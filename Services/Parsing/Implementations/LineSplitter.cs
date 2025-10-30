@@ -19,12 +19,40 @@ namespace LayoutParserApi.Services.Parsing.Implementations
             if (string.IsNullOrEmpty(text))
                 return new string[0];
 
-            if (layoutType == "mqseries")
+            // Layout posicional de 600 caracteres (TextPositional ou mqseries)
+            if (layoutType == "mqseries" || layoutType == "TextPositional")
+            {
+                _techLogger.LogTechnical(new TechLogEntry
+                {
+                    RequestId = Guid.NewGuid().ToString(),
+                    Endpoint = "SplitTextIntoLines",
+                    Level = "Info",
+                    Message = $"Usando split de layout posicional (600 chars) para tipo: {layoutType}"
+                });
                 return SplitTextIntoFixedLengthLines(text, 600);
+            }
             else if (layoutType == "idoc")
+            {
+                _techLogger.LogTechnical(new TechLogEntry
+                {
+                    RequestId = Guid.NewGuid().ToString(),
+                    Endpoint = "SplitTextIntoLines",
+                    Level = "Info",
+                    Message = $"Usando split por quebras de linha para tipo: {layoutType}"
+                });
                 return text.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+            }
             else
+            {
+                _techLogger.LogTechnical(new TechLogEntry
+                {
+                    RequestId = Guid.NewGuid().ToString(),
+                    Endpoint = "SplitTextIntoLines",
+                    Level = "Warn",
+                    Message = $"Tipo de layout desconhecido: {layoutType}. Usando split por quebras de linha."
+                });
                 return text.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+            }
         }
 
         private string[] SplitTextIntoFixedLengthLines(string text, int lineLength)

@@ -87,6 +87,7 @@ namespace LayoutParserApi.Services.Parsing.Implementations
 
                 int initialValueLength = !string.IsNullOrEmpty(lineConfig.InitialValue) ? lineConfig.InitialValue.Length : 0;
 
+                // Calcular todos os FieldElements EXCETO "Sequencia" (que pertence à próxima linha)
                 var fieldsToCalculate = fieldElements
                     .Where(f => !f.Name.Equals("Sequencia", StringComparison.OrdinalIgnoreCase))
                     .OrderBy(f => f.Sequence)
@@ -94,9 +95,10 @@ namespace LayoutParserApi.Services.Parsing.Implementations
 
                 int fieldsLength = fieldsToCalculate.Sum(f => f.LengthField);
 
-                int sequenceFieldLength = fieldElements.Any(f => f.Name.Equals("Sequencia", StringComparison.OrdinalIgnoreCase)) ? 6 : 0;
+                // Adicionar 6 chars (Sequencia da linha anterior) para todas as linhas EXCETO HEADER
+                int sequenceFromPreviousLine = lineConfig.Name?.Equals("HEADER", StringComparison.OrdinalIgnoreCase) == true ? 0 : 6;
 
-                int totalLength = initialValueLength + fieldsLength + sequenceFieldLength;
+                int totalLength = initialValueLength + fieldsLength + sequenceFromPreviousLine;
 
                 bool hasChildren = childLineElements.Any();
                 bool isValid = hasChildren ? totalLength <= 600 : totalLength == 600;
@@ -265,26 +267,70 @@ namespace LayoutParserApi.Services.Parsing.Implementations
 
             foreach (var elementJson in lineElement.Elements)
             {
-                try
-                {
-                    var field = JsonConvert.DeserializeObject<FieldElement>(elementJson);
-                    if (field != null && !string.IsNullOrEmpty(field.Name))
-                    {
-                        fieldElements.Add(field);
-                        continue;
-                    }
-                }
-                catch { }
+                // Verificar o tipo do elemento antes de desserializar
+                bool isLineElement = elementJson.Contains("\"Type\":\"LineElementVO\"");
+                bool isFieldElement = elementJson.Contains("\"Type\":\"FieldElementVO\"");
 
-                try
+                if (isFieldElement)
                 {
-                    var childLine = JsonConvert.DeserializeObject<LineElement>(elementJson);
-                    if (childLine != null && !string.IsNullOrEmpty(childLine.Name))
+                    try
                     {
-                        childLineElements.Add(childLine);
+                        var field = JsonConvert.DeserializeObject<FieldElement>(elementJson);
+                        if (field != null && !string.IsNullOrEmpty(field.Name))
+                        {
+                            fieldElements.Add(field);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _techLogger.LogTechnical(new TechLogEntry
+                        {
+                            RequestId = Guid.NewGuid().ToString(),
+                            Endpoint = "SeparateElementsRobust",
+                            Level = "Error",
+                            Message = $"Erro ao desserializar FieldElement: {ex.Message}"
+                        });
                     }
                 }
-                catch { }
+                else if (isLineElement)
+                {
+                    try
+                    {
+                        var childLine = JsonConvert.DeserializeObject<LineElement>(elementJson);
+                        if (childLine != null && !string.IsNullOrEmpty(childLine.Name) && childLine.Name != lineElement.Name)
+                        {
+                            childLineElements.Add(childLine);
+                            _techLogger.LogTechnical(new TechLogEntry
+                            {
+                                RequestId = Guid.NewGuid().ToString(),
+                                Endpoint = "SeparateElementsRobust",
+                                Level = "Info",
+                                Message = $"✅ LineElement FILHO encontrado: {childLine.Name} dentro de {lineElement.Name}"
+                            });
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _techLogger.LogTechnical(new TechLogEntry
+                        {
+                            RequestId = Guid.NewGuid().ToString(),
+                            Endpoint = "SeparateElementsRobust",
+                            Level = "Error",
+                            Message = $"Erro ao desserializar LineElement: {ex.Message}"
+                        });
+                    }
+                }
+            }
+
+            if (childLineElements.Any())
+            {
+                _techLogger.LogTechnical(new TechLogEntry
+                {
+                    RequestId = Guid.NewGuid().ToString(),
+                    Endpoint = "SeparateElementsRobust",
+                    Level = "Info",
+                    Message = $"📊 SEPARAÇÃO EM {lineElement.Name}: {fieldElements.Count} FieldElements, {childLineElements.Count} LineElements filhos ({string.Join(", ", childLineElements.Select(c => c.Name))})"
+                });
             }
 
             return (fieldElements, childLineElements);
