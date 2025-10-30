@@ -3,6 +3,7 @@ using LayoutParserApi.Models.Generation;
 using LayoutParserApi.Services.Generation.Interfaces;
 using LayoutParserApi.Services.Generation.Implementations;
 using Microsoft.AspNetCore.Mvc;
+using System.IO.Compression;
 
 namespace LayoutParserApi.Controllers
 {
@@ -31,7 +32,7 @@ namespace LayoutParserApi.Controllers
         public async Task<IActionResult> GenerateSyntheticData(
             IFormFile layoutFile,
             IFormFile excelFile = null,
-            int numberOfRecords = 100,
+            int numberOfRecords = 2,
             bool useAI = true)
         {
             if (layoutFile == null)
@@ -257,6 +258,90 @@ namespace LayoutParserApi.Controllers
             {
                 _logger.LogError(ex, "Erro ao ler dados de exemplo");
                 return new List<ParsedField>();
+            }
+        }
+
+        [HttpPost("generate-synthetic-zip")]
+        public async Task<IActionResult> GenerateSyntheticDataZip(
+            IFormFile layoutFile,
+            IFormFile excelFile = null,
+            int numberOfRecords = 2,
+            int numberOfFiles = 1,
+            bool useAI = true)
+        {
+            if (layoutFile == null)
+                return BadRequest("Arquivo de layout é obrigatório");
+
+            if (Path.GetExtension(layoutFile.FileName).ToLower() != ".xml")
+                return BadRequest("O arquivo de layout deve ser XML");
+
+            try
+            {
+                _logger.LogInformation("Iniciando geração de {Files} arquivos com {Records} registros cada", numberOfFiles, numberOfRecords);
+
+                // Carregar layout
+                var layout = await LoadLayoutFromFile(layoutFile);
+                if (layout == null)
+                    return BadRequest("Erro ao carregar layout XML");
+
+                // Processar Excel se fornecido
+                ExcelDataContext excelContext = null;
+                if (excelFile != null)
+                {
+                    var excelResult = await _excelProcessor.ProcessExcelFileAsync(excelFile.OpenReadStream());
+                    excelContext = excelResult?.DataContext;
+                }
+
+                // Gerar dados para cada arquivo
+                var zipStream = new MemoryStream();
+                using (var archive = new ZipArchive(zipStream, ZipArchiveMode.Create, true))
+                {
+                    for (int fileIndex = 1; fileIndex <= numberOfFiles; fileIndex++)
+                    {
+                        var request = new SyntheticDataRequest
+                        {
+                            Layout = layout,
+                            NumberOfRecords = numberOfRecords,
+                            UseAI = useAI,
+                            ExcelContext = excelContext
+                        };
+
+                        var result = await _dataGenerator.GenerateSyntheticDataAsync(request);
+                        
+                        if (result.Success && result.GeneratedLines.Any())
+                        {
+                            var fileName = $"arquivo_{fileIndex:D3}.txt";
+                            var entry = archive.CreateEntry(fileName);
+                            
+                            using (var entryStream = entry.Open())
+                            using (var writer = new StreamWriter(entryStream))
+                            {
+                                foreach (var line in result.GeneratedLines)
+                                {
+                                    await writer.WriteLineAsync(line);
+                                }
+                            }
+                            
+                            _logger.LogInformation("Arquivo {FileIndex} gerado com {Lines} linhas", fileIndex, result.GeneratedLines.Count);
+                        }
+                        else
+                        {
+                            _logger.LogWarning("Falha ao gerar arquivo {FileIndex}", fileIndex);
+                        }
+                    }
+                }
+
+                zipStream.Position = 0;
+                var zipBytes = zipStream.ToArray();
+                
+                _logger.LogInformation("ZIP gerado com {Size} bytes contendo {Files} arquivos", zipBytes.Length, numberOfFiles);
+
+                return File(zipBytes, "application/zip", $"dados_sinteticos_{DateTime.Now:yyyyMMdd_HHmmss}.zip");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Erro ao gerar dados sintéticos em ZIP");
+                return StatusCode(500, new { error = ex.Message });
             }
         }
     }

@@ -283,6 +283,22 @@ namespace LayoutParserApi.Services.Implementations
         {
             //DebugLineParsing(line, lineConfig);
 
+            // ✅ CASO ESPECIAL: LINHA999999 (não tem InitialValue, identifica pela sequência)
+            if (lineConfig.Name?.Equals("LINHA999999", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                if (line.Length >= 6 && line.StartsWith("999999"))
+                {
+                    _techLogger.LogTechnical(new TechLogEntry
+                    {
+                        RequestId = Guid.NewGuid().ToString(),
+                        Endpoint = "IsLineValidForConfig",
+                        Level = "Info",
+                        Message = $"✅ Match por sequência especial: LINHA999999 (sequência '999999')"
+                    });
+                    return true;
+                }
+            }
+
             // Verificar por InitialValue (HEADER, LINHA000, LINHA001, etc.)
             if (!string.IsNullOrEmpty(lineConfig.InitialValue))
             {
@@ -305,6 +321,7 @@ namespace LayoutParserApi.Services.Implementations
                 else
                 {
                     // CORREÇÃO: Para LINHA000, LINHA001, etc., verificar após a sequência
+                    // Estrutura: Sequencia(6) + InitialValue(3) + campos
                     if (line.Length >= 6 && IsNumericSequence(line.Substring(0, 6)))
                     {
                         // Verificar se após a sequência (6 caracteres) temos o InitialValue
@@ -321,7 +338,7 @@ namespace LayoutParserApi.Services.Implementations
                                     RequestId = Guid.NewGuid().ToString(),
                                     Endpoint = "IsLineValidForConfig",
                                     Level = "Info",
-                                    Message = $"Match por InitialValue: '{lineConfig.InitialValue}' na posição {checkPosition + 1} para {lineConfig.Name}"
+                                    Message = $"✅ Match por InitialValue: '{lineConfig.InitialValue}' na posição {checkPosition + 1} para {lineConfig.Name}"
                                 });
                             }
                             else
@@ -331,22 +348,40 @@ namespace LayoutParserApi.Services.Implementations
                                     RequestId = Guid.NewGuid().ToString(),
                                     Endpoint = "IsLineValidForConfig",
                                     Level = "Debug",
-                                    Message = $"InitialValue não corresponde: esperado '{lineConfig.InitialValue}', encontrado '{actualValue}' para {lineConfig.Name}"
+                                    Message = $"❌ InitialValue não corresponde: esperado '{lineConfig.InitialValue}', encontrado '{actualValue}' na posição 7-{checkPosition + lineConfig.InitialValue.Length} para {lineConfig.Name}"
                                 });
                             }
                             return matches;
                         }
                     }
+                    else
+                    {
+                        _techLogger.LogTechnical(new TechLogEntry
+                        {
+                            RequestId = Guid.NewGuid().ToString(),
+                            Endpoint = "IsLineValidForConfig",
+                            Level = "Debug",
+                            Message = $"Linha não começa com sequência numérica. Primeiros 6 chars: '{line.Substring(0, Math.Min(6, line.Length))}' para {lineConfig.Name}"
+                        });
+                    }
                 }
             }
 
-            // CORREÇÃO: Verificação por sequência numérica + nome da linha
+            // Se chegou aqui, não fez match
             if (line.Length >= 6 && IsNumericSequence(line.Substring(0, 6)))
             {
                 string sequence = line.Substring(0, 6);
+                
+                _techLogger.LogTechnical(new TechLogEntry
+                {
+                    RequestId = Guid.NewGuid().ToString(),
+                    Endpoint = "IsLineValidForConfig",
+                    Level = "Debug",
+                    Message = $"Nenhum match para {lineConfig.Name}. Sequência: '{sequence}', InitialValue esperado: '{lineConfig.InitialValue}'"
+                });
 
-                // Verificar se o nome da linha contém a sequência (ex: LINHA001 contém "001")
-                bool matchesByName = lineConfig.Name.Contains(sequence.Substring(3)); // Pega os últimos 3 dígitos
+                // ❌ REMOVER: Lógica antiga que tentava fazer match por substring da sequência
+                bool matchesByName = false;
 
                 if (matchesByName)
                 {
@@ -431,6 +466,14 @@ namespace LayoutParserApi.Services.Implementations
                 Message = $"=== Processando: {lineConfig.Name} (Ocorrência {occurrenceIndex + 1}) ==="
             });
 
+            _techLogger.LogTechnical(new TechLogEntry
+            {
+                RequestId = Guid.NewGuid().ToString(),
+                Endpoint = "ParseTextWithSequenceValidation",
+                Level = "Info",
+                Message = $"Linha completa ({line.Length} chars): {line.Substring(0, Math.Min(100, line.Length))}..."
+            });
+
             string paddedLine = line.PadRight(600);
 
             // ✅ OBTER CAMPOS ORDENADOS POR SEQUENCE
@@ -468,8 +511,20 @@ namespace LayoutParserApi.Services.Implementations
                 RequestId = Guid.NewGuid().ToString(),
                 Endpoint = "ParseTextWithSequenceValidation",
                 Level = "Info",
-                Message = $"Posição inicial: {currentPosition + 1}"
+                Message = $"Posição inicial dos campos: {currentPosition + 1} (após InitialValue/Sequencia)"
             });
+
+            if (currentPosition > 0)
+            {
+                string prefix = paddedLine.Substring(0, currentPosition);
+                _techLogger.LogTechnical(new TechLogEntry
+                {
+                    RequestId = Guid.NewGuid().ToString(),
+                    Endpoint = "ParseTextWithSequenceValidation",
+                    Level = "Info",
+                    Message = $"Prefixo da linha (posições 1-{currentPosition}): '{prefix}'"
+                });
+            }
 
             // ✅ PROCESSAR CAMPOS SEQUENCIALMENTE (IGNORAR StartValue DO XML)
             foreach (var field in fieldsToProcess)
@@ -564,24 +619,44 @@ namespace LayoutParserApi.Services.Implementations
             if (lineConfig.Name == "HEADER")
             {
                 // HEADER: campos começam APÓS "HEADER" (6 caracteres)
+                // Estrutura: HEADER + campos (sem Sequencia própria)
+                return 6;
+            }
+            else if (lineConfig.Name?.Equals("LINHA999999", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                // LINHA999999: não tem InitialValue, campos começam APÓS a sequência (6)
+                // Estrutura: Sequencia da linha anterior (6) + campos (sem InitialValue, sem Sequencia própria)
+                _techLogger.LogTechnical(new TechLogEntry
+                {
+                    RequestId = Guid.NewGuid().ToString(),
+                    Endpoint = "CalculateLineOffset",
+                    Level = "Info",
+                    Message = $"Linha {lineConfig.Name}: Offset = 6 (Seq. anterior, SEM InitialValue)"
+                });
                 return 6;
             }
             else if (lineConfig.Name.StartsWith("LINHA"))
             {
-                // LINHAS: campos começam APÓS sequência (6) + InitialValue
-                if (paddedLine.Length >= 6 && IsNumericSequence(paddedLine.Substring(0, 6)))
+                // LINHAS: campos começam APÓS Sequencia da linha anterior (6) + InitialValue
+                // Estrutura: Sequencia da linha anterior (6) + InitialValue (ex: "000" = 3) + campos (sem Sequencia própria)
+                int offset = 6; // Sequência da linha anterior (sempre 6 chars)
+                
+                if (!string.IsNullOrEmpty(lineConfig.InitialValue))
                 {
-                    int offset = 6; // Sequência numérica
-
-                    if (!string.IsNullOrEmpty(lineConfig.InitialValue))
-                    {
-                        offset += lineConfig.InitialValue.Length;
-                    }
-
-                    return offset;
+                    offset += lineConfig.InitialValue.Length;
                 }
+                
+                _techLogger.LogTechnical(new TechLogEntry
+                {
+                    RequestId = Guid.NewGuid().ToString(),
+                    Endpoint = "CalculateLineOffset",
+                    Level = "Info",
+                    Message = $"Linha {lineConfig.Name}: Offset = 6 (Seq. anterior) + {lineConfig.InitialValue?.Length ?? 0} (InitialValue '{lineConfig.InitialValue}') = {offset}"
+                });
+                
+                return offset;
             }
-
+            
             return 0;
         }
 
@@ -865,14 +940,110 @@ namespace LayoutParserApi.Services.Implementations
 
         private DocumentSummary CalculateSummary(ParsingResult result)
         {
+            // Extrair linhas presentes e esperadas
+            var linesPresent = ExtractLinesPresent(result.ParsedFields);
+            var linesExpected = ExtractExpectedLinesFromLayout(result.Layout);
+            var missingLines = linesExpected.Count - linesPresent.Count;
+
+            // Calcular total de linhas lógicas (para mqseries com 600 chars por linha)
+            int totalLogicalLines = 0;
+            if (!string.IsNullOrEmpty(result.RawText))
+            {
+                var cleanContent = result.RawText.Replace("\r", "").Replace("\n", "");
+                if (cleanContent.Length >= 600 && cleanContent.Length % 600 == 0)
+                {
+                    // Linhas de comprimento fixo de 600
+                    totalLogicalLines = cleanContent.Length / 600;
+                }
+                else
+                {
+                    // Linhas físicas (quebras de linha)
+                    totalLogicalLines = result.RawText.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length;
+                }
+            }
+
+            // Extrair tipo e versão do layout a partir do nome
+            string documentType = ExtractLayoutType(result.Layout?.Name);
+            string layoutVersion = ExtractLayoutVersion(result.Layout?.Name);
+
             return new DocumentSummary
             {
                 TotalFields = result.ParsedFields.Count,
                 ValidFields = result.ParsedFields.Count(f => f.Status == "ok"),
                 WarningFields = result.ParsedFields.Count(f => f.Status == "warning"),
                 ErrorFields = result.ParsedFields.Count(f => f.Status == "error"),
-                TotalLines = result.RawText.Split('\n').Length
+                TotalLines = totalLogicalLines,
+                PresentLines = linesPresent.Count,
+                ExpectedLines = linesExpected.Count,
+                MissingLines = missingLines > 0 ? missingLines : 0,
+                DocumentType = documentType,
+                LayoutVersion = layoutVersion,
+                ProcessingDate = DateTime.Now
             };
+        }
+
+        private string ExtractLayoutType(string layoutName)
+        {
+            if (string.IsNullOrEmpty(layoutName))
+                return "N/A";
+
+            // Exemplo: "LAY_CNHI_TXT_MQSERIES_ENVNFE_4.00_NFe"
+            // Procurar por padrões conhecidos
+            var upperName = layoutName.ToUpper();
+            
+            if (upperName.Contains("MQSERIES"))
+                return "MQSeries";
+            if (upperName.Contains("IDOC"))
+                return "iDoc";
+            if (upperName.Contains("EDI"))
+                return "EDI";
+            if (upperName.Contains("XML"))
+                return "XML";
+            if (upperName.Contains("JSON"))
+                return "JSON";
+            
+            // Tentar extrair da estrutura LAY_*_TXT_TIPO_*
+            var parts = layoutName.Split('_');
+            if (parts.Length >= 4)
+            {
+                // Retornar a parte que provavelmente é o tipo (após TXT)
+                for (int i = 0; i < parts.Length - 1; i++)
+                {
+                    if (parts[i].Equals("TXT", StringComparison.OrdinalIgnoreCase) && i + 1 < parts.Length)
+                    {
+                        return parts[i + 1];
+                    }
+                }
+            }
+
+            return "Desconhecido";
+        }
+
+        private string ExtractLayoutVersion(string layoutName)
+        {
+            if (string.IsNullOrEmpty(layoutName))
+                return "N/A";
+
+            // Procurar por padrão de versão: X.XX ou X.X
+            // Exemplo: "LAY_CNHI_TXT_MQSERIES_ENVNFE_4.00_NFe" -> "4.00"
+            var versionPattern = new System.Text.RegularExpressions.Regex(@"_(\d+\.\d+)(?:_|$)");
+            var match = versionPattern.Match(layoutName);
+            
+            if (match.Success)
+            {
+                return match.Groups[1].Value;
+            }
+
+            // Tentar outros padrões (ex: V1, V2, etc.)
+            var versionPattern2 = new System.Text.RegularExpressions.Regex(@"[Vv](\d+(?:\.\d+)?)");
+            var match2 = versionPattern2.Match(layoutName);
+            
+            if (match2.Success)
+            {
+                return match2.Groups[1].Value;
+            }
+
+            return "N/A";
         }
 
         DocumentStructure ILayoutParserService.BuildDocumentStructure(ParsingResult result)
@@ -916,30 +1087,12 @@ namespace LayoutParserApi.Services.Implementations
                     return GetDefaultExpectedLines();
                 }
 
-                // ✅ EXTRAIR LINHAS DIRETAMENTE DOS ELEMENTS DO LAYOUT (estrutura real)
+                // ✅ EXTRAIR LINHAS RECURSIVAMENTE (incluindo LineElements filhos)
                 if (layout.Elements != null && layout.Elements.Any())
                 {
                     foreach (var lineElement in layout.Elements)
                     {
-                        // Usar o Name do LineElement (estrutura real)
-                        if (!string.IsNullOrEmpty(lineElement.Name))
-                        {
-                            var lineName = lineElement.Name.Trim().ToUpper();
-                            if (IsValidLineName(lineName))
-                            {
-                                expectedLines.Add(lineName);
-                            }
-                        }
-
-                        // Se não tem Name, tentar InitialValue
-                        else if (!string.IsNullOrEmpty(lineElement.InitialValue))
-                        {
-                            var lineName = lineElement.InitialValue.Trim().ToUpper();
-                            if (IsValidLineName(lineName))
-                            {
-                                expectedLines.Add(lineName);
-                            }
-                        }
+                        ExtractLineElementsRecursively(lineElement, expectedLines);
                     }
                 }
 
@@ -976,6 +1129,48 @@ namespace LayoutParserApi.Services.Implementations
                 });
 
                 return GetDefaultExpectedLines();
+            }
+        }
+
+        private void ExtractLineElementsRecursively(LineElement lineElement, List<string> expectedLines)
+        {
+            // Adicionar o próprio LineElement
+            if (!string.IsNullOrEmpty(lineElement.Name))
+            {
+                var lineName = lineElement.Name.Trim().ToUpper();
+                if (IsValidLineName(lineName) && !expectedLines.Contains(lineName))
+                {
+                    expectedLines.Add(lineName);
+                }
+            }
+            else if (!string.IsNullOrEmpty(lineElement.InitialValue))
+            {
+                var lineName = lineElement.InitialValue.Trim().ToUpper();
+                if (IsValidLineName(lineName) && !expectedLines.Contains(lineName))
+                {
+                    expectedLines.Add(lineName);
+                }
+            }
+
+            // Extrair recursivamente os LineElements filhos
+            if (lineElement.Elements != null && lineElement.Elements.Any())
+            {
+                foreach (var elementJson in lineElement.Elements)
+                {
+                    try
+                    {
+                        // Tentar desserializar como LineElement filho
+                        if (elementJson.Contains("\"Type\":\"LineElementVO\""))
+                        {
+                            var childLineElement = JsonConvert.DeserializeObject<LineElement>(elementJson);
+                            if (childLineElement != null)
+                            {
+                                ExtractLineElementsRecursively(childLineElement, expectedLines);
+                            }
+                        }
+                    }
+                    catch { }
+                }
             }
         }
 
@@ -1497,37 +1692,49 @@ namespace LayoutParserApi.Services.Implementations
                 return errors;
             }
 
-            var lines = rawText.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            // Remover quebras de linha para análise consistente
+            var cleanText = rawText.Replace("\r", "").Replace("\n", "");
 
-            for (int i = 0; i < lines.Length; i++)
+            // Validar se começa com HEADER
+            if (!cleanText.StartsWith("HEADER"))
             {
-                var line = lines[i];
-                var lineNumber = i + 1;
-
-                if (line.Length != 600)
-                    errors.Add($"Linha {lineNumber}: Comprimento incorreto ({line.Length} caracteres, esperado 600)");
-
-                if (ContainsInvalidCharacters(line))
-                    errors.Add($"Linha {lineNumber}: Contém caracteres inválidos ou não-ASCII");
+                errors.Add("Documento não começa com HEADER");
             }
 
-            if (lines.Length > 0)
+            // Validar se o tamanho total é múltiplo de 600
+            if (cleanText.Length < 600)
             {
-                if (!lines[0].StartsWith("HEADER"))
-                    errors.Add("Primeira linha não é HEADER");
-
-
-                CheckLineSequence(lines, errors);
+                errors.Add($"Documento muito pequeno ({cleanText.Length} caracteres, mínimo 600)");
+                return errors;
             }
 
-            if (lines.Length > 1)
+            if (cleanText.Length % 600 != 0)
             {
-                for (int i = 1; i < lines.Length - 1; i++)
+                errors.Add($"Tamanho do documento ({cleanText.Length} caracteres) não é múltiplo de 600. Possível linha incompleta.");
+            }
+
+            // Validar blocos lógicos de 600 caracteres
+            int totalLogicalLines = cleanText.Length / 600;
+            for (int i = 0; i < totalLogicalLines; i++)
+            {
+                int startPos = i * 600;
+                if (startPos + 600 <= cleanText.Length)
                 {
-                    if (string.IsNullOrWhiteSpace(lines[i]))
-                        errors.Add($"Linha {i + 1}: Linha vazia no meio do documento");
+                    var logicalLine = cleanText.Substring(startPos, 600);
+                    var lineNumber = i + 1;
 
+                    if (ContainsInvalidCharacters(logicalLine))
+                    {
+                        errors.Add($"Bloco lógico {lineNumber} (posição {startPos}-{startPos + 599}): Contém caracteres inválidos ou não-ASCII");
+                    }
                 }
+            }
+
+            // Validar sequências (se houver padrões de 6 dígitos)
+            var sequentialMatches = System.Text.RegularExpressions.Regex.Matches(cleanText, @"\d{6}");
+            if (sequentialMatches.Count < 2)
+            {
+                errors.Add("Documento não contém padrões de sequência esperados (formato: NNNNNN)");
             }
 
             return errors;
@@ -1604,7 +1811,7 @@ namespace LayoutParserApi.Services.Implementations
             if (lineElement == null || lineElement.Elements == null)
                 return 0;
 
-            int totalLength = 0;
+            int fieldsLength = 0;
             int fieldCount = 0;
 
             foreach (var elementJson in lineElement.Elements)
@@ -1615,8 +1822,12 @@ namespace LayoutParserApi.Services.Implementations
                     var field = JsonConvert.DeserializeObject<FieldElement>(elementJson);
                     if (field != null && field.LengthField > 0)
                     {
-                        totalLength += field.LengthField;
-                        fieldCount++;
+                        // ✅ CORREÇÃO: Excluir o campo "Sequencia" pois ele pertence à linha SEGUINTE
+                        if (!field.Name.Equals("Sequencia", StringComparison.OrdinalIgnoreCase))
+                        {
+                            fieldsLength += field.LengthField;
+                            fieldCount++;
+                        }
                         continue;
                     }
                 }
@@ -1636,13 +1847,23 @@ namespace LayoutParserApi.Services.Implementations
                 catch { }
             }
 
+            // ✅ APLICAR A MESMA LÓGICA DO ValidateLineLayoutWithResult:
+            // 1. InitialValue (HEADER, "000", "001", etc.)
+            int initialValueLength = !string.IsNullOrEmpty(lineElement.InitialValue) ? lineElement.InitialValue.Length : 0;
+            
+            // 2. Sequencia da linha ANTERIOR (6 chars), exceto para HEADER
+            int sequenceFromPreviousLine = (lineElement.Name?.Equals("HEADER", StringComparison.OrdinalIgnoreCase) == true) ? 0 : 6;
+            
+            // 3. Total = InitialValue + campos (sem Sequencia) + Sequencia da linha anterior
+            int totalLength = initialValueLength + fieldsLength + sequenceFromPreviousLine;
+
             // Log do tamanho calculado
             _techLogger.LogTechnical(new TechLogEntry
             {
                 RequestId = Guid.NewGuid().ToString(),
                 Endpoint = "SumLengthFieldFromFieldElements",
                 Level = totalLength == 600 ? "Info" : "Warn",
-                Message = $"Linha: {lineElement.Name ?? "Desconhecida"} | Total de campos: {fieldCount} | Comprimento total: {totalLength} posições" + (totalLength != 600 ? " ⚠️ DIFERENTE DE 600!" : " ✓")
+                Message = $"Linha: {lineElement.Name ?? "Desconhecida"} | Campos: {fieldCount} ({fieldsLength} chars) + InitialValue ({initialValueLength}) + Seq. anterior ({sequenceFromPreviousLine}) = {totalLength}" + (totalLength != 600 ? " ⚠️ DIFERENTE DE 600!" : " ✓")
             });
 
             return totalLength;
@@ -1868,7 +2089,8 @@ namespace LayoutParserApi.Services.Implementations
 
                 int initialValueLength = !string.IsNullOrEmpty(lineConfig.InitialValue) ? lineConfig.InitialValue.Length : 0;
 
-                // ✅ CORREÇÃO: Calcular apenas FieldElements (ignorar LineElements filhos)
+                // ✅ CORREÇÃO: Calcular apenas FieldElements (ignorar LineElements filhos E a tag "Sequencia")
+                // A tag "Sequencia" de cada linha pertence à PRÓXIMA linha
                 var fieldsToCalculate = fieldElements
                     .Where(f => !f.Name.Equals("Sequencia", StringComparison.OrdinalIgnoreCase))
                     .OrderBy(f => f.Sequence)
@@ -1876,9 +2098,10 @@ namespace LayoutParserApi.Services.Implementations
 
                 int fieldsLength = fieldsToCalculate.Sum(f => f.LengthField);
 
-                int sequenceFieldLength = fieldElements.Any(f => f.Name.Equals("Sequencia", StringComparison.OrdinalIgnoreCase)) ? 6 : 0;
+                // Adicionar 6 chars (Sequencia da linha anterior) para todas as linhas EXCETO HEADER
+                int sequenceFromPreviousLine = lineConfig.Name?.Equals("HEADER", StringComparison.OrdinalIgnoreCase) == true ? 0 : 6;
 
-                int totalLength = initialValueLength + fieldsLength + sequenceFieldLength;
+                int totalLength = initialValueLength + fieldsLength + sequenceFromPreviousLine;
 
                 _techLogger.LogTechnical(new TechLogEntry
                 {
@@ -1893,7 +2116,7 @@ namespace LayoutParserApi.Services.Implementations
                     RequestId = Guid.NewGuid().ToString(),
                     Endpoint = "ValidateLineLayout",
                     Level = "Info",
-                    Message = $"Campos PRÓPRIOS (exceto Sequence): {fieldsToCalculate.Count} campos = {fieldsLength} chars"
+                    Message = $"Campos PRÓPRIOS (EXCETO Sequencia, que pertence à próxima linha): {fieldsToCalculate.Count} campos = {fieldsLength} chars"
                 });
 
                 if (childLineElements.Any())
@@ -1912,15 +2135,7 @@ namespace LayoutParserApi.Services.Implementations
                     RequestId = Guid.NewGuid().ToString(),
                     Endpoint = "ValidateLineLayout",
                     Level = "Info",
-                    Message = $"Sequence field: {sequenceFieldLength} chars"
-                });
-
-                _techLogger.LogTechnical(new TechLogEntry
-                {
-                    RequestId = Guid.NewGuid().ToString(),
-                    Endpoint = "ValidateLineLayout",
-                    Level = "Info",
-                    Message = $"CÁLCULO: {initialValueLength} (InitialValue) + {fieldsLength} (Campos próprios) + {sequenceFieldLength} (Sequence) = {totalLength} chars"
+                    Message = $"CÁLCULO: {initialValueLength} (InitialValue) + {fieldsLength} (Campos sem Sequencia) + {sequenceFromPreviousLine} (Sequencia da linha anterior) = {totalLength} chars"
                 });
 
                 // ✅ CORREÇÃO: Validação diferente para linhas com filhos
@@ -1997,17 +2212,13 @@ namespace LayoutParserApi.Services.Implementations
                     fieldNumber++;
                 }
 
-                if (sequenceFieldLength > 0)
+                _techLogger.LogTechnical(new TechLogEntry
                 {
-                    accumulated += sequenceFieldLength;
-                    _techLogger.LogTechnical(new TechLogEntry
-                    {
-                        RequestId = Guid.NewGuid().ToString(),
-                        Endpoint = "ValidateLineLayout",
-                        Level = "Info",
-                        Message = $"Sequence → Length: {sequenceFieldLength} | Soma acumulada: {accumulated}"
-                    });
-                }
+                    RequestId = Guid.NewGuid().ToString(),
+                    Endpoint = "ValidateLineLayout",
+                    Level = "Info",
+                    Message = $"Total calculado (SEM Sequencia, que pertence à próxima linha): {accumulated} chars"
+                });
 
                 // ✅ CORREÇÃO: Validar também os elementos filhos
                 if (childLineElements.Any())
@@ -2340,6 +2551,7 @@ namespace LayoutParserApi.Services.Implementations
 
                 int initialValueLength = !string.IsNullOrEmpty(lineConfig.InitialValue) ? lineConfig.InitialValue.Length : 0;
 
+                // Calcular todos os FieldElements EXCETO "Sequencia" (que pertence à próxima linha)
                 var fieldsToCalculate = fieldElements
                     .Where(f => !f.Name.Equals("Sequencia", StringComparison.OrdinalIgnoreCase))
                     .OrderBy(f => f.Sequence)
@@ -2347,9 +2559,10 @@ namespace LayoutParserApi.Services.Implementations
 
                 int fieldsLength = fieldsToCalculate.Sum(f => f.LengthField);
 
-                int sequenceFieldLength = fieldElements.Any(f => f.Name.Equals("Sequencia", StringComparison.OrdinalIgnoreCase)) ? 6 : 0;
+                // Adicionar 6 chars (Sequencia da linha anterior) para todas as linhas EXCETO HEADER
+                int sequenceFromPreviousLine = lineConfig.Name?.Equals("HEADER", StringComparison.OrdinalIgnoreCase) == true ? 0 : 6;
 
-                int totalLength = initialValueLength + fieldsLength + sequenceFieldLength;
+                int totalLength = initialValueLength + fieldsLength + sequenceFromPreviousLine;
 
                 bool hasChildren = childLineElements.Any();
                 bool isValid = hasChildren ? totalLength <= 600 : totalLength == 600;

@@ -2,18 +2,21 @@ using LayoutParserApi.Models.Entities;
 using LayoutParserApi.Models.Generation;
 using LayoutParserApi.Services.Generation.Interfaces;
 using System.Text;
+using System.Xml.Serialization;
 
 namespace LayoutParserApi.Services.Generation.Implementations
 {
     public class SyntheticDataGeneratorService : ISyntheticDataGeneratorService
     {
-        private readonly IAIService _aiService;
+        private readonly GeminiAIService _geminiService;
         private readonly ILogger<SyntheticDataGeneratorService> _logger;
         private readonly Random _random = new();
 
-        public SyntheticDataGeneratorService(IAIService aiService, ILogger<SyntheticDataGeneratorService> logger)
+        public SyntheticDataGeneratorService(
+            GeminiAIService geminiService,
+            ILogger<SyntheticDataGeneratorService> logger)
         {
-            _aiService = aiService;
+            _geminiService = geminiService;
             _logger = logger;
         }
 
@@ -31,9 +34,20 @@ namespace LayoutParserApi.Services.Generation.Implementations
             {
                 _logger.LogInformation("Iniciando geração de {Count} registros sintéticos", request.NumberOfRecords);
 
-                if (request.UseAI && _aiService != null)
+                // Tentar IA primeiro, mas com fallback para regras
+                if (request.UseAI && _geminiService != null)
                 {
-                    result = await GenerateWithAIAsync(request);
+                    try
+                    {
+                        result = await GenerateWithGeminiAsync(request);
+                        _logger.LogInformation("Geração com Gemini concluída com sucesso");
+                    }
+                    catch (Exception geminiEx)
+                    {
+                        _logger.LogWarning(geminiEx, "Falha na geração com Gemini, usando fallback para regras");
+                        result = await GenerateWithRulesAsync(request);
+                        result.GenerationMetadata["fallbackReason"] = $"Gemini failed: {geminiEx.Message}";
+                    }
                 }
                 else
                 {
@@ -131,10 +145,22 @@ namespace LayoutParserApi.Services.Generation.Implementations
             return requirements;
         }
 
-        private async Task<GeneratedDataResult> GenerateWithAIAsync(SyntheticDataRequest request)
+        private async Task<GeneratedDataResult> GenerateWithGeminiAsync(SyntheticDataRequest request)
         {
-            var prompt = BuildAIPrompt(request);
-            var aiResponse = await _aiService.GenerateSyntheticDataAsync(prompt);
+            // Converter layout para XML string
+            var layoutXml = SerializeLayoutToXml(request.Layout);
+            
+            // Preparar exemplos (se disponíveis)
+            var examples = request.SampleRealData?.Select(s => s.Value).ToList() ?? new List<string>();
+            
+            // Preparar regras do Excel (se disponíveis)
+            var excelRules = new Dictionary<string, string>();
+            
+            var aiResponse = await _geminiService.GenerateSyntheticData(
+                layoutXml, 
+                examples, 
+                excelRules, 
+                request.NumberOfRecords);
             
             var lines = ParseAIResponse(aiResponse, request.NumberOfRecords);
             
@@ -146,8 +172,8 @@ namespace LayoutParserApi.Services.Generation.Implementations
                 UsedLayout = request.Layout,
                 GenerationMetadata = new Dictionary<string, object>
                 {
-                    ["generationMethod"] = "AI",
-                    ["aiPrompt"] = prompt,
+                    ["generationMethod"] = "Gemini",
+                    ["layoutXml"] = layoutXml,
                     ["aiResponseLength"] = aiResponse.Length
                 }
             };
@@ -400,6 +426,22 @@ namespace LayoutParserApi.Services.Generation.Implementations
             var words = new[] { "exemplo", "teste", "dados", "sinteticos", "gerado", "automaticamente" };
             var word = words[_random.Next(words.Length)];
             return word.PadRight(length, ' ');
+        }
+
+        private string SerializeLayoutToXml(Layout layout)
+        {
+            try
+            {
+                var serializer = new XmlSerializer(typeof(Layout));
+                using var stringWriter = new StringWriter();
+                serializer.Serialize(stringWriter, layout);
+                return stringWriter.ToString();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Erro ao serializar layout para XML");
+                return $"<Layout><Name>{layout.Name}</Name><LayoutType>{layout.LayoutType}</LayoutType></Layout>";
+            }
         }
     }
 }

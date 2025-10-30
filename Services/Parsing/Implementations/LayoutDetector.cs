@@ -10,15 +10,27 @@ namespace LayoutParserApi.Services.Parsing.Implementations
         {
             if (string.IsNullOrWhiteSpace(content)) return "unknown";
 
+            Console.WriteLine($"🔍 Detectando tipo de layout... (tamanho: {content.Length} caracteres)");
+
             if (LooksLikeXml(content) && IsWellFormedXml(content))
+            {
+                Console.WriteLine("✅ Detectado como XML");
                 return "xml";
+            }
 
             if (LooksLikeMqSeries(content))
+            {
+                Console.WriteLine("✅ Detectado como mqseries");
                 return "mqseries";
+            }
 
             if (LooksLikeIdoc(content))
+            {
+                Console.WriteLine("✅ Detectado como idoc");
                 return "idoc";
+            }
 
+            Console.WriteLine("❌ Tipo desconhecido");
             return "unknown";
         }
 
@@ -48,22 +60,37 @@ namespace LayoutParserApi.Services.Parsing.Implementations
             if (string.IsNullOrEmpty(content))
                 return false;
 
-            var firstLine = GetFirstLine(content);
-            if (string.IsNullOrEmpty(firstLine))
-                return false;
-
-            if (!firstLine.StartsWith("HEADER"))
-                return false;
-
-            if (firstLine.Length < 6)
-                return false;
-
+            // Remover quebras de linha para análise
             var cleanContent = content.Replace("\r", "").Replace("\n", "");
-            bool isDivisibleBy600 = cleanContent.Length % 600 == 0;
+            
+            // Verificar se começa com HEADER
+            if (!cleanContent.StartsWith("HEADER"))
+                return false;
 
-            int lineCount = CountDocumentLines(content);
+            // Verificar se o tamanho é múltiplo de 600 (linhas de 600 caracteres)
+            if (cleanContent.Length < 600 || cleanContent.Length % 600 != 0)
+                return false;
 
-            return isDivisibleBy600 && lineCount > 1;
+            // Verificar se tem padrões sequenciais típicos do mqseries
+            // Formato: NNNNNNLLL onde N=sequencial (6 dígitos) e L=linha (3 dígitos)
+            // Ex: 000001000, 000002001, 000003002, etc.
+            var sequentialMatches = System.Text.RegularExpressions.Regex.Matches(
+                cleanContent, 
+                @"\d{6}\d{3}"
+            );
+
+            // Deve ter pelo menos 2 sequenciais para confirmar o padrão
+            if (sequentialMatches.Count < 2)
+                return false;
+
+            // Verificar se termina com linha 999 (típico do mqseries)
+            var endsWithLinha999 = cleanContent.Contains("999999") || 
+                                   System.Text.RegularExpressions.Regex.IsMatch(cleanContent, @"\d{6}999");
+
+            // Verificar se tem múltiplas "linhas" lógicas de 600 caracteres (mínimo 2)
+            int logicalLineCount = cleanContent.Length / 600;
+
+            return logicalLineCount >= 2 && (sequentialMatches.Count >= 3 || endsWithLinha999);
         }
 
         private bool LooksLikeIdoc(string content)
