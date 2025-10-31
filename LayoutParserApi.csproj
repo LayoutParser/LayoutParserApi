@@ -9,6 +9,7 @@
     <DockerfileContext>.</DockerfileContext>
     <LangVersion>preview</LangVersion>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+	<GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
   </PropertyGroup>
 
   <ItemGroup>
@@ -20,6 +21,12 @@
     <PackageReference Include="Serilog.Sinks.Elasticsearch" Version="10.0.0" />
     <PackageReference Include="StackExchange.Redis" Version="2.9.32" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="9.0.6" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="LayoutParserLib">
+      <HintPath>..\LayoutParserLib\LayoutParserLib\bin\Debug\LayoutParserLib.dll</HintPath>
+    </Reference>
   </ItemGroup>
 
 </Project>

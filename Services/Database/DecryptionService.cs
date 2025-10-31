@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -11,14 +12,19 @@ namespace LayoutParserApi.Services.Database
     public class DecryptionService : IDecryptionService
     {
         private readonly ILogger<DecryptionService> _logger;
+        private readonly string _layoutParserDecrypt;
 
-        public DecryptionService(ILogger<DecryptionService> logger)
+        public DecryptionService(ILogger<DecryptionService> logger, IConfiguration configuration)
         {
             _logger = logger;
+            _layoutParserDecrypt = configuration["LayoutParserDecrypt:Path"] ?? @"C:\Users\elson.lopes\source\repos\LayoutParserDecrypt\bin\Debug\LayoutParserDecrypt.exe";
         }
 
         public string DecryptContent(string encryptedContent)
         {
+            string tempInputFile = null;
+            string tempOutputFile = null;
+
             try
             {
                 if (string.IsNullOrEmpty(encryptedContent))
@@ -27,15 +33,18 @@ namespace LayoutParserApi.Services.Database
                     return string.Empty;
                 }
 
+                tempInputFile = Path.GetTempFileName();
+                tempOutputFile = Path.GetTempFileName();
+
+                File.WriteAllText(tempInputFile, encryptedContent, Encoding.UTF8);
+
                 _logger.LogInformation("Descriptografando conteúdo usando CryptographySysMiddle.Cryptography (tamanho: {Size} caracteres)", encryptedContent.Length);
 
-                // Sempre remover prefixo de 3 caracteres
-                if (encryptedContent.Length <= 3)
-                    throw new FormatException("Conteúdo muito curto para remoção de prefixo de 3 caracteres.");
-                var withoutPrefix = encryptedContent.Substring(3);
+                CallLegacyDecryptor(tempInputFile, tempOutputFile);
 
-                var decrypted = CryptographySysMiddle.Cryptography.Decrypt(withoutPrefix);
-                return decrypted;
+                string decryptedContent = File.ReadAllText(tempOutputFile, Encoding.UTF8);
+
+                return decryptedContent;
             }
             catch (Exception ex)
             {
@@ -43,6 +52,43 @@ namespace LayoutParserApi.Services.Database
                 _logger.LogWarning("Tentando usar conteúdo sem descriptografia");
                 return encryptedContent;
             }
+        }
+
+        private void CallLegacyDecryptor(string inputFile, string outputFile)
+        {
+            var processStartInfo = new ProcessStartInfo
+            {
+                FileName = _layoutParserDecrypt,
+                Arguments = $"\"{inputFile}\" \"{outputFile}\"",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden
+            };
+
+            using var process = new Process();
+            process.StartInfo = processStartInfo;
+
+            process.Start();
+
+            string output = process.StandardOutput.ReadToEnd();
+            string error = process.StandardError.ReadToEnd();
+
+            bool exited = process.WaitForExit(30000);
+
+            if (!exited)
+            {
+                process.Kill();
+                throw new Exception("Legacy decryptor timeout (30 segundos)");
+            }
+
+            if (process.ExitCode != 0)
+            {
+                throw new Exception($"Legacy decryptor failed (Exit code: {process.ExitCode}): {error}");
+            }
+
+            _logger.LogDebug("Processo legado finalizado: {Output}", output);
         }
     }
 }
