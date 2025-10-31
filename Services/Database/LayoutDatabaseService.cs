@@ -86,7 +86,7 @@ namespace LayoutParserApi.Services.Database
                         Name = SafeGetString(reader, 3),
                         Description = reader.IsDBNull(4) ? "" : SafeGetString(reader, 4),
                         LayoutType = reader.IsDBNull(5) ? "" : SafeGetString(reader, 5),
-                        ValueContent = reader.IsDBNull(6) ? "" : SafeGetString(reader, 6),
+                        ValueContent = reader.GetString(6),
                         XmlShemaValidatorPath = reader.IsDBNull(7) ? "" : SafeGetString(reader, 7),
                         ProjectId = reader.GetInt32(8),
                         LastUpdateDate = reader.GetDateTime(9)
@@ -94,9 +94,8 @@ namespace LayoutParserApi.Services.Database
 
                     // Descriptografar o conteúdo
                     if (!string.IsNullOrEmpty(layout.ValueContent))
-                    {
                         layout.DecryptedContent = _decryptionService.DecryptContent(layout.ValueContent);
-                    }
+                    
 
                     layouts.Add(layout);
                 }
@@ -171,9 +170,8 @@ namespace LayoutParserApi.Services.Database
 
                     // Descriptografar o conteúdo
                     if (!string.IsNullOrEmpty(layout.ValueContent))
-                    {
                         layout.DecryptedContent = _decryptionService.DecryptContent(layout.ValueContent);
-                    }
+                    
 
                     _logger.LogInformation("Layout encontrado no banco: {Name}", layout.Name);
                     return layout;
