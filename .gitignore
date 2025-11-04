@@ -35,8 +35,11 @@ bld/
 
 # Visual Studio 2015/2017 cache/options directory
 .vs/
-# Uncomment if you have tasks that create the project's static files in wwwroot
-#wwwroot/
+# wwwroot está vazia (front-end separado em LayoutParser/wwwroot)
+# Mantemos a pasta mas ignoramos conteúdo (exceto README.md)
+wwwroot/*
+!wwwroot/.gitkeep
+!wwwroot/README.md
 
 # Visual Studio 2017 auto generated files
 Generated\ Files/

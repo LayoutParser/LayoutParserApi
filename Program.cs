@@ -11,6 +11,14 @@ using System.Reflection;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Garantir que wwwroot existe (mesmo que vazia) para evitar erro de DirectoryNotFoundException
+// Front-end está separado em LayoutParser/wwwroot, mas ASP.NET Core ainda espera a pasta
+var wwwrootPath = Path.Combine(AppContext.BaseDirectory, "wwwroot");
+if (!Directory.Exists(wwwrootPath))
+{
+    Directory.CreateDirectory(wwwrootPath);
+}
+
 // Configurar log por txt (Console.Out/Error) se habilitado
 var enableTxtLog = builder.Configuration.GetValue<bool>("Logging:Txt:Enabled", false);
 if (enableTxtLog)
