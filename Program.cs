@@ -80,10 +80,44 @@ if (loggingType == "elasticsearch")
 }
 else
 {
-    // Para file e console, usar configuração básica do Serilog
+    // Padrão: log em arquivo .log na pasta Logs (onde o assembly está rodando)
+    var logDirectory = GetSerilogDirectory(builder.Configuration);
+    var configuredFileName = builder.Configuration["Logging:File:FileName"] ?? "layoutparserapi.log";
+    
+    // Criar diretório se não existir
+    if (!Directory.Exists(logDirectory))
+        Directory.CreateDirectory(logDirectory);
+    
+    // Construir caminho completo do arquivo de log
+    // Serilog com RollingInterval.Day automaticamente adiciona data ao nome do arquivo
+    // Se o arquivo contém {Date}, o Serilog substitui; caso contrário, adiciona a data automaticamente
+    // Exemplo: "layoutparserapi.log" vira "layoutparserapi20240115.log" ou "layoutparserapi-2024-01-15.log" se usar {Date}
+    var logFilePath = Path.Combine(logDirectory, configuredFileName);
+    
     Log.Logger = new LoggerConfiguration()
-        .WriteTo.Console()
+        .WriteTo.File(
+            path: logFilePath,
+            rollingInterval: RollingInterval.Day,
+            retainedFileCountLimit: 30,
+            outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff}] [{Level:u3}] {Message:lj}{NewLine}{Exception}",
+            shared: true)
         .CreateLogger();
+}
+
+static string GetSerilogDirectory(IConfiguration configuration)
+{
+    // Verificar se há pasta customizada configurada
+    var customDirectory = configuration["Logging:File:Directory"];
+    if (!string.IsNullOrWhiteSpace(customDirectory))
+    {
+        return customDirectory;
+    }
+    
+    // Usar pasta padrão "Logs" onde o assembly está rodando
+    var assemblyLocation = Assembly.GetExecutingAssembly().Location;
+    var assemblyDirectory = Path.GetDirectoryName(assemblyLocation) ?? AppDomain.CurrentDomain.BaseDirectory;
+    
+    return Path.Combine(assemblyDirectory, "Logs");
 }
 
 builder.Services.AddControllers();
