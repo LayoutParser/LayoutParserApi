@@ -7,15 +7,60 @@ using StackExchange.Redis;
 using Microsoft.AspNetCore.Http.Features;
 
 using Serilog;
-
-var logFile = "C:\\Users\\elson.lopes\\source\\repos\\LayoutParserApi\\Logs\\log.log";
-
-var fileStream = new FileStream(logFile, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
-var writer = new StreamWriter(fileStream) { AutoFlush = true };
-Console.SetOut(writer);
-Console.SetError(writer);
+using System.Reflection;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Configurar log por txt (Console.Out/Error) se habilitado
+var enableTxtLog = builder.Configuration.GetValue<bool>("Logging:Txt:Enabled", false);
+if (enableTxtLog)
+{
+    var logDirectory = GetLogDirectory(builder.Configuration);
+    var logFileName = builder.Configuration["Logging:Txt:FileName"] ?? "log.log";
+    var logFilePath = Path.Combine(logDirectory, logFileName);
+    
+    // Criar diretório se não existir
+    if (!Directory.Exists(logDirectory))
+        Directory.CreateDirectory(logDirectory);
+    
+    var fileStream = new FileStream(logFilePath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+    var writer = new StreamWriter(fileStream) { AutoFlush = true };
+    Console.SetOut(writer);
+    Console.SetError(writer);
+}
+
+static string GetLogDirectory(IConfiguration configuration)
+{
+    // Verificar se há pasta customizada configurada
+    var customDirectory = configuration["Logging:Txt:CustomDirectory"];
+    if (!string.IsNullOrWhiteSpace(customDirectory))
+    {
+        return customDirectory;
+    }
+    
+    // Usar pasta padrão baseada na localização do assembly
+    var assemblyLocation = Assembly.GetExecutingAssembly().Location;
+    var assemblyDirectory = Path.GetDirectoryName(assemblyLocation) ?? AppDomain.CurrentDomain.BaseDirectory;
+    
+    // Procurar pela pasta "bin" na árvore de diretórios
+    var currentDirectory = new DirectoryInfo(assemblyDirectory);
+    while (currentDirectory != null)
+    {
+        if (currentDirectory.Name.Equals("bin", StringComparison.OrdinalIgnoreCase))
+        {
+            // Se encontrou "bin", criar "log" na mesma raiz que "bin"
+            var parentDirectory = currentDirectory.Parent?.FullName;
+            if (parentDirectory != null)
+            {
+                return Path.Combine(parentDirectory, "log");
+            }
+        }
+        currentDirectory = currentDirectory.Parent;
+    }
+    
+    // Se não encontrou "bin", criar pasta log na mesma raiz que o assembly
+    return Path.Combine(assemblyDirectory, "log");
+}
 
 var environment = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
 
@@ -95,7 +140,7 @@ builder.Services.AddCors(options =>
 var app = builder.Build();
 
 app.UseCors("AllowAll");
-app.UseStaticFiles();
+// Removido UseStaticFiles() - front-end agora está em LayoutParser/wwwroot (separado do back-end)
 app.UseAuthorization();
 app.MapControllers();
 
