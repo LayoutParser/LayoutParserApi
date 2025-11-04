@@ -16,6 +16,7 @@ namespace LayoutParserApi.Services.Database
         public DecryptionService(ILogger<DecryptionService> logger, IConfiguration configuration)
         {
             _logger = logger;
+            _layoutParserDecryptPath = string.Empty; // Inicializar para evitar null
             
             // IMPORTANTE: A descriptografia só funciona no .NET Framework 4.8.1
             // Devido à tecnologia de criptografia utilizada, é necessário usar o executável
@@ -35,22 +36,31 @@ namespace LayoutParserApi.Services.Database
 
                 foreach (var path in possiblePaths)
                 {
-                    if (File.Exists(path))
+                    var fullPath = Path.GetFullPath(path);
+                    if (File.Exists(fullPath))
                     {
-                        _layoutParserDecryptPath = Path.GetFullPath(path);
-                        _logger.LogInformation("Executável LayoutParserDecrypt encontrado em: {Path}", _layoutParserDecryptPath);
+                        _layoutParserDecryptPath = fullPath;
+                        _logger.LogInformation("Executável LayoutParserDecrypt encontrado automaticamente em: {Path}", _layoutParserDecryptPath);
                         break;
                     }
                 }
 
                 if (string.IsNullOrEmpty(_layoutParserDecryptPath))
                 {
-                    _logger.LogWarning("LayoutParserDecrypt.exe não encontrado. Configure o caminho em 'LayoutParserDecrypt:Path'");
+                    _logger.LogWarning("LayoutParserDecrypt.exe não encontrado automaticamente. Configure o caminho em 'LayoutParserDecrypt:Path' no appsettings.json");
                 }
             }
             else
             {
                 _layoutParserDecryptPath = configuredPath;
+                if (!File.Exists(_layoutParserDecryptPath))
+                {
+                    _logger.LogWarning("LayoutParserDecrypt.exe não encontrado no caminho configurado: {Path}", _layoutParserDecryptPath);
+                }
+                else
+                {
+                    _logger.LogInformation("Usando LayoutParserDecrypt.exe do caminho configurado: {Path}", _layoutParserDecryptPath);
+                }
             }
         }
 
