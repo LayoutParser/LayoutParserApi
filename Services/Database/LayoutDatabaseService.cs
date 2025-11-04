@@ -39,7 +39,14 @@ namespace LayoutParserApi.Services.Database
         {
             try
             {
-                _logger.LogInformation("Buscando layouts com termo: {SearchTerm}", request.SearchTerm);
+                if (string.IsNullOrWhiteSpace(request.SearchTerm))
+                {
+                    _logger.LogInformation("Buscando todos os layouts (sem filtro)");
+                }
+                else
+                {
+                    _logger.LogInformation("Buscando layouts com termo: {SearchTerm}", request.SearchTerm);
+                }
                 return await SearchLayoutsFromDatabase(request);
             }
             catch (Exception ex)
@@ -60,17 +67,39 @@ namespace LayoutParserApi.Services.Database
                 using var connection = new SqlConnection(_connectionString);
                 await connection.OpenAsync();
 
-                var query = @"
-                    SELECT TOP (@MaxResults) 
-                        [Id], [LayoutGuid], [PackageGuid], [Name], [Description], 
-                        [LayoutType], [ValueContent], [XmlShemaValidatorPath], 
-                        [ProjectId], [LastUpdateDate]
-                    FROM [ConnectUS_Macgyver].[dbo].[tbLayout] 
-                    WHERE [Name] LIKE @SearchPattern
-                    ORDER BY [LastUpdateDate] DESC";
+                // Se SearchTerm estiver vazio ou null, buscar todos os layouts
+                bool hasSearchTerm = !string.IsNullOrWhiteSpace(request.SearchTerm);
+                
+                string query;
+                if (hasSearchTerm)
+                {
+                    // Busca com filtro por nome
+                    query = @"
+                        SELECT TOP (@MaxResults) 
+                            [Id], [LayoutGuid], [PackageGuid], [Name], [Description], 
+                            [LayoutType], [ValueContent], [XmlShemaValidatorPath], 
+                            [ProjectId], [LastUpdateDate]
+                        FROM [ConnectUS_Macgyver].[dbo].[tbLayout] 
+                        WHERE [Name] LIKE @SearchPattern
+                        ORDER BY [LastUpdateDate] DESC";
+                }
+                else
+                {
+                    // Busca todos os layouts (sem WHERE)
+                    query = @"
+                        SELECT TOP (@MaxResults) 
+                            [Id], [LayoutGuid], [PackageGuid], [Name], [Description], 
+                            [LayoutType], [ValueContent], [XmlShemaValidatorPath], 
+                            [ProjectId], [LastUpdateDate]
+                        FROM [ConnectUS_Macgyver].[dbo].[tbLayout] 
+                        ORDER BY [LastUpdateDate] DESC";
+                }
 
                 using var command = new SqlCommand(query, connection);
-                command.Parameters.AddWithValue("@SearchPattern", $"%{request.SearchTerm}%");
+                if (hasSearchTerm)
+                {
+                    command.Parameters.AddWithValue("@SearchPattern", $"%{request.SearchTerm}%");
+                }
                 command.Parameters.AddWithValue("@MaxResults", request.MaxResults);
 
                 var layouts = new List<LayoutRecord>();

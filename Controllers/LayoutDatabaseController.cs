@@ -79,18 +79,18 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
-        /// Busca layouts MQSeries NFe (endpoint simplificado)
+        /// Busca todos os layouts (endpoint simplificado)
         /// </summary>
         [HttpGet("mqseries-nfe")]
-        public async Task<IActionResult> GetMqSeriesNFeLayouts()
+        public async Task<IActionResult> GetAllLayouts()
         {
             try
             {
-                _logger.LogInformation("Buscando layouts MQSeries NFe");
+                _logger.LogInformation("Buscando todos os layouts");
 
                 var request = new LayoutSearchRequest
                 {
-                    SearchTerm = "mqseries_envnfe",
+                    SearchTerm = "", // String vazia = buscar todos os layouts (sem filtro WHERE)
                     MaxResults = 1000
                 };
 
@@ -107,7 +107,7 @@ namespace LayoutParserApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Erro ao buscar layouts MQSeries NFe");
+                _logger.LogError(ex, "Erro ao buscar layouts");
                 return StatusCode(500, new { error = ex.Message });
             }
         }

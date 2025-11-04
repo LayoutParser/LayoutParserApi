@@ -32,10 +32,14 @@ namespace LayoutParserApi.Services.Database
         {
             try
             {
-                _logger.LogInformation("Buscando layouts com termo: {SearchTerm}", request.SearchTerm);
+                // Normalizar SearchTerm: se vazio ou null, usar "all" como chave de cache
+                var searchTerm = string.IsNullOrWhiteSpace(request.SearchTerm) ? "all" : request.SearchTerm;
+                var cacheKey = searchTerm;
+                
+                _logger.LogInformation("Buscando layouts com termo: {SearchTerm}", searchTerm);
 
                 // Tentar buscar no cache primeiro
-                var cachedLayouts = await _cacheService.GetCachedLayoutsAsync(request.SearchTerm);
+                var cachedLayouts = await _cacheService.GetCachedLayoutsAsync(cacheKey);
                 if (cachedLayouts != null)
                 {
                     _logger.LogInformation("Retornando layouts do cache: {Count} layouts", cachedLayouts.Count);
@@ -54,7 +58,7 @@ namespace LayoutParserApi.Services.Database
                 if (layouts.Success && layouts.Layouts.Any())
                 {
                     // Salvar no cache para próximas consultas
-                    await _cacheService.SetCachedLayoutsAsync(request.SearchTerm, layouts.Layouts);
+                    await _cacheService.SetCachedLayoutsAsync(cacheKey, layouts.Layouts);
                 }
 
                 return layouts;
@@ -107,10 +111,10 @@ namespace LayoutParserApi.Services.Database
             {
                 _logger.LogInformation("Iniciando atualização do cache a partir do banco de dados");
 
-                // Buscar layouts MQSeries NFe do banco
+                // Buscar todos os layouts do banco (sem filtro WHERE)
                 var request = new LayoutSearchRequest
                 {
-                    SearchTerm = "mqseries_envnfe",
+                    SearchTerm = "", // String vazia = buscar todos os layouts
                     MaxResults = 1000
                 };
 
@@ -119,7 +123,7 @@ namespace LayoutParserApi.Services.Database
                 if (response.Success && response.Layouts.Any())
                 {
                     // Salvar no cache
-                    await _cacheService.SetCachedLayoutsAsync(request.SearchTerm, response.Layouts);
+                    await _cacheService.SetCachedLayoutsAsync("all", response.Layouts); // Usar "all" como chave de cache
                     
                     // Salvar layouts individuais no cache
                     foreach (var layout in response.Layouts)
