@@ -12,7 +12,7 @@ on:
 
 jobs:
   deploy:
-    runs-on: self-hosted  # ✅ Runner instalado no servidor (172.25.32.42)
+    runs-on: self-hosted  # Runner instalado no servidor (172.25.32.42)
     timeout-minutes: 30
     
     steps:
@@ -59,16 +59,16 @@ jobs:
         $LIB_DIR = Join-Path $WORK_DIR "LayoutParserLib"
         $LIB_PROJECT = Join-Path $LIB_DIR "LayoutParserLib.csproj"
         
-        Write-Host "📦 Compilando LayoutParserLib..."
-        Write-Host "📂 Diretório: $LIB_DIR"
-        Write-Host "📂 Projeto: $LIB_PROJECT"
+        Write-Host "Compilando LayoutParserLib..."
+        Write-Host "Diretorio: $LIB_DIR"
+        Write-Host "Projeto: $LIB_PROJECT"
         
         if (-not (Test-Path $LIB_PROJECT)) {
-          Write-Error "❌ Projeto não encontrado: $LIB_PROJECT"
-          Write-Host "📋 Conteúdo do diretório de trabalho:"
+          Write-Error "Projeto nao encontrado: $LIB_PROJECT"
+          Write-Host "Conteudo do diretorio de trabalho:"
           Get-ChildItem -Path $WORK_DIR | Select-Object Name | Format-Table
           if (Test-Path $LIB_DIR) {
-            Write-Host "📋 Conteúdo de LayoutParserLib:"
+            Write-Host "Conteudo de LayoutParserLib:"
             Get-ChildItem -Path $LIB_DIR | Select-Object Name | Format-Table
           }
           exit 1
@@ -81,7 +81,7 @@ jobs:
           exit 1
         }
         
-        Write-Host "✅ LayoutParserLib compilado com sucesso"
+        Write-Host "LayoutParserLib compilado com sucesso"
     
     - name: Build LayoutParserDecrypt (.NET Framework 4.8.1)
       run: |
@@ -91,26 +91,26 @@ jobs:
         $DECRYPT_DIR = Join-Path $WORK_DIR "LayoutParserDecrypt"
         $DECRYPT_PROJECT = Join-Path $DECRYPT_DIR "LayoutParserDecrypt.csproj"
         
-        Write-Host "📦 Compilando LayoutParserDecrypt..."
-        Write-Host "📂 Diretório: $DECRYPT_DIR"
-        Write-Host "📂 Projeto: $DECRYPT_PROJECT"
+        Write-Host "Compilando LayoutParserDecrypt..."
+        Write-Host "Diretorio: $DECRYPT_DIR"
+        Write-Host "Projeto: $DECRYPT_PROJECT"
         
         # Copiar DLL da lib para o diretório do Decrypt
         if (Test-Path $LIB_DLL) {
           Copy-Item -Path $LIB_DLL -Destination $DECRYPT_DIR -Force
-          Write-Host "✅ LayoutParserLib.dll copiado para LayoutParserDecrypt"
+          Write-Host "LayoutParserLib.dll copiado para LayoutParserDecrypt"
         } else {
-          Write-Warning "⚠️ LayoutParserLib.dll não encontrado em: $LIB_DLL"
-          Write-Host "📋 Verificando se LayoutParserLib foi compilado..."
+          Write-Warning "LayoutParserLib.dll nao encontrado em: $LIB_DLL"
+          Write-Host "Verificando se LayoutParserLib foi compilado..."
           if (Test-Path $LIB_DIR) {
             Get-ChildItem -Path $LIB_DIR -Recurse -Filter "*.dll" | Select-Object FullName | Format-Table
           }
         }
         
         if (-not (Test-Path $DECRYPT_PROJECT)) {
-          Write-Error "❌ Projeto não encontrado: $DECRYPT_PROJECT"
+          Write-Error "Projeto nao encontrado: $DECRYPT_PROJECT"
           if (Test-Path $DECRYPT_DIR) {
-            Write-Host "📋 Conteúdo de LayoutParserDecrypt:"
+            Write-Host "Conteudo de LayoutParserDecrypt:"
             Get-ChildItem -Path $DECRYPT_DIR | Select-Object Name | Format-Table
           }
           exit 1
@@ -123,19 +123,19 @@ jobs:
           exit 1
         }
         
-        Write-Host "✅ LayoutParserDecrypt compilado com sucesso"
+        Write-Host "LayoutParserDecrypt compilado com sucesso"
     
     - name: Build LayoutParserApi (.NET Core 9.0)
       run: |
         $WORK_DIR = $PWD.Path
         $API_DIR = Join-Path $WORK_DIR "LayoutParserApi"
         
-        Write-Host "📦 Compilando LayoutParserApi..."
-        Write-Host "📂 Diretório: $API_DIR"
+        Write-Host "Compilando LayoutParserApi..."
+        Write-Host "Diretorio: $API_DIR"
         
         if (-not (Test-Path $API_DIR)) {
-          Write-Error "❌ Diretório LayoutParserApi não encontrado: $API_DIR"
-          Write-Host "📋 Conteúdo do diretório de trabalho:"
+          Write-Error "Diretorio LayoutParserApi nao encontrado: $API_DIR"
+          Write-Host "Conteudo do diretorio de trabalho:"
           Get-ChildItem -Path $WORK_DIR | Select-Object Name | Format-Table
           exit 1
         }
@@ -151,7 +151,7 @@ jobs:
             exit 1
           }
           
-          Write-Host "✅ LayoutParserApi compilado com sucesso"
+          Write-Host "LayoutParserApi compilado com sucesso"
         } finally {
           Pop-Location
         }
@@ -163,12 +163,12 @@ jobs:
         $PROJECT_PATH = Join-Path $API_DIR "LayoutParserApi.csproj"
         $PUBLISH_OUTPUT = Join-Path $WORK_DIR "publish-api"
         
-        Write-Host "📦 Publicando LayoutParserApi..."
-        Write-Host "📂 Projeto: $PROJECT_PATH"
-        Write-Host "📂 Saída: $PUBLISH_OUTPUT"
+        Write-Host "Publicando LayoutParserApi..."
+        Write-Host "Projeto: $PROJECT_PATH"
+        Write-Host "Saida: $PUBLISH_OUTPUT"
         
         if (-not (Test-Path $PROJECT_PATH)) {
-          Write-Error "❌ Projeto não encontrado: $PROJECT_PATH"
+          Write-Error "Projeto nao encontrado: $PROJECT_PATH"
           exit 1
         }
         
@@ -183,67 +183,67 @@ jobs:
           exit 1
         }
         
-        Write-Host "✅ LayoutParserApi publicado com sucesso em: $PUBLISH_OUTPUT"
+        Write-Host "LayoutParserApi publicado com sucesso em: $PUBLISH_OUTPUT"
     
     - name: Create deployment package
       run: |
         $WORK_DIR = $PWD.Path
-        Write-Host "📦 Criando pacote de deploy..."
-        Write-Host "📂 Diretório de trabalho: $WORK_DIR"
+        Write-Host "Criando pacote de deploy..."
+        Write-Host "Diretorio de trabalho: $WORK_DIR"
         
         # Criar estrutura de deploy
         New-Item -ItemType Directory -Path deploy/api -Force | Out-Null
         New-Item -ItemType Directory -Path deploy/front-end -Force | Out-Null
         
         # Copiar arquivos da API (do publish-api)
-        Write-Host "📋 Copiando arquivos da API..."
+        Write-Host "Copiando arquivos da API..."
         $PUBLISH_API_PATH = Join-Path $WORK_DIR "publish-api"
         if (Test-Path $PUBLISH_API_PATH) {
           Copy-Item -Path "$PUBLISH_API_PATH\*" -Destination "deploy/api/" -Recurse -Force
-          Write-Host "✅ Arquivos copiados de: $PUBLISH_API_PATH"
+          Write-Host "Arquivos copiados de: $PUBLISH_API_PATH"
         } else {
-          Write-Error "❌ Diretório de publicação não encontrado: $PUBLISH_API_PATH"
+          Write-Error "Diretorio de publicacao nao encontrado: $PUBLISH_API_PATH"
           exit 1
         }
         
         # Copiar arquivos do front-end
-        Write-Host "📋 Copiando arquivos do front-end..."
+        Write-Host "Copiando arquivos do front-end..."
         $FRONTEND_SOURCE = Join-Path $WORK_DIR "LayoutParser\wwwroot"
         if (Test-Path $FRONTEND_SOURCE) {
           Copy-Item -Path "$FRONTEND_SOURCE\*" -Destination "deploy/front-end/" -Recurse -Force
-          Write-Host "✅ Arquivos do front-end copiados de: $FRONTEND_SOURCE"
+          Write-Host "Arquivos do front-end copiados de: $FRONTEND_SOURCE"
         } else {
-          Write-Warning "⚠️ Diretório do front-end não encontrado: $FRONTEND_SOURCE"
+          Write-Warning "Diretorio do front-end nao encontrado: $FRONTEND_SOURCE"
         }
         
         # Copiar LayoutParserDecrypt.exe e DLLs
-        Write-Host "📋 Copiando LayoutParserDecrypt e dependências..."
+        Write-Host "Copiando LayoutParserDecrypt e dependencias..."
         $DECRYPT_EXE = Join-Path $WORK_DIR "LayoutParserDecrypt\bin\Release\LayoutParserDecrypt.exe"
         $DECRYPT_DLL = Join-Path $WORK_DIR "LayoutParserDecrypt\bin\Release\LayoutParserLib.dll"
         $LIB_DLL = Join-Path $WORK_DIR "LayoutParserLib\bin\Release\LayoutParserLib.dll"
         
         if (Test-Path $DECRYPT_EXE) {
           Copy-Item -Path $DECRYPT_EXE -Destination "deploy/api/" -Force
-          Write-Host "  ✅ LayoutParserDecrypt.exe copiado de: $DECRYPT_EXE"
+          Write-Host "  LayoutParserDecrypt.exe copiado de: $DECRYPT_EXE"
         } else {
-          Write-Warning "  ⚠️ LayoutParserDecrypt.exe não encontrado em: $DECRYPT_EXE"
+          Write-Warning "  LayoutParserDecrypt.exe nao encontrado em: $DECRYPT_EXE"
         }
         
         if (Test-Path $DECRYPT_DLL) {
           Copy-Item -Path $DECRYPT_DLL -Destination "deploy/api/" -Force
-          Write-Host "  ✅ LayoutParserLib.dll copiado de: $DECRYPT_DLL"
+          Write-Host "  LayoutParserLib.dll copiado de: $DECRYPT_DLL"
         } elseif (Test-Path $LIB_DLL) {
           Copy-Item -Path $LIB_DLL -Destination "deploy/api/" -Force
-          Write-Host "  ✅ LayoutParserLib.dll copiado de: $LIB_DLL"
+          Write-Host "  LayoutParserLib.dll copiado de: $LIB_DLL"
         } else {
-          Write-Warning "  ⚠️ LayoutParserLib.dll não encontrado em nenhum dos locais"
+          Write-Warning "  LayoutParserLib.dll nao encontrado em nenhum dos locais"
         }
         
         # Verificar estrutura
-        Write-Host "`n📂 Estrutura do deploy:"
+        Write-Host "`nEstrutura do deploy:"
         Get-ChildItem -Path deploy -Recurse -File | Select-Object FullName | ForEach-Object { Write-Host "  $($_.FullName)" }
         
-        Write-Host "`n✅ Pacote de deploy criado com sucesso!"
+        Write-Host "`nPacote de deploy criado com sucesso!"
     
     - name: Deploy to server (local)
       run: |
@@ -252,7 +252,7 @@ jobs:
         
         # Validar se DEPLOY_PATH está configurado
         if ([string]::IsNullOrWhiteSpace($DEPLOY_PATH)) {
-          Write-Error "❌ DEPLOY_PATH não está configurado! Configure o secret DEPLOY_PATH no GitHub."
+          Write-Error "DEPLOY_PATH nao esta configurado! Configure o secret DEPLOY_PATH no GitHub."
           exit 1
         }
         
@@ -265,34 +265,34 @@ jobs:
         $DEPLOY_API_SOURCE = Join-Path $DEPLOY_SOURCE "api"
         $DEPLOY_FRONTEND_SOURCE = Join-Path $DEPLOY_SOURCE "front-end"
         
-        Write-Host "🚀 Iniciando deploy no servidor..."
-        Write-Host "📂 Caminho de deploy (DEPLOY_PATH): $DEPLOY_PATH"
-        Write-Host "📂 Diretório de trabalho: $WORK_DIR"
-        Write-Host "📦 Pacote de deploy: $DEPLOY_SOURCE"
-        Write-Host "📦 Pacote API: $DEPLOY_API_SOURCE"
-        Write-Host "🏃 Runner: Self-hosted (executando localmente)"
-        Write-Host "🌐 Servidor: 172.25.32.42"
+        Write-Host "Iniciando deploy no servidor..."
+        Write-Host "Caminho de deploy (DEPLOY_PATH): $DEPLOY_PATH"
+        Write-Host "Diretorio de trabalho: $WORK_DIR"
+        Write-Host "Pacote de deploy: $DEPLOY_SOURCE"
+        Write-Host "Pacote API: $DEPLOY_API_SOURCE"
+        Write-Host "Runner: Self-hosted (executando localmente)"
+        Write-Host "Servidor: 172.25.32.42"
         
         # Verificar se o pacote de deploy existe
         if (-not (Test-Path $DEPLOY_API_SOURCE)) {
-          Write-Error "❌ Diretório de deploy não encontrado: $DEPLOY_API_SOURCE"
-          Write-Host "📋 Conteúdo do diretório de trabalho:"
+          Write-Error "Diretorio de deploy nao encontrado: $DEPLOY_API_SOURCE"
+          Write-Host "Conteudo do diretorio de trabalho:"
           Get-ChildItem -Path $WORK_DIR | Select-Object Name, FullName | Format-Table
           exit 1
         }
         
-        Write-Host "✅ Pacote de deploy encontrado em: $DEPLOY_SOURCE"
-        Write-Host "📋 Arquivos no pacote API:"
+        Write-Host "Pacote de deploy encontrado em: $DEPLOY_SOURCE"
+        Write-Host "Arquivos no pacote API:"
         Get-ChildItem -Path $DEPLOY_API_SOURCE -File | Select-Object Name | Format-Table
         
         # Criar diretórios se não existirem
-        Write-Host "📁 Criando diretórios de destino..."
+        Write-Host "Criando diretorios de destino..."
         $DEPLOY_API_PATH = Join-Path $DEPLOY_PATH "api"
         $DEPLOY_FRONTEND_PATH = Join-Path $DEPLOY_PATH "front-end"
         $DEPLOY_LOGS_PATH = Join-Path $DEPLOY_API_PATH "Logs"
         $DEPLOY_BACKUPS_PATH = Join-Path $DEPLOY_PATH "backups"
         
-        Write-Host "📁 Diretórios de destino:"
+        Write-Host "Diretorios de destino:"
         Write-Host "   API: $DEPLOY_API_PATH"
         Write-Host "   Front-end: $DEPLOY_FRONTEND_PATH"
         Write-Host "   Logs: $DEPLOY_LOGS_PATH"
@@ -300,51 +300,51 @@ jobs:
         
         # Criar diretórios com verificação
         if (-not (Test-Path $DEPLOY_PATH)) {
-          Write-Host "📁 Criando diretório base: $DEPLOY_PATH"
+          Write-Host "Criando diretorio base: $DEPLOY_PATH"
           New-Item -ItemType Directory -Path $DEPLOY_PATH -Force | Out-Null
         }
         
         if (-not (Test-Path $DEPLOY_API_PATH)) {
-          Write-Host "📁 Criando diretório API: $DEPLOY_API_PATH"
+          Write-Host "Criando diretorio API: $DEPLOY_API_PATH"
           New-Item -ItemType Directory -Path $DEPLOY_API_PATH -Force | Out-Null
         }
         
         if (-not (Test-Path $DEPLOY_FRONTEND_PATH)) {
-          Write-Host "📁 Criando diretório Front-end: $DEPLOY_FRONTEND_PATH"
+          Write-Host "Criando diretorio Front-end: $DEPLOY_FRONTEND_PATH"
           New-Item -ItemType Directory -Path $DEPLOY_FRONTEND_PATH -Force | Out-Null
         }
         
         if (-not (Test-Path $DEPLOY_LOGS_PATH)) {
-          Write-Host "📁 Criando diretório Logs: $DEPLOY_LOGS_PATH"
+          Write-Host "Criando diretorio Logs: $DEPLOY_LOGS_PATH"
           New-Item -ItemType Directory -Path $DEPLOY_LOGS_PATH -Force | Out-Null
         }
         
         if (-not (Test-Path $DEPLOY_BACKUPS_PATH)) {
-          Write-Host "📁 Criando diretório Backups: $DEPLOY_BACKUPS_PATH"
+          Write-Host "Criando diretorio Backups: $DEPLOY_BACKUPS_PATH"
           New-Item -ItemType Directory -Path $DEPLOY_BACKUPS_PATH -Force | Out-Null
         }
         
-        Write-Host "✅ Diretórios criados/verificados"
+        Write-Host "Diretorios criados/verificados"
         
         # Verificar se os diretórios foram criados
         if (-not (Test-Path $DEPLOY_API_PATH)) {
-          Write-Error "❌ Falha ao criar diretório API: $DEPLOY_API_PATH"
+          Write-Error "Falha ao criar diretorio API: $DEPLOY_API_PATH"
           exit 1
         }
         
         # Backup do appsettings.json se existir
         $APP_SETTINGS_PATH = Join-Path $DEPLOY_API_PATH "appsettings.json"
-        Write-Host "💾 Verificando appsettings.json em: $APP_SETTINGS_PATH"
+        Write-Host "Verificando appsettings.json em: $APP_SETTINGS_PATH"
         if (Test-Path $APP_SETTINGS_PATH) {
           $backupName = "appsettings-$(Get-Date -Format 'yyyyMMdd-HHmmss').json"
           $backupPath = Join-Path $DEPLOY_BACKUPS_PATH $backupName
-          Write-Host "💾 Fazendo backup do appsettings.json: $backupName"
+          Write-Host "Fazendo backup do appsettings.json: $backupName"
           Write-Host "   Origem: $APP_SETTINGS_PATH"
           Write-Host "   Destino: $backupPath"
           
           # Verificar se diretório de backup existe
           if (-not (Test-Path $DEPLOY_BACKUPS_PATH)) {
-            Write-Host "⚠️ Diretório de backup não existe, criando: $DEPLOY_BACKUPS_PATH"
+            Write-Host "Diretorio de backup nao existe, criando: $DEPLOY_BACKUPS_PATH"
             New-Item -ItemType Directory -Path $DEPLOY_BACKUPS_PATH -Force | Out-Null
           }
           
@@ -352,62 +352,62 @@ jobs:
           
           if (Test-Path $backupPath) {
             $backupInfo = Get-Item $backupPath
-            Write-Host "✅ Backup criado com sucesso em: $backupPath"
+            Write-Host "Backup criado com sucesso em: $backupPath"
             Write-Host "   Tamanho: $([math]::Round($backupInfo.Length / 1KB, 2)) KB"
           } else {
-            Write-Warning "⚠️ Backup não foi criado! Verifique permissões."
+            Write-Warning "Backup nao foi criado! Verifique permissoes."
           }
         } else {
-          Write-Host "ℹ️ appsettings.json não encontrado em: $APP_SETTINGS_PATH (primeiro deploy?)"
+          Write-Host "appsettings.json nao encontrado em: $APP_SETTINGS_PATH (primeiro deploy?)"
         }
         
         # Parar serviço Windows se existir
         $serviceName = "LayoutParserApi"
         if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
-          Write-Host "⏸️ Parando serviço $serviceName..."
+          Write-Host "Parando servico $serviceName..."
           Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 3
-          Write-Host "✅ Serviço parado"
+          Write-Host "Servico parado"
         } else {
-          Write-Host "ℹ️ Serviço $serviceName não encontrado (pode não estar instalado como serviço)"
+          Write-Host "Servico $serviceName nao encontrado (pode nao estar instalado como servico)"
         }
         
         # Copiar arquivos da API (manter appsettings.json se já existir)
-        Write-Host "📋 Copiando arquivos da API..."
+        Write-Host "Copiando arquivos da API..."
         Write-Host "   Origem: $DEPLOY_API_SOURCE"
         Write-Host "   Destino: $DEPLOY_API_PATH"
         
         # Verificar e mostrar caminhos absolutos
-        Write-Host "🔍 Verificando caminhos..."
+        Write-Host "Verificando caminhos..."
         Write-Host "   DEPLOY_PATH (raw): $DEPLOY_PATH"
         Write-Host "   DEPLOY_API_PATH (resolvido): $DEPLOY_API_PATH"
         Write-Host "   DEPLOY_API_PATH existe: $(Test-Path $DEPLOY_API_PATH)"
         
         if (-not (Test-Path $DEPLOY_API_SOURCE)) {
-          Write-Error "❌ Diretório de origem não encontrado: $DEPLOY_API_SOURCE"
-          Write-Host "📋 Conteúdo do diretório de trabalho:"
+          Write-Error "Diretorio de origem nao encontrado: $DEPLOY_API_SOURCE"
+          Write-Host "Conteudo do diretorio de trabalho:"
           Get-ChildItem -Path $WORK_DIR | Select-Object Name | Format-Table
           exit 1
         }
         
         if (-not (Test-Path $DEPLOY_API_PATH)) {
-          Write-Error "❌ Diretório de destino não encontrado: $DEPLOY_API_PATH"
-          Write-Host "📋 Tentando criar novamente..."
+          Write-Error "Diretorio de destino nao encontrado: $DEPLOY_API_PATH"
+          Write-Host "Tentando criar novamente..."
           New-Item -ItemType Directory -Path $DEPLOY_API_PATH -Force | Out-Null
           if (-not (Test-Path $DEPLOY_API_PATH)) {
-            Write-Error "❌ Falha ao criar diretório de destino. Verifique permissões."
-            Write-Host "💡 Execute como Administrador:"
+            Write-Error "Falha ao criar diretorio de destino. Verifique permissoes."
+            Write-Host "Execute como Administrador:"
             Write-Host "   icacls `"$DEPLOY_PATH`" /grant `"BRNDDAPPBLD01\appbld:(OI)(CI)F`" /T"
             exit 1
           }
         }
         
         $apiFiles = Get-ChildItem -Path $DEPLOY_API_SOURCE -Exclude "appsettings.json" -Recurse -File
-        Write-Host "📋 Encontrados $($apiFiles.Count) arquivos para copiar"
+        Write-Host "Encontrados $($apiFiles.Count) arquivos para copiar"
         
         if ($apiFiles.Count -eq 0) {
-          Write-Warning "⚠️ Nenhum arquivo encontrado em: $DEPLOY_API_SOURCE"
-          Write-Host "📋 Conteúdo do diretório de origem:"
+          Write-Warning "Nenhum arquivo encontrado em: $DEPLOY_API_SOURCE"
+          Write-Host "Conteudo do diretorio de origem:"
           Get-ChildItem -Path $DEPLOY_API_SOURCE -Recurse | Select-Object FullName | Format-Table
         }
         
@@ -431,31 +431,31 @@ jobs:
             }
           } catch {
             $errorCount++
-            Write-Warning "⚠️ Erro ao copiar $($file.Name): $($_.Exception.Message)"
+            Write-Warning "Erro ao copiar $($file.Name): $($_.Exception.Message)"
           }
         }
         
-        Write-Host "✅ Arquivos da API copiados ($copiedCount arquivos, $errorCount erros)"
+        Write-Host "Arquivos da API copiados ($copiedCount arquivos, $errorCount erros)"
         
         # Verificar se os arquivos foram copiados
-        Write-Host "🔍 Verificando arquivos no destino: $DEPLOY_API_PATH"
+        Write-Host "Verificando arquivos no destino: $DEPLOY_API_PATH"
         if (Test-Path $DEPLOY_API_PATH) {
           $copiedFiles = Get-ChildItem -Path $DEPLOY_API_PATH -File -ErrorAction SilentlyContinue
-          Write-Host "📋 Arquivos no destino: $($copiedFiles.Count) arquivos"
+          Write-Host "Arquivos no destino: $($copiedFiles.Count) arquivos"
           if ($copiedFiles.Count -gt 0) {
             Write-Host "   Primeiros arquivos:"
             $copiedFiles | Select-Object -First 10 Name, Length, LastWriteTime | Format-Table
           } else {
-            Write-Warning "⚠️ Nenhum arquivo foi copiado para $DEPLOY_API_PATH"
-            Write-Host "📋 Listando conteúdo do diretório:"
+            Write-Warning "Nenhum arquivo foi copiado para $DEPLOY_API_PATH"
+            Write-Host "Listando conteudo do diretorio:"
             Get-ChildItem -Path $DEPLOY_API_PATH -ErrorAction SilentlyContinue | Select-Object Name, FullName | Format-Table
           }
         } else {
-          Write-Error "❌ Diretório de destino não existe após tentativa de cópia: $DEPLOY_API_PATH"
+          Write-Error "Diretorio de destino nao existe apos tentativa de copia: $DEPLOY_API_PATH"
         }
         
         # Copiar arquivos do front-end
-        Write-Host "📋 Copiando arquivos do front-end de $DEPLOY_FRONTEND_SOURCE para $DEPLOY_FRONTEND_PATH..."
+        Write-Host "Copiando arquivos do front-end de $DEPLOY_FRONTEND_SOURCE para $DEPLOY_FRONTEND_PATH..."
         if (Test-Path $DEPLOY_FRONTEND_SOURCE) {
           $frontendFiles = Get-ChildItem -Path $DEPLOY_FRONTEND_SOURCE -Recurse
           foreach ($file in $frontendFiles) {
@@ -467,60 +467,60 @@ jobs:
             }
             Copy-Item -Path $file.FullName -Destination $destPath -Force
           }
-          Write-Host "✅ Arquivos do front-end copiados ($($frontendFiles.Count) arquivos)"
+          Write-Host "Arquivos do front-end copiados ($($frontendFiles.Count) arquivos)"
         } else {
-          Write-Warning "⚠️ Diretório de front-end não encontrado: $DEPLOY_FRONTEND_SOURCE"
+          Write-Warning "Diretorio de front-end nao encontrado: $DEPLOY_FRONTEND_SOURCE"
         }
         
         # Verificar se LayoutParserDecrypt.exe foi copiado
         $decryptExePath = Join-Path $DEPLOY_API_PATH "LayoutParserDecrypt.exe"
         if (Test-Path $decryptExePath) {
-          Write-Host "✅ LayoutParserDecrypt.exe encontrado em: $decryptExePath"
+          Write-Host "LayoutParserDecrypt.exe encontrado em: $decryptExePath"
         } else {
-          Write-Warning "⚠️ LayoutParserDecrypt.exe não encontrado em: $decryptExePath"
+          Write-Warning "LayoutParserDecrypt.exe nao encontrado em: $decryptExePath"
         }
         
         # Verificar se LayoutParserLib.dll foi copiado
         $libDllPath = Join-Path $DEPLOY_API_PATH "LayoutParserLib.dll"
         if (Test-Path $libDllPath) {
-          Write-Host "✅ LayoutParserLib.dll encontrado em: $libDllPath"
+          Write-Host "LayoutParserLib.dll encontrado em: $libDllPath"
         } else {
-          Write-Warning "⚠️ LayoutParserLib.dll não encontrado em: $libDllPath"
+          Write-Warning "LayoutParserLib.dll nao encontrado em: $libDllPath"
         }
         
         # Verificar se LayoutParserApi.dll foi copiado (Release)
         $apiDllPath = Join-Path $DEPLOY_API_PATH "LayoutParserApi.dll"
         if (Test-Path $apiDllPath) {
           $dllInfo = Get-Item $apiDllPath
-          Write-Host "✅ LayoutParserApi.dll encontrado em: $apiDllPath"
-          Write-Host "   📅 Data de modificação: $($dllInfo.LastWriteTime)"
-          Write-Host "   📦 Tamanho: $([math]::Round($dllInfo.Length / 1KB, 2)) KB"
+          Write-Host "LayoutParserApi.dll encontrado em: $apiDllPath"
+          Write-Host "   Data de modificacao: $($dllInfo.LastWriteTime)"
+          Write-Host "   Tamanho: $([math]::Round($dllInfo.Length / 1KB, 2)) KB"
         } else {
-          Write-Warning "⚠️ LayoutParserApi.dll não encontrado em: $apiDllPath"
+          Write-Warning "LayoutParserApi.dll nao encontrado em: $apiDllPath"
         }
         
         # Reiniciar serviço Windows se existir
         if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
-          Write-Host "▶️ Reiniciando serviço $serviceName..."
+          Write-Host "Reiniciando servico $serviceName..."
           Start-Service -Name $serviceName -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 2
           
           $service = Get-Service -Name $serviceName
           if ($service.Status -eq 'Running') {
-            Write-Host "✅ Serviço $serviceName está em execução"
+            Write-Host "Servico $serviceName esta em execucao"
           } else {
-            Write-Warning "⚠️ Serviço $serviceName não está em execução (Status: $($service.Status))"
+            Write-Warning "Servico $serviceName nao esta em execucao (Status: $($service.Status))"
           }
         } else {
-          Write-Host "ℹ️ Serviço $serviceName não encontrado. Execute manualmente:"
+          Write-Host "Servico $serviceName nao encontrado. Execute manualmente:"
           Write-Host "   cd $DEPLOY_API_PATH"
           Write-Host "   dotnet LayoutParserApi.dll"
         }
         
         # Validar deploy
-        Write-Host "`n✅ Deploy concluído com sucesso!"
-        Write-Host "📍 API: $DEPLOY_API_PATH"
-        Write-Host "📍 Front-end: $DEPLOY_FRONTEND_PATH"
-        Write-Host "📍 Logs: $DEPLOY_LOGS_PATH"
-        Write-Host "📍 Backups: $DEPLOY_BACKUPS_PATH"
-        Write-Host "🏃 Runner: Self-hosted (execução local)"
+        Write-Host "`nDeploy concluido com sucesso!"
+        Write-Host "API: $DEPLOY_API_PATH"
+        Write-Host "Front-end: $DEPLOY_FRONTEND_PATH"
+        Write-Host "Logs: $DEPLOY_LOGS_PATH"
+        Write-Host "Backups: $DEPLOY_BACKUPS_PATH"
+        Write-Host "Runner: Self-hosted (execucao local)"
