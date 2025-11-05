@@ -1,9 +1,12 @@
 using LayoutParserApi.Models.Entities;
 using LayoutParserApi.Models.Generation;
+using LayoutParserApi.Models.Parsing;
 using LayoutParserApi.Services.Generation.Interfaces;
 using LayoutParserApi.Services.Generation.Implementations;
+using LayoutParserApi.Services.Interfaces;
 using Microsoft.AspNetCore.Mvc;
 using System.IO.Compression;
+using System.Text;
 
 namespace LayoutParserApi.Controllers
 {
@@ -14,17 +17,20 @@ namespace LayoutParserApi.Controllers
         private readonly ISyntheticDataGeneratorService _dataGenerator;
         private readonly IExcelDataProcessor _excelProcessor;
         private readonly ILayoutAnalysisService _layoutAnalysis;
+        private readonly ILayoutParserService _parserService;
         private readonly ILogger<DataGenerationController> _logger;
 
         public DataGenerationController(
             ISyntheticDataGeneratorService dataGenerator,
             IExcelDataProcessor excelProcessor,
             ILayoutAnalysisService layoutAnalysis,
+            ILayoutParserService parserService,
             ILogger<DataGenerationController> logger)
         {
             _dataGenerator = dataGenerator;
             _excelProcessor = excelProcessor;
             _layoutAnalysis = layoutAnalysis;
+            _parserService = parserService;
             _logger = logger;
         }
 
@@ -261,6 +267,109 @@ namespace LayoutParserApi.Controllers
             }
         }
 
+        /// <summary>
+        /// Valida um arquivo gerado sinteticamente usando o mesmo método de validação de arquivos reais
+        /// </summary>
+        private async Task<ValidationSummary> ValidateGeneratedFileAsync(List<string> generatedLines, Layout layout)
+        {
+            var summary = new ValidationSummary();
+            
+            try
+            {
+                // Converter linhas geradas em um texto (como se fosse um arquivo real)
+                var generatedText = string.Join(Environment.NewLine, generatedLines);
+                
+                // Criar streams para validação
+                using var layoutStream = new MemoryStream();
+                using var txtStream = new MemoryStream();
+                
+                // Serializar layout para XML
+                var layoutXml = SerializeLayoutToXml(layout);
+                var layoutBytes = Encoding.UTF8.GetBytes(layoutXml);
+                await layoutStream.WriteAsync(layoutBytes, 0, layoutBytes.Length);
+                layoutStream.Position = 0;
+                
+                // Escrever texto gerado
+                var txtBytes = Encoding.UTF8.GetBytes(generatedText);
+                await txtStream.WriteAsync(txtBytes, 0, txtBytes.Length);
+                txtStream.Position = 0;
+                
+                // Usar o mesmo método de parsing/validação usado para arquivos reais
+                var parsingResult = await _parserService.ParseAsync(layoutStream, txtStream);
+                
+                if (parsingResult.Success && parsingResult.ParsedFields != null)
+                {
+                    summary.TotalFields = parsingResult.ParsedFields.Count;
+                    summary.ValidFields = parsingResult.ParsedFields.Count(f => f.Status == "ok");
+                    summary.ErrorCount = parsingResult.ParsedFields.Count(f => f.Status == "error");
+                    summary.WarningCount = parsingResult.ParsedFields.Count(f => f.Status == "warning");
+                    summary.HasErrors = summary.ErrorCount > 0;
+                    summary.HasWarnings = summary.WarningCount > 0;
+                    
+                    // Coletar detalhes dos erros e warnings
+                    summary.Details = parsingResult.ParsedFields
+                        .Where(f => f.Status != "ok")
+                        .Select(f => new
+                        {
+                            lineName = f.LineName,
+                            fieldName = f.FieldName,
+                            sequence = f.Sequence,
+                            status = f.Status,
+                            value = f.Value?.Substring(0, Math.Min(50, f.Value?.Length ?? 0)),
+                            isRequired = f.IsRequired,
+                            occurrence = f.Occurrence
+                        })
+                        .ToList();
+                    
+                    _logger.LogInformation("Validação concluída: {Total} campos, {Valid} válidos, {Errors} erros, {Warnings} avisos",
+                        summary.TotalFields, summary.ValidFields, summary.ErrorCount, summary.WarningCount);
+                }
+                else
+                {
+                    summary.HasErrors = true;
+                    summary.ErrorCount = 1;
+                    summary.Details = new List<object> { new { error = parsingResult.ErrorMessage ?? "Falha na validação" } };
+                    _logger.LogWarning("Falha na validação do arquivo gerado: {Error}", parsingResult.ErrorMessage);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Erro ao validar arquivo gerado");
+                summary.HasErrors = true;
+                summary.ErrorCount = 1;
+                summary.Details = new List<object> { new { error = ex.Message } };
+            }
+            
+            return summary;
+        }
+
+        private string SerializeLayoutToXml(Layout layout)
+        {
+            try
+            {
+                var serializer = new System.Xml.Serialization.XmlSerializer(typeof(Layout));
+                using var stringWriter = new StringWriter();
+                serializer.Serialize(stringWriter, layout);
+                return stringWriter.ToString();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Erro ao serializar layout para XML");
+                return string.Empty;
+            }
+        }
+
+        private class ValidationSummary
+        {
+            public int TotalFields { get; set; }
+            public int ValidFields { get; set; }
+            public int ErrorCount { get; set; }
+            public int WarningCount { get; set; }
+            public bool HasErrors { get; set; }
+            public bool HasWarnings { get; set; }
+            public List<object> Details { get; set; } = new List<object>();
+        }
+
         [HttpPost("generate-synthetic-zip")]
         public async Task<IActionResult> GenerateSyntheticDataZip(
             IFormFile layoutFile,
@@ -294,6 +403,8 @@ namespace LayoutParserApi.Controllers
 
                 // Gerar dados para cada arquivo
                 var zipStream = new MemoryStream();
+                var validationResults = new List<object>();
+                
                 using (var archive = new ZipArchive(zipStream, ZipArchiveMode.Create, true))
                 {
                     for (int fileIndex = 1; fileIndex <= numberOfFiles; fileIndex++)
@@ -310,23 +421,80 @@ namespace LayoutParserApi.Controllers
                         
                         if (result.Success && result.GeneratedLines.Any())
                         {
-                            var fileName = $"arquivo_{fileIndex:D3}.txt";
-                            var entry = archive.CreateEntry(fileName);
+                            // Validar o arquivo gerado usando o mesmo método de validação de arquivos reais
+                            var validationResult = await ValidateGeneratedFileAsync(result.GeneratedLines, layout);
                             
-                            using (var entryStream = entry.Open())
-                            using (var writer = new StreamWriter(entryStream))
+                            // Se houver erros críticos, registrar mas continuar
+                            if (validationResult.HasErrors)
                             {
-                                foreach (var line in result.GeneratedLines)
-                                {
-                                    await writer.WriteLineAsync(line);
-                                }
+                                _logger.LogWarning("Arquivo {FileIndex} gerado com {ErrorCount} erros de validação", 
+                                    fileIndex, validationResult.ErrorCount);
                             }
                             
-                            _logger.LogInformation("Arquivo {FileIndex} gerado com {Lines} linhas", fileIndex, result.GeneratedLines.Count);
+                            // Se houver warnings, registrar
+                            if (validationResult.HasWarnings)
+                            {
+                                _logger.LogInformation("Arquivo {FileIndex} gerado com {WarningCount} avisos de validação", 
+                                    fileIndex, validationResult.WarningCount);
+                            }
+                            
+                            // Adicionar ao ZIP apenas se passar na validação básica ou se tiver apenas warnings
+                            if (!validationResult.HasErrors || validationResult.ErrorCount <= validationResult.WarningCount)
+                            {
+                                var fileName = $"arquivo_{fileIndex:D3}.txt";
+                                var entry = archive.CreateEntry(fileName);
+                                
+                                using (var entryStream = entry.Open())
+                                using (var writer = new StreamWriter(entryStream))
+                                {
+                                    foreach (var line in result.GeneratedLines)
+                                    {
+                                        await writer.WriteLineAsync(line);
+                                    }
+                                }
+                                
+                                validationResults.Add(new
+                                {
+                                    fileIndex = fileIndex,
+                                    fileName = fileName,
+                                    totalLines = result.GeneratedLines.Count,
+                                    totalFields = validationResult.TotalFields,
+                                    validFields = validationResult.ValidFields,
+                                    errorFields = validationResult.ErrorCount,
+                                    warningFields = validationResult.WarningCount,
+                                    isValid = !validationResult.HasErrors,
+                                    validationDetails = validationResult.Details
+                                });
+                                
+                                _logger.LogInformation("Arquivo {FileIndex} gerado e validado: {ValidFields} válidos, {ErrorFields} erros, {WarningFields} avisos", 
+                                    fileIndex, validationResult.ValidFields, validationResult.ErrorCount, validationResult.WarningCount);
+                            }
+                            else
+                            {
+                                _logger.LogError("Arquivo {FileIndex} rejeitado devido a muitos erros de validação: {ErrorFields} erros", 
+                                    fileIndex, validationResult.ErrorCount);
+                                
+                                validationResults.Add(new
+                                {
+                                    fileIndex = fileIndex,
+                                    fileName = $"arquivo_{fileIndex:D3}.txt",
+                                    rejected = true,
+                                    reason = "Muitos erros de validação",
+                                    errorFields = validationResult.ErrorCount,
+                                    warningFields = validationResult.WarningCount,
+                                    validationDetails = validationResult.Details
+                                });
+                            }
                         }
                         else
                         {
                             _logger.LogWarning("Falha ao gerar arquivo {FileIndex}", fileIndex);
+                            validationResults.Add(new
+                            {
+                                fileIndex = fileIndex,
+                                rejected = true,
+                                reason = result.ErrorMessage ?? "Falha na geração"
+                            });
                         }
                     }
                 }
@@ -334,7 +502,19 @@ namespace LayoutParserApi.Controllers
                 zipStream.Position = 0;
                 var zipBytes = zipStream.ToArray();
                 
-                _logger.LogInformation("ZIP gerado com {Size} bytes contendo {Files} arquivos", zipBytes.Length, numberOfFiles);
+                var acceptedFiles = validationResults.Count(r => 
+                {
+                    var obj = r as dynamic;
+                    return obj?.rejected != true;
+                });
+                
+                _logger.LogInformation("ZIP gerado com {Size} bytes contendo {Accepted}/{Total} arquivos aceitos", 
+                    zipBytes.Length, acceptedFiles, numberOfFiles);
+
+                // Retornar ZIP com metadata de validação nos headers
+                Response.Headers.Add("X-Validation-Results", System.Text.Json.JsonSerializer.Serialize(validationResults));
+                Response.Headers.Add("X-Accepted-Files", acceptedFiles.ToString());
+                Response.Headers.Add("X-Total-Files", numberOfFiles.ToString());
 
                 return File(zipBytes, "application/zip", $"dados_sinteticos_{DateTime.Now:yyyyMMdd_HHmmss}.zip");
             }
