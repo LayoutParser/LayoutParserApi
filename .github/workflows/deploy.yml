@@ -26,21 +26,24 @@ jobs:
       with:
         repository: Elsonc1/LayoutParserLib
         path: LayoutParserLib
-        token: ${{ secrets.GITHUB_TOKEN }}
+        token: ${{ secrets.GH_PAT_TOKEN || secrets.GITHUB_TOKEN }}
+        fetch-depth: 1
     
     - name: Checkout LayoutParserDecrypt
       uses: actions/checkout@v4
       with:
         repository: Elsonc1/LayoutParserDecrypt
         path: LayoutParserDecrypt
-        token: ${{ secrets.GITHUB_TOKEN }}
+        token: ${{ secrets.GH_PAT_TOKEN || secrets.GITHUB_TOKEN }}
+        fetch-depth: 1
     
     - name: Checkout LayoutParser (Front-end)
       uses: actions/checkout@v4
       with:
         repository: Elsonc1/LayoutParser
         path: LayoutParser
-        token: ${{ secrets.GITHUB_TOKEN }}
+        token: ${{ secrets.GH_PAT_TOKEN || secrets.GITHUB_TOKEN }}
+        fetch-depth: 1
     
     - name: Setup .NET
       uses: actions/setup-dotnet@v4
