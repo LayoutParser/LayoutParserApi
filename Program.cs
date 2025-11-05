@@ -71,9 +71,8 @@ var environment = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
 // Configurar Serilog baseado no tipo de logging
 var loggingType = builder.Configuration["Logging:Type"]?.ToLower() ?? "file";
 if (loggingType == "elasticsearch")
-{
     Log.Logger = ElasticSearchLogger.CreateLogger(builder.Configuration, environment);
-}
+
 else
 {
     // Padrão: log em arquivo .log na pasta Logs (onde o assembly está rodando)
