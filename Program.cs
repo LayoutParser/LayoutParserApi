@@ -41,9 +41,8 @@ static string GetLogDirectory(IConfiguration configuration)
     // Verificar se há pasta customizada configurada
     var customDirectory = configuration["Logging:Txt:CustomDirectory"];
     if (!string.IsNullOrWhiteSpace(customDirectory))
-    {
         return customDirectory;
-    }
+    
     
     // Usar pasta padrão baseada na localização do assembly
     var assemblyLocation = Assembly.GetExecutingAssembly().Location;
