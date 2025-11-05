@@ -30,7 +30,17 @@ namespace LayoutParserApi.Services.Database
             var userId = configuration["Database:UserId"] ?? "macgyver";
             var password = configuration["Database:Password"] ?? "eb8XNsww3D@U&HyZe4";
             
-            _connectionString = $"Server={server};Database={database};User Id={userId};Password={password};TrustServerCertificate=true;";
+            // Configurar connection string com timeout e SSL adequado
+            // Encrypt=false desabilita SSL/TLS (pode resolver timeout)
+            // Ou Encrypt=true com TrustServerCertificate=true para SSL sem validação
+            var encrypt = configuration["Database:Encrypt"]?.ToLower() ?? "false";
+            var connectionTimeout = configuration["Database:ConnectionTimeout"] ?? "30";
+            var commandTimeout = configuration["Database:CommandTimeout"] ?? "30";
+            
+            _connectionString = $"Server={server};Database={database};User Id={userId};Password={password};" +
+                              $"TrustServerCertificate=true;Encrypt={encrypt};" +
+                              $"Connection Timeout={connectionTimeout};Command Timeout={commandTimeout};" +
+                              $"Pooling=true;Min Pool Size=5;Max Pool Size=100;";
             
             _logger.LogInformation("LayoutDatabaseService configurado para servidor: {Server}", server);
         }
