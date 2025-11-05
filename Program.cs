@@ -104,9 +104,8 @@ static string GetSerilogDirectory(IConfiguration configuration)
     // Verificar se há pasta customizada configurada
     var customDirectory = configuration["Logging:File:Directory"];
     if (!string.IsNullOrWhiteSpace(customDirectory))
-    {
         return customDirectory;
-    }
+    
     
     // Usar pasta padrão "Logs" onde o assembly está rodando
     var assemblyLocation = Assembly.GetExecutingAssembly().Location;
@@ -174,9 +173,7 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowAll", policy =>
     {
-        policy.AllowAnyOrigin()
-              .AllowAnyHeader()
-              .AllowAnyMethod();
+        policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod();
     });
 });
 
