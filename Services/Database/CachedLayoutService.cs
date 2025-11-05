@@ -56,10 +56,7 @@ namespace LayoutParserApi.Services.Database
                 var layouts = await _layoutDatabaseService.SearchLayoutsAsync(request);
                 
                 if (layouts.Success && layouts.Layouts.Any())
-                {
-                    // Salvar no cache para próximas consultas
                     await _cacheService.SetCachedLayoutsAsync(cacheKey, layouts.Layouts);
-                }
 
                 return layouts;
             }
