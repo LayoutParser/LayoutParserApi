@@ -88,10 +88,7 @@ namespace LayoutParserApi.Services.Database
                 // Se não estiver no cache, buscar no banco
                 var layout = await _layoutDatabaseService.GetLayoutByIdAsync(id);
                 if (layout != null)
-                {
-                    // Salvar no cache para próximas consultas
                     await _cacheService.SetCachedLayoutByIdAsync(id, layout);
-                }
 
                 return layout;
             }
