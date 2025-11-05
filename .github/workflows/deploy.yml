@@ -144,6 +144,15 @@ jobs:
         $ErrorActionPreference = "Stop"
         $DEPLOY_PATH = "${{ secrets.DEPLOY_PATH }}"
         
+        # Validar se DEPLOY_PATH está configurado
+        if ([string]::IsNullOrWhiteSpace($DEPLOY_PATH)) {
+          Write-Error "❌ DEPLOY_PATH não está configurado! Configure o secret DEPLOY_PATH no GitHub."
+          exit 1
+        }
+        
+        # Normalizar caminho (remover aspas se houver)
+        $DEPLOY_PATH = $DEPLOY_PATH.Trim('"', '''', ' ')
+        
         # Obter caminho absoluto do diretório de trabalho
         $WORK_DIR = $PWD.Path
         $DEPLOY_SOURCE = Join-Path $WORK_DIR "deploy"
@@ -151,19 +160,24 @@ jobs:
         $DEPLOY_FRONTEND_SOURCE = Join-Path $DEPLOY_SOURCE "front-end"
         
         Write-Host "🚀 Iniciando deploy no servidor..."
-        Write-Host "📂 Caminho de deploy: $DEPLOY_PATH"
+        Write-Host "📂 Caminho de deploy (DEPLOY_PATH): $DEPLOY_PATH"
         Write-Host "📂 Diretório de trabalho: $WORK_DIR"
         Write-Host "📦 Pacote de deploy: $DEPLOY_SOURCE"
+        Write-Host "📦 Pacote API: $DEPLOY_API_SOURCE"
         Write-Host "🏃 Runner: Self-hosted (executando localmente)"
         Write-Host "🌐 Servidor: 172.25.32.42"
         
         # Verificar se o pacote de deploy existe
         if (-not (Test-Path $DEPLOY_API_SOURCE)) {
           Write-Error "❌ Diretório de deploy não encontrado: $DEPLOY_API_SOURCE"
+          Write-Host "📋 Conteúdo do diretório de trabalho:"
+          Get-ChildItem -Path $WORK_DIR | Select-Object Name, FullName | Format-Table
           exit 1
         }
         
         Write-Host "✅ Pacote de deploy encontrado em: $DEPLOY_SOURCE"
+        Write-Host "📋 Arquivos no pacote API:"
+        Get-ChildItem -Path $DEPLOY_API_SOURCE -File | Select-Object Name | Format-Table
         
         # Criar diretórios se não existirem
         Write-Host "📁 Criando diretórios de destino..."
@@ -172,21 +186,73 @@ jobs:
         $DEPLOY_LOGS_PATH = Join-Path $DEPLOY_API_PATH "Logs"
         $DEPLOY_BACKUPS_PATH = Join-Path $DEPLOY_PATH "backups"
         
-        New-Item -ItemType Directory -Path $DEPLOY_API_PATH -Force | Out-Null
-        New-Item -ItemType Directory -Path $DEPLOY_FRONTEND_PATH -Force | Out-Null
-        New-Item -ItemType Directory -Path $DEPLOY_LOGS_PATH -Force | Out-Null
-        New-Item -ItemType Directory -Path $DEPLOY_BACKUPS_PATH -Force | Out-Null
+        Write-Host "📁 Diretórios de destino:"
+        Write-Host "   API: $DEPLOY_API_PATH"
+        Write-Host "   Front-end: $DEPLOY_FRONTEND_PATH"
+        Write-Host "   Logs: $DEPLOY_LOGS_PATH"
+        Write-Host "   Backups: $DEPLOY_BACKUPS_PATH"
+        
+        # Criar diretórios com verificação
+        if (-not (Test-Path $DEPLOY_PATH)) {
+          Write-Host "📁 Criando diretório base: $DEPLOY_PATH"
+          New-Item -ItemType Directory -Path $DEPLOY_PATH -Force | Out-Null
+        }
+        
+        if (-not (Test-Path $DEPLOY_API_PATH)) {
+          Write-Host "📁 Criando diretório API: $DEPLOY_API_PATH"
+          New-Item -ItemType Directory -Path $DEPLOY_API_PATH -Force | Out-Null
+        }
+        
+        if (-not (Test-Path $DEPLOY_FRONTEND_PATH)) {
+          Write-Host "📁 Criando diretório Front-end: $DEPLOY_FRONTEND_PATH"
+          New-Item -ItemType Directory -Path $DEPLOY_FRONTEND_PATH -Force | Out-Null
+        }
+        
+        if (-not (Test-Path $DEPLOY_LOGS_PATH)) {
+          Write-Host "📁 Criando diretório Logs: $DEPLOY_LOGS_PATH"
+          New-Item -ItemType Directory -Path $DEPLOY_LOGS_PATH -Force | Out-Null
+        }
+        
+        if (-not (Test-Path $DEPLOY_BACKUPS_PATH)) {
+          Write-Host "📁 Criando diretório Backups: $DEPLOY_BACKUPS_PATH"
+          New-Item -ItemType Directory -Path $DEPLOY_BACKUPS_PATH -Force | Out-Null
+        }
         
         Write-Host "✅ Diretórios criados/verificados"
         
+        # Verificar se os diretórios foram criados
+        if (-not (Test-Path $DEPLOY_API_PATH)) {
+          Write-Error "❌ Falha ao criar diretório API: $DEPLOY_API_PATH"
+          exit 1
+        }
+        
         # Backup do appsettings.json se existir
         $APP_SETTINGS_PATH = Join-Path $DEPLOY_API_PATH "appsettings.json"
+        Write-Host "💾 Verificando appsettings.json em: $APP_SETTINGS_PATH"
         if (Test-Path $APP_SETTINGS_PATH) {
           $backupName = "appsettings-$(Get-Date -Format 'yyyyMMdd-HHmmss').json"
           $backupPath = Join-Path $DEPLOY_BACKUPS_PATH $backupName
           Write-Host "💾 Fazendo backup do appsettings.json: $backupName"
+          Write-Host "   Origem: $APP_SETTINGS_PATH"
+          Write-Host "   Destino: $backupPath"
+          
+          # Verificar se diretório de backup existe
+          if (-not (Test-Path $DEPLOY_BACKUPS_PATH)) {
+            Write-Host "⚠️ Diretório de backup não existe, criando: $DEPLOY_BACKUPS_PATH"
+            New-Item -ItemType Directory -Path $DEPLOY_BACKUPS_PATH -Force | Out-Null
+          }
+          
           Copy-Item -Path $APP_SETTINGS_PATH -Destination $backupPath -Force
-          Write-Host "✅ Backup criado em: $backupPath"
+          
+          if (Test-Path $backupPath) {
+            $backupInfo = Get-Item $backupPath
+            Write-Host "✅ Backup criado com sucesso em: $backupPath"
+            Write-Host "   Tamanho: $([math]::Round($backupInfo.Length / 1KB, 2)) KB"
+          } else {
+            Write-Warning "⚠️ Backup não foi criado! Verifique permissões."
+          }
+        } else {
+          Write-Host "ℹ️ appsettings.json não encontrado em: $APP_SETTINGS_PATH (primeiro deploy?)"
         }
         
         # Parar serviço Windows se existir
@@ -201,18 +267,52 @@ jobs:
         }
         
         # Copiar arquivos da API (manter appsettings.json se já existir)
-        Write-Host "📋 Copiando arquivos da API de $DEPLOY_API_SOURCE para $DEPLOY_API_PATH..."
-        $apiFiles = Get-ChildItem -Path $DEPLOY_API_SOURCE -Exclude "appsettings.json" -Recurse
+        Write-Host "📋 Copiando arquivos da API..."
+        Write-Host "   Origem: $DEPLOY_API_SOURCE"
+        Write-Host "   Destino: $DEPLOY_API_PATH"
+        
+        if (-not (Test-Path $DEPLOY_API_SOURCE)) {
+          Write-Error "❌ Diretório de origem não encontrado: $DEPLOY_API_SOURCE"
+          exit 1
+        }
+        
+        if (-not (Test-Path $DEPLOY_API_PATH)) {
+          Write-Error "❌ Diretório de destino não encontrado: $DEPLOY_API_PATH"
+          exit 1
+        }
+        
+        $apiFiles = Get-ChildItem -Path $DEPLOY_API_SOURCE -Exclude "appsettings.json" -Recurse -File
+        Write-Host "📋 Encontrados $($apiFiles.Count) arquivos para copiar"
+        
+        $copiedCount = 0
         foreach ($file in $apiFiles) {
           $relativePath = $file.FullName.Substring($DEPLOY_API_SOURCE.Length + 1)
           $destPath = Join-Path $DEPLOY_API_PATH $relativePath
           $destDir = Split-Path $destPath -Parent
+          
           if (-not (Test-Path $destDir)) {
             New-Item -ItemType Directory -Path $destDir -Force | Out-Null
           }
+          
           Copy-Item -Path $file.FullName -Destination $destPath -Force
+          $copiedCount++
+          
+          if ($copiedCount % 10 -eq 0) {
+            Write-Host "   Copiados $copiedCount / $($apiFiles.Count) arquivos..."
+          }
         }
-        Write-Host "✅ Arquivos da API copiados ($($apiFiles.Count) arquivos)"
+        
+        Write-Host "✅ Arquivos da API copiados ($copiedCount arquivos)"
+        
+        # Verificar se os arquivos foram copiados
+        $copiedFiles = Get-ChildItem -Path $DEPLOY_API_PATH -File
+        Write-Host "📋 Arquivos no destino: $($copiedFiles.Count) arquivos"
+        if ($copiedFiles.Count -gt 0) {
+          Write-Host "   Primeiros arquivos:"
+          $copiedFiles | Select-Object -First 5 Name | ForEach-Object { Write-Host "      - $($_.Name)" }
+        } else {
+          Write-Warning "⚠️ Nenhum arquivo foi copiado para $DEPLOY_API_PATH"
+        }
         
         # Copiar arquivos do front-end
         Write-Host "📋 Copiando arquivos do front-end de $DEPLOY_FRONTEND_SOURCE para $DEPLOY_FRONTEND_PATH..."
