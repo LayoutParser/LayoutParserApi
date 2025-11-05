@@ -1,7 +1,4 @@
-# Exemplo de workflow usando Self-Hosted Runner
-# Renomeie para deploy.yml após instalar o runner
-
-name: Deploy to Production Server (Self-Hosted)
+name: Deploy to Production Server
 
 on:
   push:
@@ -14,11 +11,12 @@ on:
       - 'LayoutParserDecrypt/**'
       - 'LayoutParserLib/**'
       - '.github/workflows/deploy.yml'
-  workflow_dispatch:
+  workflow_dispatch: # Permite executar manualmente
 
 jobs:
   deploy:
-    runs-on: self-hosted  # ✅ Runner instalado no servidor
+    runs-on: self-hosted  # ✅ Runner instalado no servidor (172.25.32.42)
+    timeout-minutes: 30
     
     steps:
     - name: Checkout code
@@ -47,6 +45,7 @@ jobs:
     - name: Build LayoutParserDecrypt (.NET Framework 4.8.1)
       working-directory: ./LayoutParserDecrypt
       run: |
+        # Copiar DLL da lib para o diretório do Decrypt
         Copy-Item -Path "..\LayoutParserLib\bin\Release\LayoutParserLib.dll" -Destination "." -Force
         msbuild LayoutParserDecrypt.csproj /p:Configuration=Release /p:Platform=AnyCPU /t:Restore,Build /verbosity:minimal
         if ($LASTEXITCODE -ne 0) {
@@ -79,21 +78,43 @@ jobs:
     - name: Create deployment package
       run: |
         Write-Host "📦 Criando pacote de deploy..."
+        
+        # Criar estrutura de deploy
         New-Item -ItemType Directory -Path deploy/api -Force | Out-Null
         New-Item -ItemType Directory -Path deploy/front-end -Force | Out-Null
         
+        # Copiar arquivos da API
+        Write-Host "📋 Copiando arquivos da API..."
         Copy-Item -Path "LayoutParserApi/publish/*" -Destination "deploy/api/" -Recurse -Force
+        
+        # Copiar arquivos do front-end
+        Write-Host "📋 Copiando arquivos do front-end..."
         Copy-Item -Path "LayoutParser/wwwroot/*" -Destination "deploy/front-end/" -Recurse -Force
         
+        # Copiar LayoutParserDecrypt.exe e DLLs
+        Write-Host "📋 Copiando LayoutParserDecrypt e dependências..."
         if (Test-Path "LayoutParserDecrypt/bin/Release/LayoutParserDecrypt.exe") {
           Copy-Item -Path "LayoutParserDecrypt/bin/Release/LayoutParserDecrypt.exe" -Destination "deploy/api/" -Force
+          Write-Host "  ✅ LayoutParserDecrypt.exe copiado"
+        } else {
+          Write-Warning "  ⚠️ LayoutParserDecrypt.exe não encontrado em bin/Release/"
         }
         
         if (Test-Path "LayoutParserDecrypt/bin/Release/LayoutParserLib.dll") {
           Copy-Item -Path "LayoutParserDecrypt/bin/Release/LayoutParserLib.dll" -Destination "deploy/api/" -Force
+          Write-Host "  ✅ LayoutParserLib.dll copiado"
         } elseif (Test-Path "LayoutParserLib/bin/Release/LayoutParserLib.dll") {
           Copy-Item -Path "LayoutParserLib/bin/Release/LayoutParserLib.dll" -Destination "deploy/api/" -Force
+          Write-Host "  ✅ LayoutParserLib.dll copiado da lib"
+        } else {
+          Write-Warning "  ⚠️ LayoutParserLib.dll não encontrado"
         }
+        
+        # Verificar estrutura
+        Write-Host "`n📂 Estrutura do deploy:"
+        Get-ChildItem -Path deploy -Recurse -File | Select-Object FullName | ForEach-Object { Write-Host "  $($_.FullName)" }
+        
+        Write-Host "`n✅ Pacote de deploy criado com sucesso!"
     
     - name: Deploy to server (local)
       run: |
@@ -102,21 +123,24 @@ jobs:
         
         Write-Host "🚀 Iniciando deploy no servidor..."
         Write-Host "📂 Caminho de deploy: $DEPLOY_PATH"
+        Write-Host "🏃 Runner: Self-hosted (executando localmente)"
+        Write-Host "🌐 Servidor: 172.25.32.42"
         
-        # Criar diretórios
+        # Criar diretórios se não existirem
+        Write-Host "📁 Criando diretórios..."
         New-Item -ItemType Directory -Path "$DEPLOY_PATH/api" -Force | Out-Null
         New-Item -ItemType Directory -Path "$DEPLOY_PATH/front-end" -Force | Out-Null
         New-Item -ItemType Directory -Path "$DEPLOY_PATH/api/Logs" -Force | Out-Null
         New-Item -ItemType Directory -Path "$DEPLOY_PATH/backups" -Force | Out-Null
         
-        # Backup do appsettings.json
+        # Backup do appsettings.json se existir
         if (Test-Path "$DEPLOY_PATH/api/appsettings.json") {
           $backupName = "appsettings-$(Get-Date -Format 'yyyyMMdd-HHmmss').json"
           Write-Host "💾 Fazendo backup do appsettings.json: $backupName"
           Copy-Item -Path "$DEPLOY_PATH/api/appsettings.json" -Destination "$DEPLOY_PATH/backups/$backupName" -Force
         }
         
-        # Parar serviço
+        # Parar serviço Windows se existir
         $serviceName = "LayoutParserApi"
         if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
           Write-Host "⏸️ Parando serviço $serviceName..."
@@ -124,14 +148,31 @@ jobs:
           Start-Sleep -Seconds 3
         }
         
-        # Copiar arquivos (sem SSH/SCP!)
+        # Copiar arquivos da API (manter appsettings.json se já existir)
         Write-Host "📋 Copiando arquivos da API..."
         Get-ChildItem -Path "deploy/api" -Exclude "appsettings.json" | Copy-Item -Destination "$DEPLOY_PATH/api/" -Recurse -Force
+        Write-Host "  ✅ Arquivos da API copiados"
         
+        # Copiar arquivos do front-end
         Write-Host "📋 Copiando arquivos do front-end..."
         Copy-Item -Path "deploy/front-end/*" -Destination "$DEPLOY_PATH/front-end/" -Recurse -Force
+        Write-Host "  ✅ Arquivos do front-end copiados"
         
-        # Reiniciar serviço
+        # Verificar se LayoutParserDecrypt.exe foi copiado
+        if (Test-Path "$DEPLOY_PATH/api/LayoutParserDecrypt.exe") {
+          Write-Host "  ✅ LayoutParserDecrypt.exe encontrado"
+        } else {
+          Write-Warning "  ⚠️ LayoutParserDecrypt.exe não encontrado após deploy"
+        }
+        
+        # Verificar se LayoutParserLib.dll foi copiado
+        if (Test-Path "$DEPLOY_PATH/api/LayoutParserLib.dll") {
+          Write-Host "  ✅ LayoutParserLib.dll encontrado"
+        } else {
+          Write-Warning "  ⚠️ LayoutParserLib.dll não encontrado após deploy"
+        }
+        
+        # Reiniciar serviço Windows se existir
         if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
           Write-Host "▶️ Reiniciando serviço $serviceName..."
           Start-Service -Name $serviceName -ErrorAction SilentlyContinue
@@ -140,8 +181,18 @@ jobs:
           $service = Get-Service -Name $serviceName
           if ($service.Status -eq 'Running') {
             Write-Host "  ✅ Serviço $serviceName está em execução"
+          } else {
+            Write-Warning "  ⚠️ Serviço $serviceName não está em execução (Status: $($service.Status))"
           }
+        } else {
+          Write-Host "ℹ️ Serviço $serviceName não encontrado. Execute manualmente:"
+          Write-Host "   cd $DEPLOY_PATH/api"
+          Write-Host "   dotnet LayoutParserApi.dll"
         }
         
+        # Validar deploy
         Write-Host "`n✅ Deploy concluído com sucesso!"
-
+        Write-Host "📍 API: $DEPLOY_PATH/api"
+        Write-Host "📍 Front-end: $DEPLOY_PATH/front-end"
+        Write-Host "📍 Logs: $DEPLOY_PATH/api/Logs"
+        Write-Host "🏃 Runner: Self-hosted (execução local)"
