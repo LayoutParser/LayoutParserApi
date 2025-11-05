@@ -1,4 +1,4 @@
-name: Deploy to Production Server
+name: Deploy API to Production Server
 
 on:
   push:
@@ -34,14 +34,6 @@ jobs:
       with:
         repository: Elsonc1/LayoutParserDecrypt
         path: LayoutParserDecrypt
-        token: ${{ secrets.GH_PAT_TOKEN || secrets.GITHUB_TOKEN }}
-        fetch-depth: 1
-    
-    - name: Checkout LayoutParser (Front-end)
-      uses: actions/checkout@v4
-      with:
-        repository: Elsonc1/LayoutParser
-        path: LayoutParser
         token: ${{ secrets.GH_PAT_TOKEN || secrets.GITHUB_TOKEN }}
         fetch-depth: 1
     
@@ -191,9 +183,8 @@ jobs:
         Write-Host "Criando pacote de deploy..."
         Write-Host "Diretorio de trabalho: $WORK_DIR"
         
-        # Criar estrutura de deploy
+        # Criar estrutura de deploy (apenas API)
         New-Item -ItemType Directory -Path deploy/api -Force | Out-Null
-        New-Item -ItemType Directory -Path deploy/front-end -Force | Out-Null
         
         # Copiar arquivos da API (do publish-api)
         Write-Host "Copiando arquivos da API..."
@@ -204,16 +195,6 @@ jobs:
         } else {
           Write-Error "Diretorio de publicacao nao encontrado: $PUBLISH_API_PATH"
           exit 1
-        }
-        
-        # Copiar arquivos do front-end
-        Write-Host "Copiando arquivos do front-end..."
-        $FRONTEND_SOURCE = Join-Path $WORK_DIR "LayoutParser\wwwroot"
-        if (Test-Path $FRONTEND_SOURCE) {
-          Copy-Item -Path "$FRONTEND_SOURCE\*" -Destination "deploy/front-end/" -Recurse -Force
-          Write-Host "Arquivos do front-end copiados de: $FRONTEND_SOURCE"
-        } else {
-          Write-Warning "Diretorio do front-end nao encontrado: $FRONTEND_SOURCE"
         }
         
         # Copiar LayoutParserDecrypt.exe e DLLs
@@ -263,9 +244,8 @@ jobs:
         $WORK_DIR = $PWD.Path
         $DEPLOY_SOURCE = Join-Path $WORK_DIR "deploy"
         $DEPLOY_API_SOURCE = Join-Path $DEPLOY_SOURCE "api"
-        $DEPLOY_FRONTEND_SOURCE = Join-Path $DEPLOY_SOURCE "front-end"
         
-        Write-Host "Iniciando deploy no servidor..."
+        Write-Host "Iniciando deploy da API no servidor..."
         Write-Host "Caminho de deploy (DEPLOY_PATH): $DEPLOY_PATH"
         Write-Host "Diretorio de trabalho: $WORK_DIR"
         Write-Host "Pacote de deploy: $DEPLOY_SOURCE"
@@ -288,13 +268,11 @@ jobs:
         # Criar diretórios se não existirem
         Write-Host "Criando diretorios de destino..."
         $DEPLOY_API_PATH = Join-Path $DEPLOY_PATH "api"
-        $DEPLOY_FRONTEND_PATH = Join-Path $DEPLOY_PATH "front-end"
         $DEPLOY_LOGS_PATH = Join-Path $DEPLOY_API_PATH "Logs"
         $DEPLOY_BACKUPS_PATH = Join-Path $DEPLOY_PATH "backups"
         
         Write-Host "Diretorios de destino:"
         Write-Host "   API: $DEPLOY_API_PATH"
-        Write-Host "   Front-end: $DEPLOY_FRONTEND_PATH"
         Write-Host "   Logs: $DEPLOY_LOGS_PATH"
         Write-Host "   Backups: $DEPLOY_BACKUPS_PATH"
         
@@ -307,11 +285,6 @@ jobs:
         if (-not (Test-Path $DEPLOY_API_PATH)) {
           Write-Host "Criando diretorio API: $DEPLOY_API_PATH"
           New-Item -ItemType Directory -Path $DEPLOY_API_PATH -Force | Out-Null
-        }
-        
-        if (-not (Test-Path $DEPLOY_FRONTEND_PATH)) {
-          Write-Host "Criando diretorio Front-end: $DEPLOY_FRONTEND_PATH"
-          New-Item -ItemType Directory -Path $DEPLOY_FRONTEND_PATH -Force | Out-Null
         }
         
         if (-not (Test-Path $DEPLOY_LOGS_PATH)) {
@@ -454,24 +427,6 @@ jobs:
           Write-Error "Diretorio de destino nao existe apos tentativa de copia: $DEPLOY_API_PATH"
         }
         
-        # Copiar arquivos do front-end
-        Write-Host "Copiando arquivos do front-end de $DEPLOY_FRONTEND_SOURCE para $DEPLOY_FRONTEND_PATH..."
-        if (Test-Path $DEPLOY_FRONTEND_SOURCE) {
-          $frontendFiles = Get-ChildItem -Path $DEPLOY_FRONTEND_SOURCE -Recurse
-          foreach ($file in $frontendFiles) {
-            $relativePath = $file.FullName.Substring($DEPLOY_FRONTEND_SOURCE.Length + 1)
-            $destPath = Join-Path $DEPLOY_FRONTEND_PATH $relativePath
-            $destDir = Split-Path $destPath -Parent
-            if (-not (Test-Path $destDir)) {
-              New-Item -ItemType Directory -Path $destDir -Force | Out-Null
-            }
-            Copy-Item -Path $file.FullName -Destination $destPath -Force
-          }
-          Write-Host "Arquivos do front-end copiados ($($frontendFiles.Count) arquivos)"
-        } else {
-          Write-Warning "Diretorio de front-end nao encontrado: $DEPLOY_FRONTEND_SOURCE"
-        }
-        
         # Verificar se LayoutParserDecrypt.exe foi copiado
         $decryptExePath = Join-Path $DEPLOY_API_PATH "LayoutParserDecrypt.exe"
         if (Test-Path $decryptExePath) {
@@ -518,9 +473,8 @@ jobs:
         }
         
         # Validar deploy
-        Write-Host "`nDeploy concluido com sucesso!"
+        Write-Host "`nDeploy da API concluido com sucesso!"
         Write-Host "API: $DEPLOY_API_PATH"
-        Write-Host "Front-end: $DEPLOY_FRONTEND_PATH"
         Write-Host "Logs: $DEPLOY_LOGS_PATH"
         Write-Host "Backups: $DEPLOY_BACKUPS_PATH"
         Write-Host "Runner: Self-hosted (execucao local)"
