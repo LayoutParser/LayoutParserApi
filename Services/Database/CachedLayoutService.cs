@@ -121,9 +121,8 @@ namespace LayoutParserApi.Services.Database
                     
                     // Salvar layouts individuais no cache
                     foreach (var layout in response.Layouts)
-                    {
                         await _cacheService.SetCachedLayoutByIdAsync(layout.Id, layout);
-                    }
+                    
 
                     _logger.LogInformation("Cache atualizado com {Count} layouts do banco de dados", response.Layouts.Count);
                 }
