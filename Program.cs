@@ -57,9 +57,7 @@ static string GetLogDirectory(IConfiguration configuration)
             // Se encontrou "bin", criar "log" na mesma raiz que "bin"
             var parentDirectory = currentDirectory.Parent?.FullName;
             if (parentDirectory != null)
-            {
                 return Path.Combine(parentDirectory, "log");
-            }
         }
         currentDirectory = currentDirectory.Parent;
     }
