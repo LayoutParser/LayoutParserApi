@@ -5,12 +5,9 @@ on:
     branches:
       - main
       - master
+    # Workflow está no repositório LayoutParserApi, então só aciona quando há push neste repositório
     paths:
-      - 'LayoutParserApi/**'
-      - 'LayoutParser/**'
-      - 'LayoutParserDecrypt/**'
-      - 'LayoutParserLib/**'
-      - '.github/workflows/deploy.yml'
+      - '**'  # Qualquer mudança no LayoutParserApi aciona o deploy
   workflow_dispatch: # Permite executar manualmente
 
 jobs:
@@ -19,8 +16,31 @@ jobs:
     timeout-minutes: 30
     
     steps:
-    - name: Checkout code
+    - name: Checkout LayoutParserApi
       uses: actions/checkout@v4
+      with:
+        path: LayoutParserApi
+    
+    - name: Checkout LayoutParserLib
+      uses: actions/checkout@v4
+      with:
+        repository: Elsonc1/LayoutParserLib
+        path: LayoutParserLib
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Checkout LayoutParserDecrypt
+      uses: actions/checkout@v4
+      with:
+        repository: Elsonc1/LayoutParserDecrypt
+        path: LayoutParserDecrypt
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Checkout LayoutParser (Front-end)
+      uses: actions/checkout@v4
+      with:
+        repository: Elsonc1/LayoutParser
+        path: LayoutParser
+        token: ${{ secrets.GITHUB_TOKEN }}
     
     - name: Setup .NET
       uses: actions/setup-dotnet@v4
@@ -33,13 +53,21 @@ jobs:
     - name: Build LayoutParserLib (.NET Framework 4.8.1)
       run: |
         $WORK_DIR = $PWD.Path
-        $LIB_PROJECT = Join-Path $WORK_DIR "LayoutParserLib\LayoutParserLib.csproj"
+        $LIB_DIR = Join-Path $WORK_DIR "LayoutParserLib"
+        $LIB_PROJECT = Join-Path $LIB_DIR "LayoutParserLib.csproj"
         
         Write-Host "📦 Compilando LayoutParserLib..."
+        Write-Host "📂 Diretório: $LIB_DIR"
         Write-Host "📂 Projeto: $LIB_PROJECT"
         
         if (-not (Test-Path $LIB_PROJECT)) {
           Write-Error "❌ Projeto não encontrado: $LIB_PROJECT"
+          Write-Host "📋 Conteúdo do diretório de trabalho:"
+          Get-ChildItem -Path $WORK_DIR | Select-Object Name | Format-Table
+          if (Test-Path $LIB_DIR) {
+            Write-Host "📋 Conteúdo de LayoutParserLib:"
+            Get-ChildItem -Path $LIB_DIR | Select-Object Name | Format-Table
+          }
           exit 1
         }
         
@@ -55,11 +83,13 @@ jobs:
     - name: Build LayoutParserDecrypt (.NET Framework 4.8.1)
       run: |
         $WORK_DIR = $PWD.Path
-        $LIB_DLL = Join-Path $WORK_DIR "LayoutParserLib\bin\Release\LayoutParserLib.dll"
-        $DECRYPT_PROJECT = Join-Path $WORK_DIR "LayoutParserDecrypt\LayoutParserDecrypt.csproj"
+        $LIB_DIR = Join-Path $WORK_DIR "LayoutParserLib"
+        $LIB_DLL = Join-Path $LIB_DIR "bin\Release\LayoutParserLib.dll"
         $DECRYPT_DIR = Join-Path $WORK_DIR "LayoutParserDecrypt"
+        $DECRYPT_PROJECT = Join-Path $DECRYPT_DIR "LayoutParserDecrypt.csproj"
         
         Write-Host "📦 Compilando LayoutParserDecrypt..."
+        Write-Host "📂 Diretório: $DECRYPT_DIR"
         Write-Host "📂 Projeto: $DECRYPT_PROJECT"
         
         # Copiar DLL da lib para o diretório do Decrypt
@@ -68,10 +98,18 @@ jobs:
           Write-Host "✅ LayoutParserLib.dll copiado para LayoutParserDecrypt"
         } else {
           Write-Warning "⚠️ LayoutParserLib.dll não encontrado em: $LIB_DLL"
+          Write-Host "📋 Verificando se LayoutParserLib foi compilado..."
+          if (Test-Path $LIB_DIR) {
+            Get-ChildItem -Path $LIB_DIR -Recurse -Filter "*.dll" | Select-Object FullName | Format-Table
+          }
         }
         
         if (-not (Test-Path $DECRYPT_PROJECT)) {
           Write-Error "❌ Projeto não encontrado: $DECRYPT_PROJECT"
+          if (Test-Path $DECRYPT_DIR) {
+            Write-Host "📋 Conteúdo de LayoutParserDecrypt:"
+            Get-ChildItem -Path $DECRYPT_DIR | Select-Object Name | Format-Table
+          }
           exit 1
         }
         
@@ -91,6 +129,13 @@ jobs:
         
         Write-Host "📦 Compilando LayoutParserApi..."
         Write-Host "📂 Diretório: $API_DIR"
+        
+        if (-not (Test-Path $API_DIR)) {
+          Write-Error "❌ Diretório LayoutParserApi não encontrado: $API_DIR"
+          Write-Host "📋 Conteúdo do diretório de trabalho:"
+          Get-ChildItem -Path $WORK_DIR | Select-Object Name | Format-Table
+          exit 1
+        }
         
         Push-Location $API_DIR
         
@@ -160,25 +205,35 @@ jobs:
         
         # Copiar arquivos do front-end
         Write-Host "📋 Copiando arquivos do front-end..."
-        Copy-Item -Path "LayoutParser/wwwroot/*" -Destination "deploy/front-end/" -Recurse -Force
+        $FRONTEND_SOURCE = Join-Path $WORK_DIR "LayoutParser\wwwroot"
+        if (Test-Path $FRONTEND_SOURCE) {
+          Copy-Item -Path "$FRONTEND_SOURCE\*" -Destination "deploy/front-end/" -Recurse -Force
+          Write-Host "✅ Arquivos do front-end copiados de: $FRONTEND_SOURCE"
+        } else {
+          Write-Warning "⚠️ Diretório do front-end não encontrado: $FRONTEND_SOURCE"
+        }
         
         # Copiar LayoutParserDecrypt.exe e DLLs
         Write-Host "📋 Copiando LayoutParserDecrypt e dependências..."
-        if (Test-Path "LayoutParserDecrypt/bin/Release/LayoutParserDecrypt.exe") {
-          Copy-Item -Path "LayoutParserDecrypt/bin/Release/LayoutParserDecrypt.exe" -Destination "deploy/api/" -Force
-          Write-Host "  ✅ LayoutParserDecrypt.exe copiado"
+        $DECRYPT_EXE = Join-Path $WORK_DIR "LayoutParserDecrypt\bin\Release\LayoutParserDecrypt.exe"
+        $DECRYPT_DLL = Join-Path $WORK_DIR "LayoutParserDecrypt\bin\Release\LayoutParserLib.dll"
+        $LIB_DLL = Join-Path $WORK_DIR "LayoutParserLib\bin\Release\LayoutParserLib.dll"
+        
+        if (Test-Path $DECRYPT_EXE) {
+          Copy-Item -Path $DECRYPT_EXE -Destination "deploy/api/" -Force
+          Write-Host "  ✅ LayoutParserDecrypt.exe copiado de: $DECRYPT_EXE"
         } else {
-          Write-Warning "  ⚠️ LayoutParserDecrypt.exe não encontrado em bin/Release/"
+          Write-Warning "  ⚠️ LayoutParserDecrypt.exe não encontrado em: $DECRYPT_EXE"
         }
         
-        if (Test-Path "LayoutParserDecrypt/bin/Release/LayoutParserLib.dll") {
-          Copy-Item -Path "LayoutParserDecrypt/bin/Release/LayoutParserLib.dll" -Destination "deploy/api/" -Force
-          Write-Host "  ✅ LayoutParserLib.dll copiado"
-        } elseif (Test-Path "LayoutParserLib/bin/Release/LayoutParserLib.dll") {
-          Copy-Item -Path "LayoutParserLib/bin/Release/LayoutParserLib.dll" -Destination "deploy/api/" -Force
-          Write-Host "  ✅ LayoutParserLib.dll copiado da lib"
+        if (Test-Path $DECRYPT_DLL) {
+          Copy-Item -Path $DECRYPT_DLL -Destination "deploy/api/" -Force
+          Write-Host "  ✅ LayoutParserLib.dll copiado de: $DECRYPT_DLL"
+        } elseif (Test-Path $LIB_DLL) {
+          Copy-Item -Path $LIB_DLL -Destination "deploy/api/" -Force
+          Write-Host "  ✅ LayoutParserLib.dll copiado de: $LIB_DLL"
         } else {
-          Write-Warning "  ⚠️ LayoutParserLib.dll não encontrado"
+          Write-Warning "  ⚠️ LayoutParserLib.dll não encontrado em nenhum dos locais"
         }
         
         # Verificar estrutura
