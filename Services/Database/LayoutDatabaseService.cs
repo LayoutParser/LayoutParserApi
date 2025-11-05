@@ -119,22 +119,35 @@ namespace LayoutParserApi.Services.Database
                 {
                     var layout = new LayoutRecord
                     {
-                        Id = reader.GetInt32(0),
+                        Id = reader.IsDBNull(0) ? 0 : reader.GetInt32(0),
                         LayoutGuid = reader.IsDBNull(1) ? Guid.Empty : SafeParseGuid(SafeGetString(reader, 1)),
                         PackageGuid = reader.IsDBNull(2) ? Guid.Empty : SafeParseGuid(SafeGetString(reader, 2)),
                         Name = SafeGetString(reader, 3),
                         Description = reader.IsDBNull(4) ? "" : SafeGetString(reader, 4),
                         LayoutType = reader.IsDBNull(5) ? "" : SafeGetString(reader, 5),
-                        ValueContent = reader.GetString(6),
+                        ValueContent = reader.IsDBNull(6) ? "" : SafeGetString(reader, 6),
                         XmlShemaValidatorPath = reader.IsDBNull(7) ? "" : SafeGetString(reader, 7),
-                        ProjectId = reader.GetInt32(8),
-                        LastUpdateDate = reader.GetDateTime(9)
+                        ProjectId = reader.IsDBNull(8) ? 0 : reader.GetInt32(8),
+                        LastUpdateDate = reader.IsDBNull(9) ? DateTime.MinValue : reader.GetDateTime(9)
                     };
 
-                    // Descriptografar o conteúdo
+                    // Descriptografar o conteúdo apenas se não for vazio
                     if (!string.IsNullOrEmpty(layout.ValueContent))
-                        layout.DecryptedContent = _decryptionService.DecryptContent(layout.ValueContent);
-                    
+                    {
+                        try
+                        {
+                            layout.DecryptedContent = _decryptionService.DecryptContent(layout.ValueContent);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "Erro ao descriptografar conteudo do layout {Id} ({Name}). Continuando sem conteudo descriptografado.", layout.Id, layout.Name);
+                            layout.DecryptedContent = "";
+                        }
+                    }
+                    else
+                    {
+                        layout.DecryptedContent = "";
+                    }
 
                     layouts.Add(layout);
                 }
@@ -195,7 +208,7 @@ namespace LayoutParserApi.Services.Database
                 {
                     var layout = new LayoutRecord
                     {
-                        Id = reader.GetInt32(0),
+                        Id = reader.IsDBNull(0) ? 0 : reader.GetInt32(0),
                         LayoutGuid = reader.IsDBNull(1) ? Guid.Empty : SafeParseGuid(SafeGetString(reader, 1)),
                         PackageGuid = reader.IsDBNull(2) ? Guid.Empty : SafeParseGuid(SafeGetString(reader, 2)),
                         Name = SafeGetString(reader, 3),
@@ -203,14 +216,27 @@ namespace LayoutParserApi.Services.Database
                         LayoutType = reader.IsDBNull(5) ? "" : SafeGetString(reader, 5),
                         ValueContent = reader.IsDBNull(6) ? "" : SafeGetString(reader, 6),
                         XmlShemaValidatorPath = reader.IsDBNull(7) ? "" : SafeGetString(reader, 7),
-                        ProjectId = reader.GetInt32(8),
-                        LastUpdateDate = reader.GetDateTime(9)
+                        ProjectId = reader.IsDBNull(8) ? 0 : reader.GetInt32(8),
+                        LastUpdateDate = reader.IsDBNull(9) ? DateTime.MinValue : reader.GetDateTime(9)
                     };
 
-                    // Descriptografar o conteúdo
+                    // Descriptografar o conteúdo apenas se não for vazio
                     if (!string.IsNullOrEmpty(layout.ValueContent))
-                        layout.DecryptedContent = _decryptionService.DecryptContent(layout.ValueContent);
-                    
+                    {
+                        try
+                        {
+                            layout.DecryptedContent = _decryptionService.DecryptContent(layout.ValueContent);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "Erro ao descriptografar conteudo do layout {Id} ({Name}). Continuando sem conteudo descriptografado.", layout.Id, layout.Name);
+                            layout.DecryptedContent = "";
+                        }
+                    }
+                    else
+                    {
+                        layout.DecryptedContent = "";
+                    }
 
                     _logger.LogInformation("Layout encontrado no banco: {Name}", layout.Name);
                     return layout;
