@@ -1,0 +1,147 @@
+# Exemplo de workflow usando Self-Hosted Runner
+# Renomeie para deploy.yml após instalar o runner
+
+name: Deploy to Production Server (Self-Hosted)
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - 'LayoutParserApi/**'
+      - 'LayoutParser/**'
+      - 'LayoutParserDecrypt/**'
+      - 'LayoutParserLib/**'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: self-hosted  # ✅ Runner instalado no servidor
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '9.0.x'
+    
+    - name: Setup MSBuild for .NET Framework
+      uses: microsoft/setup-msbuild@v1.1
+      with:
+        msbuild-version: 'latest'
+    
+    - name: Build LayoutParserLib (.NET Framework 4.8.1)
+      working-directory: ./LayoutParserLib
+      run: |
+        msbuild LayoutParserLib.csproj /p:Configuration=Release /p:Platform=AnyCPU /t:Restore,Build /verbosity:minimal
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "Falha ao compilar LayoutParserLib"
+          exit 1
+        }
+        Write-Host "✅ LayoutParserLib compilado com sucesso"
+    
+    - name: Build LayoutParserDecrypt (.NET Framework 4.8.1)
+      working-directory: ./LayoutParserDecrypt
+      run: |
+        Copy-Item -Path "..\LayoutParserLib\bin\Release\LayoutParserLib.dll" -Destination "." -Force
+        msbuild LayoutParserDecrypt.csproj /p:Configuration=Release /p:Platform=AnyCPU /t:Restore,Build /verbosity:minimal
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "Falha ao compilar LayoutParserDecrypt"
+          exit 1
+        }
+        Write-Host "✅ LayoutParserDecrypt compilado com sucesso"
+    
+    - name: Build LayoutParserApi (.NET Core 9.0)
+      working-directory: ./LayoutParserApi
+      run: |
+        dotnet restore
+        dotnet build --configuration Release --no-restore
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "Falha ao compilar LayoutParserApi"
+          exit 1
+        }
+        Write-Host "✅ LayoutParserApi compilado com sucesso"
+    
+    - name: Publish LayoutParserApi
+      working-directory: ./LayoutParserApi
+      run: |
+        dotnet publish --configuration Release --no-build --output ./publish
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "Falha ao publicar LayoutParserApi"
+          exit 1
+        }
+        Write-Host "✅ LayoutParserApi publicado com sucesso"
+    
+    - name: Create deployment package
+      run: |
+        Write-Host "📦 Criando pacote de deploy..."
+        New-Item -ItemType Directory -Path deploy/api -Force | Out-Null
+        New-Item -ItemType Directory -Path deploy/front-end -Force | Out-Null
+        
+        Copy-Item -Path "LayoutParserApi/publish/*" -Destination "deploy/api/" -Recurse -Force
+        Copy-Item -Path "LayoutParser/wwwroot/*" -Destination "deploy/front-end/" -Recurse -Force
+        
+        if (Test-Path "LayoutParserDecrypt/bin/Release/LayoutParserDecrypt.exe") {
+          Copy-Item -Path "LayoutParserDecrypt/bin/Release/LayoutParserDecrypt.exe" -Destination "deploy/api/" -Force
+        }
+        
+        if (Test-Path "LayoutParserDecrypt/bin/Release/LayoutParserLib.dll") {
+          Copy-Item -Path "LayoutParserDecrypt/bin/Release/LayoutParserLib.dll" -Destination "deploy/api/" -Force
+        } elseif (Test-Path "LayoutParserLib/bin/Release/LayoutParserLib.dll") {
+          Copy-Item -Path "LayoutParserLib/bin/Release/LayoutParserLib.dll" -Destination "deploy/api/" -Force
+        }
+    
+    - name: Deploy to server (local)
+      run: |
+        $ErrorActionPreference = "Stop"
+        $DEPLOY_PATH = "${{ secrets.DEPLOY_PATH }}"
+        
+        Write-Host "🚀 Iniciando deploy no servidor..."
+        Write-Host "📂 Caminho de deploy: $DEPLOY_PATH"
+        
+        # Criar diretórios
+        New-Item -ItemType Directory -Path "$DEPLOY_PATH/api" -Force | Out-Null
+        New-Item -ItemType Directory -Path "$DEPLOY_PATH/front-end" -Force | Out-Null
+        New-Item -ItemType Directory -Path "$DEPLOY_PATH/api/Logs" -Force | Out-Null
+        New-Item -ItemType Directory -Path "$DEPLOY_PATH/backups" -Force | Out-Null
+        
+        # Backup do appsettings.json
+        if (Test-Path "$DEPLOY_PATH/api/appsettings.json") {
+          $backupName = "appsettings-$(Get-Date -Format 'yyyyMMdd-HHmmss').json"
+          Write-Host "💾 Fazendo backup do appsettings.json: $backupName"
+          Copy-Item -Path "$DEPLOY_PATH/api/appsettings.json" -Destination "$DEPLOY_PATH/backups/$backupName" -Force
+        }
+        
+        # Parar serviço
+        $serviceName = "LayoutParserApi"
+        if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
+          Write-Host "⏸️ Parando serviço $serviceName..."
+          Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 3
+        }
+        
+        # Copiar arquivos (sem SSH/SCP!)
+        Write-Host "📋 Copiando arquivos da API..."
+        Get-ChildItem -Path "deploy/api" -Exclude "appsettings.json" | Copy-Item -Destination "$DEPLOY_PATH/api/" -Recurse -Force
+        
+        Write-Host "📋 Copiando arquivos do front-end..."
+        Copy-Item -Path "deploy/front-end/*" -Destination "$DEPLOY_PATH/front-end/" -Recurse -Force
+        
+        # Reiniciar serviço
+        if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
+          Write-Host "▶️ Reiniciando serviço $serviceName..."
+          Start-Service -Name $serviceName -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          
+          $service = Get-Service -Name $serviceName
+          if ($service.Status -eq 'Running') {
+            Write-Host "  ✅ Serviço $serviceName está em execução"
+          }
+        }
+        
+        Write-Host "`n✅ Deploy concluído com sucesso!"
+
