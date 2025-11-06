@@ -7,6 +7,7 @@ using LayoutParserApi.Services.Interfaces;
 using Microsoft.AspNetCore.Mvc;
 using System.IO.Compression;
 using System.Text;
+using System.Linq;
 
 namespace LayoutParserApi.Controllers
 {
@@ -309,7 +310,7 @@ namespace LayoutParserApi.Controllers
                     // Coletar detalhes dos erros e warnings
                     summary.Details = parsingResult.ParsedFields
                         .Where(f => f.Status != "ok")
-                        .Select<Models.Parsing.ParsedField, object>(f => new Dictionary<string, object>
+                        .Select(f => (object)new Dictionary<string, object>
                         {
                             ["lineName"] = f.LineName,
                             ["fieldName"] = f.FieldName,
