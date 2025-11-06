@@ -309,15 +309,15 @@ namespace LayoutParserApi.Controllers
                     // Coletar detalhes dos erros e warnings
                     summary.Details = parsingResult.ParsedFields
                         .Where(f => f.Status != "ok")
-                        .Select(f => new
+                        .Select<Models.Parsing.ParsedField, object>(f => new Dictionary<string, object>
                         {
-                            lineName = f.LineName,
-                            fieldName = f.FieldName,
-                            sequence = f.Sequence,
-                            status = f.Status,
-                            value = f.Value?.Substring(0, Math.Min(50, f.Value?.Length ?? 0)),
-                            isRequired = f.IsRequired,
-                            occurrence = f.Occurrence
+                            ["lineName"] = f.LineName,
+                            ["fieldName"] = f.FieldName,
+                            ["sequence"] = f.Sequence,
+                            ["status"] = f.Status,
+                            ["value"] = f.Value?.Substring(0, Math.Min(50, f.Value?.Length ?? 0)) ?? "",
+                            ["isRequired"] = f.IsRequired,
+                            ["occurrence"] = f.Occurrence
                         })
                         .ToList();
                     
