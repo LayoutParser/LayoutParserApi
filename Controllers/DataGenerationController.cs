@@ -69,7 +69,7 @@ namespace LayoutParserApi.Controllers
                     if (excelResult.Success)
                     {
                         excelContext = excelResult.DataContext;
-                        _logger.LogInformation("Excel processado: {RowCount} linhas, {ColumnCount} colunas", 
+                        _logger.LogInformation("Excel processado: {RowCount} linhas, {ColumnCount} colunas",
                             excelContext.RowCount, excelContext.Headers.Count);
                     }
                     else
@@ -260,7 +260,7 @@ namespace LayoutParserApi.Controllers
                 using var stream = sampleDataFile.OpenReadStream();
                 using var reader = new StreamReader(stream);
                 var content = await reader.ReadToEndAsync();
-                
+
                 // Implementar parsing dos dados de exemplo
                 // Por enquanto, retornar lista vazia
                 return new List<ParsedField>();
@@ -278,30 +278,30 @@ namespace LayoutParserApi.Controllers
         private async Task<ValidationSummary> ValidateGeneratedFileAsync(List<string> generatedLines, Layout layout)
         {
             var summary = new ValidationSummary();
-            
+
             try
             {
                 // Converter linhas geradas em um texto (como se fosse um arquivo real)
                 var generatedText = string.Join(Environment.NewLine, generatedLines);
-                
+
                 // Criar streams para validação
                 using var layoutStream = new MemoryStream();
                 using var txtStream = new MemoryStream();
-                
+
                 // Serializar layout para XML
                 var layoutXml = SerializeLayoutToXml(layout);
                 var layoutBytes = Encoding.UTF8.GetBytes(layoutXml);
                 await layoutStream.WriteAsync(layoutBytes, 0, layoutBytes.Length);
                 layoutStream.Position = 0;
-                
+
                 // Escrever texto gerado
                 var txtBytes = Encoding.UTF8.GetBytes(generatedText);
                 await txtStream.WriteAsync(txtBytes, 0, txtBytes.Length);
                 txtStream.Position = 0;
-                
+
                 // Usar o mesmo método de parsing/validação usado para arquivos reais
                 var parsingResult = await _parserService.ParseAsync(layoutStream, txtStream);
-                
+
                 if (parsingResult.Success && parsingResult.ParsedFields != null)
                 {
                     summary.TotalFields = parsingResult.ParsedFields.Count;
@@ -310,7 +310,7 @@ namespace LayoutParserApi.Controllers
                     summary.WarningCount = parsingResult.ParsedFields.Count(f => f.Status == "warning");
                     summary.HasErrors = summary.ErrorCount > 0;
                     summary.HasWarnings = summary.WarningCount > 0;
-                    
+
                     // Coletar detalhes dos erros e warnings
                     summary.Details = parsingResult.ParsedFields
                         .Where(f => f.Status != "ok")
@@ -325,7 +325,7 @@ namespace LayoutParserApi.Controllers
                             ["occurrence"] = f.Occurrence
                         })
                         .ToList();
-                    
+
                     _logger.LogInformation("Validação concluída: {Total} campos, {Valid} válidos, {Errors} erros, {Warnings} avisos",
                         summary.TotalFields, summary.ValidFields, summary.ErrorCount, summary.WarningCount);
                 }
@@ -344,7 +344,7 @@ namespace LayoutParserApi.Controllers
                 summary.ErrorCount = 1;
                 summary.Details = new List<object> { new { error = ex.Message } };
             }
-            
+
             return summary;
         }
 
@@ -376,12 +376,7 @@ namespace LayoutParserApi.Controllers
         }
 
         [HttpPost("generate-synthetic-zip")]
-        public async Task<IActionResult> GenerateSyntheticDataZip(
-            IFormFile layoutFile,
-            IFormFile excelFile = null,
-            int numberOfRecords = 2,
-            int numberOfFiles = 1,
-            string generationMode = "Random") // Deterministic, Random, SemanticAI
+        public async Task<IActionResult> GenerateSyntheticDataZip(IFormFile layoutFile, IFormFile excelFile = null, int numberOfRecords = 2, int numberOfFiles = 1, string generationMode = "Random")
         {
             if (layoutFile == null)
                 return BadRequest("Arquivo de layout é obrigatório");
@@ -389,21 +384,19 @@ namespace LayoutParserApi.Controllers
             if (Path.GetExtension(layoutFile.FileName).ToLower() != ".xml")
                 return BadRequest("O arquivo de layout deve ser XML");
 
+            // Criar diretório temporário para os arquivos
+            var tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+            
             try
             {
                 // Determinar modo de geração
                 GenerationMode mode = GenerationMode.Random;
                 if (Enum.TryParse<GenerationMode>(generationMode, true, out var parsedMode))
-                {
                     mode = parsedMode;
-                }
                 else
-                {
                     _logger.LogWarning("Modo de geração inválido: {Mode}, usando Random", generationMode);
-                }
-
-                _logger.LogInformation("Iniciando geração de {Files} arquivos com {Records} registros cada - Modo: {Mode}", 
-                    numberOfFiles, numberOfRecords, mode);
+                
+                _logger.LogInformation("Iniciando geração de {Files} arquivos com {Records} registros cada - Modo: {Mode}", numberOfFiles, numberOfRecords, mode);
 
                 // Ler conteúdo do layout XML
                 string layoutXml;
@@ -427,113 +420,109 @@ namespace LayoutParserApi.Controllers
                 // Criar gerador de arquivos .txt
                 var txtGenerator = _txtGeneratorFactory.Create(mode);
 
-                // Criar diretório temporário para os arquivos
-                var tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+                // Criar diretório temporário
                 Directory.CreateDirectory(tempDir);
 
-                try
+                // Gerar dados para cada arquivo
+                var zipStream = new MemoryStream();
+                var validationResults = new List<Dictionary<string, object>>();
+
+                using (var archive = new ZipArchive(zipStream, ZipArchiveMode.Create, true))
                 {
-                    // Gerar dados para cada arquivo
-                    var zipStream = new MemoryStream();
-                    var validationResults = new List<Dictionary<string, object>>();
-                    
-                    using (var archive = new ZipArchive(zipStream, ZipArchiveMode.Create, true))
+                    for (int fileIndex = 1; fileIndex <= numberOfFiles; fileIndex++)
                     {
-                        for (int fileIndex = 1; fileIndex <= numberOfFiles; fileIndex++)
+                        _logger.LogInformation("Gerando arquivo {Index}/{Total}...", fileIndex, numberOfFiles);
+
+                        // Gerar arquivo usando TxtFileGeneratorService
+                        var result = await txtGenerator.GenerateFileAsync(
+                            layoutXml: layoutXml,
+                            excelContext: excelContext,
+                            recordCount: numberOfRecords,
+                            outputPath: tempDir,
+                            mode: mode
+                        );
+
+                        if (result.Success && !string.IsNullOrEmpty(result.FilePath))
                         {
-                            _logger.LogInformation("Gerando arquivo {Index}/{Total}...", fileIndex, numberOfFiles);
+                            // Ler arquivo gerado
+                            var fileContent = await System.IO.File.ReadAllTextAsync(result.FilePath);
+                            var fileName = Path.GetFileName(result.FilePath);
 
-                            // Gerar arquivo usando TxtFileGeneratorService
-                            var result = await txtGenerator.GenerateFileAsync(
-                                layoutXml: layoutXml,
-                                excelContext: excelContext,
-                                recordCount: numberOfRecords,
-                                outputPath: tempDir,
-                                mode: mode
-                            );
-                            
-                            if (result.Success && !string.IsNullOrEmpty(result.FilePath))
+                            // Adicionar ao ZIP
+                            var entry = archive.CreateEntry($"arquivo_{fileIndex:D3}_{fileName}");
+                            using (var entryStream = entry.Open())
+                            using (var writer = new StreamWriter(entryStream, Encoding.UTF8))
                             {
-                                // Ler arquivo gerado
-                                var fileContent = await System.IO.File.ReadAllTextAsync(result.FilePath);
-                                var fileName = Path.GetFileName(result.FilePath);
-                                
-                                // Adicionar ao ZIP
-                                var entry = archive.CreateEntry($"arquivo_{fileIndex:D3}_{fileName}");
-                                using (var entryStream = entry.Open())
-                                using (var writer = new StreamWriter(entryStream, Encoding.UTF8))
-                                {
-                                    await writer.WriteAsync(fileContent);
-                                }
-
-                                // Adicionar resultado de validação
-                                var validationResult = new Dictionary<string, object>
-                                {
-                                    ["fileIndex"] = fileIndex,
-                                    ["fileName"] = fileName,
-                                    ["lineCount"] = result.LineCount,
-                                    ["isValid"] = result.ValidationResult?.IsValid ?? false,
-                                    ["validLines"] = result.ValidationResult?.ValidLines ?? 0,
-                                    ["invalidLines"] = result.ValidationResult?.InvalidLines ?? 0,
-                                    ["errors"] = result.ValidationResult?.Errors ?? new List<string>(),
-                                    ["warnings"] = result.ValidationResult?.Warnings ?? new List<string>()
-                                };
-                                validationResults.Add(validationResult);
-
-                                _logger.LogInformation("Arquivo {Index} gerado: {Lines} linhas, Válido: {IsValid}", 
-                                    fileIndex, result.LineCount, result.ValidationResult?.IsValid ?? false);
+                                await writer.WriteAsync(fileContent);
                             }
-                            else
+
+                            // Adicionar resultado de validação
+                            var validationResult = new Dictionary<string, object>
                             {
-                                _logger.LogWarning("Falha ao gerar arquivo {Index}: {Error}", fileIndex, result.ErrorMessage);
-                                validationResults.Add(new Dictionary<string, object>
-                                {
-                                    ["fileIndex"] = fileIndex,
-                                    ["rejected"] = true,
-                                    ["error"] = result.ErrorMessage ?? "Erro desconhecido"
-                                });
-                            }
+                                ["fileIndex"] = fileIndex,
+                                ["fileName"] = fileName,
+                                ["lineCount"] = result.LineCount,
+                                ["isValid"] = result.ValidationResult?.IsValid ?? false,
+                                ["validLines"] = result.ValidationResult?.ValidLines ?? 0,
+                                ["invalidLines"] = result.ValidationResult?.InvalidLines ?? 0,
+                                ["errors"] = result.ValidationResult?.Errors ?? new List<string>(),
+                                ["warnings"] = result.ValidationResult?.Warnings ?? new List<string>()
+                            };
+                            validationResults.Add(validationResult);
+
+                            _logger.LogInformation("Arquivo {Index} gerado: {Lines} linhas, Válido: {IsValid}", 
+                                fileIndex, result.LineCount, result.ValidationResult?.IsValid ?? false);
+                        }
+                        else
+                        {
+                            _logger.LogWarning("Falha ao gerar arquivo {Index}: {Error}", fileIndex, result.ErrorMessage);
+                            validationResults.Add(new Dictionary<string, object>
+                            {
+                                ["fileIndex"] = fileIndex,
+                                ["rejected"] = true,
+                                ["error"] = result.ErrorMessage ?? "Erro desconhecido"
+                            });
                         }
                     }
                 }
 
-                    zipStream.Position = 0;
-                    var zipBytes = zipStream.ToArray();
-                    
-                    var acceptedFiles = validationResults.Count(r => 
-                        !r.ContainsKey("rejected") || !(r["rejected"] is bool rejected && !rejected));
-                    
-                    _logger.LogInformation("ZIP gerado com {Size} bytes contendo {Accepted}/{Total} arquivos aceitos", 
-                        zipBytes.Length, acceptedFiles, numberOfFiles);
+                zipStream.Position = 0;
+                var zipBytes = zipStream.ToArray();
 
-                    // Retornar ZIP com metadata de validação nos headers
-                    Response.Headers.Add("X-Validation-Results", System.Text.Json.JsonSerializer.Serialize(validationResults));
-                    Response.Headers.Add("X-Accepted-Files", acceptedFiles.ToString());
-                    Response.Headers.Add("X-Total-Files", numberOfFiles.ToString());
-                    Response.Headers.Add("X-Generation-Mode", mode.ToString());
+                var acceptedFiles = validationResults.Count(r => 
+                    !r.ContainsKey("rejected") || !(r["rejected"] is bool rejected && rejected));
 
-                    return File(zipBytes, "application/zip", $"dados_sinteticos_{DateTime.Now:yyyyMMdd_HHmmss}.zip");
-                }
-                finally
-                {
-                    // Limpar diretório temporário
-                    try
-                    {
-                        if (Directory.Exists(tempDir))
-                        {
-                            Directory.Delete(tempDir, true);
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "Erro ao limpar diretório temporário: {Path}", tempDir);
-                    }
-                }
+                _logger.LogInformation("ZIP gerado com {Size} bytes contendo {Accepted}/{Total} arquivos aceitos", 
+                    zipBytes.Length, acceptedFiles, numberOfFiles);
+
+                // Retornar ZIP com metadata de validação nos headers
+                Response.Headers.Add("X-Validation-Results", System.Text.Json.JsonSerializer.Serialize(validationResults));
+                Response.Headers.Add("X-Accepted-Files", acceptedFiles.ToString());
+                Response.Headers.Add("X-Total-Files", numberOfFiles.ToString());
+                Response.Headers.Add("X-Generation-Mode", mode.ToString());
+
+                return File(zipBytes, "application/zip", $"dados_sinteticos_{DateTime.Now:yyyyMMdd_HHmmss}.zip");
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Erro ao gerar dados sintéticos em ZIP");
                 return StatusCode(500, new { error = ex.Message });
+            }
+            finally
+            {
+                // Limpar diretório temporário
+                try
+                {
+                    if (Directory.Exists(tempDir))
+                    {
+                        Directory.Delete(tempDir, true);
+                        _logger.LogInformation("Diretório temporário removido: {Path}", tempDir);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Erro ao limpar diretório temporário: {Path}", tempDir);
+                }
             }
         }
     }

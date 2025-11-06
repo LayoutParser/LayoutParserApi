@@ -5,6 +5,7 @@ using System.Text;
 using System.Threading.Tasks;
 using LayoutParserApi.Services.Generation.TxtGenerator.Models;
 using LayoutParserApi.Services.Generation.Interfaces;
+using LayoutParserApi.Services.Generation.Implementations;
 
 namespace LayoutParserApi.Services.Generation.TxtGenerator.Generators
 {
