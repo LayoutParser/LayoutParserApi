@@ -519,10 +519,10 @@ namespace LayoutParserApi.Services.Generation.Implementations
                 
                 // Extrair informações do layout raiz
                 var layout = doc.Root;
-                var layoutType = layout?.Element("LayoutType")?.Value ?? "Unknown";
+                var layoutTypeTxt = layout.Element("LayoutType").Value ?? "Unknown";
                 var limitOfChars = layout?.Element("LimitOfCaracters")?.Value ?? "600";
                 
-                sb.AppendLine($"Tipo de Layout: {layoutType}");
+                sb.AppendLine($"Tipo de Layout: {layoutTypeTxt}");
                 sb.AppendLine($"Limite de Caracteres por Linha: {limitOfChars}");
                 sb.AppendLine();
                 
@@ -625,7 +625,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
                 }
             };
 
-            var json = JsonSerializer.Serialize(request);
+            var json = System.Text.Json.JsonSerializer.Serialize(request);
             var content = new StringContent(json, Encoding.UTF8, "application/json");
 
             var response = await _httpClient.PostAsync(
