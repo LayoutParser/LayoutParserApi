@@ -168,6 +168,9 @@ builder.Services.AddScoped<LayoutParserApi.Services.Learning.FileStorageService>
 builder.Services.AddScoped<LayoutParserApi.Services.Learning.LayoutLearningService>();
 builder.Services.AddScoped<LayoutParserApi.Services.Learning.XmlFormatterService>();
 
+// XML Analysis Services - Sistema de análise e validação de XML
+builder.Services.AddScoped<LayoutParserApi.Services.XmlAnalysis.XmlAnalysisService>();
+
 // Serviços de IA Online (Gemini) - Solução gratuita e confiável
 builder.Services.AddHttpClient<LayoutParserApi.Services.Generation.Implementations.GeminiAIService>();
 builder.Services.AddScoped<LayoutParserApi.Services.Generation.Implementations.GeminiAIService>();
