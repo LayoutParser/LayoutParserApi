@@ -145,8 +145,28 @@ builder.Services.AddScoped<LayoutParserApi.Services.Generation.Interfaces.ILayou
 // Validador de linhas incrementais
 builder.Services.AddScoped<LayoutParserApi.Services.Generation.Interfaces.ILineValidator, LayoutParserApi.Services.Generation.Implementations.LineValidator>();
 
+// Gerador de valores com regras de consistência
+builder.Services.AddScoped<LayoutParserApi.Services.Generation.Interfaces.IValueGenerator, LayoutParserApi.Services.Generation.Implementations.ValueGenerator>();
+
+// Validador de consistência matemática
+builder.Services.AddScoped<LayoutParserApi.Services.Generation.Implementations.ConsistencyValidator>();
+
 // Geradores de campos específicos
 builder.Services.AddScoped<LayoutParserApi.Services.Generation.Interfaces.IFieldGenerator, LayoutParserApi.Services.Generation.Implementations.FieldGenerators.CommonFieldGenerator>();
+
+// TxtGenerator - Sistema de geração de arquivos .txt
+builder.Services.AddScoped<LayoutParserApi.Services.Generation.TxtGenerator.Parsers.XmlLayoutParser>();
+builder.Services.AddScoped<LayoutParserApi.Services.Generation.TxtGenerator.Parsers.ExcelRulesParser>();
+builder.Services.AddScoped<LayoutParserApi.Services.Generation.TxtGenerator.Validators.LayoutValidator>();
+builder.Services.AddScoped<LayoutParserApi.Services.Generation.TxtGenerator.Generators.DeterministicGenerator>();
+builder.Services.AddScoped<LayoutParserApi.Services.Generation.TxtGenerator.Generators.RandomGenerator>();
+builder.Services.AddScoped<LayoutParserApi.Services.Generation.TxtGenerator.Generators.SemanticAIGenerator>();
+builder.Services.AddScoped<LayoutParserApi.Services.Generation.TxtGenerator.TxtFileGeneratorFactory>();
+
+// Learning Services - Sistema de aprendizado de layout
+builder.Services.AddScoped<LayoutParserApi.Services.Learning.FileStorageService>();
+builder.Services.AddScoped<LayoutParserApi.Services.Learning.LayoutLearningService>();
+builder.Services.AddScoped<LayoutParserApi.Services.Learning.XmlFormatterService>();
 
 // Serviços de IA Online (Gemini) - Solução gratuita e confiável
 builder.Services.AddHttpClient<LayoutParserApi.Services.Generation.Implementations.GeminiAIService>();
