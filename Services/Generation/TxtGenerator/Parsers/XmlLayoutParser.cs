@@ -112,7 +112,7 @@ namespace LayoutParserApi.Services.Generation.TxtGenerator.Parsers
                     DataType = InferDataType(fieldElement),
                     Alignment = fieldElement.Element("AlignmentType")?.Value ?? "Left",
                     IsRequired = bool.TryParse(fieldElement.Element("IsRequired")?.Value, out var req) && req,
-                    Sequence = int.TryParse(fieldElement.Element("Sequence")?.Value, out var seq) ? seq : 0,
+                    Sequence = int.TryParse(fieldElement.Element("Sequence")?.Value, out var sequence) ? sequence : 0,
                     LineName = recordLayout.Name,
                     InitialValue = recordLayout.InitialValue
                 };
