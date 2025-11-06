@@ -40,18 +40,36 @@ namespace LayoutParserApi.Controllers
         public async Task<IActionResult> Upload(IFormFile layoutFile, IFormFile txtFile, [FromForm] string layoutName = null)
         {
             if (layoutFile == null || txtFile == null)
-                return BadRequest("Layout XML e arquivo TXT são obrigatórios.");
+                return BadRequest("Layout XML e arquivo são obrigatórios.");
 
             if (Path.GetExtension(layoutFile.FileName).ToLower() != ".xml")
                 return BadRequest("O arquivo de layout deve ser XML.");
 
             try
             {
+                // Detectar tipo de arquivo pela extensão e conteúdo
+                var fileExtension = Path.GetExtension(txtFile.FileName).ToLower();
+                var isXmlFile = fileExtension == ".xml";
+
                 // Ler conteúdo do arquivo para detecção de tipo
                 using var txtStreamForDetection = txtFile.OpenReadStream();
                 using var reader = new StreamReader(txtStreamForDetection, leaveOpen: true);
                 var sample = await reader.ReadToEndAsync();
                 var detectedType = _layoutDetector.DetectType(sample);
+
+                // Se for arquivo XML, retornar indicando que deve ser processado no front-end
+                if (isXmlFile || detectedType == "xml")
+                {
+                    _logger.LogInformation("Arquivo XML detectado, deve ser processado no front-end");
+                    return Ok(new
+                    {
+                        success = true,
+                        fileType = "xml",
+                        detectedType = "xml",
+                        message = "Arquivo XML detectado. Processe no front-end com xmltools.js",
+                        content = sample // Retornar conteúdo para processamento no front-end
+                    });
+                }
 
                 // Salvar arquivo para aprendizado de máquina ANTES de processar
                 if (!string.IsNullOrEmpty(layoutName))
