@@ -404,7 +404,7 @@ namespace LayoutParserApi.Controllers
 
                 // Gerar dados para cada arquivo
                 var zipStream = new MemoryStream();
-                var validationResults = new List<object>();
+                var validationResults = new List<Dictionary<string, object>>();
                 
                 using (var archive = new ZipArchive(zipStream, ZipArchiveMode.Create, true))
                 {
@@ -454,17 +454,17 @@ namespace LayoutParserApi.Controllers
                                     }
                                 }
                                 
-                                validationResults.Add(new
+                                validationResults.Add(new Dictionary<string, object>
                                 {
-                                    fileIndex = fileIndex,
-                                    fileName = fileName,
-                                    totalLines = result.GeneratedLines.Count,
-                                    totalFields = validationResult.TotalFields,
-                                    validFields = validationResult.ValidFields,
-                                    errorFields = validationResult.ErrorCount,
-                                    warningFields = validationResult.WarningCount,
-                                    isValid = !validationResult.HasErrors,
-                                    validationDetails = validationResult.Details
+                                    ["fileIndex"] = fileIndex,
+                                    ["fileName"] = fileName,
+                                    ["totalLines"] = result.GeneratedLines.Count,
+                                    ["totalFields"] = validationResult.TotalFields,
+                                    ["validFields"] = validationResult.ValidFields,
+                                    ["errorFields"] = validationResult.ErrorCount,
+                                    ["warningFields"] = validationResult.WarningCount,
+                                    ["isValid"] = !validationResult.HasErrors,
+                                    ["validationDetails"] = validationResult.Details
                                 });
                                 
                                 _logger.LogInformation("Arquivo {FileIndex} gerado e validado: {ValidFields} válidos, {ErrorFields} erros, {WarningFields} avisos", 
@@ -475,26 +475,26 @@ namespace LayoutParserApi.Controllers
                                 _logger.LogError("Arquivo {FileIndex} rejeitado devido a muitos erros de validação: {ErrorFields} erros", 
                                     fileIndex, validationResult.ErrorCount);
                                 
-                                validationResults.Add(new
+                                validationResults.Add(new Dictionary<string, object>
                                 {
-                                    fileIndex = fileIndex,
-                                    fileName = $"arquivo_{fileIndex:D3}.txt",
-                                    rejected = true,
-                                    reason = "Muitos erros de validação",
-                                    errorFields = validationResult.ErrorCount,
-                                    warningFields = validationResult.WarningCount,
-                                    validationDetails = validationResult.Details
+                                    ["fileIndex"] = fileIndex,
+                                    ["fileName"] = $"arquivo_{fileIndex:D3}.txt",
+                                    ["rejected"] = true,
+                                    ["reason"] = "Muitos erros de validação",
+                                    ["errorFields"] = validationResult.ErrorCount,
+                                    ["warningFields"] = validationResult.WarningCount,
+                                    ["validationDetails"] = validationResult.Details
                                 });
                             }
                         }
                         else
                         {
                             _logger.LogWarning("Falha ao gerar arquivo {FileIndex}", fileIndex);
-                            validationResults.Add(new
+                            validationResults.Add(new Dictionary<string, object>
                             {
-                                fileIndex = fileIndex,
-                                rejected = true,
-                                reason = result.ErrorMessage ?? "Falha na geração"
+                                ["fileIndex"] = fileIndex,
+                                ["rejected"] = true,
+                                ["reason"] = result.ErrorMessage ?? "Falha na geração"
                             });
                         }
                     }
@@ -504,10 +504,7 @@ namespace LayoutParserApi.Controllers
                 var zipBytes = zipStream.ToArray();
                 
                 var acceptedFiles = validationResults.Count(r => 
-                {
-                    var obj = r as dynamic;
-                    return obj?.rejected != true;
-                });
+                    !r.ContainsKey("rejected") || !(r["rejected"] is bool rejected && rejected));
                 
                 _logger.LogInformation("ZIP gerado com {Size} bytes contendo {Accepted}/{Total} arquivos aceitos", 
                     zipBytes.Length, acceptedFiles, numberOfFiles);
