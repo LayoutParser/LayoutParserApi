@@ -139,6 +139,15 @@ builder.Services.AddScoped<LayoutParserApi.Services.Generation.Interfaces.ISynth
 builder.Services.AddScoped<LayoutParserApi.Services.Generation.Interfaces.ILayoutAnalysisService, LayoutParserApi.Services.Generation.Implementations.LayoutAnalysisService>();
 // IAIService removido - usando OllamaAIService diretamente
 
+// Detector de tipo de layout
+builder.Services.AddScoped<LayoutParserApi.Services.Generation.Interfaces.ILayoutTypeDetector, LayoutParserApi.Services.Generation.Implementations.LayoutTypeDetector>();
+
+// Validador de linhas incrementais
+builder.Services.AddScoped<LayoutParserApi.Services.Generation.Interfaces.ILineValidator, LayoutParserApi.Services.Generation.Implementations.LineValidator>();
+
+// Geradores de campos específicos
+builder.Services.AddScoped<LayoutParserApi.Services.Generation.Interfaces.IFieldGenerator, LayoutParserApi.Services.Generation.Implementations.FieldGenerators.CommonFieldGenerator>();
+
 // Serviços de IA Online (Gemini) - Solução gratuita e confiável
 builder.Services.AddHttpClient<LayoutParserApi.Services.Generation.Implementations.GeminiAIService>();
 builder.Services.AddScoped<LayoutParserApi.Services.Generation.Implementations.GeminiAIService>();
