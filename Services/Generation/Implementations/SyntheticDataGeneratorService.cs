@@ -155,12 +155,34 @@ namespace LayoutParserApi.Services.Generation.Implementations
             
             // Preparar regras do Excel (se disponíveis)
             var excelRules = new Dictionary<string, string>();
+            if (request.ExcelContext != null)
+            {
+                // Extrair regras do Excel se necessário
+                foreach (var header in request.ExcelContext.Headers)
+                {
+                    if (request.ExcelContext.ColumnData.ContainsKey(header))
+                    {
+                        var samples = request.ExcelContext.ColumnData[header].Take(5).ToList();
+                        if (samples.Any())
+                        {
+                            excelRules[header] = $"Exemplos: {string.Join(", ", samples)}";
+                        }
+                    }
+                }
+            }
+            
+            // Extrair nome e descrição do layout
+            var layoutName = request.Layout?.Name ?? "";
+            var layoutDescription = request.Layout?.Description ?? "";
             
             var aiResponse = await _geminiService.GenerateSyntheticData(
                 layoutXml, 
                 examples, 
                 excelRules, 
-                request.NumberOfRecords);
+                request.NumberOfRecords,
+                layoutName,
+                layoutDescription,
+                request.ExcelContext);
             
             var lines = ParseAIResponse(aiResponse, request.NumberOfRecords);
             
@@ -174,7 +196,10 @@ namespace LayoutParserApi.Services.Generation.Implementations
                 {
                     ["generationMethod"] = "Gemini",
                     ["layoutXml"] = layoutXml,
-                    ["aiResponseLength"] = aiResponse.Length
+                    ["layoutName"] = layoutName,
+                    ["aiResponseLength"] = aiResponse.Length,
+                    ["examplesUsed"] = examples.Count,
+                    ["excelRulesUsed"] = excelRules.Count
                 }
             };
         }
