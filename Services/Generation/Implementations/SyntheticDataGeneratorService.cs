@@ -1,6 +1,7 @@
 using LayoutParserApi.Models.Entities;
 using LayoutParserApi.Models.Generation;
 using LayoutParserApi.Services.Generation.Interfaces;
+using System.Linq;
 using System.Text;
 using System.Xml.Serialization;
 
@@ -186,6 +187,9 @@ namespace LayoutParserApi.Services.Generation.Implementations
             
             var lines = ParseAIResponse(aiResponse, request.NumberOfRecords);
             
+            // Pós-processamento: garantir que todas as linhas tenham exatamente 600 caracteres
+            lines = NormalizeLineLengths(lines, request.Layout?.LimitOfCaracters ?? 600);
+            
             return new GeneratedDataResult
             {
                 Success = true,
@@ -284,14 +288,45 @@ namespace LayoutParserApi.Services.Generation.Implementations
 
         private List<string> ParseAIResponse(string aiResponse, int expectedCount)
         {
+            // Não remover espaços no final pois podem ser parte do layout posicional
             var lines = aiResponse
-                .Split('\n', StringSplitOptions.RemoveEmptyEntries)
-                .Select(line => line.Trim())
-                .Where(line => !string.IsNullOrWhiteSpace(line))
+                .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .Where(line => !string.IsNullOrWhiteSpace(line.Trim())) // Verificar se não é linha vazia
+                .Select(line => line.TrimEnd('\r', '\n')) // Remover apenas quebras de linha no final
                 .Take(expectedCount)
                 .ToList();
 
             return lines;
+        }
+
+        /// <summary>
+        /// Normaliza o tamanho de todas as linhas para o tamanho exato especificado
+        /// </summary>
+        private List<string> NormalizeLineLengths(List<string> lines, int targetLength)
+        {
+            var normalized = new List<string>();
+            
+            foreach (var line in lines)
+            {
+                if (line.Length == targetLength)
+                {
+                    normalized.Add(line);
+                }
+                else if (line.Length > targetLength)
+                {
+                    // Truncar se exceder o tamanho
+                    _logger.LogWarning("Linha truncada de {Original} para {Target} caracteres", line.Length, targetLength);
+                    normalized.Add(line.Substring(0, targetLength));
+                }
+                else
+                {
+                    // Preencher com espaços se for menor
+                    _logger.LogWarning("Linha preenchida de {Original} para {Target} caracteres", line.Length, targetLength);
+                    normalized.Add(line.PadRight(targetLength, ' '));
+                }
+            }
+            
+            return normalized;
         }
 
         private async Task<string> GenerateLineContent(LineElement lineElement, int recordIndex, SyntheticDataRequest request)
