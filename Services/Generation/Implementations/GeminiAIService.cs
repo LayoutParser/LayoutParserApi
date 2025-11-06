@@ -245,34 +245,50 @@ namespace LayoutParserApi.Services.Generation.Implementations
 
             try
             {
+                var allFiles = new List<string>();
+                
                 // Buscar diretórios que contenham o nome do layout
                 var matchingDirs = Directory.GetDirectories(_examplesPath, $"*{layoutName}*", SearchOption.TopDirectoryOnly);
                 
                 foreach (var dir in matchingDirs)
                 {
-                    // Buscar arquivos .txt no diretório
+                    // Buscar arquivos .txt e .mq_series no diretório e subdiretórios
                     var txtFiles = Directory.GetFiles(dir, "*.txt", SearchOption.AllDirectories);
+                    var mqSeriesFiles = Directory.GetFiles(dir, "*.mq_series", SearchOption.AllDirectories);
                     
-                    foreach (var file in txtFiles.Take(5)) // Limitar a 5 arquivos por layout
+                    allFiles.AddRange(txtFiles);
+                    allFiles.AddRange(mqSeriesFiles);
+                }
+                
+                // Também buscar arquivos diretamente no diretório raiz que contenham o nome do layout
+                var rootTxtFiles = Directory.GetFiles(_examplesPath, $"*{layoutName}*.txt", SearchOption.TopDirectoryOnly);
+                var rootMqSeriesFiles = Directory.GetFiles(_examplesPath, $"*{layoutName}*.mq_series", SearchOption.TopDirectoryOnly);
+                
+                allFiles.AddRange(rootTxtFiles);
+                allFiles.AddRange(rootMqSeriesFiles);
+                
+                // Remover duplicatas e ordenar
+                allFiles = allFiles.Distinct().OrderBy(f => f).ToList();
+                
+                foreach (var file in allFiles.Take(5)) // Limitar a 5 arquivos por layout
+                {
+                    try
                     {
-                        try
+                        var content = await File.ReadAllTextAsync(file, Encoding.UTF8);
+                        if (!string.IsNullOrWhiteSpace(content))
                         {
-                            var content = await File.ReadAllTextAsync(file, Encoding.UTF8);
-                            if (!string.IsNullOrWhiteSpace(content))
-                            {
-                                examples.Add(content);
-                                _logger.LogDebug("Carregado exemplo do arquivo: {File}", file);
-                            }
+                            examples.Add(content);
+                            _logger.LogDebug("Carregado exemplo do arquivo: {File}", file);
                         }
-                        catch (Exception ex)
-                        {
-                            _logger.LogWarning(ex, "Erro ao ler arquivo de exemplo: {File}", file);
-                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Erro ao ler arquivo de exemplo: {File}", file);
                     }
                 }
                 
-                _logger.LogInformation("Carregados {Count} exemplos do diretório para layout {LayoutName}", 
-                    examples.Count, layoutName);
+                _logger.LogInformation("Carregados {Count} exemplos do diretório para layout {LayoutName} (arquivos encontrados: {TotalFiles})", 
+                    examples.Count, layoutName, allFiles.Count);
             }
             catch (Exception ex)
             {
