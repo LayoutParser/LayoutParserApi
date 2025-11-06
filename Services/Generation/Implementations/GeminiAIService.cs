@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Text;
 using System.Text.Json;
 using System.Xml.Linq;
@@ -123,50 +124,68 @@ namespace LayoutParserApi.Services.Generation.Implementations
             sb.AppendLine(layoutDetails);
             sb.AppendLine();
 
-            // ===== SEÇÃO 3: EXEMPLOS REAIS =====
+            // ===== SEÇÃO 3: EXEMPLOS REAIS (OTIMIZADOS) =====
             if (examples != null && examples.Any())
             {
-                sb.AppendLine("=== EXEMPLOS DE DOCUMENTOS REAIS ===");
-                sb.AppendLine();
-                sb.AppendLine("ANALISE ESTES EXEMPLOS COM ATENÇÃO:");
-                sb.AppendLine("1. Padrões de formatação de cada campo");
-                sb.AppendLine("2. Valores típicos e realistas");
-                sb.AppendLine("3. Sequência e ordem das linhas");
-                sb.AppendLine("4. Tamanhos exatos de cada campo");
-                sb.AppendLine("5. Alinhamento (esquerda, direita, centro)");
+                sb.AppendLine("=== EXEMPLOS REAIS ===");
+                sb.AppendLine("ANALISE: tamanho de linha (600 chars), formato de campos, padrões de dados.");
                 sb.AppendLine();
                 
-                for (int i = 0; i < Math.Min(examples.Count, 5); i++)
+                // Mostrar apenas 2 exemplos completos, limitando a 5 linhas por exemplo
+                for (int i = 0; i < Math.Min(examples.Count, 2); i++)
                 {
-                    sb.AppendLine($"--- EXEMPLO {i + 1} ---");
+                    sb.AppendLine($"EXEMPLO {i + 1}:");
                     var exampleLines = examples[i].Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-                    foreach (var line in exampleLines.Take(10)) // Limitar a 10 linhas por exemplo
+                    foreach (var line in exampleLines.Take(5))
                     {
-                        sb.AppendLine(line);
+                        var lineLength = line.Length;
+                        var preview = line.Length > 100 ? line.Substring(0, 100) + "..." : line;
+                        sb.AppendLine($"[{lineLength} chars] {preview}");
                     }
                     sb.AppendLine();
                 }
-                sb.AppendLine("IMPORTANTE: Os dados gerados devem seguir EXATAMENTE os mesmos padrões observados nestes exemplos.");
-                sb.AppendLine();
+                
+                // Mostrar análise de tamanhos se houver mais exemplos
+                if (examples.Count > 2)
+                {
+                    var allLines = examples.SelectMany(e => e.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+                                          .Where(l => !string.IsNullOrWhiteSpace(l))
+                                          .ToList();
+                    var avgLength = allLines.Any() ? (int)allLines.Average(l => l.Length) : 600;
+                    var minLength = allLines.Any() ? allLines.Min(l => l.Length) : 600;
+                    var maxLength = allLines.Any() ? allLines.Max(l => l.Length) : 600;
+                    
+                    sb.AppendLine($"ANÁLISE: {allLines.Count} linhas analisadas. Tamanho médio: {avgLength}, min: {minLength}, max: {maxLength}");
+                    sb.AppendLine("TODAS as linhas devem ter EXATAMENTE 600 caracteres.");
+                    sb.AppendLine();
+                }
             }
 
-            // ===== SEÇÃO 4: REGRAS DO EXCEL (SE DISPONÍVEL) =====
+            // ===== SEÇÃO 4: DADOS DO EXCEL (OTIMIZADOS) =====
             if (excelContext != null && excelContext.Headers.Any())
             {
-                sb.AppendLine("=== REGRAS E DADOS DO EXCEL ===");
+                sb.AppendLine("=== DADOS DO EXCEL ===");
+                sb.AppendLine("USE estes valores como referência para gerar dados realistas:");
                 sb.AppendLine();
-                sb.AppendLine("Colunas disponíveis no Excel:");
-                foreach (var header in excelContext.Headers.Take(20))
+                
+                // Mostrar apenas as colunas mais relevantes (primeiras 15) com exemplos resumidos
+                foreach (var header in excelContext.Headers.Take(15))
                 {
-                    sb.AppendLine($"- {header}");
-                    if (excelContext.ColumnData.ContainsKey(header))
+                    if (excelContext.ColumnData.ContainsKey(header) && excelContext.ColumnData[header].Any())
                     {
-                        var samples = excelContext.ColumnData[header].Take(3);
-                        sb.AppendLine($"  Exemplos: {string.Join(", ", samples)}");
+                        var samples = excelContext.ColumnData[header]
+                            .Where(v => !string.IsNullOrWhiteSpace(v))
+                            .Distinct()
+                            .Take(5)
+                            .ToList();
+                        
+                        if (samples.Any())
+                        {
+                            var samplesStr = string.Join(", ", samples.Select(s => s.Length > 30 ? s.Substring(0, 30) + "..." : s));
+                            sb.AppendLine($"{header}: {samplesStr}");
+                        }
                     }
                 }
-                sb.AppendLine();
-                sb.AppendLine("USE os dados do Excel como referência para gerar valores realistas quando aplicável.");
                 sb.AppendLine();
             }
 
@@ -180,53 +199,29 @@ namespace LayoutParserApi.Services.Generation.Implementations
                 sb.AppendLine();
             }
 
-            // ===== SEÇÃO 5: INSTRUÇÕES DETALHADAS =====
-            sb.AppendLine("=== INSTRUÇÕES CRÍTICAS ===");
+            // ===== SEÇÃO 5: INSTRUÇÕES CRÍTICAS (OTIMIZADAS) =====
+            sb.AppendLine("=== REGRAS CRÍTICAS ===");
             sb.AppendLine();
-            sb.AppendLine("1. POSICIONAMENTO EXATO:");
-            sb.AppendLine("   - Cada campo tem uma posição inicial (StartValue) e um tamanho (LengthField) EXATOS");
-            sb.AppendLine("   - NÃO adicione ou remova espaços além do especificado");
-            sb.AppendLine("   - Respeite o alinhamento (Left, Right, Center) de cada campo");
+            sb.AppendLine("TAMANHO DE LINHA: Cada linha DEVE ter EXATAMENTE 600 caracteres. NUNCA mais, NUNCA menos.");
+            sb.AppendLine("Se a linha exceder 600 caracteres, remova espaços ou trunque o final. Se tiver menos, preencha com espaços.");
             sb.AppendLine();
-            
-            sb.AppendLine("2. SEQUÊNCIA DE LINHAS:");
-            sb.AppendLine("   - A primeira linha deve ser HEADER (se existir no layout)");
-            sb.AppendLine("   - Seguir a ordem correta das linhas conforme o layout");
-            sb.AppendLine("   - Cada linha tem um campo 'Sequencia' de 6 caracteres no início (exceto HEADER)");
+            sb.AppendLine("FORMATO:");
+            sb.AppendLine("- Primeira linha: HEADER (se existir) com 600 caracteres");
+            sb.AppendLine("- Linhas seguintes: Sequencia (6 chars) + campos conforme layout");
+            sb.AppendLine("- Campos obrigatórios: NUNCA vazios");
+            sb.AppendLine("- Alinhamento: Left (esquerda), Right (direita), Center (centro)");
             sb.AppendLine();
-            
-            sb.AppendLine("3. VALIDAÇÃO DE CAMPOS:");
-            sb.AppendLine("   - Campos obrigatórios (IsRequired=true) NUNCA devem ficar vazios");
-            sb.AppendLine("   - Campos numéricos devem conter apenas dígitos");
-            sb.AppendLine("   - Campos de data devem seguir o formato DDMMYYYY ou similar");
-            sb.AppendLine("   - Campos de texto devem ser preenchidos completamente até o tamanho especificado");
+            sb.AppendLine("DADOS REALISTAS:");
+            sb.AppendLine("- Use padrões dos exemplos fornecidos");
+            sb.AppendLine("- CNPJ: 14 dígitos, CPF: 11 dígitos");
+            sb.AppendLine("- Datas: formato dos exemplos");
+            sb.AppendLine("- Prefira dados do Excel quando disponível");
             sb.AppendLine();
-            
-            sb.AppendLine("4. CONSISTÊNCIA:");
-            sb.AppendLine("   - Valores devem ser realistas e coerentes entre si");
-            sb.AppendLine("   - Se o exemplo mostra CNPJ, use formato de CNPJ válido");
-            sb.AppendLine("   - Se o exemplo mostra data, use formato de data válido");
-            sb.AppendLine("   - Mantenha padrões observados nos exemplos fornecidos");
-            sb.AppendLine();
-            
-            sb.AppendLine("5. FORMATAÇÃO DA RESPOSTA:");
-            sb.AppendLine("   - Retorne APENAS as linhas de dados, uma por linha");
-            sb.AppendLine("   - NÃO inclua explicações, comentários ou cabeçalhos");
-            sb.AppendLine("   - Cada linha deve ter exatamente o tamanho especificado no layout");
-            sb.AppendLine("   - Use quebras de linha simples entre registros");
-            sb.AppendLine();
-            
-            sb.AppendLine("6. VALIDAÇÃO FINAL:");
-            sb.AppendLine("   - Cada linha gerada será validada campo a campo, linha por linha e sequência por sequência");
-            sb.AppendLine("   - Garanta que TODOS os campos estejam corretos antes de finalizar");
-            sb.AppendLine("   - Se um campo está com tamanho errado, ajuste até corresponder exatamente");
-            sb.AppendLine();
-
-            // ===== SEÇÃO 6: SOLICITAÇÃO FINAL =====
-            sb.AppendLine("=== RESPOSTA ESPERADA ===");
-            sb.AppendLine();
-            sb.AppendLine($"Gere exatamente {recordCount} registro(s) seguindo TODAS as instruções acima.");
-            sb.AppendLine("Retorne APENAS as linhas de dados, sem explicações.");
+            sb.AppendLine("RESPOSTA:");
+            sb.AppendLine($"- Retorne APENAS {recordCount} linha(s) de dados");
+            sb.AppendLine("- Cada linha com EXATAMENTE 600 caracteres");
+            sb.AppendLine("- Sem explicações, comentários ou cabeçalhos");
+            sb.AppendLine("- Uma linha por registro");
 
             return sb.ToString();
         }
@@ -361,18 +356,17 @@ namespace LayoutParserApi.Services.Generation.Implementations
                     // Ordenar campos por sequência
                     fieldList = fieldList.OrderBy(f => f.sequence).ToList();
                     
-                    // Mostrar campos ordenados
-                    sb.AppendLine("CAMPOS (em ordem de sequência):");
-                    foreach (var field in fieldList)
+                    // Mostrar campos ordenados de forma mais concisa
+                    sb.AppendLine("CAMPOS:");
+                    foreach (var field in fieldList.Take(30)) // Limitar a 30 campos por linha para reduzir tamanho
                     {
-                        sb.AppendLine($"  [{field.sequence}] {field.name}:");
-                        sb.AppendLine($"    - Posição Inicial: {field.start + 1}");
-                        sb.AppendLine($"    - Tamanho: {field.length} caracteres");
-                        sb.AppendLine($"    - Posição Final: {field.start + field.length}");
-                        sb.AppendLine($"    - Alinhamento: {field.alignment}");
-                        sb.AppendLine($"    - Obrigatório: {(field.required ? "SIM" : "NÃO")}");
-                        sb.AppendLine();
+                        sb.AppendLine($"  [{field.sequence}] {field.name}: pos {field.start + 1}-{field.start + field.length}, tam {field.length}, alinh {field.alignment}, obrigatório: {(field.required ? "SIM" : "NÃO")}");
                     }
+                    if (fieldList.Count > 30)
+                    {
+                        sb.AppendLine($"  ... e mais {fieldList.Count - 30} campos");
+                    }
+                    sb.AppendLine();
                 }
                 
                 return sb.ToString();
