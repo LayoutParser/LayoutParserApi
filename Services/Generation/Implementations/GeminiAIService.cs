@@ -599,7 +599,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
         /// <summary>
         /// Chama API do Gemini
         /// </summary>
-        private async Task<string> CallGeminiAPI(string prompt)
+        public async Task<string> CallGeminiAPI(string prompt)
         {
             var request = new
             {
@@ -915,7 +915,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
                 sb.AppendLine();
             }
 
-            sb.AppendLine("=== INSTRUÇÕES ===");
+            sb.AppendLine("=== INSTRUÇÕES CRÍTICAS ===");
             sb.AppendLine($"Gere APENAS UMA linha com EXATAMENTE {limitOfChars} caracteres.");
             sb.AppendLine("A linha deve conter:");
             if (!string.IsNullOrEmpty(initialValue))
@@ -924,6 +924,13 @@ namespace LayoutParserApi.Services.Generation.Implementations
             }
             sb.AppendLine("  2. Todos os campos na ordem e posição corretas");
             sb.AppendLine("  3. Preenchimento com espaços até completar 600 caracteres");
+            sb.AppendLine();
+            sb.AppendLine("=== REGRAS IMPORTANTES ===");
+            sb.AppendLine("- Campos FILLER: SEMPRE deixe vazios (apenas espaços), NUNCA preencha com texto");
+            sb.AppendLine("- Valores monetários: Apenas números, sem separadores, sem pontos ou vírgulas");
+            sb.AppendLine("- Use dados realistas: evite palavras genéricas como 'teste', 'exemplo', 'sintetico'");
+            sb.AppendLine("- Prefira nomes reais de empresas, produtos e pessoas");
+            sb.AppendLine("- Mantenha consistência: se um CNPJ aparece em um campo, use o mesmo em campos relacionados");
             sb.AppendLine();
             sb.AppendLine("Retorne APENAS a linha gerada, sem explicações.");
 

@@ -2,6 +2,7 @@
 using LayoutParserApi.Services.Filters;
 using LayoutParserApi.Services.Parsing.Interfaces;
 using LayoutParserApi.Services.Interfaces;
+using LayoutParserApi.Services.Learning;
 
 using Microsoft.AspNetCore.Mvc;
 
@@ -14,17 +15,29 @@ namespace LayoutParserApi.Controllers
         private readonly ILayoutParserService _parserService;
         private readonly ILogger<ParseController> _logger;
         private readonly ILayoutDetector _layoutDetector;
+        private readonly FileStorageService _fileStorage;
+        private readonly LayoutLearningService _learningService;
+        private readonly IConfiguration _configuration;
 
-        public ParseController(ILayoutParserService parserService, ILogger<ParseController> logger, ILayoutDetector layoutDetector)
+        public ParseController(
+            ILayoutParserService parserService, 
+            ILogger<ParseController> logger, 
+            ILayoutDetector layoutDetector,
+            FileStorageService fileStorage,
+            LayoutLearningService learningService,
+            IConfiguration configuration)
         {
             _parserService = parserService;
             _logger = logger;
             _layoutDetector = layoutDetector;
+            _fileStorage = fileStorage;
+            _learningService = learningService;
+            _configuration = configuration;
         }
 
         [ServiceFilter(typeof(AuditActionFilter))]
         [HttpPost("upload")]
-        public async Task<IActionResult> Upload(IFormFile layoutFile, IFormFile txtFile)
+        public async Task<IActionResult> Upload(IFormFile layoutFile, IFormFile txtFile, [FromForm] string layoutName = null)
         {
             if (layoutFile == null || txtFile == null)
                 return BadRequest("Layout XML e arquivo TXT são obrigatórios.");
@@ -34,13 +47,21 @@ namespace LayoutParserApi.Controllers
 
             try
             {
+                // Ler conteúdo do arquivo para detecção de tipo
+                using var txtStreamForDetection = txtFile.OpenReadStream();
+                using var reader = new StreamReader(txtStreamForDetection, leaveOpen: true);
+                var sample = await reader.ReadToEndAsync();
+                var detectedType = _layoutDetector.DetectType(sample);
+
+                // Salvar arquivo para aprendizado de máquina ANTES de processar
+                if (!string.IsNullOrEmpty(layoutName))
+                {
+                    await SaveFileForLearningAsync(layoutName, txtFile, detectedType);
+                }
+
+                // Processar arquivo
                 using var layoutStream = layoutFile.OpenReadStream();
                 using var txtStream = txtFile.OpenReadStream();
-
-                using var reader = new StreamReader(txtStream, leaveOpen: true);
-                var sample = await reader.ReadToEndAsync();
-                txtStream.Position = 0;
-                var detectedType = _layoutDetector.DetectType(sample);
 
                 var result = await _parserService.ParseAsync(layoutStream, txtStream);
 
@@ -77,6 +98,83 @@ namespace LayoutParserApi.Controllers
             {
                 _logger.LogError(ex, "Erro durante o parsing do XML");
                 return StatusCode(500, $"Erro interno: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Salva arquivo na pasta do layout para aprendizado de máquina
+        /// </summary>
+        private async Task SaveFileForLearningAsync(string layoutName, IFormFile txtFile, string detectedType)
+        {
+            try
+            {
+                _logger.LogInformation("Salvando arquivo para aprendizado: Layout={LayoutName}, Tipo={Type}", layoutName, detectedType);
+
+                // Criar diretório baseado no nome do layout
+                var basePath = _configuration["Learning:BasePath"] ?? @"C:\inetpub\wwwroot\layoutparser\Exemplo";
+                var layoutDirectory = Path.Combine(basePath, layoutName);
+
+                if (!Directory.Exists(layoutDirectory))
+                {
+                    Directory.CreateDirectory(layoutDirectory);
+                    _logger.LogInformation("Diretório criado: {Path}", layoutDirectory);
+                }
+
+                // Salvar arquivo com timestamp para evitar sobrescrita
+                var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+                var fileExtension = Path.GetExtension(txtFile.FileName);
+                var fileName = $"{timestamp}_{txtFile.FileName}";
+                var filePath = Path.Combine(layoutDirectory, fileName);
+
+                using (var stream = new FileStream(filePath, FileMode.Create))
+                {
+                    await txtFile.CopyToAsync(stream);
+                }
+
+                _logger.LogInformation("Arquivo salvo para aprendizado: {Path}", filePath);
+
+                // Executar aprendizado de máquina em background (não bloquear resposta)
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        // Determinar tipo de arquivo para aprendizado
+                        var fileType = detectedType?.ToLower() switch
+                        {
+                            "xml" => "xml",
+                            "idoc" => "txt",
+                            "mqseries" => "txt",
+                            _ => "txt"
+                        };
+
+                        // Aprender estrutura do arquivo
+                        var learningResult = await _learningService.LearnFromFileAsync(filePath, fileType);
+                        
+                        if (learningResult.Success && learningResult.LearnedModel != null)
+                        {
+                            // Salvar modelo aprendido
+                            learningResult.LearnedModel.FilePath = filePath;
+                            await _fileStorage.SaveLearnedModelAsync(layoutDirectory, learningResult.LearnedModel);
+                            
+                            _logger.LogInformation("Aprendizado concluído para {LayoutName}: {Fields} campos detectados", 
+                                layoutName, learningResult.LearnedModel.TotalFields);
+                        }
+                        else
+                        {
+                            _logger.LogWarning("Aprendizado falhou para {LayoutName}: {Message}", 
+                                layoutName, learningResult.Message);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Erro durante aprendizado de máquina para {LayoutName}", layoutName);
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Erro ao salvar arquivo para aprendizado");
+                // Não falhar o processamento principal se houver erro no aprendizado
             }
         }
     }

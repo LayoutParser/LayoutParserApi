@@ -73,10 +73,12 @@ namespace LayoutParserApi.Services.Generation.Implementations.FieldGenerators
             {
                 result = GenerateHeader(length, alignment, context);
             }
-            // FILLER - campo de preenchimento com espaços
+            // FILLER - campo de preenchimento com espaços (NUNCA preencher com texto)
             else if (normalizedName == "FILLER" || normalizedName.Contains("FILLER"))
             {
+                // FILLER sempre deve ser apenas espaços, nunca texto
                 result = new string(' ', length);
+                _logger.LogDebug("Campo FILLER gerado: {Length} espaços", length);
             }
             // DATA / DATE / EMISSAO
             else if (normalizedName.Contains("DATA") || normalizedName.Contains("DATE") || 
