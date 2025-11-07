@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Xml.Linq;
+using LayoutParserApi.Services.XmlAnalysis;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
@@ -117,22 +118,21 @@ namespace LayoutParserApi.Services.Transformation
                 // Passo 4: Comparar com saída esperada (se fornecida)
                 if (!string.IsNullOrEmpty(expectedOutputXml))
                 {
-                    var comparisonResult = await CompareWithExpectedAsync(
-                        transformationResult.TransformedXml,
-                        expectedOutputXml);
-                    
+                    var comparisonResult = await CompareWithExpectedAsync(transformationResult.TransformedXml, expectedOutputXml);
+
                     result.ValidationSteps.Add(new ValidationStep
                     {
                         Step = "Expected Output Comparison",
                         Success = comparisonResult.Match,
                         Message = comparisonResult.Message,
-                        Details = comparisonResult.Differences
+                        Details = comparisonResult.Differences != null && comparisonResult.Differences.Any()
+                            ? string.Join("; ", comparisonResult.Differences)
+                            : ""
                     });
 
                     if (!comparisonResult.Match)
-                    {
                         result.Warnings.AddRange(comparisonResult.Differences);
-                    }
+                    
                 }
                 else
                 {
@@ -150,7 +150,9 @@ namespace LayoutParserApi.Services.Transformation
                             Step = "Expected Output Comparison (from file)",
                             Success = comparisonResult.Match,
                             Message = comparisonResult.Message,
-                            Details = comparisonResult.Differences
+                            Details = comparisonResult.Differences != null && comparisonResult.Differences.Any()
+                                ? string.Join("; ", comparisonResult.Differences)
+                                : ""
                         });
 
                         if (!comparisonResult.Match)

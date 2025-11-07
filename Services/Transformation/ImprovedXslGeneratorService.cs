@@ -97,7 +97,7 @@ namespace LayoutParserApi.Services.Transformation
 
                 // 6. Validar XSL melhorado
                 var validationResult = await ValidateXslStructureAsync(improvedXsl);
-                if (!validationResult.IsValid)
+                if (!validationResult.Success)
                 {
                     result.Warnings.AddRange(validationResult.Errors);
                     result.SuggestedXsl = baseXsl; // Reverter se inválido
@@ -187,7 +187,7 @@ namespace LayoutParserApi.Services.Transformation
         /// </summary>
         private async Task<ValidationResult> ValidateXslStructureAsync(string xslContent)
         {
-            var result = new ValidationResult { IsValid = true, Errors = new List<string>() };
+            var result = new ValidationResult { Success = true, Errors = new List<string>() };
 
             try
             {
@@ -199,7 +199,7 @@ namespace LayoutParserApi.Services.Transformation
                 
                 if (stylesheet == null)
                 {
-                    result.IsValid = false;
+                    result.Success = false;
                     result.Errors.Add("Elemento stylesheet/transform não encontrado");
                     return result;
                 }
@@ -212,7 +212,7 @@ namespace LayoutParserApi.Services.Transformation
             }
             catch (Exception ex)
             {
-                result.IsValid = false;
+                result.Success = false;
                 result.Errors.Add($"Erro ao validar XSL: {ex.Message}");
             }
 

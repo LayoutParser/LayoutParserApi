@@ -182,7 +182,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
             }
 
             // Fechar elementos
-            foreach (var part in elementPath.Reverse())
+            foreach (var part in System.Linq.Enumerable.Reverse(elementPath))
             {
                 if (part == elementPath.Last())
                 {

@@ -146,7 +146,7 @@ namespace LayoutParserApi.Controllers
                 {
                     var errorCodes = result.Errors.Select(e => e.Message).ToList();
                     var orientations = await _xsdValidationService.GetOrientationsAsync(result.XsdVersion, errorCodes);
-                    result.Orientations = orientations.Orientations;
+                    result.Orientations = orientations;
                 }
 
                 return Ok(new
@@ -405,8 +405,11 @@ Seja objetivo e direto, focando na solução prática.";
     public class XsdErrorAnalysisRequest
     {
         public string XsdError { get; set; }
+        public string DocumentType { get; set; }
         public string XmlContent { get; set; }
         public string FieldName { get; set; }
+        public string OriginalContent { get; set; }
+        public string LayoutName { get; set; }
     }
 
     public class XmlTransformRequest

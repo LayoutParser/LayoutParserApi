@@ -2,7 +2,9 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.DependencyInjection;
 using LayoutParserApi.Services.XmlAnalysis;
+using LayoutParserApi.Models.Database;
 using System.Threading.Tasks;
+using System.Linq;
 
 namespace LayoutParserApi.Controllers
 {
@@ -13,9 +15,7 @@ namespace LayoutParserApi.Controllers
         private readonly ILogger<AutoTransformationController> _logger;
         private readonly AutoTransformationGeneratorService _autoGenerator;
 
-        public AutoTransformationController(
-            ILogger<AutoTransformationController> logger,
-            AutoTransformationGeneratorService autoGenerator)
+        public AutoTransformationController(ILogger<AutoTransformationController> logger,AutoTransformationGeneratorService autoGenerator)
         {
             _logger = logger;
             _autoGenerator = autoGenerator;
@@ -78,31 +78,29 @@ namespace LayoutParserApi.Controllers
                     request.LayoutGuid, request.LayoutName);
 
                 // Buscar layout do Redis
-                var layoutsRequest = new Models.Requests.LayoutSearchRequest
+                var layoutsRequest = new LayoutParserApi.Models.Database.LayoutSearchRequest
                 {
-                    PageNumber = 1,
-                    PageSize = 100
+                    SearchTerm = !string.IsNullOrEmpty(request.LayoutName) ? request.LayoutName : "",
+                    MaxResults = 100
                 };
 
-                if (!string.IsNullOrEmpty(request.LayoutGuid))
-                {
-                    layoutsRequest.LayoutGuid = request.LayoutGuid;
-                }
-
-                if (!string.IsNullOrEmpty(request.LayoutName))
-                {
-                    layoutsRequest.LayoutName = request.LayoutName;
-                }
-
-                var layoutsResponse = await _autoGenerator.GetLayoutDatabaseService()
-                    .SearchLayoutsFromDatabase(layoutsRequest);
+                var layoutDatabaseService = _autoGenerator.GetLayoutDatabaseService();
+                var layoutsResponse = await layoutDatabaseService.SearchLayoutsAsync(layoutsRequest);
 
                 if (layoutsResponse == null || !layoutsResponse.Layouts.Any())
                 {
                     return NotFound(new { error = "Layout não encontrado" });
                 }
 
-                var layout = layoutsResponse.Layouts.First();
+                // Filtrar por LayoutGuid se fornecido, senão usar o primeiro resultado
+                var layout = !string.IsNullOrEmpty(request.LayoutGuid) && Guid.TryParse(request.LayoutGuid, out var layoutGuid)
+                    ? layoutsResponse.Layouts.FirstOrDefault(l => l.LayoutGuid == layoutGuid)
+                    : layoutsResponse.Layouts.First();
+
+                if (layout == null)
+                {
+                    return NotFound(new { error = "Layout não encontrado" });
+                }
                 var processed = await _autoGenerator.ProcessLayoutAsync(layout);
 
                 return Ok(new

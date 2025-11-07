@@ -103,7 +103,7 @@ namespace LayoutParserApi.Services.Transformation
 
                 // 6. Validar TCL melhorado
                 var validationResult = await ValidateTclStructureAsync(improvedTcl);
-                if (!validationResult.IsValid)
+                if (!validationResult.Success)
                 {
                     result.Warnings.AddRange(validationResult.Errors);
                     result.SuggestedTcl = baseTcl; // Reverter se inválido
@@ -201,7 +201,7 @@ namespace LayoutParserApi.Services.Transformation
         /// </summary>
         private async Task<ValidationResult> ValidateTclStructureAsync(string tclContent)
         {
-            var result = new ValidationResult { IsValid = true, Errors = new List<string>() };
+            var result = new ValidationResult { Success = true, Errors = new List<string>() };
 
             try
             {
@@ -210,7 +210,7 @@ namespace LayoutParserApi.Services.Transformation
                 
                 if (mapElement == null)
                 {
-                    result.IsValid = false;
+                    result.Success = false;
                     result.Errors.Add("Elemento MAP não encontrado");
                     return result;
                 }
@@ -218,7 +218,7 @@ namespace LayoutParserApi.Services.Transformation
                 var lines = mapElement.Elements("LINE").ToList();
                 if (!lines.Any())
                 {
-                    result.IsValid = false;
+                    result.Success = false;
                     result.Errors.Add("Nenhuma linha encontrada no TCL");
                     return result;
                 }
@@ -235,7 +235,7 @@ namespace LayoutParserApi.Services.Transformation
             }
             catch (Exception ex)
             {
-                result.IsValid = false;
+                result.Success = false;
                 result.Errors.Add($"Erro ao validar TCL: {ex.Message}");
             }
 
@@ -253,15 +253,6 @@ namespace LayoutParserApi.Services.Transformation
         public string SuggestedTcl { get; set; }
         public List<string> Suggestions { get; set; } = new();
         public List<string> Warnings { get; set; } = new();
-    }
-
-    /// <summary>
-    /// Resultado de validação
-    /// </summary>
-    public class ValidationResult
-    {
-        public bool IsValid { get; set; }
-        public List<string> Errors { get; set; } = new();
     }
 }
 

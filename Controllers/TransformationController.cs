@@ -47,7 +47,7 @@ namespace LayoutParserApi.Controllers
                 // Salvar se outputPath fornecido
                 if (!string.IsNullOrEmpty(request.OutputPath))
                 {
-                    await File.WriteAllTextAsync(request.OutputPath, tclContent, Encoding.UTF8);
+                    await System.IO.File.WriteAllTextAsync(request.OutputPath, tclContent, Encoding.UTF8);
                     _logger.LogInformation("Arquivo TCL salvo em: {Path}", request.OutputPath);
                 }
 
@@ -86,7 +86,7 @@ namespace LayoutParserApi.Controllers
                 // Salvar se outputPath fornecido
                 if (!string.IsNullOrEmpty(request.OutputPath))
                 {
-                    await File.WriteAllTextAsync(request.OutputPath, xslContent, Encoding.UTF8);
+                    await System.IO.File.WriteAllTextAsync(request.OutputPath, xslContent, Encoding.UTF8);
                     _logger.LogInformation("Arquivo XSL salvo em: {Path}", request.OutputPath);
                 }
 

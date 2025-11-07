@@ -236,7 +236,7 @@ namespace LayoutParserApi.Services.Learning
             try
             {
                 var directory = Path.GetDirectoryName(filePath);
-                var files = Directory.GetFiles(directory, pattern, SearchOption.TopLevelOnly);
+                var files = Directory.GetFiles(directory, pattern, SearchOption.TopDirectoryOnly);
                 
                 if (files.Any())
                 {

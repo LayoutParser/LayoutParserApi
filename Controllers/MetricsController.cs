@@ -4,6 +4,7 @@ using Microsoft.Extensions.Configuration;
 using LayoutParserApi.Services.Transformation;
 using LayoutParserApi.Services.Database;
 using LayoutParserApi.Services.XmlAnalysis;
+using LayoutParserApi.Models.Database;
 using System.Threading.Tasks;
 using System.Linq;
 using System.IO;
@@ -249,14 +250,14 @@ namespace LayoutParserApi.Controllers
                 errors = new List<string>()
             };
 
-            if (!File.Exists(tclPath))
+            if (!System.IO.File.Exists(tclPath))
             {
                 return metrics;
             }
 
             try
             {
-                var tclContent = await File.ReadAllTextAsync(tclPath, Encoding.UTF8);
+                var tclContent = await System.IO.File.ReadAllTextAsync(tclPath, Encoding.UTF8);
                 
                 // Parse do TCL (XML)
                 var tclDoc = XDocument.Parse(tclContent);
@@ -307,14 +308,14 @@ namespace LayoutParserApi.Controllers
                 errors = new List<string>()
             };
 
-            if (!File.Exists(xslPath))
+            if (!System.IO.File.Exists(xslPath))
             {
                 return metrics;
             }
 
             try
             {
-                var xslContent = await File.ReadAllTextAsync(xslPath, Encoding.UTF8);
+                var xslContent = await System.IO.File.ReadAllTextAsync(xslPath, Encoding.UTF8);
                 
                 // Parse do XSL
                 var xslDoc = XDocument.Parse(xslContent);

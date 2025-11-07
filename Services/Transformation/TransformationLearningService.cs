@@ -731,6 +731,94 @@ namespace LayoutParserApi.Services.Transformation
         }
 
         /// <summary>
+        /// Calcula confiança baseada em frequência
+        /// </summary>
+        private double CalculateConfidence(int frequency, int total)
+        {
+            if (total == 0) return 0.0;
+            var baseConfidence = (double)frequency / total;
+            // Normalizar para 0.0-1.0 com um mínimo de 0.1
+            return Math.Max(0.1, Math.Min(1.0, baseConfidence));
+        }
+
+        /// <summary>
+        /// Analisa padrões TCL a partir de exemplos
+        /// </summary>
+        private async Task<List<LearnedPattern>> AnalyzeTclPatternsAsync(List<TclExample> examples)
+        {
+            var patterns = new List<LearnedPattern>();
+
+            try
+            {
+                if (examples == null || !examples.Any())
+                    return patterns;
+
+                // Parsear todas as linhas TCL
+                var allLines = new List<TclLineInfo>();
+                var allFields = new List<TclFieldInfo>();
+
+                foreach (var example in examples)
+                {
+                    var lines = ParseTclLines(example.Content);
+                    allLines.AddRange(lines);
+
+                    foreach (var line in lines)
+                    {
+                        var fields = ParseTclFields(example.Content);
+                        allFields.AddRange(fields);
+                    }
+                }
+
+                // Agrupar padrões por tipo de linha
+                var linePatterns = allLines
+                    .GroupBy(l => l.LineType)
+                    .Select(g => new LearnedPattern
+                    {
+                        Type = "TclLine",
+                        Name = g.Key,
+                        Pattern = g.First().Structure,
+                        Frequency = g.Count(),
+                        Confidence = CalculateConfidence(g.Count(), allLines.Count),
+                        Metadata = new Dictionary<string, object>
+                        {
+                            ["LineType"] = g.Key,
+                            ["FieldCount"] = g.Average(l => l.FieldCount)
+                        }
+                    })
+                    .ToList();
+
+                patterns.AddRange(linePatterns);
+
+                // Agrupar padrões por tipo de campo
+                var fieldPatterns = allFields
+                    .GroupBy(f => f.FieldType)
+                    .Select(g => new LearnedPattern
+                    {
+                        Type = "TclField",
+                        Name = g.Key,
+                        Pattern = g.First().Mapping,
+                        Frequency = g.Count(),
+                        Confidence = CalculateConfidence(g.Count(), allFields.Count),
+                        Metadata = new Dictionary<string, object>
+                        {
+                            ["FieldType"] = g.Key,
+                            ["AverageLength"] = g.Average(f => f.Length),
+                            ["AverageStartPosition"] = g.Average(f => f.StartPosition)
+                        }
+                    })
+                    .ToList();
+
+                patterns.AddRange(fieldPatterns);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Erro ao analisar padrões TCL");
+            }
+
+            return patterns;
+        }
+
+        /// <summary>
         /// Carrega modelo aprendido
         /// </summary>
         public async Task<LearnedTclModel> LoadTclModelAsync(string layoutName)
