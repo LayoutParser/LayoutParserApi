@@ -10,6 +10,7 @@ namespace LayoutParserApi.Services.Database
         Task<LayoutRecord?> GetLayoutByIdAsync(int id);
         Task RefreshCacheFromDatabaseAsync();
         Task ClearCacheAsync();
+        ILayoutDatabaseService GetLayoutDatabaseService();
     }
 
     public class CachedLayoutService : ICachedLayoutService
@@ -148,6 +149,14 @@ namespace LayoutParserApi.Services.Database
             {
                 _logger.LogError(ex, "Erro ao limpar cache");
             }
+        }
+
+        /// <summary>
+        /// Expõe o serviço de banco de dados para uso externo
+        /// </summary>
+        public ILayoutDatabaseService GetLayoutDatabaseService()
+        {
+            return _layoutDatabaseService;
         }
     }
 }
