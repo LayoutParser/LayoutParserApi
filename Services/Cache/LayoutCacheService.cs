@@ -15,20 +15,44 @@ namespace LayoutParserApi.Services.Cache
 
     public class LayoutCacheService : ILayoutCacheService
     {
-        private readonly IDatabase _redis;
+        private readonly IDatabase? _redis;
         private readonly ILogger<LayoutCacheService> _logger;
         private readonly TimeSpan _defaultExpiry = TimeSpan.FromHours(1); // Cache por 1 hora
+        private readonly bool _redisAvailable;
 
         public LayoutCacheService(
-            IConnectionMultiplexer redis,
+            IConnectionMultiplexer? redis,
             ILogger<LayoutCacheService> logger)
         {
-            _redis = redis.GetDatabase();
+            if (redis != null && redis.IsConnected)
+            {
+                try
+                {
+                    _redis = redis.GetDatabase();
+                    _redisAvailable = true;
+                    _logger.LogInformation("LayoutCacheService initialized with Redis");
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Redis is available but failed to get database. Caching will be disabled.");
+                    _redisAvailable = false;
+                }
+            }
+            else
+            {
+                _redisAvailable = false;
+                _logger.LogWarning("Redis is not available. LayoutCacheService will operate without caching.");
+            }
             _logger = logger;
         }
 
         public async Task<List<LayoutRecord>?> GetCachedLayoutsAsync(string searchTerm)
         {
+            if (!_redisAvailable || _redis == null)
+            {
+                return null; // Cache não disponível
+            }
+
             try
             {
                 var cacheKey = $"layouts:search:{searchTerm}";
@@ -53,6 +77,11 @@ namespace LayoutParserApi.Services.Cache
 
         public async Task SetCachedLayoutsAsync(string searchTerm, List<LayoutRecord> layouts, TimeSpan? expiry = null)
         {
+            if (!_redisAvailable || _redis == null)
+            {
+                return; // Cache não disponível
+            }
+
             try
             {
                 var cacheKey = $"layouts:search:{searchTerm}";
@@ -69,6 +98,11 @@ namespace LayoutParserApi.Services.Cache
 
         public async Task<LayoutRecord?> GetCachedLayoutByIdAsync(int id)
         {
+            if (!_redisAvailable || _redis == null)
+            {
+                return null; // Cache não disponível
+            }
+
             try
             {
                 var cacheKey = $"layout:id:{id}";
@@ -93,6 +127,11 @@ namespace LayoutParserApi.Services.Cache
 
         public async Task SetCachedLayoutByIdAsync(int id, LayoutRecord layout, TimeSpan? expiry = null)
         {
+            if (!_redisAvailable || _redis == null)
+            {
+                return; // Cache não disponível
+            }
+
             try
             {
                 var cacheKey = $"layout:id:{id}";
@@ -109,6 +148,11 @@ namespace LayoutParserApi.Services.Cache
 
         public async Task ClearCacheAsync()
         {
+            if (!_redisAvailable || _redis == null)
+            {
+                return; // Cache não disponível
+            }
+
             try
             {
                 var server = _redis.Multiplexer.GetServer(_redis.Multiplexer.GetEndPoints().First());
