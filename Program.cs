@@ -16,12 +16,17 @@ builder.Services.AddSwaggerGen();
 // CORS Configuration
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("AllowFrontend", policy =>
+    options.AddDefaultPolicy(policy =>
     {
-        policy.WithOrigins("http://172.25.32.42:81", "http://localhost:81", "http://localhost:8080")
+        policy.WithOrigins(
+                "http://172.25.32.42:81",
+                "http://localhost:81",
+                "http://localhost:8080",
+                "http://172.25.32.42:80",
+                "http://localhost:80"
+              )
               .AllowAnyMethod()
-              .AllowAnyHeader()
-              .AllowCredentials();
+              .AllowAnyHeader();
     });
 });
 
@@ -70,15 +75,45 @@ builder.Services.AddScoped<AutomatedTransformationTestService>();
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
+// Handle CORS preflight and add CORS headers to all responses
+app.Use(async (context, next) =>
+{
+    var allowedOrigins = new[] { "http://172.25.32.42:81", "http://localhost:81", "http://localhost:8080", "http://172.25.32.42:80", "http://localhost:80" };
+    var origin = context.Request.Headers["Origin"].ToString();
+    
+    if (allowedOrigins.Contains(origin))
+    {
+        context.Response.Headers.Add("Access-Control-Allow-Origin", origin);
+        context.Response.Headers.Add("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH");
+        context.Response.Headers.Add("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept");
+        context.Response.Headers.Add("Access-Control-Max-Age", "3600");
+    }
+    
+    if (context.Request.Method == "OPTIONS")
+    {
+        context.Response.StatusCode = 200;
+        await context.Response.WriteAsync("");
+        return;
+    }
+    
+    await next();
+});
+
+// CORS must be first in the pipeline - before any other middleware
+app.UseCors();
+
+// Only use HTTPS redirection if actually using HTTPS
+// app.UseHttpsRedirection();
+
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
 }
 
-app.UseCors("AllowFrontend");
-app.UseHttpsRedirection();
-app.UseAuthorization();
+// Remove Authorization if not needed - it can interfere with CORS preflight
+// app.UseAuthorization();
+
 app.MapControllers();
 
 app.Run();
