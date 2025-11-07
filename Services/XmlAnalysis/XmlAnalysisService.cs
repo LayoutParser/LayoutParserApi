@@ -35,39 +35,43 @@ namespace LayoutParserApi.Services.XmlAnalysis
 
             try
             {
-                // 1. Validação estrutural básica
-                var structuralValidation = ValidateXmlStructure(xmlContent);
-                result.Success = structuralValidation.IsValid;
-                result.Errors.AddRange(structuralValidation.Errors);
-                result.Warnings.AddRange(structuralValidation.Warnings);
-
-                if (!result.Success)
-                {
-                    _logger.LogWarning("XML inválido estruturalmente: {Errors}", string.Join(", ", result.Errors));
-                    return result;
-                }
-
-                // 2. Parse do XML
+                // 1. Parse do XML usando XDocument (que já valida estrutura corretamente, incluindo namespaces)
+                // XDocument.Parse é a melhor forma de validar XML, pois lida corretamente com:
+                // - Declarações XML (<?xml ... ?>)
+                // - Namespaces
+                // - Comentários, CDATA, etc.
                 XDocument doc;
                 try
                 {
-                    doc = XDocument.Parse(xmlContent);
+                    doc = XDocument.Parse(xmlContent, LoadOptions.None);
+                }
+                catch (System.Xml.XmlException xmlEx)
+                {
+                    result.Success = false;
+                    result.Errors.Add($"Erro de estrutura XML: {xmlEx.Message}");
+                    if (xmlEx.LineNumber > 0)
+                    {
+                        result.Errors.Add($"Linha {xmlEx.LineNumber}, Posição {xmlEx.LinePosition}");
+                    }
+                    _logger.LogWarning("XML inválido estruturalmente: {Errors}", string.Join(", ", result.Errors));
+                    return result;
                 }
                 catch (Exception ex)
                 {
                     result.Success = false;
                     result.Errors.Add($"Erro ao fazer parse do XML: {ex.Message}");
+                    _logger.LogWarning("Erro ao parsear XML: {Error}", ex.Message);
                     return result;
                 }
 
-                // 3. Análise de estrutura
+                // 2. Análise de estrutura
                 var structureAnalysis = AnalyzeXmlStructure(doc);
                 result.ValidationDetails["structure"] = structureAnalysis;
                 result.TotalElements = structureAnalysis.TotalElements;
                 result.TotalAttributes = structureAnalysis.TotalAttributes;
                 result.Depth = structureAnalysis.MaxDepth;
 
-                // 4. Validação contra layout (se fornecido)
+                // 3. Validação contra layout (se fornecido)
                 if (layout != null)
                 {
                     var layoutValidation = ValidateAgainstLayout(doc, layout);
@@ -79,7 +83,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
                         result.Success = false;
                 }
 
-                // 5. Validação de regras de negócio
+                // 4. Validação de regras de negócio
                 var businessRulesValidation = ValidateBusinessRules(doc);
                 result.ValidationDetails["businessRules"] = businessRulesValidation;
                 result.Warnings.AddRange(businessRulesValidation.Warnings);
@@ -98,62 +102,6 @@ namespace LayoutParserApi.Services.XmlAnalysis
             }
         }
 
-        /// <summary>
-        /// Valida estrutura básica do XML
-        /// </summary>
-        private XmlValidationResult ValidateXmlStructure(string xmlContent)
-        {
-            var result = new XmlValidationResult { IsValid = true };
-
-            if (string.IsNullOrWhiteSpace(xmlContent))
-            {
-                result.IsValid = false;
-                result.Errors.Add("XML vazio ou nulo");
-                return result;
-            }
-
-            // Verificar tags não fechadas
-            var openTags = new Stack<string>();
-            var tagPattern = new System.Text.RegularExpressions.Regex(@"<(/?)([^\s>]+)[^>]*>");
-            var matches = tagPattern.Matches(xmlContent);
-
-            foreach (System.Text.RegularExpressions.Match match in matches)
-            {
-                var isClosing = match.Groups[1].Value == "/";
-                var tagName = match.Groups[2].Value;
-
-                if (tagName.StartsWith("!")) // Comentários, CDATA, etc.
-                    continue;
-
-                if (match.Value.EndsWith("/>")) // Self-closing tag
-                    continue;
-
-                if (isClosing)
-                {
-                    if (openTags.Count == 0 || openTags.Peek() != tagName)
-                    {
-                        result.IsValid = false;
-                        result.Errors.Add($"Tag de fechamento '{tagName}' sem correspondente de abertura");
-                    }
-                    else
-                    {
-                        openTags.Pop();
-                    }
-                }
-                else
-                {
-                    openTags.Push(tagName);
-                }
-            }
-
-            if (openTags.Count > 0)
-            {
-                result.IsValid = false;
-                result.Errors.Add($"Tags não fechadas: {string.Join(", ", openTags)}");
-            }
-
-            return result;
-        }
 
         /// <summary>
         /// Analisa a estrutura do XML
