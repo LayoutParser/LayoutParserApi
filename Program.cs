@@ -23,25 +23,67 @@ try
     var logDirectory = builder.Configuration["Logging:File:Directory"] ?? "Logs";
     var logFileName = builder.Configuration["Logging:File:FileName"] ?? "layoutparserapi.log";
 
-    // Ensure log directory exists
+    // Ensure log directory exists and is writable
     try
     {
-        if (!string.IsNullOrEmpty(logDirectory) && !Directory.Exists(logDirectory))
+        Console.WriteLine($"[BOOTSTRAP] Configuring log directory: {logDirectory}");
+        Console.WriteLine($"[BOOTSTRAP] Current working directory: {Directory.GetCurrentDirectory()}");
+        
+        if (string.IsNullOrEmpty(logDirectory))
         {
+            logDirectory = Path.Combine(Directory.GetCurrentDirectory(), "Logs");
+            Console.WriteLine($"[BOOTSTRAP] Log directory was empty, using default: {logDirectory}");
+        }
+
+        if (!Directory.Exists(logDirectory))
+        {
+            Console.WriteLine($"[BOOTSTRAP] Creating log directory: {logDirectory}");
             Directory.CreateDirectory(logDirectory);
-            Console.WriteLine($"[BOOTSTRAP] Created log directory: {logDirectory}");
+            Console.WriteLine($"[BOOTSTRAP] Log directory created successfully");
+        }
+        else
+        {
+            Console.WriteLine($"[BOOTSTRAP] Log directory already exists: {logDirectory}");
+        }
+
+        // Test write permissions
+        var testFile = Path.Combine(logDirectory, "test-write-permissions.tmp");
+        try
+        {
+            File.WriteAllText(testFile, "test");
+            File.Delete(testFile);
+            Console.WriteLine($"[BOOTSTRAP] Log directory is writable: {logDirectory}");
+        }
+        catch (Exception writeEx)
+        {
+            Console.WriteLine($"[BOOTSTRAP] WARNING: Cannot write to log directory '{logDirectory}': {writeEx.Message}");
+            // Fallback to current directory
+            logDirectory = Path.Combine(Directory.GetCurrentDirectory(), "Logs");
+            if (!Directory.Exists(logDirectory))
+            {
+                Directory.CreateDirectory(logDirectory);
+            }
+            Console.WriteLine($"[BOOTSTRAP] Using fallback log directory: {logDirectory}");
         }
     }
     catch (Exception ex)
     {
-        Console.WriteLine($"[BOOTSTRAP] ERROR: Failed to create log directory '{logDirectory}': {ex.Message}");
+        Console.WriteLine($"[BOOTSTRAP] ERROR: Failed to setup log directory '{logDirectory}': {ex.Message}");
+        Console.WriteLine($"[BOOTSTRAP] Stack trace: {ex.StackTrace}");
         // Fallback to current directory
         logDirectory = Path.Combine(Directory.GetCurrentDirectory(), "Logs");
-        if (!Directory.Exists(logDirectory))
+        try
         {
-            Directory.CreateDirectory(logDirectory);
+            if (!Directory.Exists(logDirectory))
+            {
+                Directory.CreateDirectory(logDirectory);
+            }
+            Console.WriteLine($"[BOOTSTRAP] Using fallback log directory: {logDirectory}");
         }
-        Console.WriteLine($"[BOOTSTRAP] Using fallback log directory: {logDirectory}");
+        catch
+        {
+            Console.WriteLine($"[BOOTSTRAP] CRITICAL: Cannot create fallback log directory. Logging may not work.");
+        }
     }
 
     // Configure Serilog with error handling
@@ -98,25 +140,41 @@ try
         });
     });
 
-    // Redis Configuration
+    // Redis Configuration - Make it optional to prevent startup failure
     var redisConnectionString = builder.Configuration["Redis:ConnectionString"] ?? "localhost:6379";
-    builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
+    Log.Information("Configuring Redis connection at {RedisConnection}", redisConnectionString);
+    
+    // Try to connect to Redis, but don't fail if it's not available
+    IConnectionMultiplexer? redisConnection = null;
+    try
     {
-        try
-        {
-            Log.Information("Connecting to Redis at {RedisConnection}", redisConnectionString);
-            return ConnectionMultiplexer.Connect(redisConnectionString);
-        }
-        catch (Exception ex)
-        {
-            Log.Error(ex, "Failed to connect to Redis at {RedisConnection}. The application will continue but Redis features will not work.", redisConnectionString);
-            // Return a null or throw - depending on your requirements
-            throw;
-        }
-    });
+        redisConnection = ConnectionMultiplexer.Connect(redisConnectionString);
+        Log.Information("Successfully connected to Redis at {RedisConnection}", redisConnectionString);
+    }
+    catch (Exception ex)
+    {
+        Log.Warning(ex, "Failed to connect to Redis at {RedisConnection}. The application will start but caching features will be disabled.", redisConnectionString);
+        redisConnection = null;
+    }
 
-    // Cache Services
-    builder.Services.AddScoped<ILayoutCacheService, LayoutCacheService>();
+    // Register Redis connection - make it optional for services
+    if (redisConnection != null)
+    {
+        builder.Services.AddSingleton<IConnectionMultiplexer>(redisConnection);
+        Log.Information("Redis service registered successfully");
+    }
+    else
+    {
+        Log.Warning("Redis is not available. Cache services will operate without Redis.");
+    }
+
+    // Cache Services - will handle null Redis connection gracefully
+    builder.Services.AddScoped<ILayoutCacheService>(sp =>
+    {
+        var redis = sp.GetService<IConnectionMultiplexer>();
+        var logger = sp.GetRequiredService<ILogger<LayoutCacheService>>();
+        return new LayoutCacheService(redis, logger);
+    });
 
     // Database Services
     builder.Services.AddScoped<ILayoutDatabaseService, LayoutDatabaseService>();
@@ -187,6 +245,13 @@ try
     var kestrelUrl = builder.Configuration["Kestrel:Endpoints:Http:Url"] ?? "http://0.0.0.0:5000";
     Log.Information("LayoutParserApi started successfully. Listening on: {Url}", kestrelUrl);
     Log.Information("CORS enabled for frontend origins");
+    Log.Information("Log files are being written to: {LogDirectory}", logDirectory);
+    
+    Console.WriteLine("=".PadRight(80, '='));
+    Console.WriteLine($"LayoutParserApi is starting...");
+    Console.WriteLine($"Listening on: {kestrelUrl}");
+    Console.WriteLine($"Log directory: {logDirectory}");
+    Console.WriteLine("=".PadRight(80, '='));
 
     app.Run();
 }
