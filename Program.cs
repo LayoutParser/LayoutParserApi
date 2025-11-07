@@ -4,6 +4,8 @@ using LayoutParserApi.Services.XmlAnalysis;
 using LayoutParserApi.Services.Transformation;
 using LayoutParserApi.Services.Learning;
 using LayoutParserApi.Services.Testing;
+using LayoutParserApi.Services.Interfaces;
+using LayoutParserApi.Services.Implementations;
 using StackExchange.Redis;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -23,10 +25,13 @@ builder.Services.AddCors(options =>
                 "http://localhost:81",
                 "http://localhost:8080",
                 "http://172.25.32.42:80",
-                "http://localhost:80"
+                "http://localhost:80",
+                "http://127.0.0.1:81",
+                "http://127.0.0.1:8080"
               )
               .AllowAnyMethod()
-              .AllowAnyHeader();
+              .AllowAnyHeader()
+              .WithExposedHeaders("*");
     });
 });
 
@@ -72,44 +77,31 @@ builder.Services.AddScoped<FileStorageService>();
 // Testing Services
 builder.Services.AddScoped<AutomatedTransformationTestService>();
 
+// Audit and Logging Services
+builder.Services.AddScoped<IAuditLogger, AuditLogger>();
+builder.Services.AddScoped<ITechLogger, TechLogger>();
+builder.Services.AddScoped<LayoutParserApi.Services.Filters.AuditActionFilter>();
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
-// Handle CORS preflight and add CORS headers to all responses
-app.Use(async (context, next) =>
+// Enable detailed error pages in development
+if (app.Environment.IsDevelopment())
 {
-    var allowedOrigins = new[] { "http://172.25.32.42:81", "http://localhost:81", "http://localhost:8080", "http://172.25.32.42:80", "http://localhost:80" };
-    var origin = context.Request.Headers["Origin"].ToString();
-    
-    if (allowedOrigins.Contains(origin))
-    {
-        context.Response.Headers.Add("Access-Control-Allow-Origin", origin);
-        context.Response.Headers.Add("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH");
-        context.Response.Headers.Add("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept");
-        context.Response.Headers.Add("Access-Control-Max-Age", "3600");
-    }
-    
-    if (context.Request.Method == "OPTIONS")
-    {
-        context.Response.StatusCode = 200;
-        await context.Response.WriteAsync("");
-        return;
-    }
-    
-    await next();
-});
+    app.UseDeveloperExceptionPage();
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
+else
+{
+    app.UseExceptionHandler("/Error");
+}
 
-// CORS must be first in the pipeline - before any other middleware
+// CORS must be early in the pipeline - before routing and other middleware
 app.UseCors();
 
 // Only use HTTPS redirection if actually using HTTPS
 // app.UseHttpsRedirection();
-
-if (app.Environment.IsDevelopment())
-{
-    app.UseSwagger();
-    app.UseSwaggerUI();
-}
 
 // Remove Authorization if not needed - it can interfere with CORS preflight
 // app.UseAuthorization();
