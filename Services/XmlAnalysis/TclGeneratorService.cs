@@ -257,15 +257,24 @@ namespace LayoutParserApi.Services.XmlAnalysis
             foreach (var child in children)
             {
                 // Procurar por Name, Size, StartValue
-                var nameElem = child.Descendants().FirstOrDefault(e => e.Name.LocalName == "Name");
-                var sizeAttr = child.Attribute("Size") ?? child.Descendants().FirstOrDefault(e => e.Name.LocalName == "Size");
-                var startValueAttr = child.Attribute("StartValue") ?? child.Descendants().FirstOrDefault(e => e.Name.LocalName == "StartValue");
+                var nameElem = child.Descendants().FirstOrDefault(e => e.Name.LocalName == "Name") 
+                             ?? child.Element("Name");
+                
+                // Buscar Size como atributo ou elemento
+                var sizeValue = child.Attribute("Size")?.Value 
+                             ?? child.Element("Size")?.Value 
+                             ?? child.Descendants("Size").FirstOrDefault()?.Value;
+                
+                // Buscar StartValue como atributo ou elemento
+                var startValueValue = child.Attribute("StartValue")?.Value 
+                                   ?? child.Element("StartValue")?.Value 
+                                   ?? child.Descendants("StartValue").FirstOrDefault()?.Value;
 
-                if (nameElem != null && sizeAttr != null)
+                if (nameElem != null && !string.IsNullOrEmpty(sizeValue))
                 {
                     var fieldName = nameElem.Value;
-                    var size = int.TryParse(sizeAttr.Value ?? sizeAttr.Value, out var s) ? s : 0;
-                    var startValue = int.TryParse(startValueAttr?.Value ?? startValueAttr?.Value, out var sv) ? sv : 0;
+                    var size = int.TryParse(sizeValue, out var s) ? s : 0;
+                    var startValue = int.TryParse(startValueValue, out var sv) ? sv : 0;
 
                     if (size > 0)
                     {
@@ -351,9 +360,15 @@ namespace LayoutParserApi.Services.XmlAnalysis
         private string GetLineName(XElement element)
         {
             var nameElem = element.Descendants().FirstOrDefault(e => e.Name.LocalName == "Name")
-                          ?? element.Element("Name")
-                          ?? element.Attribute("Name");
-            return nameElem?.Value;
+                          ?? element.Element("Name");
+            if (nameElem != null)
+                return nameElem.Value;
+            
+            var nameAttr = element.Attribute("Name");
+            if (nameAttr != null)
+                return nameAttr.Value;
+            
+            return null;
         }
 
         /// <summary>

@@ -65,7 +65,7 @@ namespace LayoutParserApi.Services.Testing
                 _logger.LogInformation("Iniciando execução de testes automatizados");
 
                 // Buscar todos os diretórios de exemplos
-                var exampleDirectories = Directory.GetDirectories(_examplesBasePath, "LAY_*", SearchOption.TopLevelOnly);
+                var exampleDirectories = Directory.GetDirectories(_examplesBasePath, "LAY_*", SearchOption.TopDirectoryOnly);
 
                 foreach (var exampleDir in exampleDirectories)
                 {

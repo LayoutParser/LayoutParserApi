@@ -10,6 +10,7 @@ using LayoutParserApi.Models.Database;
 using LayoutParserApi.Services.Database;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using LayoutParserApi.Services.Transformation;
 
 namespace LayoutParserApi.Services.XmlAnalysis
 {

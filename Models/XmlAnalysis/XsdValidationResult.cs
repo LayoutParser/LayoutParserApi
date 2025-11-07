@@ -8,6 +8,9 @@ namespace LayoutParserApi.Models.XmlAnalysis
         public List<XsdValidationError> Errors { get; set; } = new();
         public List<string> Warnings { get; set; } = new();
         public string TransformedXml { get; set; }
+        public string DocumentType { get; set; }
+        public string XsdVersion { get; set; }
+        public XsdOrientationResult Orientations { get; set; }
     }
 
     public class XsdValidationError

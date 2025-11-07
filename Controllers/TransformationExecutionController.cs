@@ -154,7 +154,7 @@ namespace LayoutParserApi.Controllers
             {
                 _logger.LogInformation("Iniciando aprendizado a partir de exemplos para layout: {LayoutName}", request.LayoutName);
 
-                var learningResult = new { success = false };
+                object learningResult = new { success = false };
 
                 if (request.TclExamples != null && request.TclExamples.Any())
                 {
