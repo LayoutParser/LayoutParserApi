@@ -200,6 +200,13 @@ try
     builder.Services.AddScoped<ImprovedXslGeneratorService>();
     builder.Services.AddScoped<TransformationValidatorService>();
 
+    // Parsing Services
+    builder.Services.AddScoped<LayoutParserApi.Services.Parsing.Interfaces.ILineSplitter, LayoutParserApi.Services.Parsing.Implementations.LineSplitter>();
+    builder.Services.AddScoped<LayoutParserApi.Services.Parsing.Interfaces.ILayoutValidator, LayoutParserApi.Services.Parsing.Implementations.LayoutValidator>();
+    builder.Services.AddScoped<LayoutParserApi.Services.Parsing.Interfaces.ILayoutNormalizer, LayoutParserApi.Services.Parsing.Implementations.LayoutNormalizer>();
+    builder.Services.AddScoped<LayoutParserApi.Services.Parsing.Interfaces.ILayoutDetector, LayoutParserApi.Services.Parsing.Implementations.LayoutDetector>();
+    builder.Services.AddScoped<ILayoutParserService, LayoutParserApi.Services.Implementations.LayoutParserService>();
+
     // Learning Services
     builder.Services.AddScoped<ExampleLearningService>();
     builder.Services.AddScoped<LayoutLearningService>();
