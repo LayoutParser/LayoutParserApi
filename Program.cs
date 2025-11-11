@@ -233,24 +233,24 @@ try
     }
     else
     {
-        // Configure exception handler to allow proper error responses with CORS headers
-        app.UseExceptionHandler(options =>
+        // Configure exception handler with a custom error handler
+        // This ensures CORS headers are sent even when errors occur
+        app.UseExceptionHandler(errorApp =>
         {
-            options.AllowStatusCode404Response = true;
-            options.ExceptionHandler = async context =>
+            errorApp.Run(async context =>
             {
                 var exception = context.Features.Get<IExceptionHandlerFeature>()?.Error;
-                if (exception != null)
+                context.Response.StatusCode = 500;
+                context.Response.ContentType = "application/json";
+                
+                var response = new
                 {
-                    context.Response.StatusCode = 500;
-                    context.Response.ContentType = "application/json";
-                    await context.Response.WriteAsync(System.Text.Json.JsonSerializer.Serialize(new
-                    {
-                        error = "An error occurred while processing your request.",
-                        message = app.Environment.IsDevelopment() ? exception.Message : null
-                    }));
-                }
-            };
+                    error = "An error occurred while processing your request.",
+                    message = app.Environment.IsDevelopment() ? exception?.Message : null
+                };
+                
+                await context.Response.WriteAsync(System.Text.Json.JsonSerializer.Serialize(response));
+            });
         });
     }
 
