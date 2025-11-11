@@ -9,6 +9,7 @@ using LayoutParserApi.Services.Implementations;
 using StackExchange.Redis;
 using Serilog;
 using Serilog.Events;
+using Microsoft.AspNetCore.Diagnostics;
 
 // Bootstrap logger for errors before Serilog is configured
 Log.Logger = new LoggerConfiguration()
@@ -218,6 +219,10 @@ try
     Log.Information("Application built successfully. Environment: {Environment}", app.Environment.EnvironmentName);
 
     // Configure the HTTP request pipeline.
+    // CORS must be early in the pipeline - before routing and other middleware
+    // This ensures CORS headers are sent even when errors occur
+    app.UseCors();
+    
     // Enable detailed error pages in development
     if (app.Environment.IsDevelopment())
     {
@@ -228,11 +233,26 @@ try
     }
     else
     {
-        app.UseExceptionHandler("/Error");
+        // Configure exception handler to allow proper error responses with CORS headers
+        app.UseExceptionHandler(options =>
+        {
+            options.AllowStatusCode404Response = true;
+            options.ExceptionHandler = async context =>
+            {
+                var exception = context.Features.Get<IExceptionHandlerFeature>()?.Error;
+                if (exception != null)
+                {
+                    context.Response.StatusCode = 500;
+                    context.Response.ContentType = "application/json";
+                    await context.Response.WriteAsync(System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        error = "An error occurred while processing your request.",
+                        message = app.Environment.IsDevelopment() ? exception.Message : null
+                    }));
+                }
+            };
+        });
     }
-
-    // CORS must be early in the pipeline - before routing and other middleware
-    app.UseCors();
 
     // Only use HTTPS redirection if actually using HTTPS
     // app.UseHttpsRedirection();

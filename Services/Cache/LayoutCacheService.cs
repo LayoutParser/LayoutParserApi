@@ -24,6 +24,8 @@ namespace LayoutParserApi.Services.Cache
             IConnectionMultiplexer? redis,
             ILogger<LayoutCacheService> logger)
         {
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            
             if (redis != null && redis.IsConnected)
             {
                 try
@@ -43,7 +45,6 @@ namespace LayoutParserApi.Services.Cache
                 _redisAvailable = false;
                 _logger.LogWarning("Redis is not available. LayoutCacheService will operate without caching.");
             }
-            _logger = logger;
         }
 
         public async Task<List<LayoutRecord>?> GetCachedLayoutsAsync(string searchTerm)
