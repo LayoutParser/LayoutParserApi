@@ -281,6 +281,30 @@ try
 
     app.MapControllers();
 
+    // Inicializar cache permanente de layouts e mapeadores na inicialização
+    try
+    {
+        using (var scope = app.Services.CreateScope())
+        {
+            var cachedLayoutService = scope.ServiceProvider.GetRequiredService<ICachedLayoutService>();
+            var cachedMapperService = scope.ServiceProvider.GetRequiredService<ICachedMapperService>();
+            
+            Log.Information("Inicializando cache permanente de layouts e mapeadores...");
+            
+            // Popular cache de layouts
+            await cachedLayoutService.RefreshCacheFromDatabaseAsync();
+            
+            // Popular cache de mapeadores
+            await cachedMapperService.RefreshCacheFromDatabaseAsync();
+            
+            Log.Information("Cache permanente inicializado com sucesso");
+        }
+    }
+    catch (Exception ex)
+    {
+        Log.Warning(ex, "Erro ao inicializar cache permanente. A aplicação continuará, mas o cache pode estar vazio.");
+    }
+
     var kestrelUrl = builder.Configuration["Kestrel:Endpoints:Http:Url"] ?? "http://0.0.0.0:5000";
     Log.Information("LayoutParserApi started successfully. Listening on: {Url}", kestrelUrl);
     Log.Information("CORS enabled for frontend origins");

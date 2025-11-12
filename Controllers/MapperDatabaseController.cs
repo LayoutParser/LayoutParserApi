@@ -1,6 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using LayoutParserApi.Services.Database;
-using Microsoft.Extensions.Logging;
+using LayoutParserApi.Models.Entities;
 
 namespace LayoutParserApi.Controllers
 {
@@ -9,18 +9,21 @@ namespace LayoutParserApi.Controllers
     public class MapperDatabaseController : ControllerBase
     {
         private readonly MapperDatabaseService _mapperDatabaseService;
+        private readonly ICachedMapperService _cachedMapperService;
         private readonly ILogger<MapperDatabaseController> _logger;
 
         public MapperDatabaseController(
             MapperDatabaseService mapperDatabaseService,
+            ICachedMapperService cachedMapperService,
             ILogger<MapperDatabaseController> logger)
         {
             _mapperDatabaseService = mapperDatabaseService;
+            _cachedMapperService = cachedMapperService;
             _logger = logger;
         }
 
         /// <summary>
-        /// Busca mapeadores relacionados a um layout (por InputLayoutGuid ou TargetLayoutGuid)
+        /// Busca mapeadores para um layout específico
         /// </summary>
         [HttpGet("by-layout/{layoutGuid}")]
         public async Task<IActionResult> GetMappersByLayoutGuid(string layoutGuid)
@@ -66,7 +69,7 @@ namespace LayoutParserApi.Controllers
             {
                 _logger.LogInformation("Buscando todos os mapeadores");
 
-                var mappers = await _mapperDatabaseService.GetAllMappersAsync();
+                var mappers = await _cachedMapperService.GetAllMappersAsync();
 
                 return Ok(new
                 {
@@ -102,27 +105,26 @@ namespace LayoutParserApi.Controllers
             {
                 _logger.LogInformation("Buscando mapeador por InputLayoutGuid: {InputLayoutGuid}", inputLayoutGuid);
 
-                var mapper = await _mapperDatabaseService.GetMapperByInputLayoutGuidAsync(inputLayoutGuid);
+                var mappers = await _cachedMapperService.GetMappersByInputLayoutGuidAsync(inputLayoutGuid);
 
-                if (mapper == null)
+                if (mappers == null || !mappers.Any())
                 {
                     return NotFound(new { error = "Mapeador não encontrado" });
                 }
 
+                var mapper = mappers.First();
+
                 return Ok(new
                 {
                     success = true,
-                    mapper = new
-                    {
-                        id = mapper.Id,
-                        mapperGuid = mapper.MapperGuid,
-                        name = mapper.Name,
-                        description = mapper.Description,
-                        inputLayoutGuid = mapper.InputLayoutGuidFromXml ?? mapper.InputLayoutGuid,
-                        targetLayoutGuid = mapper.TargetLayoutGuidFromXml ?? mapper.TargetLayoutGuid,
-                        hasDecryptedContent = !string.IsNullOrEmpty(mapper.DecryptedContent),
-                        lastUpdateDate = mapper.LastUpdateDate
-                    }
+                    id = mapper.Id,
+                    mapperGuid = mapper.MapperGuid,
+                    name = mapper.Name,
+                    description = mapper.Description,
+                    inputLayoutGuid = mapper.InputLayoutGuidFromXml ?? mapper.InputLayoutGuid,
+                    targetLayoutGuid = mapper.TargetLayoutGuidFromXml ?? mapper.TargetLayoutGuid,
+                    hasDecryptedContent = !string.IsNullOrEmpty(mapper.DecryptedContent),
+                    lastUpdateDate = mapper.LastUpdateDate
                 });
             }
             catch (Exception ex)
@@ -133,44 +135,33 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
-        /// Busca mapeador por TargetLayoutGuid (saída)
+        /// Atualiza o cache de mapeadores com dados do banco
         /// </summary>
-        [HttpGet("by-target/{targetLayoutGuid}")]
-        public async Task<IActionResult> GetMapperByTargetLayoutGuid(string targetLayoutGuid)
+        [HttpPost("refresh-cache")]
+        public async Task<IActionResult> RefreshCache()
         {
             try
             {
-                _logger.LogInformation("Buscando mapeador por TargetLayoutGuid: {TargetLayoutGuid}", targetLayoutGuid);
+                _logger.LogInformation("Iniciando atualização do cache de mapeadores");
 
-                var mapper = await _mapperDatabaseService.GetMapperByTargetLayoutGuidAsync(targetLayoutGuid);
-
-                if (mapper == null)
-                {
-                    return NotFound(new { error = "Mapeador não encontrado" });
-                }
+                await _cachedMapperService.RefreshCacheFromDatabaseAsync();
 
                 return Ok(new
                 {
                     success = true,
-                    mapper = new
-                    {
-                        id = mapper.Id,
-                        mapperGuid = mapper.MapperGuid,
-                        name = mapper.Name,
-                        description = mapper.Description,
-                        inputLayoutGuid = mapper.InputLayoutGuidFromXml ?? mapper.InputLayoutGuid,
-                        targetLayoutGuid = mapper.TargetLayoutGuidFromXml ?? mapper.TargetLayoutGuid,
-                        hasDecryptedContent = !string.IsNullOrEmpty(mapper.DecryptedContent),
-                        lastUpdateDate = mapper.LastUpdateDate
-                    }
+                    message = "Cache de mapeadores atualizado com sucesso",
+                    timestamp = DateTime.UtcNow
                 });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Erro ao buscar mapeador por TargetLayoutGuid: {TargetLayoutGuid}", targetLayoutGuid);
-                return StatusCode(500, new { error = ex.Message });
+                _logger.LogError(ex, "Erro ao atualizar cache de mapeadores");
+                return StatusCode(500, new
+                {
+                    success = false,
+                    error = ex.Message
+                });
             }
         }
     }
 }
-
