@@ -1,6 +1,7 @@
 using Microsoft.Data.SqlClient;
 using LayoutParserApi.Models.Database;
 using LayoutParserApi.Services.Database;
+using System.Xml.Linq;
 
 namespace LayoutParserApi.Services.Database
 {
@@ -137,6 +138,9 @@ namespace LayoutParserApi.Services.Database
                         try
                         {
                             layout.DecryptedContent = _decryptionService.DecryptContent(layout.ValueContent);
+                            
+                            // Extrair LayoutGuid do XML descriptografado (sempre priorizar XML sobre banco)
+                            ExtractLayoutGuidFromDecryptedContent(layout);
                         }
                         catch (Exception ex)
                         {
@@ -226,6 +230,9 @@ namespace LayoutParserApi.Services.Database
                         try
                         {
                             layout.DecryptedContent = _decryptionService.DecryptContent(layout.ValueContent);
+                            
+                            // Extrair LayoutGuid do XML descriptografado (sempre priorizar XML sobre banco)
+                            ExtractLayoutGuidFromDecryptedContent(layout);
                         }
                         catch (Exception ex)
                         {
@@ -286,6 +293,97 @@ namespace LayoutParserApi.Services.Database
             catch
             {
                 return "";
+            }
+        }
+
+        /// <summary>
+        /// Extrai LayoutGuid do XML descriptografado do layout
+        /// O LayoutGuid do XML é sempre priorizado sobre o do banco de dados
+        /// </summary>
+        private void ExtractLayoutGuidFromDecryptedContent(LayoutRecord layout)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(layout.DecryptedContent))
+                {
+                    _logger.LogWarning("⚠️ DecryptedContent vazio para layout {Id} ({Name}). Não é possível extrair LayoutGuid do XML.", 
+                        layout.Id, layout.Name);
+                    return;
+                }
+
+                // Guardar o LayoutGuid do banco para log
+                var layoutGuidFromDb = layout.LayoutGuid;
+
+                // Parse do XML descriptografado
+                var doc = XDocument.Parse(layout.DecryptedContent);
+                var root = doc.Root;
+                
+                if (root == null)
+                {
+                    _logger.LogWarning("⚠️ XML root é nulo para layout {Id} ({Name})", layout.Id, layout.Name);
+                    return;
+                }
+
+                // Buscar LayoutGuid no XML
+                // Pode estar diretamente no root (LayoutVO) ou dentro de um elemento LayoutVO
+                var layoutVo = root.Name.LocalName == "LayoutVO" ? root : root.Element("LayoutVO");
+                if (layoutVo == null)
+                {
+                    // Tentar buscar diretamente no root
+                    layoutVo = root;
+                }
+
+                var layoutGuidElement = layoutVo.Element("LayoutGuid");
+                
+                // Se encontrado no XML, usar esse valor (sempre priorizar XML sobre banco)
+                if (layoutGuidElement != null && !string.IsNullOrEmpty(layoutGuidElement.Value))
+                {
+                    var layoutGuidFromXml = layoutGuidElement.Value.Trim();
+                    _logger.LogInformation("📝 LayoutGuid encontrado no XML para layout {Id} ({Name}): {Guid}", 
+                        layout.Id, layout.Name, layoutGuidFromXml);
+                    
+                    // Remover prefixo LAY_ se houver (o XML pode ter LAY_xxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
+                    var guidString = layoutGuidFromXml;
+                    if (guidString.StartsWith("LAY_", StringComparison.OrdinalIgnoreCase))
+                    {
+                        guidString = guidString.Substring(4);
+                        _logger.LogInformation("📝 Prefixo LAY_ removido: {Guid}", guidString);
+                    }
+                    
+                    // Tentar converter para Guid
+                    if (Guid.TryParse(guidString, out var parsedGuid))
+                    {
+                        // Sempre atualizar com o valor do XML (priorizar XML sobre banco)
+                        var wasEmpty = layout.LayoutGuid == Guid.Empty;
+                        layout.LayoutGuid = parsedGuid;
+                        
+                        if (wasEmpty)
+                        {
+                            _logger.LogInformation("✅ LayoutGuid preenchido do XML para layout {Id} ({Name}): {Guid} (estava vazio no banco)", 
+                                layout.Id, layout.Name, layout.LayoutGuid);
+                        }
+                        else
+                        {
+                            _logger.LogInformation("✅ LayoutGuid atualizado do XML para layout {Id} ({Name}): {Guid} (banco tinha: {DbGuid})", 
+                                layout.Id, layout.Name, layout.LayoutGuid, layoutGuidFromDb);
+                        }
+                    }
+                    else
+                    {
+                        _logger.LogWarning("⚠️ Não foi possível converter LayoutGuid do XML para Guid: {GuidString} (layout {Id})", 
+                            guidString, layout.Id);
+                    }
+                }
+                else
+                {
+                    _logger.LogWarning("⚠️ LayoutGuid não encontrado no XML descriptografado para layout {Id} ({Name}). Mantendo valor do banco: {DbGuid}", 
+                        layout.Id, layout.Name, layoutGuidFromDb);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Erro ao extrair LayoutGuid do XML descriptografado para layout {Id} ({Name}). Continuando com LayoutGuid do banco: {DbGuid}", 
+                    layout.Id, layout.Name, layout.LayoutGuid);
             }
         }
     }
