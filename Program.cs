@@ -207,6 +207,18 @@ try
     builder.Services.AddScoped<LayoutParserApi.Services.Parsing.Interfaces.ILayoutDetector, LayoutParserApi.Services.Parsing.Implementations.LayoutDetector>();
     builder.Services.AddScoped<ILayoutParserService, LayoutParserApi.Services.Implementations.LayoutParserService>();
 
+    // Mapper Cache Services
+    builder.Services.AddScoped<LayoutParserApi.Services.Cache.IMapperCacheService>(sp =>
+    {
+        var redis = sp.GetService<IConnectionMultiplexer>();
+        var logger = sp.GetRequiredService<ILogger<LayoutParserApi.Services.Cache.MapperCacheService>>();
+        return new LayoutParserApi.Services.Cache.MapperCacheService(redis, logger);
+    });
+    builder.Services.AddScoped<ICachedMapperService, CachedMapperService>();
+
+    // Transformation Services
+    builder.Services.AddScoped<LayoutParserApi.Services.Transformation.IMapperTransformationService, LayoutParserApi.Services.Transformation.MapperTransformationService>();
+
     // Learning Services
     builder.Services.AddScoped<ExampleLearningService>();
     builder.Services.AddScoped<LayoutLearningService>();
