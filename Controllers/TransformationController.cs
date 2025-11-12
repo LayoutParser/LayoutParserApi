@@ -1,10 +1,7 @@
+using LayoutParserApi.Models.Database;
+using LayoutParserApi.Services.Database;
+using LayoutParserApi.Services.Transformation;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Logging;
-using LayoutParserApi.Services.XmlAnalysis;
-using LayoutParserApi.Scripts;
-using System.Threading.Tasks;
-using System.IO;
-using System.Text;
 
 namespace LayoutParserApi.Controllers
 {
@@ -12,108 +9,150 @@ namespace LayoutParserApi.Controllers
     [Route("api/[controller]")]
     public class TransformationController : ControllerBase
     {
+        private readonly IMapperTransformationService _transformationService;
+        private readonly ICachedMapperService _cachedMapperService;
+        private readonly ICachedLayoutService _cachedLayoutService;
         private readonly ILogger<TransformationController> _logger;
-        private readonly TclGeneratorService _tclGenerator;
-        private readonly XslGeneratorService _xslGenerator;
 
         public TransformationController(
-            ILogger<TransformationController> logger,
-            TclGeneratorService tclGenerator,
-            XslGeneratorService xslGenerator)
+            IMapperTransformationService transformationService,
+            ICachedMapperService cachedMapperService,
+            ICachedLayoutService cachedLayoutService,
+            ILogger<TransformationController> logger)
         {
+            _transformationService = transformationService;
+            _cachedMapperService = cachedMapperService;
+            _cachedLayoutService = cachedLayoutService;
             _logger = logger;
-            _tclGenerator = tclGenerator;
-            _xslGenerator = xslGenerator;
         }
 
         /// <summary>
-        /// Gera arquivo TCL a partir de layout XML MQSeries
+        /// Busca layouts de destino disponíveis para transformação a partir de um layout de entrada
         /// </summary>
-        [HttpPost("generate-tcl")]
-        public async Task<IActionResult> GenerateTcl([FromBody] GenerateTclRequest request)
+        [HttpGet("available-targets/{inputLayoutGuid}")]
+        public async Task<IActionResult> GetAvailableTargetLayouts(string inputLayoutGuid)
         {
             try
             {
-                if (string.IsNullOrEmpty(request.LayoutXmlPath))
+                _logger.LogInformation("Buscando layouts de destino para InputLayoutGuid: {Guid}", inputLayoutGuid);
+
+                // Buscar mapeadores que têm este layout como entrada
+                var mappers = await _cachedMapperService.GetMappersByInputLayoutGuidAsync(inputLayoutGuid);
+                
+                if (mappers == null || !mappers.Any())
                 {
-                    return BadRequest("Caminho do layout XML é obrigatório");
+                    return Ok(new
+                    {
+                        success = true,
+                        targets = new List<object>()
+                    });
                 }
 
-                _logger.LogInformation("Gerando TCL a partir do layout: {Path}", request.LayoutXmlPath);
-
-                // Usar método estático do script
-                var tclContent = await GenerateTclAndXsl.GenerateTclFromLayout(request.LayoutXmlPath);
-
-                // Salvar se outputPath fornecido
-                if (!string.IsNullOrEmpty(request.OutputPath))
+                // Buscar layouts do cache
+                var layoutsResponse = await _cachedLayoutService.SearchLayoutsAsync(new LayoutSearchRequest
                 {
-                    await System.IO.File.WriteAllTextAsync(request.OutputPath, tclContent, Encoding.UTF8);
-                    _logger.LogInformation("Arquivo TCL salvo em: {Path}", request.OutputPath);
+                    SearchTerm = "all"
+                });
+
+                if (!layoutsResponse.Success || layoutsResponse.Layouts == null)
+                {
+                    return StatusCode(500, new { error = "Não foi possível buscar layouts do cache" });
                 }
+
+                // Filtrar layouts de destino baseado nos mapeadores
+                var targetLayoutGuids = mappers
+                    .Select(m => m.TargetLayoutGuid ?? m.TargetLayoutGuidFromXml)
+                    .Where(g => !string.IsNullOrEmpty(g))
+                    .Distinct()
+                    .ToList();
+
+                var targetLayouts = layoutsResponse.Layouts
+                    .Where(l => targetLayoutGuids.Contains(l.LayoutGuid.ToString() ?? ""))
+                    .Select(l => new
+                    {
+                        id = l.Id,
+                        guid = l.LayoutGuid.ToString(),
+                        name = l.Name,
+                        description = l.Description
+                    })
+                    .ToList();
 
                 return Ok(new
                 {
                     success = true,
-                    tclContent = tclContent,
-                    outputPath = request.OutputPath
+                    targets = targetLayouts
                 });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Erro ao gerar TCL");
+                _logger.LogError(ex, "Erro ao buscar layouts de destino");
                 return StatusCode(500, new { error = ex.Message });
             }
         }
 
         /// <summary>
-        /// Gera arquivo XSL a partir do MAP de transformação
+        /// Transforma texto usando mapeador (txt para xml ou xml para xml)
         /// </summary>
-        [HttpPost("generate-xsl")]
-        public async Task<IActionResult> GenerateXsl([FromBody] GenerateXslRequest request)
+        [HttpPost("transform")]
+        public async Task<IActionResult> Transform([FromBody] TransformRequest request)
         {
             try
             {
-                if (string.IsNullOrEmpty(request.MapXmlPath))
+                if (string.IsNullOrEmpty(request.InputText))
                 {
-                    return BadRequest("Caminho do MAP XML é obrigatório");
+                    return BadRequest(new { error = "InputText é obrigatório" });
                 }
 
-                _logger.LogInformation("Gerando XSL a partir do MAP: {Path}", request.MapXmlPath);
-
-                // Usar método estático do script
-                var xslContent = await GenerateTclAndXsl.GenerateXslFromMap(request.MapXmlPath);
-
-                // Salvar se outputPath fornecido
-                if (!string.IsNullOrEmpty(request.OutputPath))
+                if (string.IsNullOrEmpty(request.InputLayoutGuid))
                 {
-                    await System.IO.File.WriteAllTextAsync(request.OutputPath, xslContent, Encoding.UTF8);
-                    _logger.LogInformation("Arquivo XSL salvo em: {Path}", request.OutputPath);
+                    return BadRequest(new { error = "InputLayoutGuid é obrigatório" });
+                }
+
+                if (string.IsNullOrEmpty(request.TargetLayoutGuid))
+                {
+                    return BadRequest(new { error = "TargetLayoutGuid é obrigatório" });
+                }
+
+                _logger.LogInformation("Iniciando transformação: InputGuid={InputGuid}, TargetGuid={TargetGuid}",
+                    request.InputLayoutGuid, request.TargetLayoutGuid);
+
+                var result = await _transformationService.TransformAsync(
+                    request.InputText,
+                    request.InputLayoutGuid,
+                    request.TargetLayoutGuid,
+                    request.MapperXml);
+
+                if (!result.Success)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        errors = result.Errors,
+                        warnings = result.Warnings
+                    });
                 }
 
                 return Ok(new
                 {
                     success = true,
-                    xslContent = xslContent,
-                    outputPath = request.OutputPath
+                    intermediateXml = result.IntermediateXml,
+                    finalXml = result.FinalXml,
+                    warnings = result.Warnings
                 });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Erro ao gerar XSL");
+                _logger.LogError(ex, "Erro durante transformação");
                 return StatusCode(500, new { error = ex.Message });
             }
         }
     }
 
-    public class GenerateTclRequest
+    public class TransformRequest
     {
-        public string LayoutXmlPath { get; set; }
-        public string OutputPath { get; set; }
-    }
-
-    public class GenerateXslRequest
-    {
-        public string MapXmlPath { get; set; }
-        public string OutputPath { get; set; }
+        public string InputText { get; set; }
+        public string InputLayoutGuid { get; set; }
+        public string TargetLayoutGuid { get; set; }
+        public string MapperXml { get; set; }
     }
 }
