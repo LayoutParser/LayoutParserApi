@@ -25,8 +25,7 @@ namespace LayoutParserApi.Services.Cache
         private readonly bool _redisAvailable;
         
         // Chave fixa para todos os mapeadores (compartilhada entre múltiplos computadores)
-        // Também usar "mappers:search:all" para compatibilidade com front-end
-        private const string ALL_MAPPERS_KEY = "mappers:all";
+        // Usar apenas "mappers:search:all" para compatibilidade com front-end
         private const string ALL_MAPPERS_SEARCH_KEY = "mappers:search:all";
 
         public MapperCacheService(
@@ -66,23 +65,16 @@ namespace LayoutParserApi.Services.Cache
 
             try
             {
-                _logger.LogInformation("🔍 Buscando mapeadores no cache (chaves: {Key1}, {Key2})...", 
-                    ALL_MAPPERS_KEY, ALL_MAPPERS_SEARCH_KEY);
+                _logger.LogInformation("🔍 Buscando mapeadores no cache (chave: {Key})...", 
+                    ALL_MAPPERS_SEARCH_KEY);
                 
-                // Verificar se as chaves existem
-                var exists1 = await _redis.KeyExistsAsync(ALL_MAPPERS_KEY);
-                var exists2 = await _redis.KeyExistsAsync(ALL_MAPPERS_SEARCH_KEY);
-                _logger.LogInformation("🔍 Verificação de chaves no Redis: {Key1}={Exists1}, {Key2}={Exists2}", 
-                    ALL_MAPPERS_KEY, exists1, ALL_MAPPERS_SEARCH_KEY, exists2);
+                // Verificar se a chave existe
+                var exists = await _redis.KeyExistsAsync(ALL_MAPPERS_SEARCH_KEY);
+                _logger.LogInformation("🔍 Verificação de chave no Redis: {Key}={Exists}", 
+                    ALL_MAPPERS_SEARCH_KEY, exists);
                 
-                // Tentar primeiro "mappers:all", depois "mappers:search:all" para compatibilidade
-                var cachedData = await _redis.StringGetAsync(ALL_MAPPERS_KEY);
-                
-                if (!cachedData.HasValue)
-                {
-                    _logger.LogInformation("⚠️ Chave {Key1} não encontrada, tentando {Key2}...", ALL_MAPPERS_KEY, ALL_MAPPERS_SEARCH_KEY);
-                    cachedData = await _redis.StringGetAsync(ALL_MAPPERS_SEARCH_KEY);
-                }
+                // Buscar na chave "mappers:search:all"
+                var cachedData = await _redis.StringGetAsync(ALL_MAPPERS_SEARCH_KEY);
                 
                 if (cachedData.HasValue)
                 {
@@ -145,39 +137,36 @@ namespace LayoutParserApi.Services.Cache
                     return;
                 }
 
-                _logger.LogInformation("🔄 Salvando cache no Redis (chaves: {Key1}, {Key2})...", 
-                    ALL_MAPPERS_KEY, ALL_MAPPERS_SEARCH_KEY);
+                _logger.LogInformation("🔄 Salvando cache no Redis (chave: {Key})...", 
+                    ALL_MAPPERS_SEARCH_KEY);
                 
                 // Cache permanente (sem expiração) para múltiplos computadores
-                // A chave "mappers:all" e "mappers:search:all" devem ser permanentes no Redis
-                var result1 = await _redis.StringSetAsync(ALL_MAPPERS_KEY, jsonData);
-                var result2 = await _redis.StringSetAsync(ALL_MAPPERS_SEARCH_KEY, jsonData);
+                // A chave "mappers:search:all" deve ser permanente no Redis
+                var result = await _redis.StringSetAsync(ALL_MAPPERS_SEARCH_KEY, jsonData);
                 
-                if (result1 && result2)
+                if (result)
                 {
-                    _logger.LogInformation("✅ Cache permanente atualizado com sucesso para todos os mapeadores - {Count} mapeadores (chaves: {Key1}, {Key2})", 
-                        mappers.Count, ALL_MAPPERS_KEY, ALL_MAPPERS_SEARCH_KEY);
+                    _logger.LogInformation("✅ Cache permanente atualizado com sucesso para todos os mapeadores - {Count} mapeadores (chave: {Key})", 
+                        mappers.Count, ALL_MAPPERS_SEARCH_KEY);
                     
-                    // Verificar se as chaves foram realmente criadas
+                    // Verificar se a chave foi realmente criada
                     await Task.Delay(100); // Pequeno delay para garantir que o Redis processou
-                    var verify1 = await _redis.KeyExistsAsync(ALL_MAPPERS_KEY);
-                    var verify2 = await _redis.KeyExistsAsync(ALL_MAPPERS_SEARCH_KEY);
-                    _logger.LogInformation("🔍 Verificação de chaves no Redis: {Key1}={Exists1}, {Key2}={Exists2}", 
-                        ALL_MAPPERS_KEY, verify1, ALL_MAPPERS_SEARCH_KEY, verify2);
+                    var verify = await _redis.KeyExistsAsync(ALL_MAPPERS_SEARCH_KEY);
+                    _logger.LogInformation("🔍 Verificação de chave no Redis: {Key}={Exists}", 
+                        ALL_MAPPERS_SEARCH_KEY, verify);
                     
-                    if (verify1 && verify2)
+                    if (verify)
                     {
-                        // Verificar o tamanho das chaves
-                        var length1 = await _redis.StringLengthAsync(ALL_MAPPERS_KEY);
-                        var length2 = await _redis.StringLengthAsync(ALL_MAPPERS_SEARCH_KEY);
-                        _logger.LogInformation("📊 Tamanho das chaves no Redis: {Key1}={Length1} bytes, {Key2}={Length2} bytes", 
-                            ALL_MAPPERS_KEY, length1, ALL_MAPPERS_SEARCH_KEY, length2);
+                        // Verificar o tamanho da chave
+                        var length = await _redis.StringLengthAsync(ALL_MAPPERS_SEARCH_KEY);
+                        _logger.LogInformation("📊 Tamanho da chave no Redis: {Key}={Length} bytes", 
+                            ALL_MAPPERS_SEARCH_KEY, length);
                     }
                 }
                 else
                 {
-                    _logger.LogError("❌ Falha ao salvar cache de mapeadores no Redis. Result1={Result1}, Result2={Result2}", 
-                        result1, result2);
+                    _logger.LogError("❌ Falha ao salvar cache de mapeadores no Redis. Result={Result}", 
+                        result);
                 }
             }
             catch (Exception ex)
