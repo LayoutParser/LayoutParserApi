@@ -10,6 +10,9 @@ using StackExchange.Redis;
 using Serilog;
 using Serilog.Events;
 using Microsoft.AspNetCore.Diagnostics;
+using System.Text.Encodings.Web;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 // Bootstrap logger for errors before Serilog is configured
 Log.Logger = new LoggerConfiguration()
@@ -117,7 +120,16 @@ try
     Log.Information("Starting LayoutParserApi initialization...");
 
     // Add services to the container.
-    builder.Services.AddControllers();
+    // Configurar opções JSON para não escapar caracteres XML/HTML
+    // Isso preserva o XML intacto no JSON (não converte < para \u003C, etc.)
+    builder.Services.AddControllers()
+        .AddJsonOptions(options =>
+        {
+            options.JsonSerializerOptions.Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping;
+            options.JsonSerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
+            options.JsonSerializerOptions.PropertyNameCaseInsensitive = true;
+            options.JsonSerializerOptions.WriteIndented = false;
+        });
     builder.Services.AddEndpointsApiExplorer();
     builder.Services.AddSwaggerGen();
 

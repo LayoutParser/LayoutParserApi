@@ -1,5 +1,6 @@
 using StackExchange.Redis;
 using System.Text.Json;
+using System.Text.Encodings.Web;
 using LayoutParserApi.Models.Entities;
 
 namespace LayoutParserApi.Services.Cache
@@ -27,6 +28,15 @@ namespace LayoutParserApi.Services.Cache
         // Chave fixa para todos os mapeadores (compartilhada entre múltiplos computadores)
         // Usar apenas "mappers:search:all" para compatibilidade com front-end
         private const string ALL_MAPPERS_SEARCH_KEY = "mappers:search:all";
+        
+        // Opções de serialização JSON que não escapam caracteres XML/HTML
+        // Isso preserva o XML intacto no JSON (não converte < para \u003C, etc.)
+        private static readonly JsonSerializerOptions JsonOptions = new JsonSerializerOptions
+        {
+            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+            PropertyNameCaseInsensitive = true,
+            Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping // Não escapa <, >, &, etc.
+        };
 
         public MapperCacheService(
             IConnectionMultiplexer? redis,
@@ -80,14 +90,7 @@ namespace LayoutParserApi.Services.Cache
                 {
                     _logger.LogInformation("✅ Cache encontrado - tamanho: {Size} bytes", cachedData.Length());
                     
-                    // Opções de serialização JSON para lidar com valores nulos
-                    var jsonOptions = new JsonSerializerOptions
-                    {
-                        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
-                        PropertyNameCaseInsensitive = true
-                    };
-                    
-                    var mappers = JsonSerializer.Deserialize<List<Mapper>>(cachedData.ToString(), jsonOptions);
+                    var mappers = JsonSerializer.Deserialize<List<Mapper>>(cachedData.ToString(), JsonOptions);
                     _logger.LogInformation("✅ Cache hit para todos os mapeadores - {Count} mapeadores", mappers?.Count ?? 0);
                     return mappers;
                 }
@@ -119,14 +122,7 @@ namespace LayoutParserApi.Services.Cache
                     return;
                 }
 
-                // Opções de serialização JSON para lidar com valores nulos
-                var jsonOptions = new JsonSerializerOptions
-                {
-                    DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
-                    WriteIndented = false
-                };
-
-                var jsonData = JsonSerializer.Serialize(mappers, jsonOptions);
+                var jsonData = JsonSerializer.Serialize(mappers, JsonOptions);
                 _logger.LogInformation("📦 Serializando {Count} mapeadores para cache (tamanho JSON: {Size} bytes)", 
                     mappers.Count, jsonData.Length);
                 
@@ -190,7 +186,7 @@ namespace LayoutParserApi.Services.Cache
                 
                 if (cachedData.HasValue)
                 {
-                    var mapper = JsonSerializer.Deserialize<Mapper>(cachedData.ToString());
+                    var mapper = JsonSerializer.Deserialize<Mapper>(cachedData.ToString(), JsonOptions);
                     _logger.LogInformation("Cache hit para mapeador ID: {Id}", id);
                     return mapper;
                 }
@@ -215,7 +211,7 @@ namespace LayoutParserApi.Services.Cache
             try
             {
                 var cacheKey = $"mapper:id:{id}";
-                var jsonData = JsonSerializer.Serialize(mapper);
+                var jsonData = JsonSerializer.Serialize(mapper, JsonOptions);
                 
                 await _redis.StringSetAsync(cacheKey, jsonData, expiry ?? _defaultExpiry);
                 _logger.LogInformation("Cache atualizado para mapeador ID: {Id}", id);
@@ -240,7 +236,7 @@ namespace LayoutParserApi.Services.Cache
                 
                 if (cachedData.HasValue)
                 {
-                    var mappers = JsonSerializer.Deserialize<List<Mapper>>(cachedData.ToString());
+                    var mappers = JsonSerializer.Deserialize<List<Mapper>>(cachedData.ToString(), JsonOptions);
                     _logger.LogInformation("Cache hit para mapeadores com InputLayoutGuid: {Guid} - {Count} mapeadores", inputLayoutGuid, mappers?.Count ?? 0);
                     return mappers;
                 }
@@ -269,7 +265,7 @@ namespace LayoutParserApi.Services.Cache
                 
                 if (cachedData.HasValue)
                 {
-                    var mappers = JsonSerializer.Deserialize<List<Mapper>>(cachedData.ToString());
+                    var mappers = JsonSerializer.Deserialize<List<Mapper>>(cachedData.ToString(), JsonOptions);
                     _logger.LogInformation("Cache hit para mapeadores com TargetLayoutGuid: {Guid} - {Count} mapeadores", targetLayoutGuid, mappers?.Count ?? 0);
                     return mappers;
                 }
@@ -294,7 +290,7 @@ namespace LayoutParserApi.Services.Cache
             try
             {
                 var cacheKey = $"mappers:input:{inputLayoutGuid}";
-                var jsonData = JsonSerializer.Serialize(mappers);
+                var jsonData = JsonSerializer.Serialize(mappers, JsonOptions);
                 
                 await _redis.StringSetAsync(cacheKey, jsonData, expiry ?? _defaultExpiry);
                 _logger.LogInformation("Cache atualizado para mapeadores com InputLayoutGuid: {Guid} - {Count} mapeadores", inputLayoutGuid, mappers.Count);
@@ -315,7 +311,7 @@ namespace LayoutParserApi.Services.Cache
             try
             {
                 var cacheKey = $"mappers:target:{targetLayoutGuid}";
-                var jsonData = JsonSerializer.Serialize(mappers);
+                var jsonData = JsonSerializer.Serialize(mappers, JsonOptions);
                 
                 await _redis.StringSetAsync(cacheKey, jsonData, expiry ?? _defaultExpiry);
                 _logger.LogInformation("Cache atualizado para mapeadores com TargetLayoutGuid: {Guid} - {Count} mapeadores", targetLayoutGuid, mappers.Count);
