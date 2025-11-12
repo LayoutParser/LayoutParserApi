@@ -284,25 +284,57 @@ try
     // Inicializar cache permanente de layouts e mapeadores na inicialização
     try
     {
+        Log.Information("🔄 Iniciando população do cache permanente...");
+        
         using (var scope = app.Services.CreateScope())
         {
             var cachedLayoutService = scope.ServiceProvider.GetRequiredService<ICachedLayoutService>();
             var cachedMapperService = scope.ServiceProvider.GetRequiredService<ICachedMapperService>();
             
-            Log.Information("Inicializando cache permanente de layouts e mapeadores...");
+            Log.Information("📦 Populando cache de layouts...");
             
             // Popular cache de layouts
-            await cachedLayoutService.RefreshCacheFromDatabaseAsync();
+            try
+            {
+                await cachedLayoutService.RefreshCacheFromDatabaseAsync();
+                Log.Information("✅ Cache de layouts populado com sucesso");
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "❌ Erro ao popular cache de layouts: {Message}", ex.Message);
+            }
             
             // Popular cache de mapeadores
-            await cachedMapperService.RefreshCacheFromDatabaseAsync();
+            Log.Information("📦 Populando cache de mapeadores...");
+            try
+            {
+                await cachedMapperService.RefreshCacheFromDatabaseAsync();
+                Log.Information("✅ Cache de mapeadores populado com sucesso");
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "❌ Erro ao popular cache de mapeadores: {Message}", ex.Message);
+                Log.Error(ex, "Stack trace: {StackTrace}", ex.StackTrace);
+            }
             
-            Log.Information("Cache permanente inicializado com sucesso");
+            // Verificar se o cache foi criado
+            try
+            {
+                var allMappers = await cachedMapperService.GetAllMappersAsync();
+                Log.Information("✅ Verificação: {Count} mapeadores disponíveis no cache", allMappers?.Count ?? 0);
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "⚠️ Erro ao verificar cache de mapeadores: {Message}", ex.Message);
+            }
+            
+            Log.Information("✅ Cache permanente inicializado com sucesso");
         }
     }
     catch (Exception ex)
     {
-        Log.Warning(ex, "Erro ao inicializar cache permanente. A aplicação continuará, mas o cache pode estar vazio.");
+        Log.Error(ex, "❌ Erro ao inicializar cache permanente. A aplicação continuará, mas o cache pode estar vazio.");
+        Log.Error(ex, "Stack trace: {StackTrace}", ex.StackTrace);
     }
 
     var kestrelUrl = builder.Configuration["Kestrel:Endpoints:Http:Url"] ?? "http://0.0.0.0:5000";
