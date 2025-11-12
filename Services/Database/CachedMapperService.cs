@@ -197,7 +197,7 @@ namespace LayoutParserApi.Services.Database
                             mapper.TargetLayoutGuidFromXml ?? mapper.TargetLayoutGuid ?? "null");
                     }
                     
-                    // Popular cache permanente "mappers:all" e "mappers:search:all"
+                    // Popular cache permanente "mappers:search:all"
                     await _cacheService.SetAllCachedMappersAsync(mappers);
                     _logger.LogInformation("✅ Cache permanente de mapeadores atualizado: {Count} mapeadores", mappers.Count);
                 }

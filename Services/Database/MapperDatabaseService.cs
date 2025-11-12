@@ -67,6 +67,7 @@ namespace LayoutParserApi.Services.Database
                 using var reader = await command.ExecuteReaderAsync();
 
                 int count = 0;
+                int errorCount = 0;
                 while (await reader.ReadAsync())
                 {
                     try
@@ -85,8 +86,16 @@ namespace LayoutParserApi.Services.Database
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, "❌ Erro ao mapear mapeador (linha {Count})", count + 1);
+                        errorCount++;
+                        _logger.LogError(ex, "❌ Erro ao mapear mapeador (linha {Count}): {Message}", count + 1, ex.Message);
+                        _logger.LogError(ex, "Stack trace: {StackTrace}", ex.StackTrace);
+                        // Continuar processando os próximos mapeadores mesmo se um falhar
                     }
+                }
+                
+                if (errorCount > 0)
+                {
+                    _logger.LogWarning("⚠️ Total de erros ao mapear mapeadores: {ErrorCount} de {Total}", errorCount, count + errorCount);
                 }
 
                 _logger.LogInformation("✅ Total de mapeadores encontrados: {Count}", mappers.Count);
@@ -194,18 +203,36 @@ namespace LayoutParserApi.Services.Database
         /// </summary>
         private Mapper MapReaderToMapper(SqlDataReader reader)
         {
+            // Método auxiliar para ler valores como string de forma segura
+            string GetStringValue(string columnName)
+            {
+                if (reader.IsDBNull(columnName))
+                    return null;
+                
+                var value = reader[columnName];
+                if (value == null)
+                    return null;
+                
+                // Se for string, retornar diretamente
+                if (value is string str)
+                    return str;
+                
+                // Se for outro tipo, converter para string
+                return value.ToString();
+            }
+            
             var mapper = new Mapper
             {
                 Id = reader.GetInt32("Id"),
-                MapperGuid = reader.IsDBNull("MapperGuid") ? null : reader.GetString("MapperGuid"),
-                PackageGuid = reader.IsDBNull("PackageGuid") ? null : reader.GetString("PackageGuid"),
-                Name = reader.IsDBNull("Name") ? null : reader.GetString("Name"),
-                Description = reader.IsDBNull("Description") ? null : reader.GetString("Description"),
+                MapperGuid = GetStringValue("MapperGuid"),
+                PackageGuid = GetStringValue("PackageGuid"),
+                Name = GetStringValue("Name"),
+                Description = GetStringValue("Description"),
                 IsXPathMapper = reader.IsDBNull("IsXPathMapper") ? false : reader.GetBoolean("IsXPathMapper"),
-                InputLayoutGuid = reader.IsDBNull("InputLayoutGuid") ? null : reader.GetString("InputLayoutGuid"),
-                TargetLayoutGuid = reader.IsDBNull("TargetLayoutGuid") ? null : reader.GetString("TargetLayoutGuid"),
-                ValueContent = reader.IsDBNull("ValueContent") ? null : reader.GetString("ValueContent"),
-                ProjectId = reader.IsDBNull("ProjectId") ? null : reader.GetString("ProjectId"),
+                InputLayoutGuid = GetStringValue("InputLayoutGuid"),
+                TargetLayoutGuid = GetStringValue("TargetLayoutGuid"),
+                ValueContent = GetStringValue("ValueContent"),
+                ProjectId = GetStringValue("ProjectId"),
                 LastUpdateDate = reader.IsDBNull("LastUpdateDate") ? DateTime.MinValue : reader.GetDateTime("LastUpdateDate")
             };
 
