@@ -291,7 +291,11 @@ namespace LayoutParserApi.Services.Database
                 // Se encontrados no XML, usar esses valores (podem ser mais precisos que as colunas do banco)
                 if (inputLayoutGuidElement != null && !string.IsNullOrEmpty(inputLayoutGuidElement.Value))
                 {
-                    mapper.InputLayoutGuidFromXml = inputLayoutGuidElement.Value;
+                    var inputGuidFromXml = inputLayoutGuidElement.Value.Trim();
+                    mapper.InputLayoutGuidFromXml = inputGuidFromXml;
+                    _logger.LogInformation("📝 InputLayoutGuid extraído do XML para mapeador {Name} (ID: {Id}): {Guid}", 
+                        mapper.Name, mapper.Id, inputGuidFromXml);
+                    
                     // Atualizar também InputLayoutGuid se estiver vazio na coluna
                     if (string.IsNullOrEmpty(mapper.InputLayoutGuid))
                     {
@@ -301,7 +305,11 @@ namespace LayoutParserApi.Services.Database
 
                 if (targetLayoutGuidElement != null && !string.IsNullOrEmpty(targetLayoutGuidElement.Value))
                 {
-                    mapper.TargetLayoutGuidFromXml = targetLayoutGuidElement.Value;
+                    var targetGuidFromXml = targetLayoutGuidElement.Value.Trim();
+                    mapper.TargetLayoutGuidFromXml = targetGuidFromXml;
+                    _logger.LogInformation("📝 TargetLayoutGuid extraído do XML para mapeador {Name} (ID: {Id}): {Guid}", 
+                        mapper.Name, mapper.Id, targetGuidFromXml);
+                    
                     // Atualizar também TargetLayoutGuid se estiver vazio na coluna
                     if (string.IsNullOrEmpty(mapper.TargetLayoutGuid))
                     {

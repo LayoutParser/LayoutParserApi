@@ -32,47 +32,92 @@ namespace LayoutParserApi.Services.Database
         {
             try
             {
+                _logger.LogInformation("🔍 Buscando mapeadores por InputLayoutGuid: {Guid}", inputLayoutGuid);
+                
                 // Normalizar o GUID (remover prefixo LAY_ se houver)
                 var normalizedGuid = NormalizeLayoutGuid(inputLayoutGuid);
+                _logger.LogInformation("📝 GUID normalizado: {NormalizedGuid}", normalizedGuid);
                 
                 // Primeiro, buscar todos os mapeadores do cache permanente
                 var allMappers = await GetAllMappersAsync();
                 
                 if (allMappers != null && allMappers.Any())
                 {
+                    _logger.LogInformation("📊 Total de mapeadores no cache: {Count}", allMappers.Count);
+                    
                     // Filtrar mapeadores que têm este layout como entrada
+                    // PRIORIZAR InputLayoutGuidFromXml (do XML descriptografado) sobre InputLayoutGuid (da coluna do banco)
                     var matchingMappers = allMappers.Where(m =>
                     {
-                        var mapperInputGuid = m.InputLayoutGuid ?? m.InputLayoutGuidFromXml ?? "";
-                        return GuidMatches(mapperInputGuid, inputLayoutGuid) ||
-                               GuidMatches(mapperInputGuid, normalizedGuid);
+                        // Usar InputLayoutGuidFromXml (do XML descriptografado) como fonte primária
+                        var mapperInputGuid = m.InputLayoutGuidFromXml ?? m.InputLayoutGuid ?? "";
+                        var normalizedMapperInputGuid = NormalizeLayoutGuid(mapperInputGuid);
+                        
+                        // Comparar com o GUID normalizado recebido
+                        var matches = GuidMatches(normalizedMapperInputGuid, normalizedGuid) ||
+                                     GuidMatches(normalizedMapperInputGuid, inputLayoutGuid);
+                        
+                        if (matches)
+                        {
+                            _logger.LogInformation("✅ Mapeador encontrado: {Name} (ID: {Id}) - InputGuid (XML): {InputXml}, InputGuid (DB): {InputDb}", 
+                                m.Name, m.Id, m.InputLayoutGuidFromXml ?? "null", m.InputLayoutGuid ?? "null");
+                        }
+                        
+                        return matches;
                     }).ToList();
 
                     if (matchingMappers.Any())
                     {
-                        _logger.LogInformation("Mapeadores com InputLayoutGuid {Guid} encontrados no cache: {Count}", inputLayoutGuid, matchingMappers.Count);
+                        _logger.LogInformation("✅ Mapeadores com InputLayoutGuid {Guid} encontrados no cache: {Count}", inputLayoutGuid, matchingMappers.Count);
+                        
+                        // Log dos mapeadores encontrados
+                        foreach (var mapper in matchingMappers)
+                        {
+                            _logger.LogInformation("  - {Name} (ID: {Id}) - TargetGuid (XML): {TargetXml}", 
+                                mapper.Name, mapper.Id, mapper.TargetLayoutGuidFromXml ?? "null");
+                        }
+                        
                         return matchingMappers;
+                    }
+                    else
+                    {
+                        _logger.LogWarning("⚠️ Nenhum mapeador encontrado no cache para InputLayoutGuid: {Guid}", inputLayoutGuid);
+                        _logger.LogWarning("⚠️ Verificando primeiros 3 mapeadores para debug:");
+                        
+                        foreach (var mapper in allMappers.Take(3))
+                        {
+                            var mapperInputGuid = mapper.InputLayoutGuidFromXml ?? mapper.InputLayoutGuid ?? "null";
+                            var normalizedMapperInputGuid = NormalizeLayoutGuid(mapperInputGuid);
+                            _logger.LogWarning("  - {Name} - InputGuid: {InputGuid} (normalizado: {Normalized})", 
+                                mapper.Name, mapperInputGuid, normalizedMapperInputGuid);
+                        }
                     }
                 }
 
                 // Se não encontrou no cache, buscar do banco
-                _logger.LogInformation("Mapeadores com InputLayoutGuid {Guid} não encontrados no cache, buscando do banco", inputLayoutGuid);
-                var mapper = await _mapperDatabaseService.GetMapperByInputLayoutGuidAsync(inputLayoutGuid);
+                _logger.LogInformation("🔍 Mapeadores com InputLayoutGuid {Guid} não encontrados no cache, buscando do banco", inputLayoutGuid);
+                var mapperFromDb = await _mapperDatabaseService.GetMapperByInputLayoutGuidAsync(inputLayoutGuid);
                 
-                var mappers = mapper != null ? new List<Mapper> { mapper } : new List<Mapper>();
+                var mappers = mapperFromDb != null ? new List<Mapper> { mapperFromDb } : new List<Mapper>();
                 
                 // Se encontrou no banco, atualizar o cache permanente
                 if (mappers.Any())
                 {
+                    _logger.LogInformation("✅ Mapeador encontrado no banco, atualizando cache...");
                     // Recarregar todos os mapeadores e atualizar cache
                     await RefreshCacheFromDatabaseAsync();
+                }
+                else
+                {
+                    _logger.LogWarning("⚠️ Nenhum mapeador encontrado no banco para InputLayoutGuid: {Guid}", inputLayoutGuid);
                 }
 
                 return mappers;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Erro ao buscar mapeadores por InputLayoutGuid: {Guid}", inputLayoutGuid);
+                _logger.LogError(ex, "❌ Erro ao buscar mapeadores por InputLayoutGuid: {Guid} - {Message}", inputLayoutGuid, ex.Message);
+                _logger.LogError(ex, "Stack trace: {StackTrace}", ex.StackTrace);
                 return new List<Mapper>();
             }
         }
@@ -82,13 +127,27 @@ namespace LayoutParserApi.Services.Database
             if (string.IsNullOrEmpty(guid))
                 return "";
             
-            // Remover prefixo LAY_ se houver
-            var normalized = guid;
+            // Remover prefixos comuns (LAY_, TAG_, GRT_, MAP_, etc.) se houver
+            var normalized = guid.Trim();
+            
+            // Remover prefixo LAY_ se houver (case-insensitive)
             if (normalized.StartsWith("LAY_", StringComparison.OrdinalIgnoreCase))
                 normalized = normalized.Substring(4);
             
+            // Remover prefixo MAP_ se houver (para mapeadores)
+            if (normalized.StartsWith("MAP_", StringComparison.OrdinalIgnoreCase))
+                normalized = normalized.Substring(4);
+            
             // Remover espaços e converter para minúsculas para comparação
-            return normalized.Trim().ToLowerInvariant();
+            normalized = normalized.Trim().ToLowerInvariant();
+            
+            // Remover chaves {} se houver (caso venha de Guid.ToString())
+            normalized = normalized.Replace("{", "").Replace("}", "");
+            
+            // Remover espaços em branco extras
+            normalized = normalized.Trim();
+            
+            return normalized;
         }
 
         private bool GuidMatches(string guid1, string guid2)
@@ -96,23 +155,38 @@ namespace LayoutParserApi.Services.Database
             if (string.IsNullOrEmpty(guid1) || string.IsNullOrEmpty(guid2))
                 return false;
             
+            // Normalizar ambos os GUIDs
             var norm1 = NormalizeLayoutGuid(guid1);
             var norm2 = NormalizeLayoutGuid(guid2);
             
-            // Comparação exata
-            if (norm1 == norm2)
+            // Comparação exata após normalização
+            if (string.Equals(norm1, norm2, StringComparison.OrdinalIgnoreCase))
                 return true;
             
-            // Tentar comparar apenas a parte do GUID (sem prefixo)
-            // Ex: "LAY_ad4fb6f4-9ff5-44fd-988b-3da5ed56b22c" vs "ad4fb6f4-9ff5-44fd-988b-3da5ed56b22c"
+            // Tentar extrair apenas a parte do GUID (sem prefixo LAY_ ou outros)
+            // Ex: "LAY_50efd04d-8604-45fd-88ad-c7c5111cc127" vs "50efd04d-8604-45fd-88ad-c7c5111cc127"
             var guid1Only = ExtractGuidOnly(norm1);
             var guid2Only = ExtractGuidOnly(norm2);
             
-            if (guid1Only == guid2Only && !string.IsNullOrEmpty(guid1Only))
-                return true;
+            // Se conseguiu extrair GUIDs válidos, comparar
+            if (!string.IsNullOrEmpty(guid1Only) && !string.IsNullOrEmpty(guid2Only))
+            {
+                if (string.Equals(guid1Only, guid2Only, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
             
-            // Comparação parcial (caso um tenha o prefixo e outro não)
-            return norm1.Contains(norm2) || norm2.Contains(norm1);
+            // Comparação parcial (caso um tenha prefixo e outro não)
+            // Ex: "50efd04d-8604-45fd-88ad-c7c5111cc127" contém "50efd04d-8604-45fd-88ad-c7c5111cc127"
+            if (norm1.Contains(norm2, StringComparison.OrdinalIgnoreCase) || 
+                norm2.Contains(norm1, StringComparison.OrdinalIgnoreCase))
+            {
+                // Verificar se não é apenas uma coincidência parcial (ex: "50" contém "50")
+                // Garantir que pelo menos um dos GUIDs extraídos é válido
+                if (!string.IsNullOrEmpty(guid1Only) || !string.IsNullOrEmpty(guid2Only))
+                    return true;
+            }
+            
+            return false;
         }
 
         private string ExtractGuidOnly(string guid)
@@ -157,9 +231,9 @@ namespace LayoutParserApi.Services.Database
 
                 // Se não encontrou no cache, buscar do banco
                 _logger.LogInformation("Mapeadores com TargetLayoutGuid {Guid} não encontrados no cache, buscando do banco", targetLayoutGuid);
-                var mapper = await _mapperDatabaseService.GetMapperByTargetLayoutGuidAsync(targetLayoutGuid);
+                var mapperFromDb = await _mapperDatabaseService.GetMapperByTargetLayoutGuidAsync(targetLayoutGuid);
                 
-                var mappers = mapper != null ? new List<Mapper> { mapper } : new List<Mapper>();
+                var mappers = mapperFromDb != null ? new List<Mapper> { mapperFromDb } : new List<Mapper>();
                 
                 // Se encontrou no banco, atualizar o cache permanente
                 if (mappers.Any())
