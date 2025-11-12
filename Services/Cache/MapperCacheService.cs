@@ -25,7 +25,9 @@ namespace LayoutParserApi.Services.Cache
         private readonly bool _redisAvailable;
         
         // Chave fixa para todos os mapeadores (compartilhada entre múltiplos computadores)
+        // Também usar "mappers:search:all" para compatibilidade com front-end
         private const string ALL_MAPPERS_KEY = "mappers:all";
+        private const string ALL_MAPPERS_SEARCH_KEY = "mappers:search:all";
 
         public MapperCacheService(
             IConnectionMultiplexer? redis,
@@ -63,7 +65,13 @@ namespace LayoutParserApi.Services.Cache
 
             try
             {
+                // Tentar primeiro "mappers:all", depois "mappers:search:all" para compatibilidade
                 var cachedData = await _redis.StringGetAsync(ALL_MAPPERS_KEY);
+                
+                if (!cachedData.HasValue)
+                {
+                    cachedData = await _redis.StringGetAsync(ALL_MAPPERS_SEARCH_KEY);
+                }
                 
                 if (cachedData.HasValue)
                 {
@@ -93,10 +101,12 @@ namespace LayoutParserApi.Services.Cache
             {
                 var jsonData = JsonSerializer.Serialize(mappers);
                 
-                // Usar expiry null para cache permanente (ou usar um tempo muito longo)
-                // Para múltiplos computadores, o cache deve ser persistente
-                await _redis.StringSetAsync(ALL_MAPPERS_KEY, jsonData, expiry ?? _defaultExpiry);
-                _logger.LogInformation("Cache atualizado para todos os mapeadores - {Count} mapeadores", mappers.Count);
+                // Cache permanente (sem expiração) para múltiplos computadores
+                // A chave "mappers:all" e "mappers:search:all" devem ser permanentes no Redis
+                await _redis.StringSetAsync(ALL_MAPPERS_KEY, jsonData);
+                await _redis.StringSetAsync(ALL_MAPPERS_SEARCH_KEY, jsonData);
+                _logger.LogInformation("Cache permanente atualizado para todos os mapeadores - {Count} mapeadores (chaves: {Key1}, {Key2})", 
+                    mappers.Count, ALL_MAPPERS_KEY, ALL_MAPPERS_SEARCH_KEY);
             }
             catch (Exception ex)
             {

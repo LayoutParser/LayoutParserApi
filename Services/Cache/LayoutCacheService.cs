@@ -88,8 +88,17 @@ namespace LayoutParserApi.Services.Cache
                 var cacheKey = $"layouts:search:{searchTerm}";
                 var jsonData = JsonSerializer.Serialize(layouts);
                 
-                await _redis.StringSetAsync(cacheKey, jsonData, expiry ?? _defaultExpiry);
-                _logger.LogInformation("Cache atualizado para busca: {SearchTerm} - {Count} layouts", searchTerm, layouts.Count);
+                // Se for "all", cache permanente (sem expiração) para múltiplos computadores
+                if (searchTerm == "all")
+                {
+                    await _redis.StringSetAsync(cacheKey, jsonData);
+                    _logger.LogInformation("Cache permanente atualizado para busca: {SearchTerm} - {Count} layouts", searchTerm, layouts.Count);
+                }
+                else
+                {
+                    await _redis.StringSetAsync(cacheKey, jsonData, expiry ?? _defaultExpiry);
+                    _logger.LogInformation("Cache atualizado para busca: {SearchTerm} - {Count} layouts", searchTerm, layouts.Count);
+                }
             }
             catch (Exception ex)
             {
