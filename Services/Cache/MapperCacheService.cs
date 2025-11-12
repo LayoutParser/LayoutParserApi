@@ -60,32 +60,53 @@ namespace LayoutParserApi.Services.Cache
         {
             if (!_redisAvailable || _redis == null)
             {
+                _logger.LogWarning("⚠️ Redis não disponível - não é possível buscar cache de mapeadores");
                 return null;
             }
 
             try
             {
+                _logger.LogInformation("🔍 Buscando mapeadores no cache (chaves: {Key1}, {Key2})...", 
+                    ALL_MAPPERS_KEY, ALL_MAPPERS_SEARCH_KEY);
+                
+                // Verificar se as chaves existem
+                var exists1 = await _redis.KeyExistsAsync(ALL_MAPPERS_KEY);
+                var exists2 = await _redis.KeyExistsAsync(ALL_MAPPERS_SEARCH_KEY);
+                _logger.LogInformation("🔍 Verificação de chaves no Redis: {Key1}={Exists1}, {Key2}={Exists2}", 
+                    ALL_MAPPERS_KEY, exists1, ALL_MAPPERS_SEARCH_KEY, exists2);
+                
                 // Tentar primeiro "mappers:all", depois "mappers:search:all" para compatibilidade
                 var cachedData = await _redis.StringGetAsync(ALL_MAPPERS_KEY);
                 
                 if (!cachedData.HasValue)
                 {
+                    _logger.LogInformation("⚠️ Chave {Key1} não encontrada, tentando {Key2}...", ALL_MAPPERS_KEY, ALL_MAPPERS_SEARCH_KEY);
                     cachedData = await _redis.StringGetAsync(ALL_MAPPERS_SEARCH_KEY);
                 }
                 
                 if (cachedData.HasValue)
                 {
-                    var mappers = JsonSerializer.Deserialize<List<Mapper>>(cachedData.ToString());
-                    _logger.LogInformation("Cache hit para todos os mapeadores - {Count} mapeadores", mappers?.Count ?? 0);
+                    _logger.LogInformation("✅ Cache encontrado - tamanho: {Size} bytes", cachedData.Length());
+                    
+                    // Opções de serialização JSON para lidar com valores nulos
+                    var jsonOptions = new JsonSerializerOptions
+                    {
+                        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+                        PropertyNameCaseInsensitive = true
+                    };
+                    
+                    var mappers = JsonSerializer.Deserialize<List<Mapper>>(cachedData.ToString(), jsonOptions);
+                    _logger.LogInformation("✅ Cache hit para todos os mapeadores - {Count} mapeadores", mappers?.Count ?? 0);
                     return mappers;
                 }
 
-                _logger.LogInformation("Cache miss para todos os mapeadores");
+                _logger.LogWarning("⚠️ Cache miss para todos os mapeadores - nenhuma chave encontrada");
                 return null;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Erro ao buscar todos os mapeadores no cache");
+                _logger.LogError(ex, "❌ Erro ao buscar todos os mapeadores no cache: {Message}", ex.Message);
+                _logger.LogError(ex, "Stack trace: {StackTrace}", ex.StackTrace);
                 return null;
             }
         }
@@ -94,23 +115,75 @@ namespace LayoutParserApi.Services.Cache
         {
             if (!_redisAvailable || _redis == null)
             {
+                _logger.LogWarning("Redis não disponível - não é possível salvar cache de mapeadores");
                 return;
             }
 
             try
             {
-                var jsonData = JsonSerializer.Serialize(mappers);
+                if (mappers == null || !mappers.Any())
+                {
+                    _logger.LogWarning("⚠️ Tentativa de salvar lista vazia de mapeadores no cache");
+                    return;
+                }
+
+                // Opções de serialização JSON para lidar com valores nulos
+                var jsonOptions = new JsonSerializerOptions
+                {
+                    DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+                    WriteIndented = false
+                };
+
+                var jsonData = JsonSerializer.Serialize(mappers, jsonOptions);
+                _logger.LogInformation("📦 Serializando {Count} mapeadores para cache (tamanho JSON: {Size} bytes)", 
+                    mappers.Count, jsonData.Length);
+                
+                // Verificar se o Redis está realmente disponível
+                if (_redis == null)
+                {
+                    _logger.LogError("❌ Redis não está disponível (null)");
+                    return;
+                }
+
+                _logger.LogInformation("🔄 Salvando cache no Redis (chaves: {Key1}, {Key2})...", 
+                    ALL_MAPPERS_KEY, ALL_MAPPERS_SEARCH_KEY);
                 
                 // Cache permanente (sem expiração) para múltiplos computadores
                 // A chave "mappers:all" e "mappers:search:all" devem ser permanentes no Redis
-                await _redis.StringSetAsync(ALL_MAPPERS_KEY, jsonData);
-                await _redis.StringSetAsync(ALL_MAPPERS_SEARCH_KEY, jsonData);
-                _logger.LogInformation("Cache permanente atualizado para todos os mapeadores - {Count} mapeadores (chaves: {Key1}, {Key2})", 
-                    mappers.Count, ALL_MAPPERS_KEY, ALL_MAPPERS_SEARCH_KEY);
+                var result1 = await _redis.StringSetAsync(ALL_MAPPERS_KEY, jsonData);
+                var result2 = await _redis.StringSetAsync(ALL_MAPPERS_SEARCH_KEY, jsonData);
+                
+                if (result1 && result2)
+                {
+                    _logger.LogInformation("✅ Cache permanente atualizado com sucesso para todos os mapeadores - {Count} mapeadores (chaves: {Key1}, {Key2})", 
+                        mappers.Count, ALL_MAPPERS_KEY, ALL_MAPPERS_SEARCH_KEY);
+                    
+                    // Verificar se as chaves foram realmente criadas
+                    await Task.Delay(100); // Pequeno delay para garantir que o Redis processou
+                    var verify1 = await _redis.KeyExistsAsync(ALL_MAPPERS_KEY);
+                    var verify2 = await _redis.KeyExistsAsync(ALL_MAPPERS_SEARCH_KEY);
+                    _logger.LogInformation("🔍 Verificação de chaves no Redis: {Key1}={Exists1}, {Key2}={Exists2}", 
+                        ALL_MAPPERS_KEY, verify1, ALL_MAPPERS_SEARCH_KEY, verify2);
+                    
+                    if (verify1 && verify2)
+                    {
+                        // Verificar o tamanho das chaves
+                        var length1 = await _redis.StringLengthAsync(ALL_MAPPERS_KEY);
+                        var length2 = await _redis.StringLengthAsync(ALL_MAPPERS_SEARCH_KEY);
+                        _logger.LogInformation("📊 Tamanho das chaves no Redis: {Key1}={Length1} bytes, {Key2}={Length2} bytes", 
+                            ALL_MAPPERS_KEY, length1, ALL_MAPPERS_SEARCH_KEY, length2);
+                    }
+                }
+                else
+                {
+                    _logger.LogError("❌ Falha ao salvar cache de mapeadores no Redis. Result1={Result1}, Result2={Result2}", 
+                        result1, result2);
+                }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Erro ao salvar todos os mapeadores no cache");
+                _logger.LogError(ex, "❌ Erro ao salvar todos os mapeadores no cache: {Message}", ex.Message);
+                _logger.LogError(ex, "Stack trace: {StackTrace}", ex.StackTrace);
             }
         }
 

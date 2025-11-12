@@ -181,23 +181,35 @@ namespace LayoutParserApi.Services.Database
         {
             try
             {
-                _logger.LogInformation("Atualizando cache de mapeadores a partir do banco de dados");
+                _logger.LogInformation("🔄 Iniciando atualização do cache de mapeadores a partir do banco de dados");
                 var mappers = await _mapperDatabaseService.GetAllMappersAsync();
+                
+                _logger.LogInformation("📊 Mapeadores encontrados no banco: {Count}", mappers?.Count ?? 0);
                 
                 if (mappers != null && mappers.Any())
                 {
+                    // Log dos primeiros mapeadores para debug
+                    foreach (var mapper in mappers.Take(3))
+                    {
+                        _logger.LogInformation("  - Mapeador: {Name}, InputGuid: {InputGuid}, TargetGuid: {TargetGuid}", 
+                            mapper.Name,
+                            mapper.InputLayoutGuidFromXml ?? mapper.InputLayoutGuid ?? "null",
+                            mapper.TargetLayoutGuidFromXml ?? mapper.TargetLayoutGuid ?? "null");
+                    }
+                    
                     // Popular cache permanente "mappers:all" e "mappers:search:all"
                     await _cacheService.SetAllCachedMappersAsync(mappers);
-                    _logger.LogInformation("Cache permanente de mapeadores atualizado: {Count} mapeadores", mappers.Count);
+                    _logger.LogInformation("✅ Cache permanente de mapeadores atualizado: {Count} mapeadores", mappers.Count);
                 }
                 else
                 {
-                    _logger.LogWarning("Nenhum mapeador encontrado no banco de dados");
+                    _logger.LogWarning("⚠️ Nenhum mapeador encontrado no banco de dados para atualizar o cache");
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Erro ao atualizar cache de mapeadores a partir do banco de dados");
+                _logger.LogError(ex, "❌ Erro ao atualizar cache de mapeadores a partir do banco de dados: {Message}", ex.Message);
+                _logger.LogError(ex, "Stack trace: {StackTrace}", ex.StackTrace);
             }
         }
 

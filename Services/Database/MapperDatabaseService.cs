@@ -45,8 +45,14 @@ namespace LayoutParserApi.Services.Database
 
             try
             {
+                _logger.LogInformation("🔍 Conectando ao banco de dados para buscar todos os mapeadores...");
+                _logger.LogInformation("Connection string: Server={Server}, Database={Database}", 
+                    _connectionString.Contains("Server=") ? _connectionString.Split(';').FirstOrDefault(s => s.StartsWith("Server=")) : "N/A",
+                    _connectionString.Contains("Database=") ? _connectionString.Split(';').FirstOrDefault(s => s.StartsWith("Database=")) : "N/A");
+                
                 using var connection = new SqlConnection(_connectionString);
                 await connection.OpenAsync();
+                _logger.LogInformation("✅ Conexão com banco de dados estabelecida");
 
                 var query = @"
                     SELECT 
@@ -56,19 +62,40 @@ namespace LayoutParserApi.Services.Database
                     FROM [ConnectUS_Macgyver].[dbo].[tbMapper]
                     ORDER BY [LastUpdateDate] DESC";
 
+                _logger.LogInformation("📝 Executando query para buscar mapeadores...");
                 using var command = new SqlCommand(query, connection);
                 using var reader = await command.ExecuteReaderAsync();
 
+                int count = 0;
                 while (await reader.ReadAsync())
                 {
-                    mappers.Add(MapReaderToMapper(reader));
+                    try
+                    {
+                        var mapper = MapReaderToMapper(reader);
+                        mappers.Add(mapper);
+                        count++;
+                        
+                        if (count <= 3)
+                        {
+                            _logger.LogInformation("  - Mapeador {Count}: Id={Id}, Name={Name}, InputGuid={InputGuid}, TargetGuid={TargetGuid}", 
+                                count, mapper.Id, mapper.Name,
+                                mapper.InputLayoutGuidFromXml ?? mapper.InputLayoutGuid ?? "null",
+                                mapper.TargetLayoutGuidFromXml ?? mapper.TargetLayoutGuid ?? "null");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "❌ Erro ao mapear mapeador (linha {Count})", count + 1);
+                    }
                 }
 
+                _logger.LogInformation("✅ Total de mapeadores encontrados: {Count}", mappers.Count);
                 return mappers;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Erro ao buscar todos os mapeadores");
+                _logger.LogError(ex, "❌ Erro ao buscar todos os mapeadores: {Message}", ex.Message);
+                _logger.LogError(ex, "Stack trace: {StackTrace}", ex.StackTrace);
                 return mappers;
             }
         }
