@@ -194,14 +194,15 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 if (!targetPathParts.Any())
                     continue;
 
-                var targetElementName = targetPathParts.Last();
+                var targetElementName = SanitizeElementName(targetPathParts.Last());
 
                 // Gerar estrutura hierárquica se necessário
                 var indentLevel = 3; // infNFe já tem indentação 3
                 foreach (var part in targetPathParts.Take(targetPathParts.Count - 1))
                 {
+                    var sanitizedPart = SanitizeElementName(part);
                     var indent = new string('\t', indentLevel);
-                    sb.AppendLine($"{indent}<{part}>");
+                    sb.AppendLine($"{indent}<{sanitizedPart}>");
                     indentLevel++;
                 }
 
@@ -221,7 +222,8 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 {
                     indentLevel--;
                     var indent = new string('\t', indentLevel);
-                    sb.AppendLine($"{indent}</{targetPathParts[i]}>");
+                    var sanitizedPart = SanitizeElementName(targetPathParts[i]);
+                    sb.AppendLine($"{indent}</{sanitizedPart}>");
                 }
             }
 
@@ -235,6 +237,9 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 // Converter para XPath e XSL
                 var xpath = ConvertToXPath(sourcePath);
                 var targetElement = GetElementFromPath(targetPath);
+                
+                // Sanitizar nome do elemento (já está sanitizado em GetElementFromPath, mas garantir)
+                targetElement = SanitizeElementName(targetElement);
 
                 // Gerar elemento XSL
                 sb.AppendLine($"\t\t\t\t\t<{targetElement}>");
@@ -303,6 +308,9 @@ namespace LayoutParserApi.Services.XmlAnalysis
                     var parts = elementName.Split('_');
                     elementName = parts.Last();
                 }
+                
+                // Sanitizar nome do elemento (remover caracteres inválidos, prefixos reservados)
+                elementName = SanitizeElementName(elementName);
 
                 // Gerar XPath para buscar o valor no XML intermediário (ROOT)
                 // Estratégias de mapeamento:
@@ -520,6 +528,9 @@ namespace LayoutParserApi.Services.XmlAnalysis
                     var parts = elementName.Split('_');
                     elementName = parts.Last();
                 }
+                
+                // Sanitizar nome do elemento (remover caracteres inválidos, prefixos reservados)
+                elementName = SanitizeElementName(elementName);
 
                 // Gerar XPath para buscar o valor no XML intermediário
                 var xpathOptions = GenerateXPathOptionsForLinkMapping(name, elementName);
@@ -547,7 +558,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
 
             foreach (var group in rulesByTarget)
             {
-                var targetElement = group.Key;
+                var targetElement = SanitizeElementName(group.Key);
                 var targetRules = group.ToList();
 
                 // Gerar elemento XML baseado no target
@@ -605,14 +616,15 @@ namespace LayoutParserApi.Services.XmlAnalysis
         private void GenerateXslElement(StringBuilder sb, string targetElement, List<XElement> rules, XDocument mapDoc)
         {
             var elementPath = targetElement.Split('/');
-            var elementName = elementPath.Last();
+            var elementName = SanitizeElementName(elementPath.Last());
 
             // Gerar estrutura hierárquica
             foreach (var part in elementPath)
             {
                 if (part == elementPath.Last())
                 {
-                    sb.AppendLine($"\t\t\t\t<{part}>");
+                    var sanitizedPart = SanitizeElementName(part);
+                    sb.AppendLine($"\t\t\t\t<{sanitizedPart}>");
                 }
             }
 
@@ -627,7 +639,8 @@ namespace LayoutParserApi.Services.XmlAnalysis
             {
                 if (part == elementPath.Last())
                 {
-                    sb.AppendLine($"\t\t\t\t</{part}>");
+                    var sanitizedPart = SanitizeElementName(part);
+                    sb.AppendLine($"\t\t\t\t</{sanitizedPart}>");
                 }
             }
         }
@@ -652,6 +665,9 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 // Converter para XPath e XSL
                 var xpath = ConvertToXPath(sourcePath);
                 var targetElement = GetElementFromPath(targetPath);
+                
+                // Sanitizar nome do elemento (já está sanitizado em GetElementFromPath, mas garantir)
+                targetElement = SanitizeElementName(targetElement);
 
                 // Gerar elemento XSL
                 sb.AppendLine($"\t\t\t\t\t<{targetElement}>");
@@ -698,7 +714,109 @@ namespace LayoutParserApi.Services.XmlAnalysis
         {
             // T.enviNFe/NFe/infNFe/ide/cUF -> cUF
             var parts = targetPath.Split('/');
-            return parts.Last();
+            return SanitizeElementName(parts.Last());
+        }
+        
+        /// <summary>
+        /// Sanitiza nome de elemento XML:
+        /// - Remove ou substitui prefixos reservados (xmlns, xml)
+        /// - Remove caracteres inválidos para nomes XML
+        /// - Garante que o nome segue as regras do XML
+        /// </summary>
+        private string SanitizeElementName(string elementName)
+        {
+            if (string.IsNullOrWhiteSpace(elementName))
+                return "element";
+            
+            var sanitized = elementName.Trim();
+            
+            // Remover prefixo "xmlns" se houver (reservado pelo XML)
+            if (sanitized.StartsWith("xmlns", StringComparison.OrdinalIgnoreCase))
+            {
+                // Se começa com "xmlns", substituir por "ns" ou remover
+                if (sanitized.Length > 5 && sanitized[5] == ':')
+                {
+                    // Caso "xmlns:xxx", substituir por "ns:xxx"
+                    sanitized = "ns" + sanitized.Substring(5);
+                }
+                else if (sanitized.Length == 5)
+                {
+                    // Caso apenas "xmlns", substituir por "ns"
+                    sanitized = "ns";
+                }
+                else
+                {
+                    // Caso "xmlnsAlgo", substituir por "nsAlgo"
+                    sanitized = "ns" + sanitized.Substring(5);
+                }
+            }
+            
+            // Remover prefixo "xml" se houver no início (reservado pelo XML)
+            // Mas apenas se for exatamente "xml" ou "xml:" ou "xmlAlgo"
+            if (sanitized.StartsWith("xml", StringComparison.OrdinalIgnoreCase))
+            {
+                if (sanitized.Length == 3)
+                {
+                    // Caso apenas "xml", substituir por "elem"
+                    sanitized = "elem";
+                }
+                else if (sanitized.Length > 3 && sanitized[3] == ':')
+                {
+                    // Caso "xml:xxx", substituir por "elem:xxx"
+                    sanitized = "elem" + sanitized.Substring(3);
+                }
+                else if (sanitized.Length > 3 && (char.IsLetter(sanitized[3]) || char.IsDigit(sanitized[3])))
+                {
+                    // Caso "xmlAlgo", substituir por "elemAlgo"
+                    sanitized = "elem" + sanitized.Substring(3);
+                }
+            }
+            
+            // Remover ou substituir caracteres inválidos para nomes XML
+            // XML não permite: < > " ' & espaços no início, : em algumas posições
+            var invalidChars = new[] { '<', '>', '"', '\'', '&', ' ', '\t', '\n', '\r' };
+            foreach (var invalidChar in invalidChars)
+            {
+                sanitized = sanitized.Replace(invalidChar, '_');
+            }
+            
+            // Remover caracteres de controle
+            sanitized = new string(sanitized.Where(c => !char.IsControl(c)).ToArray());
+            
+            // Garantir que o nome não começa com número (inválido em XML)
+            if (sanitized.Length > 0 && char.IsDigit(sanitized[0]))
+            {
+                sanitized = "elem" + sanitized;
+            }
+            
+            // Garantir que o nome não está vazio
+            if (string.IsNullOrWhiteSpace(sanitized))
+            {
+                sanitized = "element";
+            }
+            
+            // Remover caracteres inválidos adicionais (caracteres especiais exceto : _ - .)
+            sanitized = System.Text.RegularExpressions.Regex.Replace(
+                sanitized,
+                @"[^\w:._-]",
+                "_");
+            
+            // Remover múltiplos underscores consecutivos
+            sanitized = System.Text.RegularExpressions.Regex.Replace(
+                sanitized,
+                @"_+",
+                "_");
+            
+            // Remover underscore no início ou fim
+            sanitized = sanitized.Trim('_');
+            
+            // Garantir que o nome não está vazio após sanitização
+            if (string.IsNullOrWhiteSpace(sanitized))
+            {
+                sanitized = "element";
+            }
+            
+            return sanitized;
         }
 
         /// <summary>
