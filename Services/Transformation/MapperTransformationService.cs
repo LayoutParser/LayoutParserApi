@@ -242,7 +242,8 @@ namespace LayoutParserApi.Services.Transformation
                 _logger.LogInformation("XML intermediário gerado: {Size} chars", intermediateXml.Length);
 
                 // 6. Gerar ou carregar XSL a partir do mapeador
-                var xslPath = await GenerateOrLoadXslAsync(mapper, inputLayout, targetLayoutGuid);
+                // Passar o XML intermediário para melhorar a geração do XSL usando exemplos
+                var xslPath = await GenerateOrLoadXslAsync(mapper, inputLayout, targetLayoutGuid, intermediateXml);
                 if (string.IsNullOrEmpty(xslPath))
                 {
                     result.Errors.Add("Não foi possível gerar ou carregar o script XSL");
@@ -390,31 +391,61 @@ namespace LayoutParserApi.Services.Transformation
         }
 
         /// <summary>
-        /// Gera ou carrega arquivo XSL a partir do mapeador usando aprendizado de máquina
+        /// Carrega ou gera arquivo XSL a partir do mapeador
+        /// PRIORIDADE: 1. XSL do mapper (Redis), 2. Arquivo XSL existente, 3. Geração (apenas se necessário)
         /// </summary>
-        private async Task<string> GenerateOrLoadXslAsync(Mapper mapper, LayoutRecord inputLayout, string targetLayoutGuid)
+        private async Task<string> GenerateOrLoadXslAsync(Mapper mapper, LayoutRecord inputLayout, string targetLayoutGuid, string intermediateXml = null)
         {
             try
             {
-                // Gerar nome do arquivo XSL baseado no mapeador e layouts
-                var xslFileName = SanitizeFileName($"{mapper.Name}_{inputLayout.Name}.xsl");
-                var xslPath = Path.Combine(_xslBasePath, xslFileName);
-                
-                // Verificar se o arquivo XSL já existe
-                if (File.Exists(xslPath))
+                // PRIORIDADE 1: Verificar se o mapper tem XSL armazenado (do Redis/cache)
+                if (!string.IsNullOrEmpty(mapper.XslContent))
                 {
-                    _logger.LogInformation("Arquivo XSL já existe: {Path}", xslPath);
+                    _logger.LogInformation("✅ XSL encontrado no mapeador {Name} (ID: {Id}) do Redis - tamanho: {Size} chars", 
+                        mapper.Name, mapper.Id, mapper.XslContent.Length);
+                    
+                    // Limpar XSL do mapper (remove namespace 'ng', corrige namespaces)
+                    var cleanedXsl = CleanXslContent(mapper.XslContent);
+                    
+                    // Salvar XSL limpo em arquivo temporário para uso na transformação
+                    var xslFileName = SanitizeFileName($"{mapper.Name}_{inputLayout.Name}.xsl");
+                    var xslPath = Path.Combine(_xslBasePath, xslFileName);
+                    
+                    // Garantir que o diretório existe
+                    Directory.CreateDirectory(_xslBasePath);
+                    
+                    // Salvar XSL do mapper em arquivo
+                    await File.WriteAllTextAsync(xslPath, cleanedXsl, Encoding.UTF8);
+                    _logger.LogInformation("✅ XSL do mapper salvo em arquivo: {Path}", xslPath);
+                    
                     return xslPath;
                 }
                 
-                // Se não existe, gerar usando aprendizado de máquina
-                _logger.LogInformation("Gerando XSL para mapeador: {Name} (ID: {Id})", mapper.Name, mapper.Id);
+                // PRIORIDADE 2: Verificar se o arquivo XSL já existe no disco
+                var xslFileName2 = SanitizeFileName($"{mapper.Name}_{inputLayout.Name}.xsl");
+                var xslPath2 = Path.Combine(_xslBasePath, xslFileName2);
+                
+                if (File.Exists(xslPath2))
+                {
+                    _logger.LogInformation("✅ Arquivo XSL já existe: {Path}", xslPath2);
+                    return xslPath2;
+                }
+                
+                // PRIORIDADE 3: Gerar XSL apenas se não existir no mapper nem no disco
+                // NOTA: A geração de XSL deve ser extinta no futuro, exceto para atualizações de NT ou demandas novas
+                _logger.LogWarning("⚠️ XSL não encontrado no mapeador nem em arquivo. Gerando XSL para mapeador: {Name} (ID: {Id})", 
+                    mapper.Name, mapper.Id);
+                _logger.LogWarning("⚠️ ATENÇÃO: Geração de XSL deve ser extinta no futuro. XSL deve vir do mapeador no Redis.");
                 
                 if (string.IsNullOrEmpty(mapper.DecryptedContent))
                 {
-                    _logger.LogWarning("DecryptedContent vazio para mapeador: {Name}", mapper.Name);
+                    _logger.LogError("❌ DecryptedContent vazio para mapeador: {Name}. Não é possível gerar XSL.", mapper.Name);
                     return null;
                 }
+                
+                // Buscar layout de destino para obter nome
+                var targetLayout = await _cachedLayoutService.GetLayoutByGuidAsync(targetLayoutGuid);
+                var targetLayoutName = targetLayout?.Name ?? targetLayoutGuid;
                 
                 // Salvar mapeador XML temporariamente para o gerador
                 var tempMapperPath = Path.Combine(Path.GetTempPath(), $"mapper_{mapper.Id}_{Guid.NewGuid()}.xml");
@@ -422,17 +453,20 @@ namespace LayoutParserApi.Services.Transformation
                 {
                     await File.WriteAllTextAsync(tempMapperPath, mapper.DecryptedContent, Encoding.UTF8);
                     
-                    // Gerar XSL usando aprendizado de máquina
+                    // Gerar XSL usando aprendizado de máquina (apenas como fallback)
                     var xslResult = await _improvedXslGenerator.GenerateXslWithMLAsync(
                         tempMapperPath,
-                        mapper.Name,
-                        xslPath);
+                        targetLayoutName,
+                        xslPath2,
+                        targetLayoutGuid: targetLayoutGuid,
+                        intermediateXml: intermediateXml);
                     
                     if (xslResult.Success && !string.IsNullOrEmpty(xslResult.SuggestedXsl))
                     {
                         // Salvar arquivo XSL gerado
-                        await File.WriteAllTextAsync(xslPath, xslResult.SuggestedXsl, Encoding.UTF8);
-                        _logger.LogInformation("XSL gerado com sucesso usando ML: {Path}", xslPath);
+                        await File.WriteAllTextAsync(xslPath2, xslResult.SuggestedXsl, Encoding.UTF8);
+                        _logger.LogWarning("⚠️ XSL gerado (fallback) usando ML: {Path}", xslPath2);
+                        _logger.LogWarning("⚠️ RECOMENDAÇÃO: Adicionar XSL ao mapeador no banco de dados para evitar geração futura.");
                         
                         if (xslResult.Warnings.Any())
                         {
@@ -442,23 +476,25 @@ namespace LayoutParserApi.Services.Transformation
                             }
                         }
                         
-                        return xslPath;
+                        return xslPath2;
                     }
                     else if (!string.IsNullOrEmpty(xslResult.GeneratedXsl))
                     {
                         // Usar XSL base se ML não retornou sugestão
-                        await File.WriteAllTextAsync(xslPath, xslResult.GeneratedXsl, Encoding.UTF8);
-                        _logger.LogInformation("XSL gerado (base): {Path}", xslPath);
-                        return xslPath;
+                        await File.WriteAllTextAsync(xslPath2, xslResult.GeneratedXsl, Encoding.UTF8);
+                        _logger.LogWarning("⚠️ XSL gerado (base, fallback): {Path}", xslPath2);
+                        _logger.LogWarning("⚠️ RECOMENDAÇÃO: Adicionar XSL ao mapeador no banco de dados para evitar geração futura.");
+                        return xslPath2;
                     }
                     else
                     {
-                        // Fallback: usar gerador base diretamente
-                        var baseXsl = await _xslGenerator.GenerateXslFromMapAsync(tempMapperPath, xslPath);
+                        // Fallback final: usar gerador base diretamente
+                        var baseXsl = await _xslGenerator.GenerateXslFromMapAsync(tempMapperPath, xslPath2);
                         if (!string.IsNullOrEmpty(baseXsl))
                         {
-                            _logger.LogInformation("XSL gerado (fallback): {Path}", xslPath);
-                            return xslPath;
+                            _logger.LogWarning("⚠️ XSL gerado (fallback final): {Path}", xslPath2);
+                            _logger.LogWarning("⚠️ RECOMENDAÇÃO: Adicionar XSL ao mapeador no banco de dados para evitar geração futura.");
+                            return xslPath2;
                         }
                     }
                 }
@@ -473,12 +509,12 @@ namespace LayoutParserApi.Services.Transformation
                     catch { }
                 }
                 
-                _logger.LogWarning("Não foi possível gerar XSL para mapeador: {Name}", mapper.Name);
+                _logger.LogError("❌ Não foi possível gerar XSL para mapeador: {Name}", mapper.Name);
                 return null;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Erro ao gerar/carregar XSL para mapeador: {Name}", mapper.Name);
+                _logger.LogError(ex, "❌ Erro ao carregar/gerar XSL para mapeador: {Name}", mapper.Name);
                 return null;
             }
         }

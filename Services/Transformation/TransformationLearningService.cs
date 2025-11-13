@@ -21,6 +21,8 @@ namespace LayoutParserApi.Services.Transformation
         private readonly ILogger<TransformationLearningService> _logger;
         private readonly IConfiguration _configuration;
         private readonly string _examplesBasePath;
+        private readonly string _examplesTclPath;
+        private readonly string _examplesXslPath;
         private readonly string _learningModelsPath;
 
         public TransformationLearningService(
@@ -30,11 +32,17 @@ namespace LayoutParserApi.Services.Transformation
             _logger = logger;
             _configuration = configuration;
             _examplesBasePath = configuration["TransformationPipeline:ExamplesPath"] 
-                ?? @"C:\inetpub\wwwroot\layoutparser\Examples";
+                ?? @"C:\inetpub\wwwroot\layoutparser\Exemplo";
+            _examplesTclPath = configuration["TransformationPipeline:ExamplesTclPath"] 
+                ?? @"C:\inetpub\wwwroot\layoutparser\Examples\tcl";
+            _examplesXslPath = configuration["TransformationPipeline:ExamplesXslPath"] 
+                ?? @"C:\inetpub\wwwroot\layoutparser\Examples\xsl";
             _learningModelsPath = configuration["TransformationPipeline:LearningModelsPath"] 
                 ?? @"C:\inetpub\wwwroot\layoutparser\LearningModels";
 
             Directory.CreateDirectory(_examplesBasePath);
+            Directory.CreateDirectory(_examplesTclPath);
+            Directory.CreateDirectory(_examplesXslPath);
             Directory.CreateDirectory(_learningModelsPath);
         }
 
@@ -860,6 +868,383 @@ namespace LayoutParserApi.Services.Transformation
             }
 
             return null;
+        }
+
+        /// <summary>
+        /// Carrega exemplos TCL constantemente da pasta ExamplesTclPath
+        /// </summary>
+        public async Task<List<TclExample>> LoadTclExamplesAsync(string layoutName = null)
+        {
+            var examples = new List<TclExample>();
+
+            try
+            {
+                _logger.LogInformation("Carregando exemplos TCL da pasta: {Path}", _examplesTclPath);
+
+                if (!Directory.Exists(_examplesTclPath))
+                {
+                    _logger.LogWarning("Diretório de exemplos TCL não encontrado: {Path}", _examplesTclPath);
+                    return examples;
+                }
+
+                // Buscar todos os arquivos TCL
+                var tclFiles = Directory.GetFiles(_examplesTclPath, "*.tcl", SearchOption.AllDirectories)
+                    .ToList();
+
+                _logger.LogInformation("Encontrados {Count} arquivos TCL", tclFiles.Count);
+
+                // Filtrar por layout se fornecido
+                if (!string.IsNullOrEmpty(layoutName))
+                {
+                    var normalizedLayoutName = NormalizeLayoutName(layoutName);
+                    tclFiles = tclFiles.Where(f =>
+                    {
+                        var fileName = Path.GetFileNameWithoutExtension(f);
+                        var normalizedFileName = NormalizeLayoutName(fileName);
+                        return normalizedFileName.Contains(normalizedLayoutName) ||
+                               normalizedLayoutName.Contains(normalizedFileName);
+                    }).ToList();
+                }
+
+                foreach (var tclFile in tclFiles)
+                {
+                    try
+                    {
+                        var tclContent = await File.ReadAllTextAsync(tclFile);
+                        
+                        // Tentar encontrar arquivos relacionados (input TXT e output XML)
+                        var directory = Path.GetDirectoryName(tclFile);
+                        var inputTxt = Directory.GetFiles(directory, "*.txt", SearchOption.TopDirectoryOnly)
+                            .FirstOrDefault();
+                        var outputXml = Directory.GetFiles(directory, "*.xml", SearchOption.TopDirectoryOnly)
+                            .FirstOrDefault();
+
+                        var example = new TclExample
+                        {
+                            LayoutName = layoutName ?? Path.GetFileNameWithoutExtension(tclFile),
+                            Content = tclContent,
+                            InputTxt = inputTxt != null ? await File.ReadAllTextAsync(inputTxt) : null,
+                            OutputXml = outputXml != null ? await File.ReadAllTextAsync(outputXml) : null
+                        };
+
+                        examples.Add(example);
+                        _logger.LogInformation("Exemplo TCL carregado: {File} ({Size} chars)", tclFile, tclContent.Length);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Erro ao carregar exemplo TCL: {File}", tclFile);
+                    }
+                }
+
+                _logger.LogInformation("Total de exemplos TCL carregados: {Count}", examples.Count);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Erro ao carregar exemplos TCL da pasta: {Path}", _examplesTclPath);
+            }
+
+            return examples;
+        }
+
+        /// <summary>
+        /// Carrega exemplos XSL constantemente da pasta ExamplesXslPath
+        /// </summary>
+        public async Task<List<XslExample>> LoadXslExamplesAsync(string layoutName = null)
+        {
+            var examples = new List<XslExample>();
+
+            try
+            {
+                _logger.LogInformation("Carregando exemplos XSL da pasta: {Path}", _examplesXslPath);
+
+                if (!Directory.Exists(_examplesXslPath))
+                {
+                    _logger.LogWarning("Diretório de exemplos XSL não encontrado: {Path}", _examplesXslPath);
+                    return examples;
+                }
+
+                // Buscar todos os arquivos XSL
+                var xslFiles = Directory.GetFiles(_examplesXslPath, "*.xsl", SearchOption.AllDirectories)
+                    .ToList();
+
+                _logger.LogInformation("Encontrados {Count} arquivos XSL", xslFiles.Count);
+
+                // Filtrar por layout se fornecido
+                if (!string.IsNullOrEmpty(layoutName))
+                {
+                    var normalizedLayoutName = NormalizeLayoutName(layoutName);
+                    xslFiles = xslFiles.Where(f =>
+                    {
+                        var fileName = Path.GetFileNameWithoutExtension(f);
+                        var normalizedFileName = NormalizeLayoutName(fileName);
+                        return normalizedFileName.Contains(normalizedLayoutName) ||
+                               normalizedLayoutName.Contains(normalizedFileName);
+                    }).ToList();
+                }
+
+                foreach (var xslFile in xslFiles)
+                {
+                    try
+                    {
+                        var xslContent = await File.ReadAllTextAsync(xslFile);
+                        
+                        // Tentar encontrar arquivos relacionados (input XML e output XML)
+                        var directory = Path.GetDirectoryName(xslFile);
+                        var inputXml = Directory.GetFiles(directory, "input*.xml", SearchOption.TopDirectoryOnly)
+                            .Concat(Directory.GetFiles(directory, "*input*.xml", SearchOption.TopDirectoryOnly))
+                            .FirstOrDefault();
+                        var outputXml = Directory.GetFiles(directory, "output*.xml", SearchOption.TopDirectoryOnly)
+                            .Concat(Directory.GetFiles(directory, "*output*.xml", SearchOption.TopDirectoryOnly))
+                            .FirstOrDefault();
+
+                        var example = new XslExample
+                        {
+                            LayoutName = layoutName ?? Path.GetFileNameWithoutExtension(xslFile),
+                            Content = xslContent,
+                            InputXml = inputXml != null ? await File.ReadAllTextAsync(inputXml) : null,
+                            OutputXml = outputXml != null ? await File.ReadAllTextAsync(outputXml) : null
+                        };
+
+                        examples.Add(example);
+                        _logger.LogInformation("Exemplo XSL carregado: {File} ({Size} chars)", xslFile, xslContent.Length);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Erro ao carregar exemplo XSL: {File}", xslFile);
+                    }
+                }
+
+                _logger.LogInformation("Total de exemplos XSL carregados: {Count}", examples.Count);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Erro ao carregar exemplos XSL da pasta: {Path}", _examplesXslPath);
+            }
+
+            return examples;
+        }
+
+        /// <summary>
+        /// Carrega exemplos XML esperados da pasta ExamplesPath baseado no nome do layout
+        /// </summary>
+        public async Task<List<XslExample>> LoadXmlExamplesAsync(string layoutName, string targetLayoutGuid = null)
+        {
+            var examples = new List<XslExample>();
+
+            try
+            {
+                _logger.LogInformation("Carregando exemplos XML para layout: {LayoutName}", layoutName);
+
+                if (!Directory.Exists(_examplesBasePath))
+                {
+                    _logger.LogWarning("Diretório de exemplos não encontrado: {Path}", _examplesBasePath);
+                    return examples;
+                }
+
+                // Buscar diretórios que correspondem ao layout (por nome ou GUID)
+                // Normalizar o nome do layout para comparação (remover prefixos, espaços, etc.)
+                var normalizedLayoutName = NormalizeLayoutName(layoutName);
+                
+                var layoutDirs = Directory.GetDirectories(_examplesBasePath, "*", SearchOption.TopDirectoryOnly)
+                    .Where(d =>
+                    {
+                        var dirName = Path.GetFileName(d);
+                        var normalizedDirName = NormalizeLayoutName(dirName);
+                        
+                        // Verificar se o nome do diretório contém o nome do layout ou GUID
+                        // Comparação mais flexível: verificar se partes do nome correspondem
+                        var layoutNameParts = normalizedLayoutName.Split(new[] { '_', '-', ' ' }, StringSplitOptions.RemoveEmptyEntries)
+                            .Where(p => p.Length > 3) // Ignorar partes muito pequenas
+                            .ToList();
+                        
+                        var dirNameParts = normalizedDirName.Split(new[] { '_', '-', ' ' }, StringSplitOptions.RemoveEmptyEntries)
+                            .Where(p => p.Length > 3)
+                            .ToList();
+                        
+                        // Verificar se há correspondência entre partes do nome
+                        var matchingParts = layoutNameParts.Count(part => 
+                            dirNameParts.Any(dirPart => 
+                                dirPart.Contains(part, StringComparison.OrdinalIgnoreCase) || 
+                                part.Contains(dirPart, StringComparison.OrdinalIgnoreCase)));
+                        
+                        // Se pelo menos 2 partes correspondem, considerar como match
+                        var isMatch = matchingParts >= 2 || 
+                                     dirName.Contains(layoutName, StringComparison.OrdinalIgnoreCase) ||
+                                     normalizedDirName.Contains(normalizedLayoutName, StringComparison.OrdinalIgnoreCase) ||
+                                     (!string.IsNullOrEmpty(targetLayoutGuid) && dirName.Contains(targetLayoutGuid, StringComparison.OrdinalIgnoreCase));
+                        
+                        if (isMatch)
+                        {
+                            _logger.LogInformation("Diretório de exemplo encontrado: {DirName} (match com layout: {LayoutName})", dirName, layoutName);
+                        }
+                        
+                        return isMatch;
+                    })
+                    .ToList();
+
+                _logger.LogInformation("Encontrados {Count} diretórios de exemplo para layout {LayoutName}", layoutDirs.Count, layoutName);
+                
+                // Se não encontrou diretórios específicos, buscar em todos os subdiretórios
+                if (!layoutDirs.Any())
+                {
+                    _logger.LogInformation("Nenhum diretório específico encontrado. Buscando em todos os subdiretórios...");
+                    layoutDirs = Directory.GetDirectories(_examplesBasePath, "*", SearchOption.AllDirectories)
+                        .Take(20) // Limitar a 20 diretórios
+                        .ToList();
+                }
+
+                // Buscar arquivos XML em cada diretório
+                foreach (var layoutDir in layoutDirs)
+                {
+                    var xmlFiles = Directory.GetFiles(layoutDir, "*.xml", SearchOption.AllDirectories)
+                        .ToList();
+
+                    _logger.LogInformation("Encontrados {Count} arquivos XML no diretório: {Dir}", xmlFiles.Count, layoutDir);
+
+                    foreach (var xmlFile in xmlFiles)
+                    {
+                        try
+                        {
+                            var xmlContent = await File.ReadAllTextAsync(xmlFile);
+                            
+                            // Verificar se é um XML válido
+                            var xmlDoc = XDocument.Parse(xmlContent);
+                            
+                            // Criar exemplo (sem InputXml e Content por enquanto, apenas OutputXml)
+                            var example = new XslExample
+                            {
+                                LayoutName = layoutName,
+                                OutputXml = xmlContent
+                            };
+
+                            examples.Add(example);
+                            _logger.LogInformation("Exemplo XML carregado: {File} ({Size} chars)", xmlFile, xmlContent.Length);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "Erro ao carregar exemplo XML: {File}", xmlFile);
+                        }
+                    }
+                }
+
+                // Se não encontrou exemplos específicos, buscar em todos os subdiretórios
+                if (!examples.Any())
+                {
+                    _logger.LogInformation("Nenhum exemplo específico encontrado. Buscando em todos os subdiretórios...");
+                    
+                    var allXmlFiles = Directory.GetFiles(_examplesBasePath, "*.xml", SearchOption.AllDirectories)
+                        .Take(10) // Limitar a 10 exemplos para não sobrecarregar
+                        .ToList();
+
+                    foreach (var xmlFile in allXmlFiles)
+                    {
+                        try
+                        {
+                            var xmlContent = await File.ReadAllTextAsync(xmlFile);
+                            var xmlDoc = XDocument.Parse(xmlContent);
+                            
+                            var example = new XslExample
+                            {
+                                LayoutName = layoutName,
+                                OutputXml = xmlContent
+                            };
+
+                            examples.Add(example);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "Erro ao carregar exemplo XML: {File}", xmlFile);
+                        }
+                    }
+                }
+
+                _logger.LogInformation("Total de exemplos XML carregados: {Count}", examples.Count);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Erro ao carregar exemplos XML para layout: {LayoutName}", layoutName);
+            }
+
+            return examples;
+        }
+
+        /// <summary>
+        /// Carrega um exemplo XML específico baseado no nome do layout e arquivo
+        /// </summary>
+        public async Task<string> LoadExpectedOutputXmlAsync(string layoutName, string fileName = null)
+        {
+            try
+            {
+                if (!Directory.Exists(_examplesBasePath))
+                {
+                    _logger.LogWarning("Diretório de exemplos não encontrado: {Path}", _examplesBasePath);
+                    return null;
+                }
+
+                // Buscar diretórios que correspondem ao layout
+                var layoutDirs = Directory.GetDirectories(_examplesBasePath, "*", SearchOption.TopDirectoryOnly)
+                    .Where(d => Path.GetFileName(d).Contains(layoutName, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                foreach (var layoutDir in layoutDirs)
+                {
+                    // Se fileName foi especificado, buscar esse arquivo
+                    if (!string.IsNullOrEmpty(fileName))
+                    {
+                        var filePath = Path.Combine(layoutDir, fileName);
+                        if (File.Exists(filePath))
+                        {
+                            var xmlContent = await File.ReadAllTextAsync(filePath);
+                            _logger.LogInformation("Exemplo XML carregado: {File}", filePath);
+                            return xmlContent;
+                        }
+                    }
+                    else
+                    {
+                        // Buscar primeiro arquivo XML encontrado
+                        var xmlFiles = Directory.GetFiles(layoutDir, "*.xml", SearchOption.TopDirectoryOnly)
+                            .FirstOrDefault();
+
+                        if (xmlFiles != null && File.Exists(xmlFiles))
+                        {
+                            var xmlContent = await File.ReadAllTextAsync(xmlFiles);
+                            _logger.LogInformation("Exemplo XML carregado: {File}", xmlFiles);
+                            return xmlContent;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Erro ao carregar exemplo XML esperado para layout: {LayoutName}", layoutName);
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Normaliza nome de layout para comparação (remove prefixos, espaços, etc.)
+        /// </summary>
+        private string NormalizeLayoutName(string layoutName)
+        {
+            if (string.IsNullOrEmpty(layoutName))
+                return "";
+
+            var normalized = layoutName.Trim();
+
+            // Remover prefixos comuns
+            if (normalized.StartsWith("LAY_", StringComparison.OrdinalIgnoreCase))
+                normalized = normalized.Substring(4);
+            if (normalized.StartsWith("MAP_", StringComparison.OrdinalIgnoreCase))
+                normalized = normalized.Substring(4);
+
+            // Converter para minúsculas e remover espaços extras
+            normalized = normalized.ToLowerInvariant()
+                .Replace(" ", "")
+                .Replace("_", "")
+                .Replace("-", "");
+
+            return normalized;
         }
 
         /// <summary>

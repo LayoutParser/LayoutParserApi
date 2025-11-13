@@ -23,6 +23,9 @@ namespace LayoutParserApi.Models.Entities
         // GUIDs extraídos do XML descriptografado (mais confiáveis)
         public string InputLayoutGuidFromXml { get; set; }
         public string TargetLayoutGuidFromXml { get; set; }
+        
+        // XSL extraído do XML descriptografado (prioridade sobre geração)
+        public string XslContent { get; set; }
     }
 }
 
