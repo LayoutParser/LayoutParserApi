@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Xml.Linq;
+using LayoutParserApi.Models.Entities;
 using Microsoft.Extensions.Logging;
 
 namespace LayoutParserApi.Services.XmlAnalysis
@@ -58,10 +59,14 @@ namespace LayoutParserApi.Services.XmlAnalysis
 
         /// <summary>
         /// Gera conteúdo XSL a partir do MAP
+        /// Agora processa Rules (código C#) e LinkMappings (mapeamento direto)
         /// </summary>
         private string GenerateXslContent(XDocument mapDoc)
         {
             var sb = new StringBuilder();
+
+            // Parsear MapperVO para estrutura tipada
+            var mapperVo = MapperVo.FromXml(mapDoc);
 
             // Cabeçalho XSL
             sb.AppendLine("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
@@ -82,9 +87,39 @@ namespace LayoutParserApi.Services.XmlAnalysis
             sb.AppendLine("\t\t\t\t</xsl:attribute>");
             sb.AppendLine();
 
-            // Processar regras do MAP
-            var rules = mapDoc.Descendants("Rule").ToList();
-            ProcessRules(sb, rules, mapDoc);
+            // Processar Rules (código C#) se existirem
+            if (mapperVo != null && mapperVo.Rules != null && mapperVo.Rules.Any())
+            {
+                _logger.LogInformation("Processando {Count} Rules do MapperVO", mapperVo.Rules.Count);
+                ProcessMapperRules(sb, mapperVo.Rules, mapDoc);
+            }
+            else
+            {
+                // Fallback: processar Rules do XML diretamente
+                var rules = mapDoc.Descendants("Rule").ToList();
+                if (rules.Any())
+                {
+                    _logger.LogInformation("Processando {Count} Rules do XML (fallback)", rules.Count);
+                    ProcessRules(sb, rules, mapDoc);
+                }
+            }
+
+            // Processar LinkMappings (mapeamento direto) se existirem
+            if (mapperVo != null && mapperVo.LinkMappings != null && mapperVo.LinkMappings.Any())
+            {
+                _logger.LogInformation("Processando {Count} LinkMappings do MapperVO", mapperVo.LinkMappings.Count);
+                ProcessLinkMappings(sb, mapperVo.LinkMappings, mapDoc);
+            }
+            else
+            {
+                // Tentar processar LinkMappings do XML diretamente
+                var linkMappings = mapDoc.Descendants("LinkMappingItem").ToList();
+                if (linkMappings.Any())
+                {
+                    _logger.LogInformation("Processando {Count} LinkMappings do XML (fallback)", linkMappings.Count);
+                    ProcessLinkMappingsFromXml(sb, linkMappings, mapDoc);
+                }
+            }
 
             sb.AppendLine("\t\t\t</infNFe>");
             sb.AppendLine("\t\t</NFe>");
@@ -93,6 +128,219 @@ namespace LayoutParserApi.Services.XmlAnalysis
             sb.AppendLine("</xsl:stylesheet>");
 
             return sb.ToString();
+        }
+
+        /// <summary>
+        /// Processa Rules do MapperVO (código C#)
+        /// Transforma código C# como GetConfigParametersValue para XSL
+        /// </summary>
+        private void ProcessMapperRules(StringBuilder sb, List<MapperRule> rules, XDocument mapDoc)
+        {
+            // Ordenar Rules por Sequence
+            var orderedRules = rules.OrderBy(r => r.Sequence).ToList();
+
+            foreach (var rule in orderedRules)
+            {
+                if (string.IsNullOrEmpty(rule.ContentValue))
+                    continue;
+
+                _logger.LogInformation("Processando Rule: {Name} (Sequence: {Sequence})", rule.Name, rule.Sequence);
+
+                // Processar ContentValue que contém código C#
+                ProcessRuleContentValue(sb, rule, mapDoc);
+            }
+        }
+
+        /// <summary>
+        /// Processa ContentValue de uma Rule que contém código C#
+        /// Transforma funções C# como GetConfigParametersValue para XSL
+        /// </summary>
+        private void ProcessRuleContentValue(StringBuilder sb, MapperRule rule, XDocument mapDoc)
+        {
+            var contentValue = rule.ContentValue ?? "";
+
+            // Remover marcadores %beginRuleContent; e %endRuleContent; se existirem
+            contentValue = System.Text.RegularExpressions.Regex.Replace(
+                contentValue,
+                @"%beginRuleContent;|%endRuleContent;",
+                "",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+            // Remover quebras de linha e normalizar espaços para facilitar parsing
+            contentValue = System.Text.RegularExpressions.Regex.Replace(contentValue, @"\r\n|\n|\r", " ");
+            contentValue = System.Text.RegularExpressions.Regex.Replace(contentValue, @"\s+", " ");
+
+            // Processar atribuições do tipo: T.enviNFe/NFe/dadosAdic/B2BDirectory = GetConfigParametersValue('B2B_Directory');
+            // Padrão: T.caminho/do/elemento = FuncaoCSharp('parametro');
+            var assignmentPattern = @"T\.([^\s=]+)\s*=\s*([^;]+);";
+            var assignments = System.Text.RegularExpressions.Regex.Matches(contentValue, assignmentPattern);
+
+            // Rastrear caminhos já processados para evitar duplicação
+            var processedPaths = new HashSet<string>();
+
+            foreach (System.Text.RegularExpressions.Match assignment in assignments)
+            {
+                var targetPath = assignment.Groups[1].Value.Trim(); // Ex: enviNFe/NFe/dadosAdic/B2BDirectory
+                var functionCall = assignment.Groups[2].Value.Trim(); // Ex: GetConfigParametersValue('B2B_Directory')
+
+                // Pular se já processamos este caminho
+                if (processedPaths.Contains(targetPath))
+                    continue;
+
+                processedPaths.Add(targetPath);
+
+                // Extrair elementos do caminho
+                var targetPathParts = targetPath.Split('/').Where(p => !string.IsNullOrEmpty(p)).ToList();
+                if (!targetPathParts.Any())
+                    continue;
+
+                var targetElementName = targetPathParts.Last();
+
+                // Gerar estrutura hierárquica se necessário
+                var indentLevel = 3; // infNFe já tem indentação 3
+                foreach (var part in targetPathParts.Take(targetPathParts.Count - 1))
+                {
+                    var indent = new string('\t', indentLevel);
+                    sb.AppendLine($"{indent}<{part}>");
+                    indentLevel++;
+                }
+
+                // Gerar elemento final
+                var elementIndent = new string('\t', indentLevel);
+                sb.AppendLine($"{elementIndent}<{targetElementName}>");
+
+                // Processar função C# e converter para XSL
+                var xslValue = ConvertCSharpFunctionToXsl(functionCall);
+                var valueIndent = new string('\t', indentLevel + 1);
+                sb.AppendLine($"{valueIndent}{xslValue}");
+
+                sb.AppendLine($"{elementIndent}</{targetElementName}>");
+
+                // Fechar elementos hierárquicos
+                for (int i = targetPathParts.Count - 2; i >= 0; i--)
+                {
+                    indentLevel--;
+                    var indent = new string('\t', indentLevel);
+                    sb.AppendLine($"{indent}</{targetPathParts[i]}>");
+                }
+            }
+
+            // Processar também mapeamentos diretos do tipo: I.LINHA000/Campo = T.enviNFe/...
+            var mappings = ExtractMappings(contentValue);
+            foreach (var mapping in mappings)
+            {
+                var sourcePath = mapping.Key; // Ex: I.LINHA000/Campo
+                var targetPath = mapping.Value; // Ex: T.enviNFe/NFe/infNFe/ide/cUF
+
+                // Converter para XPath e XSL
+                var xpath = ConvertToXPath(sourcePath);
+                var targetElement = GetElementFromPath(targetPath);
+
+                // Gerar elemento XSL
+                sb.AppendLine($"\t\t\t\t\t<{targetElement}>");
+                sb.AppendLine($"\t\t\t\t\t\t<xsl:value-of select=\"{xpath}\"/>");
+                sb.AppendLine($"\t\t\t\t\t</{targetElement}>");
+            }
+        }
+
+        /// <summary>
+        /// Converte função C# para XSL
+        /// Exemplo: GetConfigParametersValue('B2B_Directory') -> texto fixo ou XSL equivalente
+        /// </summary>
+        private string ConvertCSharpFunctionToXsl(string functionCall)
+        {
+            // GetConfigParametersValue('parametro') -> retorna texto fixo ou XSL equivalente
+            var getConfigPattern = @"GetConfigParametersValue\s*\(\s*'([^']+)'\s*\)";
+            var getConfigMatch = System.Text.RegularExpressions.Regex.Match(functionCall, getConfigPattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            
+            if (getConfigMatch.Success)
+            {
+                var parameter = getConfigMatch.Groups[1].Value;
+                // Por enquanto, retornar texto vazio (pode ser expandido para buscar do config)
+                // Em XSL, isso seria um valor fixo ou uma variável
+                return "<xsl:text></xsl:text>"; // Valor vazio por padrão
+            }
+
+            // ConcatString('texto1', 'texto2') -> concat('texto1', 'texto2')
+            var concatPattern = @"ConcatString\s*\(\s*'([^']+)'\s*,\s*'([^']+)'\s*\)";
+            var concatMatch = System.Text.RegularExpressions.Regex.Match(functionCall, concatPattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            
+            if (concatMatch.Success)
+            {
+                var text1 = concatMatch.Groups[1].Value;
+                var text2 = concatMatch.Groups[2].Value;
+                return $"<xsl:value-of select=\"concat('{text1}', '{text2}')\"/>";
+            }
+
+            // Se não reconhecer a função, tentar processar como expressão XPath
+            // Por enquanto, retornar texto vazio
+            _logger.LogWarning("Função C# não reconhecida: {FunctionCall}", functionCall);
+            return "<xsl:text></xsl:text>";
+        }
+
+        /// <summary>
+        /// Processa LinkMappings do MapperVO (mapeamento direto de campos)
+        /// LinkMappingItem mapeia campos diretamente do layout de entrada para o layout de saída
+        /// </summary>
+        private void ProcessLinkMappings(StringBuilder sb, List<LinkMappingItem> linkMappings, XDocument mapDoc)
+        {
+            // Ordenar LinkMappings por Sequence
+            var orderedLinkMappings = linkMappings.OrderBy(lm => lm.Sequence).ToList();
+
+            foreach (var linkMapping in orderedLinkMappings)
+            {
+                _logger.LogInformation("Processando LinkMapping: {Name} (InputGuid: {InputGuid}, TargetGuid: {TargetGuid})", 
+                    linkMapping.Name, linkMapping.InputLayoutGuid, linkMapping.TargetLayoutGuid);
+
+                // LinkMapping mapeia campos diretamente usando InputLayoutGuid e TargetLayoutGuid
+                // Por enquanto, gerar elemento baseado no nome
+                // TODO: Implementar mapeamento direto usando os GUIDs dos layouts
+                if (!string.IsNullOrEmpty(linkMapping.Name))
+                {
+                    // Extrair nome do elemento (remover prefixo se houver)
+                    var elementName = linkMapping.Name;
+                    if (elementName.Contains("_"))
+                    {
+                        var parts = elementName.Split('_');
+                        elementName = parts.Last();
+                    }
+
+                    // Gerar elemento XSL básico
+                    // Por enquanto, usar valor vazio (será preenchido quando tivermos os layouts)
+                    sb.AppendLine($"\t\t\t\t\t<{elementName}>");
+                    sb.AppendLine($"\t\t\t\t\t\t<!-- LinkMapping: {linkMapping.Name} (InputGuid: {linkMapping.InputLayoutGuid}, TargetGuid: {linkMapping.TargetLayoutGuid}) -->");
+                    sb.AppendLine($"\t\t\t\t\t\t<xsl:text></xsl:text>");
+                    sb.AppendLine($"\t\t\t\t\t</{elementName}>");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Processa LinkMappings do XML diretamente (fallback)
+        /// </summary>
+        private void ProcessLinkMappingsFromXml(StringBuilder sb, List<XElement> linkMappings, XDocument mapDoc)
+        {
+            foreach (var linkMappingElement in linkMappings)
+            {
+                var name = linkMappingElement.Element("Name")?.Value;
+                var inputGuid = linkMappingElement.Element("InputLayoutGuid")?.Value;
+                var targetGuid = linkMappingElement.Element("TargetLayoutGuid")?.Value;
+
+                if (!string.IsNullOrEmpty(name))
+                {
+                    var elementName = name;
+                    if (elementName.Contains("_"))
+                    {
+                        var parts = elementName.Split('_');
+                        elementName = parts.Last();
+                    }
+
+                    sb.AppendLine($"\t\t\t\t\t<{elementName}>");
+                    sb.AppendLine($"\t\t\t\t\t\t<!-- LinkMapping: {name} (InputGuid: {inputGuid}, TargetGuid: {targetGuid}) -->");
+                    sb.AppendLine($"\t\t\t\t\t\t<xsl:text></xsl:text>");
+                    sb.AppendLine($"\t\t\t\t\t</{elementName}>");
+                }
+            }
         }
 
         /// <summary>

@@ -316,10 +316,100 @@ namespace LayoutParserApi.Services.Database
                         mapper.TargetLayoutGuid = mapper.TargetLayoutGuidFromXml;
                     }
                 }
+                
+                // Extrair XSL do XML do mapper se existir
+                ExtractXslFromDecryptedContent(mapper, doc);
+                
+                // Extrair estrutura completa do MapperVO para uso futuro
+                // Isso permite processar Rules e LinkMappings adequadamente
+                try
+                {
+                    var mapperVo = MapperVo.FromXml(doc);
+                    if (mapperVo != null)
+                    {
+                        _logger.LogInformation("📋 MapperVO parseado para mapeador {Name} (ID: {Id}): {RulesCount} Rules, {LinkMappingsCount} LinkMappings", 
+                            mapper.Name, mapper.Id, mapperVo.Rules.Count, mapperVo.LinkMappings.Count);
+                        
+                        // Se o mapper tem XSL no MapperVO, usar esse
+                        if (!string.IsNullOrEmpty(mapperVo.XslContent) && string.IsNullOrEmpty(mapper.XslContent))
+                        {
+                            mapper.XslContent = mapperVo.XslContent;
+                            _logger.LogInformation("✅ XSL encontrado no MapperVO para mapeador {Name} (ID: {Id})", mapper.Name, mapper.Id);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Erro ao parsear MapperVO para mapeador {Id}", mapper.Id);
+                }
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Erro ao extrair LayoutGuids do XML descriptografado do mapeador {Id}", mapper.Id);
+            }
+        }
+
+        /// <summary>
+        /// Extrai XSL do XML descriptografado do mapeador
+        /// O XSL pode estar em um elemento XslContent, Xsl, ou XslPath dentro do MapperVO
+        /// </summary>
+        private void ExtractXslFromDecryptedContent(Mapper mapper, XDocument doc)
+        {
+            try
+            {
+                if (doc == null || doc.Root == null)
+                    return;
+
+                // Buscar XSL no XML do mapper
+                // Pode estar em: MapperVO/XslContent, MapperVO/Xsl, MapperVO/XslPath
+                var mapperVo = doc.Root.Name.LocalName == "MapperVO" ? doc.Root : doc.Root.Element("MapperVO");
+                if (mapperVo == null)
+                {
+                    mapperVo = doc.Root;
+                }
+
+                // Tentar buscar elemento XslContent (conteúdo XSL completo)
+                var xslContentElement = mapperVo.Element("XslContent");
+                if (xslContentElement != null && !string.IsNullOrEmpty(xslContentElement.Value))
+                {
+                    mapper.XslContent = xslContentElement.Value.Trim();
+                    _logger.LogInformation("✅ XSL encontrado no XML do mapeador {Name} (ID: {Id}) - tamanho: {Size} chars", 
+                        mapper.Name, mapper.Id, mapper.XslContent.Length);
+                    return;
+                }
+
+                // Tentar buscar elemento Xsl (alternativa)
+                var xslElement = mapperVo.Element("Xsl");
+                if (xslElement != null && !string.IsNullOrEmpty(xslElement.Value))
+                {
+                    mapper.XslContent = xslElement.Value.Trim();
+                    _logger.LogInformation("✅ XSL encontrado no XML do mapeador {Name} (ID: {Id}) - tamanho: {Size} chars", 
+                        mapper.Name, mapper.Id, mapper.XslContent.Length);
+                    return;
+                }
+
+                // Tentar buscar XSL dentro de um elemento xsl:stylesheet
+                var xslStylesheet = doc.Descendants().FirstOrDefault(e => 
+                    e.Name.LocalName == "stylesheet" && 
+                    (e.Name.NamespaceName.Contains("XSL/Transform") || 
+                     e.Parent?.Name.LocalName == "XslContent" ||
+                     e.Parent?.Name.LocalName == "Xsl"));
+                
+                if (xslStylesheet != null)
+                {
+                    // Extrair XSL completo incluindo o elemento xsl:stylesheet
+                    mapper.XslContent = xslStylesheet.ToString();
+                    _logger.LogInformation("✅ XSL (stylesheet) encontrado no XML do mapeador {Name} (ID: {Id}) - tamanho: {Size} chars", 
+                        mapper.Name, mapper.Id, mapper.XslContent.Length);
+                    return;
+                }
+
+                _logger.LogInformation("ℹ️ XSL não encontrado no XML do mapeador {Name} (ID: {Id}). Será gerado se necessário.", 
+                    mapper.Name, mapper.Id);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Erro ao extrair XSL do XML descriptografado do mapeador {Id}", mapper.Id);
             }
         }
     }
