@@ -461,13 +461,15 @@ namespace LayoutParserApi.Controllers
                         isValid = xsdValidation.IsValid,
                         documentType = xsdValidation.DocumentType,
                         xsdVersion = xsdValidation.XsdVersion,
-                        errors = xsdValidation.Errors?.Select(e => new
-                        {
-                            lineNumber = e.LineNumber,
-                            linePosition = e.LinePosition,
-                            severity = e.Severity,
-                            message = e.Message
-                        }) ?? new List<object>(),
+                        errors = (xsdValidation.Errors != null && xsdValidation.Errors.Any()) 
+                            ? xsdValidation.Errors.Select(e => new
+                            {
+                                lineNumber = e.LineNumber,
+                                linePosition = e.LinePosition,
+                                severity = e.Severity,
+                                message = e.Message
+                            }).Cast<object>().ToList()
+                            : new List<object>(),
                         warnings = xsdValidation.Warnings ?? new List<string>()
                     } : null
                 });

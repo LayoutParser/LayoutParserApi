@@ -25,7 +25,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
         /// <summary>
         /// Gera arquivo XSL a partir do MAP
         /// </summary>
-        public async Task<string> GenerateXslFromMapAsync(string mapXmlPath, string outputPath = null)
+        public async Task<string> GenerateXslFromMapAsync(string mapXmlPath, string outputPath = null, string exampleXmlPath = null)
         {
             try
             {
@@ -35,8 +35,25 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 var mapXml = await File.ReadAllTextAsync(mapXmlPath, Encoding.UTF8);
                 var mapDoc = XDocument.Parse(mapXml);
 
+                // Carregar estrutura do XML de exemplo se fornecido
+                XmlStructureInfo exampleStructure = null;
+                if (!string.IsNullOrEmpty(exampleXmlPath) && File.Exists(exampleXmlPath))
+                {
+                    try
+                    {
+                        var exampleXml = await File.ReadAllTextAsync(exampleXmlPath, Encoding.UTF8);
+                        exampleStructure = AnalyzeXmlStructure(exampleXml);
+                        _logger.LogInformation("Estrutura do XML exemplo analisada: Raiz={RootElement}, Namespaces={NamespacesCount}", 
+                            exampleStructure.RootElementName, exampleStructure.Namespaces.Count);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Erro ao analisar estrutura do XML exemplo, usando estrutura padrao");
+                    }
+                }
+
                 // Gerar XSL
-                var xslContent = GenerateXslContent(mapDoc);
+                var xslContent = GenerateXslContent(mapDoc, exampleStructure);
 
                 // Limpar e corrigir XSL gerado (remover namespaces inválidos, garantir namespaces corretos)
                 xslContent = CleanAndFixXsl(xslContent);
