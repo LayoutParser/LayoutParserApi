@@ -636,19 +636,22 @@ namespace LayoutParserApi.Services.Transformation
                     _logger.LogInformation("Processando linha {Index}: '{LinePreview}' (tamanho: {Length})",
                         currentLineIndex + 1, linePreview, txtLine.Length);
                     
-                    // Detectar tipo de linha baseado no identificador
-                    var lineIdentifier = DetectLineIdentifierFromTxt(txtLine);
-                    _logger.LogInformation("  Identificador detectado: '{Identifier}'", lineIdentifier);
+                    // Estratégia melhorada: tentar múltiplas formas de detectar o identificador
+                    XElement matchedLineDefinition = null;
+                    string matchedIdentifier = null;
                     
-                    // Encontrar definição correspondente no TCL (MAP)
-                    // Tentar múltiplas estratégias de correspondência
-                    var lineDefinition = tclDoc.Descendants("LINE")
+                    // Estratégia 1: Detectar identificador usando o método padrão
+                    var lineIdentifier = DetectLineIdentifierFromTxt(txtLine);
+                    _logger.LogInformation("  Identificador detectado (metodo padrao): '{Identifier}'", lineIdentifier);
+                    
+                    // Tentar encontrar definição correspondente no TCL
+                    matchedLineDefinition = tclDoc.Descendants("LINE")
                         .FirstOrDefault(l => 
                         {
                             var lIdentifier = l.Attribute("identifier")?.Value?.Trim();
                             var lName = l.Attribute("name")?.Value?.Trim();
                             
-                            // Estratégia 1: Correspondência exata (case-insensitive)
+                            // Correspondência exata (case-insensitive)
                             if (!string.IsNullOrEmpty(lIdentifier) && 
                                 lIdentifier.Equals(lineIdentifier, StringComparison.OrdinalIgnoreCase))
                                 return true;
@@ -657,7 +660,7 @@ namespace LayoutParserApi.Services.Transformation
                                 lName.Equals(lineIdentifier, StringComparison.OrdinalIgnoreCase))
                                 return true;
                             
-                            // Estratégia 2: HEADER pode corresponder a "H" ou "HEADER"
+                            // HEADER pode corresponder a "H" ou "HEADER"
                             if (lineIdentifier.Equals("HEADER", StringComparison.OrdinalIgnoreCase))
                             {
                                 if (lIdentifier?.Equals("H", StringComparison.OrdinalIgnoreCase) == true ||
@@ -665,14 +668,7 @@ namespace LayoutParserApi.Services.Transformation
                                     return true;
                             }
                             
-                            if (lineIdentifier.Equals("H", StringComparison.OrdinalIgnoreCase))
-                            {
-                                if (lIdentifier?.Equals("HEADER", StringComparison.OrdinalIgnoreCase) == true ||
-                                    lName?.Equals("HEADER", StringComparison.OrdinalIgnoreCase) == true)
-                                    return true;
-                            }
-                            
-                            // Estratégia 3: TRAILER pode corresponder a "T" ou "TRAILER"
+                            // TRAILER pode corresponder a "T" ou "TRAILER"
                             if (lineIdentifier.Equals("TRAILER", StringComparison.OrdinalIgnoreCase))
                             {
                                 if (lIdentifier?.Equals("T", StringComparison.OrdinalIgnoreCase) == true ||
@@ -680,30 +676,138 @@ namespace LayoutParserApi.Services.Transformation
                                     return true;
                             }
                             
-                            // Estratégia 4: Correspondência parcial (se um contém o outro)
-                            if (!string.IsNullOrEmpty(lIdentifier) && 
-                                (lIdentifier.Contains(lineIdentifier, StringComparison.OrdinalIgnoreCase) ||
-                                 lineIdentifier.Contains(lIdentifier, StringComparison.OrdinalIgnoreCase)))
-                                return true;
-                            
-                            if (!string.IsNullOrEmpty(lName) && 
-                                (lName.Contains(lineIdentifier, StringComparison.OrdinalIgnoreCase) ||
-                                 lineIdentifier.Contains(lName, StringComparison.OrdinalIgnoreCase)))
-                                return true;
-                            
                             return false;
                         });
                     
-                    if (lineDefinition != null)
+                    if (matchedLineDefinition != null)
                     {
-                        _logger.LogInformation("  Definicao de LINE encontrada no TCL para identificador '{Identifier}'", lineIdentifier);
+                        matchedIdentifier = lineIdentifier;
+                    }
+                    else
+                    {
+                        // Estratégia 2: Para linhas que começam com números, verificar padrões especiais
+                        // Linha 59: "999999..." deveria corresponder a "Z999999" ou "LINHA999999"
+                        if (txtLine.TrimStart().StartsWith("999999", StringComparison.OrdinalIgnoreCase))
+                        {
+                            _logger.LogInformation("  Padrao especial detectado: linha comeca com '999999'");
+                            matchedLineDefinition = tclDoc.Descendants("LINE")
+                                .FirstOrDefault(l => 
+                                {
+                                    var lIdentifier = l.Attribute("identifier")?.Value?.Trim();
+                                    var lName = l.Attribute("name")?.Value?.Trim();
+                                    
+                                    return (lIdentifier?.Contains("999999", StringComparison.OrdinalIgnoreCase) == true ||
+                                            lName?.Contains("999999", StringComparison.OrdinalIgnoreCase) == true ||
+                                            lIdentifier?.Equals("Z999999", StringComparison.OrdinalIgnoreCase) == true ||
+                                            lName?.Equals("LINHA999999", StringComparison.OrdinalIgnoreCase) == true);
+                                });
+                            
+                            if (matchedLineDefinition != null)
+                            {
+                                matchedIdentifier = matchedLineDefinition.Attribute("identifier")?.Value ?? 
+                                                   matchedLineDefinition.Attribute("name")?.Value ?? "Z999999";
+                                _logger.LogInformation("  Definicao encontrada para padrao '999999': '{Identifier}'", matchedIdentifier);
+                            }
+                        }
+                        
+                        // Estratégia 3: Tentar todas as definições de LINE e ver qual melhor se encaixa
+                        // Verificar se o primeiro caractere da linha (após espaços) é uma letra (A, B, C, etc.)
+                        if (matchedLineDefinition == null && txtLine.Length > 0)
+                        {
+                            var trimmedLine = txtLine.TrimStart();
+                            if (trimmedLine.Length > 0 && char.IsLetter(trimmedLine[0]))
+                            {
+                                var firstLetter = trimmedLine[0].ToString().ToUpperInvariant();
+                                _logger.LogInformation("  Tentando identificar por primeira letra: '{Letter}'", firstLetter);
+                                
+                                matchedLineDefinition = tclDoc.Descendants("LINE")
+                                    .FirstOrDefault(l => 
+                                    {
+                                        var lIdentifier = l.Attribute("identifier")?.Value?.Trim();
+                                        var lName = l.Attribute("name")?.Value?.Trim();
+                                        
+                                        return (lIdentifier?.Equals(firstLetter, StringComparison.OrdinalIgnoreCase) == true ||
+                                                lName?.StartsWith(firstLetter, StringComparison.OrdinalIgnoreCase) == true);
+                                    });
+                                
+                                if (matchedLineDefinition != null)
+                                {
+                                    matchedIdentifier = matchedLineDefinition.Attribute("identifier")?.Value ?? 
+                                                       matchedLineDefinition.Attribute("name")?.Value ?? firstLetter;
+                                    _logger.LogInformation("  Definicao encontrada por primeira letra '{Letter}': '{Identifier}'", 
+                                        firstLetter, matchedIdentifier);
+                                }
+                            }
+                        }
+                        
+                        // Estratégia 4: Tentar identificar pela correspondência de estrutura
+                        // Para cada definição de LINE, tentar extrair campos e ver qual melhor se encaixa
+                        if (matchedLineDefinition == null)
+                        {
+                            _logger.LogInformation("  Tentando identificar por correspondencia de estrutura...");
+                            
+                            var bestMatch = availableLineDefinitions
+                                .Select(lineDef =>
+                                {
+                                    // Tentar extrair campos usando esta definição
+                                    var testElement = ExtractLineFromTxtUsingTcl(txtLine, lineDef);
+                                    if (testElement == null || !testElement.Elements().Any())
+                                        return null;
+                                    
+                                    // Verificar quantos campos não vazios foram extraídos
+                                    var nonEmptyFields = testElement.Elements()
+                                        .Where(e => !string.IsNullOrWhiteSpace(e.Value))
+                                        .ToList();
+                                    
+                                    // Calcular score: quanto mais campos não vazios, melhor
+                                    // Também considerar a proporção de campos preenchidos
+                                    var totalFields = testElement.Elements().Count();
+                                    var score = nonEmptyFields.Count;
+                                    if (totalFields > 0)
+                                    {
+                                        var fillRatio = (double)nonEmptyFields.Count / totalFields;
+                                        score = (int)(score * (1.0 + fillRatio)); // Bônus para alta proporção
+                                    }
+                                    
+                                    return new
+                                    {
+                                        LineDefinition = lineDef,
+                                        Score = score,
+                                        NonEmptyFields = nonEmptyFields.Count,
+                                        TotalFields = totalFields,
+                                        TestElement = testElement
+                                    };
+                                })
+                                .Where(m => m != null && m.Score > 0)
+                                .OrderByDescending(m => m.Score)
+                                .ThenByDescending(m => m.NonEmptyFields)
+                                .FirstOrDefault();
+                            
+                            if (bestMatch != null && bestMatch.Score >= 3) // Pelo menos 3 campos não vazios
+                            {
+                                var lIdentifier = bestMatch.LineDefinition.Attribute("identifier")?.Value?.Trim();
+                                var lName = bestMatch.LineDefinition.Attribute("name")?.Value?.Trim();
+                                matchedLineDefinition = bestMatch.LineDefinition;
+                                matchedIdentifier = lIdentifier ?? lName ?? "UNKNOWN";
+                                _logger.LogInformation("  Definicao encontrada por correspondencia de estrutura: '{Identifier}' (score: {Score}, {NonEmptyFields}/{TotalFields} campos nao vazios)", 
+                                    matchedIdentifier, bestMatch.Score, bestMatch.NonEmptyFields, bestMatch.TotalFields);
+                            }
+                        }
+                    }
+                    
+                    // Processar linha se encontrou definição correspondente
+                    if (matchedLineDefinition != null)
+                    {
+                        _logger.LogInformation("  Definicao de LINE encontrada no TCL para identificador '{Identifier}'", matchedIdentifier);
                         
                         // Extrair campos da linha baseado na definição do TCL
-                        var lineElement = ExtractLineFromTxtUsingTcl(txtLine, lineDefinition);
+                        var lineElement = ExtractLineFromTxtUsingTcl(txtLine, matchedLineDefinition);
                         if (lineElement != null)
                         {
                             var fieldCount = lineElement.Elements().Count();
-                            _logger.LogInformation("  Linha processada: {FieldCount} campos extraidos", fieldCount);
+                            var nonEmptyFieldCount = lineElement.Elements().Count(e => !string.IsNullOrWhiteSpace(e.Value));
+                            _logger.LogInformation("  Linha processada: {FieldCount} campos extraidos ({NonEmptyFields} nao vazios)", 
+                                fieldCount, nonEmptyFieldCount);
                             root.Add(lineElement);
                             processedLines++;
                         }
@@ -715,7 +819,7 @@ namespace LayoutParserApi.Services.Transformation
                     }
                     else
                     {
-                        _logger.LogWarning("  Linha {Index}: Identificador '{Identifier}' nao encontrado no TCL", 
+                        _logger.LogWarning("  Linha {Index}: Nenhuma definicao de LINE encontrada no TCL para identificador '{Identifier}'", 
                             currentLineIndex + 1, lineIdentifier);
                         
                         // Contar quantas vezes cada identificador foi ignorado
