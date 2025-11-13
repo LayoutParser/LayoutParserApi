@@ -129,7 +129,7 @@ namespace LayoutParserApi.Controllers
                 _logger.LogInformation("Salvando arquivo para aprendizado: Layout={LayoutName}, Tipo={Type}", layoutName, detectedType);
 
                 // Criar diretório baseado no nome do layout
-                var basePath = _configuration["Learning:BasePath"] ?? @"C:\inetpub\wwwroot\layoutparser\Exemplo";
+                var basePath = _configuration["TransformationPipeline:ExamplesPath"] ?? @"C:\inetpub\wwwroot\layoutparser\Examples";
                 var layoutDirectory = Path.Combine(basePath, layoutName);
 
                 if (!Directory.Exists(layoutDirectory))

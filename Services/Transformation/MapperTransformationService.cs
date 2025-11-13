@@ -240,6 +240,24 @@ namespace LayoutParserApi.Services.Transformation
 
                 result.IntermediateXml = intermediateXml;
                 _logger.LogInformation("XML intermediário gerado: {Size} chars", intermediateXml.Length);
+                
+                // Log detalhado do XML intermediário para visualização
+                try
+                {
+                    // Formatar XML para facilitar visualização
+                    var formattedXml = FormatXmlForLogging(intermediateXml);
+                    _logger.LogInformation("═══════════════════════════════════════════════════════════════");
+                    _logger.LogInformation("📄 XML INTERMEDIÁRIO GERADO (TXT -> XML via TCL)");
+                    _logger.LogInformation("═══════════════════════════════════════════════════════════════");
+                    _logger.LogInformation("{IntermediateXml}", formattedXml);
+                    _logger.LogInformation("═══════════════════════════════════════════════════════════════");
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Erro ao formatar XML intermediário para logging. Logando XML original.");
+                    _logger.LogInformation("📄 XML INTERMEDIÁRIO (não formatado):");
+                    _logger.LogInformation("{IntermediateXml}", intermediateXml);
+                }
 
                 // 6. Gerar ou carregar XSL a partir do mapeador
                 // Passar o XML intermediário para melhorar a geração do XSL usando exemplos
@@ -588,6 +606,32 @@ namespace LayoutParserApi.Services.Transformation
                 _logger.LogInformation("XML intermediário gerado via TCL: {Size} chars, {LineCount} linhas processadas", 
                     intermediateXml.Length, currentLineIndex);
                 
+                // Log detalhado da estrutura do XML intermediário
+                try
+                {
+                    var rootElement = doc.Root;
+                    if (rootElement != null)
+                    {
+                        var elementCount = rootElement.Elements().Count();
+                        var elementNames = rootElement.Elements().Select(e => e.Name.LocalName).Distinct().ToList();
+                        _logger.LogInformation("📊 Estrutura do XML intermediário: {ElementCount} elementos raiz, tipos: {ElementTypes}",
+                            elementCount, string.Join(", ", elementNames));
+                        
+                        // Log de cada elemento raiz com seus campos
+                        foreach (var element in rootElement.Elements())
+                        {
+                            var fieldCount = element.Elements().Count();
+                            var fieldNames = element.Elements().Take(10).Select(f => f.Name.LocalName).ToList();
+                            _logger.LogInformation("  - {ElementName}: {FieldCount} campos (primeiros: {FieldNames})",
+                                element.Name.LocalName, fieldCount, string.Join(", ", fieldNames));
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Erro ao analisar estrutura do XML intermediário");
+                }
+                
                 return intermediateXml;
             }
             catch (Exception ex)
@@ -839,6 +883,41 @@ namespace LayoutParserApi.Services.Transformation
             {
                 _logger.LogError(ex, "Erro ao extrair linha do TXT usando TCL");
                 return null;
+            }
+        }
+
+        /// <summary>
+        /// Formata XML para logging (indenta e facilita visualização)
+        /// </summary>
+        private string FormatXmlForLogging(string xml)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(xml))
+                    return xml;
+
+                // Tentar parsear e formatar o XML
+                var doc = XDocument.Parse(xml);
+                var formatted = doc.ToString();
+                
+                // Se o XML for muito grande, truncar mas manter a estrutura
+                if (formatted.Length > 10000)
+                {
+                    var truncated = formatted.Substring(0, 10000);
+                    truncated += $"\n\n... (XML truncado - tamanho total: {formatted.Length} chars) ...";
+                    return truncated;
+                }
+                
+                return formatted;
+            }
+            catch
+            {
+                // Se não conseguir formatar, retornar original
+                if (xml.Length > 10000)
+                {
+                    return xml.Substring(0, 10000) + $"\n\n... (XML truncado - tamanho total: {xml.Length} chars) ...";
+                }
+                return xml;
             }
         }
 
