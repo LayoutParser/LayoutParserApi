@@ -43,6 +43,7 @@ namespace LayoutParserApi.Services.Transformation
         private readonly IConfiguration _configuration;
         private readonly string _tclBasePath;
         private readonly string _xslBasePath;
+        private readonly string _examplesBasePath;
 
         public MapperTransformationService(
             ICachedMapperService cachedMapperService,
@@ -72,6 +73,8 @@ namespace LayoutParserApi.Services.Transformation
                 ?? @"C:\inetpub\wwwroot\layoutparser\tcl";
             _xslBasePath = configuration["TransformationPipeline:XslPath"] 
                 ?? @"C:\inetpub\wwwroot\layoutparser\xsl";
+            _examplesBasePath = configuration["TransformationPipeline:ExamplesPath"] 
+                ?? @"C:\inetpub\wwwroot\layoutparser\Examples";
             
             // Garantir que os diretórios existam
             try
@@ -512,10 +515,16 @@ namespace LayoutParserApi.Services.Transformation
                     else
                     {
                         // Fallback final: usar gerador base diretamente
-                        var baseXsl = await _xslGenerator.GenerateXslFromMapAsync(tempMapperPath, xslPath2);
+                        // Buscar XML exemplo para usar como base para estrutura
+                        var exampleXmlPath = await FindExampleXmlPathAsync(targetLayoutName);
+                        var baseXsl = await _xslGenerator.GenerateXslFromMapAsync(tempMapperPath, xslPath2, exampleXmlPath);
                         if (!string.IsNullOrEmpty(baseXsl))
                         {
                             _logger.LogWarning("XSL gerado (fallback final): {Path}", xslPath2);
+                            if (!string.IsNullOrEmpty(exampleXmlPath))
+                            {
+                                _logger.LogInformation("XSL gerado usando estrutura do XML exemplo: {ExamplePath}", exampleXmlPath);
+                            }
                             _logger.LogWarning("RECOMENDACAO: Adicionar XSL ao mapeador no banco de dados para evitar geracao futura.");
                             return xslPath2;
                         }
@@ -1270,6 +1279,86 @@ namespace LayoutParserApi.Services.Transformation
             
             // Remover espaços em branco extras
             normalized = normalized.Trim();
+            
+            return normalized;
+        }
+        
+        /// <summary>
+        /// Busca XML de exemplo na pasta Examples baseado no nome do layout
+        /// </summary>
+        private async Task<string> FindExampleXmlPathAsync(string layoutName)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(layoutName) || string.IsNullOrWhiteSpace(_examplesBasePath))
+                    return null;
+                
+                if (!Directory.Exists(_examplesBasePath))
+                {
+                    _logger.LogWarning("Pasta de exemplos nao encontrada: {Path}", _examplesBasePath);
+                    return null;
+                }
+                
+                // Normalizar nome do layout para busca
+                var normalizedLayoutName = NormalizeLayoutNameForSearch(layoutName);
+                
+                // Buscar em subpastas que correspondem ao nome do layout
+                var matchingDirs = Directory.GetDirectories(_examplesBasePath, "*", SearchOption.TopDirectoryOnly)
+                    .Where(dir =>
+                    {
+                        var dirName = Path.GetFileName(dir);
+                        var normalizedDirName = NormalizeLayoutNameForSearch(dirName);
+                        return normalizedDirName.Contains(normalizedLayoutName) || 
+                               normalizedLayoutName.Contains(normalizedDirName);
+                    })
+                    .ToList();
+                
+                // Buscar XMLs em cada pasta correspondente
+                foreach (var dir in matchingDirs)
+                {
+                    var xmlFiles = Directory.GetFiles(dir, "*.xml", SearchOption.TopDirectoryOnly)
+                        .Where(f => !Path.GetFileName(f).Contains("input", StringComparison.OrdinalIgnoreCase))
+                        .ToList();
+                    
+                    if (xmlFiles.Any())
+                    {
+                        // Retornar o primeiro XML encontrado
+                        var examplePath = xmlFiles.First();
+                        _logger.LogInformation("XML exemplo encontrado para layout {LayoutName}: {Path}", layoutName, examplePath);
+                        return examplePath;
+                    }
+                }
+                
+                _logger.LogWarning("Nenhum XML exemplo encontrado para layout: {LayoutName} na pasta: {Path}", 
+                    layoutName, _examplesBasePath);
+                return null;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Erro ao buscar XML exemplo para layout: {LayoutName}", layoutName);
+                return null;
+            }
+        }
+        
+        /// <summary>
+        /// Normaliza nome do layout para busca de exemplos
+        /// </summary>
+        private string NormalizeLayoutNameForSearch(string layoutName)
+        {
+            if (string.IsNullOrWhiteSpace(layoutName))
+                return "";
+            
+            var normalized = layoutName.Trim();
+            
+            // Remover prefixos comuns
+            if (normalized.StartsWith("LAY_", StringComparison.OrdinalIgnoreCase))
+                normalized = normalized.Substring(4);
+            
+            // Converter para minúsculas e remover caracteres especiais
+            normalized = normalized.ToLowerInvariant()
+                .Replace(" ", "")
+                .Replace("_", "")
+                .Replace("-", "");
             
             return normalized;
         }
