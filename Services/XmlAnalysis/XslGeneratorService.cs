@@ -731,23 +731,30 @@ namespace LayoutParserApi.Services.XmlAnalysis
             var sanitized = elementName.Trim();
             
             // Remover prefixo "xmlns" se houver (reservado pelo XML)
+            // Não substituir por "ns" pois isso criaria prefixos não declarados
             if (sanitized.StartsWith("xmlns", StringComparison.OrdinalIgnoreCase))
             {
-                // Se começa com "xmlns", substituir por "ns" ou remover
+                // Se começa com "xmlns", remover completamente
                 if (sanitized.Length > 5 && sanitized[5] == ':')
                 {
-                    // Caso "xmlns:xxx", substituir por "ns:xxx"
-                    sanitized = "ns" + sanitized.Substring(5);
+                    // Caso "xmlns:xxx", remover "xmlns:" e usar apenas "xxx"
+                    sanitized = sanitized.Substring(6); // Remover "xmlns:"
                 }
                 else if (sanitized.Length == 5)
                 {
-                    // Caso apenas "xmlns", substituir por "ns"
-                    sanitized = "ns";
+                    // Caso apenas "xmlns", substituir por "element"
+                    sanitized = "element";
                 }
                 else
                 {
-                    // Caso "xmlnsAlgo", substituir por "nsAlgo"
-                    sanitized = "ns" + sanitized.Substring(5);
+                    // Caso "xmlnsAlgo", remover "xmlns" e usar apenas "Algo"
+                    sanitized = sanitized.Substring(5);
+                }
+                
+                // Se após remover "xmlns" ficou vazio, usar "element"
+                if (string.IsNullOrWhiteSpace(sanitized))
+                {
+                    sanitized = "element";
                 }
             }
             
@@ -757,18 +764,24 @@ namespace LayoutParserApi.Services.XmlAnalysis
             {
                 if (sanitized.Length == 3)
                 {
-                    // Caso apenas "xml", substituir por "elem"
-                    sanitized = "elem";
+                    // Caso apenas "xml", substituir por "element"
+                    sanitized = "element";
                 }
                 else if (sanitized.Length > 3 && sanitized[3] == ':')
                 {
-                    // Caso "xml:xxx", substituir por "elem:xxx"
-                    sanitized = "elem" + sanitized.Substring(3);
+                    // Caso "xml:xxx", remover "xml:" e usar apenas "xxx" (sem criar prefixo)
+                    sanitized = sanitized.Substring(4); // Remover "xml:"
                 }
                 else if (sanitized.Length > 3 && (char.IsLetter(sanitized[3]) || char.IsDigit(sanitized[3])))
                 {
-                    // Caso "xmlAlgo", substituir por "elemAlgo"
-                    sanitized = "elem" + sanitized.Substring(3);
+                    // Caso "xmlAlgo", remover "xml" e usar apenas "Algo"
+                    sanitized = sanitized.Substring(3);
+                }
+                
+                // Se após remover "xml" ficou vazio, usar "element"
+                if (string.IsNullOrWhiteSpace(sanitized))
+                {
+                    sanitized = "element";
                 }
             }
             
@@ -795,10 +808,11 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 sanitized = "element";
             }
             
-            // Remover caracteres inválidos adicionais (caracteres especiais exceto : _ - .)
+            // Remover caracteres inválidos adicionais (caracteres especiais exceto _ - .)
+            // IMPORTANTE: Remover ":" para evitar prefixos de namespace não declarados
             sanitized = System.Text.RegularExpressions.Regex.Replace(
                 sanitized,
-                @"[^\w:._-]",
+                @"[^\w._-]",
                 "_");
             
             // Remover múltiplos underscores consecutivos
