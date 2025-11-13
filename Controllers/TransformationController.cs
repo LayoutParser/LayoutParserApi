@@ -397,26 +397,45 @@ namespace LayoutParserApi.Controllers
 
                 if (!result.Success)
                 {
+                    _logger.LogWarning("Transformação falhou: {ErrorCount} erro(s), {WarningCount} aviso(s)", 
+                        result.Errors?.Count ?? 0, result.Warnings?.Count ?? 0);
+                    
+                    if (result.Errors != null && result.Errors.Any())
+                    {
+                        foreach (var error in result.Errors)
+                        {
+                            _logger.LogError("Erro: {Error}", error);
+                        }
+                    }
+                    
                     return BadRequest(new
                     {
                         success = false,
-                        errors = result.Errors,
-                        warnings = result.Warnings
+                        errors = result.Errors ?? new List<string>(),
+                        warnings = result.Warnings ?? new List<string>()
                     });
                 }
+
+                _logger.LogInformation("Transformação concluída com sucesso. IntermediateXml: {IntermediateSize} chars, FinalXml: {FinalSize} chars", 
+                    result.IntermediateXml?.Length ?? 0, result.FinalXml?.Length ?? 0);
 
                 return Ok(new
                 {
                     success = true,
                     intermediateXml = result.IntermediateXml,
                     finalXml = result.FinalXml,
-                    warnings = result.Warnings
+                    warnings = result.Warnings ?? new List<string>()
                 });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Erro durante transformação");
-                return StatusCode(500, new { error = ex.Message });
+                _logger.LogError(ex, "Erro durante transformação: {Message}", ex.Message);
+                _logger.LogError(ex, "Stack trace: {StackTrace}", ex.StackTrace);
+                return StatusCode(500, new { 
+                    success = false,
+                    error = ex.Message,
+                    errors = new List<string> { ex.Message }
+                });
             }
         }
 
