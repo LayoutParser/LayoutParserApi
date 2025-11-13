@@ -541,6 +541,6 @@ namespace LayoutParserApi.Controllers
         public string InputText { get; set; }
         public string InputLayoutGuid { get; set; }
         public string TargetLayoutGuid { get; set; }
-        public string MapperXml { get; set; }
+        public string? MapperXml { get; set; } // Opcional - se não fornecido, será buscado do banco
     }
 }
