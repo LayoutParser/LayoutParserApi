@@ -576,27 +576,48 @@ namespace LayoutParserApi.Services.Transformation
                     return null;
                 }
                 
-                // Configurar XslCompiledTransform
-                var xslt = new XslCompiledTransform();
-                xslt.Load(xslPath, new XsltSettings { EnableDocumentFunction = true }, new XmlUrlResolver());
+                // Ler e limpar XSL antes de usar (remove namespace 'ng' e corrige namespaces)
+                var xslContent = await File.ReadAllTextAsync(xslPath, Encoding.UTF8);
+                xslContent = CleanXslContent(xslContent);
                 
-                // Carregar XML de entrada
-                using (var xmlReader = XmlReader.Create(new StringReader(intermediateXml)))
-                using (var stringWriter = new StringWriter())
-                using (var xmlWriter = XmlWriter.Create(stringWriter, new XmlWriterSettings
+                // Salvar XSL limpo temporariamente (ou usar MemoryStream)
+                var tempXslPath = Path.Combine(Path.GetTempPath(), $"xsl_{Guid.NewGuid()}.xsl");
+                try
                 {
-                    Indent = true,
-                    IndentChars = "  ",
-                    OmitXmlDeclaration = false,
-                    Encoding = Encoding.UTF8
-                }))
-                {
-                    // Aplicar transformação
-                    xslt.Transform(xmlReader, xmlWriter);
-                    var finalXml = stringWriter.ToString();
+                    await File.WriteAllTextAsync(tempXslPath, xslContent, Encoding.UTF8);
                     
-                    _logger.LogInformation("XML final gerado via XSL: {Size} chars", finalXml.Length);
-                    return finalXml;
+                    // Configurar XslCompiledTransform
+                    var xslt = new XslCompiledTransform();
+                    xslt.Load(tempXslPath, new XsltSettings { EnableDocumentFunction = true }, new XmlUrlResolver());
+                
+                    // Carregar XML de entrada
+                    using (var xmlReader = XmlReader.Create(new StringReader(intermediateXml)))
+                    using (var stringWriter = new StringWriter())
+                    using (var xmlWriter = XmlWriter.Create(stringWriter, new XmlWriterSettings
+                    {
+                        Indent = true,
+                        IndentChars = "  ",
+                        OmitXmlDeclaration = false,
+                        Encoding = Encoding.UTF8
+                    }))
+                    {
+                        // Aplicar transformação
+                        xslt.Transform(xmlReader, xmlWriter);
+                        var finalXml = stringWriter.ToString();
+                        
+                        _logger.LogInformation("XML final gerado via XSL: {Size} chars", finalXml.Length);
+                        return finalXml;
+                    }
+                }
+                finally
+                {
+                    // Limpar arquivo temporário
+                    try
+                    {
+                        if (File.Exists(tempXslPath))
+                            File.Delete(tempXslPath);
+                    }
+                    catch { }
                 }
             }
             catch (Exception ex)
@@ -604,6 +625,100 @@ namespace LayoutParserApi.Services.Transformation
                 _logger.LogError(ex, "Erro ao aplicar transformação XSL: {Message}", ex.Message);
                 _logger.LogError(ex, "Stack trace: {StackTrace}", ex.StackTrace);
                 return null;
+            }
+        }
+
+        /// <summary>
+        /// Limpa conteúdo XSL:
+        /// - Remove namespace 'ng' (com.neogrid.integrator.XSLFunctions)
+        /// - Remove referências ao namespace 'ng' (exclude-result-prefixes, extension-element-prefixes)
+        /// - Garante que namespace 'xsi' esteja declarado se for usado
+        /// </summary>
+        private string CleanXslContent(string xslContent)
+        {
+            try
+            {
+                // Remover namespace 'ng' do xsl:stylesheet
+                xslContent = System.Text.RegularExpressions.Regex.Replace(
+                    xslContent,
+                    @"\s*xmlns:ng=""[^""]*""",
+                    "",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+                // Remover exclude-result-prefixes="ng"
+                xslContent = System.Text.RegularExpressions.Regex.Replace(
+                    xslContent,
+                    @"\s*exclude-result-prefixes=""ng""",
+                    "",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+                // Remover extension-element-prefixes="ng"
+                xslContent = System.Text.RegularExpressions.Regex.Replace(
+                    xslContent,
+                    @"\s*extension-element-prefixes=""ng""",
+                    "",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+                // Verificar se XSL usa xsi: (xsi:type, xsi:nil, etc.)
+                bool usesXsi = System.Text.RegularExpressions.Regex.IsMatch(
+                    xslContent,
+                    @"xsi:",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+                // Se usa xsi:, garantir que o namespace esteja declarado no xsl:stylesheet
+                if (usesXsi)
+                {
+                    // Verificar se o namespace xsi já está declarado no xsl:stylesheet
+                    bool hasXsiInStylesheet = System.Text.RegularExpressions.Regex.IsMatch(
+                        xslContent,
+                        @"<xsl:stylesheet[^>]*xmlns:xsi=""http://www\.w3\.org/2001/XMLSchema-instance""",
+                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+                    if (!hasXsiInStylesheet)
+                    {
+                        // Adicionar xmlns:xsi no xsl:stylesheet (antes do > de fechamento)
+                        xslContent = System.Text.RegularExpressions.Regex.Replace(
+                            xslContent,
+                            @"(<xsl:stylesheet[^>]*xmlns:xsl=""http://www\.w3\.org/1999/XSL/Transform"")([^>]*>)",
+                            @"$1" + Environment.NewLine + "\txmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"$2",
+                            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                        
+                        _logger.LogInformation("Namespace 'xsi' adicionado ao xsl:stylesheet");
+                    }
+                }
+
+                // Garantir que o namespace xsi esteja declarado no elemento de saída se for usado
+                if (usesXsi)
+                {
+                    // Verificar se há elemento NFe ou outro elemento raiz que precise do namespace xsi
+                    var rootElementPattern = @"<(\w+)[^>]*xmlns=""[^""]*""[^>]*>";
+                    var rootMatch = System.Text.RegularExpressions.Regex.Match(xslContent, rootElementPattern);
+                    if (rootMatch.Success)
+                    {
+                        var rootElementName = rootMatch.Groups[1].Value;
+                        var rootElementFullPattern = $@"<{rootElementName}[^>]*xmlns=""[^""]*""[^>]*>";
+                        if (!System.Text.RegularExpressions.Regex.IsMatch(
+                            xslContent,
+                            $@"<{rootElementName}[^>]*xmlns:xsi=""http://www\.w3\.org/2001/XMLSchema-instance""",
+                            System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+                        {
+                            // Adicionar xmlns:xsi no elemento raiz
+                            xslContent = System.Text.RegularExpressions.Regex.Replace(
+                                xslContent,
+                                $@"(<{rootElementName}[^>]*xmlns=""[^""]*"")([^>]*>)",
+                                @"$1" + Environment.NewLine + $"\t\t\t xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"$2",
+                                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                        }
+                    }
+                }
+
+                _logger.LogInformation("XSL limpo: namespace 'ng' removido, namespace 'xsi' verificado");
+                return xslContent;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Erro ao limpar XSL. Retornando XSL original.");
+                return xslContent;
             }
         }
 

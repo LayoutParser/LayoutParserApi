@@ -37,6 +37,9 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 // Gerar XSL
                 var xslContent = GenerateXslContent(mapDoc);
 
+                // Limpar e corrigir XSL gerado (remover namespaces inválidos, garantir namespaces corretos)
+                xslContent = CleanAndFixXsl(xslContent);
+
                 // Salvar arquivo se outputPath fornecido
                 if (!string.IsNullOrEmpty(outputPath))
                 {
@@ -63,17 +66,15 @@ namespace LayoutParserApi.Services.XmlAnalysis
             // Cabeçalho XSL
             sb.AppendLine("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
             sb.AppendLine("<xsl:stylesheet version=\"1.0\"");
-            sb.AppendLine("\txmlns:xsl=\"http://www.w3.org/1999/XSL/Transform\"");
-            sb.AppendLine("\txmlns:ng=\"com.neogrid.integrator.XSLFunctions\"");
-            sb.AppendLine("\texclude-result-prefixes=\"ng\"");
-            sb.AppendLine("\textension-element-prefixes=\"ng\">");
+            sb.AppendLine("\txmlns:xsl=\"http://www.w3.org/1999/XSL/Transform\">");
             sb.AppendLine();
             sb.AppendLine("\t<xsl:output method=\"xml\" encoding=\"UTF-8\" indent=\"yes\"/>");
             sb.AppendLine();
 
             // Template raiz
             sb.AppendLine("\t<xsl:template match=\"/\">");
-            sb.AppendLine("\t\t<NFe xmlns=\"http://www.portalfiscal.inf.br/nfe\">");
+            sb.AppendLine("\t\t<NFe xmlns=\"http://www.portalfiscal.inf.br/nfe\"");
+            sb.AppendLine("\t\t\t xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">");
             sb.AppendLine("\t\t\t<infNFe versao=\"4.00\">");
             sb.AppendLine("\t\t\t\t<xsl:attribute name=\"Id\">");
             sb.AppendLine("\t\t\t\t\t<xsl:text>NFe</xsl:text>");
@@ -258,6 +259,90 @@ namespace LayoutParserApi.Services.XmlAnalysis
             // T.enviNFe/NFe/infNFe/ide/cUF -> cUF
             var parts = targetPath.Split('/');
             return parts.Last();
+        }
+
+        /// <summary>
+        /// Limpa e corrige XSL gerado:
+        /// - Remove namespace 'ng' (com.neogrid.integrator.XSLFunctions)
+        /// - Remove referências ao namespace 'ng' (exclude-result-prefixes, extension-element-prefixes)
+        /// - Garante que namespace 'xsi' esteja declarado se for usado
+        /// </summary>
+        private string CleanAndFixXsl(string xslContent)
+        {
+            try
+            {
+                // Remover namespace 'ng' do xsl:stylesheet
+                xslContent = System.Text.RegularExpressions.Regex.Replace(
+                    xslContent,
+                    @"\s*xmlns:ng=""[^""]*""",
+                    "",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+                // Remover exclude-result-prefixes="ng"
+                xslContent = System.Text.RegularExpressions.Regex.Replace(
+                    xslContent,
+                    @"\s*exclude-result-prefixes=""ng""",
+                    "",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+                // Remover extension-element-prefixes="ng"
+                xslContent = System.Text.RegularExpressions.Regex.Replace(
+                    xslContent,
+                    @"\s*extension-element-prefixes=""ng""",
+                    "",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+                // Verificar se XSL usa xsi: (xsi:type, xsi:nil, etc.)
+                bool usesXsi = System.Text.RegularExpressions.Regex.IsMatch(
+                    xslContent,
+                    @"xsi:",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+                // Se usa xsi:, garantir que o namespace esteja declarado no xsl:stylesheet
+                if (usesXsi)
+                {
+                    // Verificar se o namespace xsi já está declarado no xsl:stylesheet
+                    bool hasXsiInStylesheet = System.Text.RegularExpressions.Regex.IsMatch(
+                        xslContent,
+                        @"<xsl:stylesheet[^>]*xmlns:xsi=""http://www\.w3\.org/2001/XMLSchema-instance""",
+                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+                    if (!hasXsiInStylesheet)
+                    {
+                        // Adicionar xmlns:xsi no xsl:stylesheet (antes do > de fechamento)
+                        xslContent = System.Text.RegularExpressions.Regex.Replace(
+                            xslContent,
+                            @"(<xsl:stylesheet[^>]*xmlns:xsl=""http://www\.w3\.org/1999/XSL/Transform"")([^>]*>)",
+                            @"$1" + Environment.NewLine + "\txmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"$2",
+                            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                        
+                        _logger.LogInformation("Namespace 'xsi' adicionado ao xsl:stylesheet");
+                    }
+                }
+
+                // Garantir que o namespace xsi esteja declarado no elemento de saída se for usado
+                // (já está sendo feito no GenerateXslContent, mas vamos garantir)
+                if (usesXsi && !System.Text.RegularExpressions.Regex.IsMatch(
+                    xslContent,
+                    @"<NFe[^>]*xmlns:xsi=""http://www\.w3\.org/2001/XMLSchema-instance""",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+                {
+                    // Adicionar xmlns:xsi no elemento NFe
+                    xslContent = System.Text.RegularExpressions.Regex.Replace(
+                        xslContent,
+                        @"(<NFe[^>]*xmlns=""http://www\.portalfiscal\.inf\.br/nfe"")(>)",
+                        @"$1" + Environment.NewLine + "\t\t\t xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"$2",
+                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                }
+
+                _logger.LogInformation("XSL limpo e corrigido: namespace 'ng' removido, namespace 'xsi' verificado");
+                return xslContent;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Erro ao limpar XSL. Retornando XSL original.");
+                return xslContent;
+            }
         }
     }
 }
