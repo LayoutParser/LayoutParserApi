@@ -1,6 +1,7 @@
 using LayoutParserApi.Models.Database;
 using LayoutParserApi.Services.Database;
 using LayoutParserApi.Services.Transformation;
+using LayoutParserApi.Services.XmlAnalysis;
 using Microsoft.AspNetCore.Mvc;
 
 namespace LayoutParserApi.Controllers
@@ -12,17 +13,20 @@ namespace LayoutParserApi.Controllers
         private readonly IMapperTransformationService _transformationService;
         private readonly ICachedMapperService _cachedMapperService;
         private readonly ICachedLayoutService _cachedLayoutService;
+        private readonly XsdValidationService _xsdValidationService;
         private readonly ILogger<TransformationController> _logger;
 
         public TransformationController(
             IMapperTransformationService transformationService,
             ICachedMapperService cachedMapperService,
             ICachedLayoutService cachedLayoutService,
+            XsdValidationService xsdValidationService,
             ILogger<TransformationController> logger)
         {
             _transformationService = transformationService;
             _cachedMapperService = cachedMapperService;
             _cachedLayoutService = cachedLayoutService;
+            _xsdValidationService = xsdValidationService;
             _logger = logger;
         }
 
@@ -419,12 +423,53 @@ namespace LayoutParserApi.Controllers
                 _logger.LogInformation("Transformação concluída com sucesso. IntermediateXml: {IntermediateSize} chars, FinalXml: {FinalSize} chars", 
                     result.IntermediateXml?.Length ?? 0, result.FinalXml?.Length ?? 0);
 
+                // Validar XML final com XSD da SEFAZ se disponível
+                Models.XmlAnalysis.XsdValidationResult xsdValidation = null;
+                if (!string.IsNullOrEmpty(result.FinalXml))
+                {
+                    try
+                    {
+                        _logger.LogInformation("Validando XML final com XSD da SEFAZ");
+                        
+                        // Buscar layout de destino para obter nome (para detecção de tipo)
+                        var targetLayout = await _cachedLayoutService.GetLayoutByGuidAsync(request.TargetLayoutGuid);
+                        var targetLayoutName = targetLayout?.Name;
+                        
+                        xsdValidation = await _xsdValidationService.ValidateXmlAgainstXsdAsync(
+                            result.FinalXml,
+                            xsdVersion: null,
+                            layoutName: targetLayoutName);
+                        
+                        _logger.LogInformation("Validação XSD concluída: IsValid={IsValid}, {ErrorCount} erros, {WarningCount} avisos",
+                            xsdValidation.IsValid, xsdValidation.Errors?.Count ?? 0, xsdValidation.Warnings?.Count ?? 0);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Erro ao validar XML final com XSD (continuando sem validação)");
+                        // Continuar sem validação se houver erro
+                    }
+                }
+
                 return Ok(new
                 {
                     success = true,
                     intermediateXml = result.IntermediateXml,
                     finalXml = result.FinalXml,
-                    warnings = result.Warnings ?? new List<string>()
+                    warnings = result.Warnings ?? new List<string>(),
+                    xsdValidation = xsdValidation != null ? new
+                    {
+                        isValid = xsdValidation.IsValid,
+                        documentType = xsdValidation.DocumentType,
+                        xsdVersion = xsdValidation.XsdVersion,
+                        errors = xsdValidation.Errors?.Select(e => new
+                        {
+                            lineNumber = e.LineNumber,
+                            linePosition = e.LinePosition,
+                            severity = e.Severity,
+                            message = e.Message
+                        }) ?? new List<object>(),
+                        warnings = xsdValidation.Warnings ?? new List<string>()
+                    } : null
                 });
             }
             catch (Exception ex)

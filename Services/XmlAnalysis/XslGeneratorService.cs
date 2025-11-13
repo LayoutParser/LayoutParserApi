@@ -61,12 +61,17 @@ namespace LayoutParserApi.Services.XmlAnalysis
         /// Gera conteúdo XSL a partir do MAP
         /// Agora processa Rules (código C#) e LinkMappings (mapeamento direto)
         /// </summary>
-        private string GenerateXslContent(XDocument mapDoc)
+        private string GenerateXslContent(XDocument mapDoc, XmlStructureInfo exampleStructure = null)
         {
             var sb = new StringBuilder();
 
             // Parsear MapperVO para estrutura tipada
             var mapperVo = MapperVo.FromXml(mapDoc);
+
+            // Determinar estrutura baseada no exemplo ou usar padrão
+            var rootElementName = exampleStructure?.RootElementName ?? "enviNFe";
+            var defaultNamespace = exampleStructure?.DefaultNamespace ?? "http://www.portalfiscal.inf.br/nfe";
+            var hasIdLoteAndIndSinc = exampleStructure?.HasIdLoteAndIndSinc ?? true;
 
             // Cabeçalho XSL
             sb.AppendLine("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
@@ -78,13 +83,43 @@ namespace LayoutParserApi.Services.XmlAnalysis
 
             // Template raiz
             sb.AppendLine("\t<xsl:template match=\"/\">");
-            sb.AppendLine("\t\t<NFe xmlns=\"http://www.portalfiscal.inf.br/nfe\"");
-            sb.AppendLine("\t\t\t xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">");
-            sb.AppendLine("\t\t\t<infNFe versao=\"4.00\">");
-            sb.AppendLine("\t\t\t\t<xsl:attribute name=\"Id\">");
-            sb.AppendLine("\t\t\t\t\t<xsl:text>NFe</xsl:text>");
-            sb.AppendLine("\t\t\t\t\t<xsl:value-of select=\"normalize-space(ROOT/chave/chNFe)\"/>");
-            sb.AppendLine("\t\t\t\t</xsl:attribute>");
+            
+            // Gerar elemento raiz baseado no exemplo (enviNFe se disponível)
+            if (rootElementName.Equals("enviNFe", StringComparison.OrdinalIgnoreCase))
+            {
+                // Estrutura correta: enviNFe como raiz
+                sb.AppendLine($"\t\t<enviNFe xmlns=\"{defaultNamespace}\"");
+                sb.AppendLine("\t\t\t xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"");
+                sb.AppendLine("\t\t\t xsi:schemaLocation=\"http://www.portalfiscal.inf.br/nfe\"");
+                sb.AppendLine("\t\t\t versao=\"4.00\">");
+                
+                // Adicionar idLote e indSinc se estiverem no exemplo
+                if (hasIdLoteAndIndSinc)
+                {
+                    sb.AppendLine("\t\t\t<idLote>");
+                    sb.AppendLine("\t\t\t\t<xsl:value-of select=\"normalize-space(ROOT/HEADER/sequencia)\"/>");
+                    sb.AppendLine("\t\t\t</idLote>");
+                    sb.AppendLine("\t\t\t<indSinc>0</indSinc>");
+                }
+                
+                sb.AppendLine("\t\t\t<NFe>");
+                sb.AppendLine("\t\t\t\t<infNFe versao=\"4.00\">");
+                sb.AppendLine("\t\t\t\t\t<xsl:attribute name=\"Id\">");
+                sb.AppendLine("\t\t\t\t\t\t<xsl:text>NFe</xsl:text>");
+                sb.AppendLine("\t\t\t\t\t\t<xsl:value-of select=\"normalize-space(ROOT/chave/chNFe)\"/>");
+                sb.AppendLine("\t\t\t\t\t</xsl:attribute>");
+            }
+            else
+            {
+                // Estrutura antiga: NFe como raiz (fallback)
+                sb.AppendLine($"\t\t<NFe xmlns=\"{defaultNamespace}\"");
+                sb.AppendLine("\t\t\t xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">");
+                sb.AppendLine("\t\t\t<infNFe versao=\"4.00\">");
+                sb.AppendLine("\t\t\t\t<xsl:attribute name=\"Id\">");
+                sb.AppendLine("\t\t\t\t\t<xsl:text>NFe</xsl:text>");
+                sb.AppendLine("\t\t\t\t\t<xsl:value-of select=\"normalize-space(ROOT/chave/chNFe)\"/>");
+                sb.AppendLine("\t\t\t\t</xsl:attribute>");
+            }
             sb.AppendLine();
 
             // Processar Rules (código C#) se existirem
@@ -121,13 +156,87 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 }
             }
 
-            sb.AppendLine("\t\t\t</infNFe>");
-            sb.AppendLine("\t\t</NFe>");
+            sb.AppendLine("\t\t\t\t</infNFe>");
+            
+            // Fechar elementos baseado na estrutura
+            if (rootElementName.Equals("enviNFe", StringComparison.OrdinalIgnoreCase))
+            {
+                sb.AppendLine("\t\t\t</NFe>");
+                sb.AppendLine("\t\t</enviNFe>");
+            }
+            else
+            {
+                sb.AppendLine("\t\t</NFe>");
+            }
+            
             sb.AppendLine("\t</xsl:template>");
             sb.AppendLine();
             sb.AppendLine("</xsl:stylesheet>");
 
             return sb.ToString();
+        }
+        
+        /// <summary>
+        /// Informações sobre a estrutura de um XML de exemplo
+        /// </summary>
+        private class XmlStructureInfo
+        {
+            public string RootElementName { get; set; }
+            public string DefaultNamespace { get; set; }
+            public Dictionary<string, string> Namespaces { get; set; } = new();
+            public bool HasIdLoteAndIndSinc { get; set; }
+            public string Versao { get; set; }
+        }
+        
+        /// <summary>
+        /// Analisa a estrutura de um XML de exemplo para determinar como gerar o XSL
+        /// </summary>
+        private XmlStructureInfo AnalyzeXmlStructure(string exampleXml)
+        {
+            var structure = new XmlStructureInfo();
+            
+            try
+            {
+                var doc = XDocument.Parse(exampleXml);
+                var root = doc.Root;
+                
+                if (root == null)
+                    return structure;
+                
+                // Extrair nome do elemento raiz
+                structure.RootElementName = root.Name.LocalName;
+                
+                // Extrair namespace padrão
+                structure.DefaultNamespace = root.Name.Namespace.NamespaceName;
+                
+                // Extrair todos os namespaces
+                foreach (var attr in root.Attributes())
+                {
+                    if (attr.IsNamespaceDeclaration)
+                    {
+                        var prefix = attr.Name.LocalName == "xmlns" ? "" : attr.Name.LocalName;
+                        structure.Namespaces[prefix] = attr.Value;
+                    }
+                    else if (attr.Name == XName.Get("versao"))
+                    {
+                        structure.Versao = attr.Value;
+                    }
+                }
+                
+                // Verificar se tem idLote e indSinc como filhos diretos do raiz
+                var idLote = root.Element(root.Name.Namespace + "idLote");
+                var indSinc = root.Element(root.Name.Namespace + "indSinc");
+                structure.HasIdLoteAndIndSinc = idLote != null && indSinc != null;
+                
+                _logger.LogInformation("Estrutura XML analisada: Raiz={Root}, Namespace={Namespace}, TemIdLoteIndSinc={HasIdLote}", 
+                    structure.RootElementName, structure.DefaultNamespace, structure.HasIdLoteAndIndSinc);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Erro ao analisar estrutura do XML exemplo");
+            }
+            
+            return structure;
         }
 
         /// <summary>
