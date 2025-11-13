@@ -1069,6 +1069,95 @@ namespace LayoutParserApi.Services.Transformation
             if (normalizedLine.Length == 0)
                 return "UNKNOWN";
             
+            // Estratégia 0: Detectar formato IDOC (EDI_DC40, ZRSDM_NFE_400_*, etc.)
+            if (normalizedLine.StartsWith("EDI_DC40", StringComparison.OrdinalIgnoreCase))
+                return "EDI_DC40";
+            
+            // IDOC com prefixo ZRSDM_NFE_400_*
+            // Exemplo: "ZRSDM_NFE_400_IDE000" -> extrair "IDE000" ou "IDE"
+            if (normalizedLine.StartsWith("ZRSDM_NFE_400_", StringComparison.OrdinalIgnoreCase))
+            {
+                // Extrair o identificador após o prefixo
+                var afterPrefix = normalizedLine.Substring("ZRSDM_NFE_400_".Length);
+                
+                // Pegar o identificador até o primeiro espaço
+                // Exemplo: "ZRSDM_NFE_400_IDE000          6100000000..." -> "IDE000"
+                var identifierEnd = afterPrefix.IndexOfAny(new[] { ' ', '\t' });
+                if (identifierEnd > 0)
+                {
+                    var segmentId = afterPrefix.Substring(0, identifierEnd);
+                    
+                    // Remover zeros finais do segmentId (ex: "IDE000" -> "IDE")
+                    // Isso é comum em IDOC onde os segmentos têm sufixos numéricos
+                    segmentId = segmentId.TrimEnd('0');
+                    if (string.IsNullOrEmpty(segmentId))
+                        segmentId = afterPrefix.Substring(0, identifierEnd); // Se removido tudo, usar original
+                    
+                    // Mapear identificadores IDOC para identificadores esperados no layout
+                    // Exemplo: "IDE000" -> "LINHA_IDE" ou "IDE"
+                    if (segmentId.StartsWith("IDE", StringComparison.OrdinalIgnoreCase))
+                        return "LINHA_IDE";
+                    if (segmentId.StartsWith("EMIT", StringComparison.OrdinalIgnoreCase))
+                        return "LINHA_EMIT";
+                    if (segmentId.StartsWith("ENDEMIT", StringComparison.OrdinalIgnoreCase))
+                        return "LINHA_ENDEMIT";
+                    if (segmentId.StartsWith("DEST", StringComparison.OrdinalIgnoreCase))
+                        return "LINHA_DEST";
+                    if (segmentId.StartsWith("ENDERDEST", StringComparison.OrdinalIgnoreCase))
+                        return "LINHA_ENDERDEST";
+                    if (segmentId.StartsWith("DET", StringComparison.OrdinalIgnoreCase))
+                        return "LINHA_DET";
+                    if (segmentId.StartsWith("PROD", StringComparison.OrdinalIgnoreCase))
+                        return "LINHA_PROD";
+                    if (segmentId.StartsWith("IMPOSTO", StringComparison.OrdinalIgnoreCase))
+                        return "LINHA_IMPOSTO";
+                    if (segmentId.StartsWith("ICMS", StringComparison.OrdinalIgnoreCase))
+                        return "LINHA_ICMS";
+                    if (segmentId.StartsWith("IPI", StringComparison.OrdinalIgnoreCase))
+                        return "LINHA_IPI";
+                    if (segmentId.StartsWith("PIS", StringComparison.OrdinalIgnoreCase))
+                        return "LINHA_PIS";
+                    if (segmentId.StartsWith("COFINS", StringComparison.OrdinalIgnoreCase))
+                        return "LINHA_COFINS";
+                    if (segmentId.StartsWith("TOTAL", StringComparison.OrdinalIgnoreCase))
+                        return "LINHA_TOTAL";
+                    if (segmentId.StartsWith("TRANSP", StringComparison.OrdinalIgnoreCase))
+                        return "LINHA_TRANSP";
+                    if (segmentId.StartsWith("TRANSPORTA", StringComparison.OrdinalIgnoreCase))
+                        return "LINHA_TRANSPORTA";
+                    if (segmentId.StartsWith("VOL", StringComparison.OrdinalIgnoreCase))
+                        return "LINHA_VOL";
+                    if (segmentId.StartsWith("PAG", StringComparison.OrdinalIgnoreCase))
+                        return "LINHA_PAG";
+                    if (segmentId.StartsWith("DETPAG", StringComparison.OrdinalIgnoreCase))
+                        return "LINHA_DETPAG";
+                    if (segmentId.StartsWith("INFADIC", StringComparison.OrdinalIgnoreCase))
+                        return "LINHA_INFADIC";
+                    if (segmentId.StartsWith("INFCPL", StringComparison.OrdinalIgnoreCase))
+                        return "LINHA_INFCPL";
+                    if (segmentId.StartsWith("CONTROL", StringComparison.OrdinalIgnoreCase))
+                        return "LINHA_CONTROL";
+                    if (segmentId.StartsWith("BLOCO", StringComparison.OrdinalIgnoreCase))
+                        return "LINHA_BLOCO";
+                    
+                    // Se não mapear, tentar usar o segmentId diretamente sem os zeros finais
+                    // Exemplo: "IDE000" -> "IDE"
+                    if (segmentId.Length > 3 && segmentId.EndsWith("000"))
+                        return "LINHA_" + segmentId.Substring(0, segmentId.Length - 3);
+                    
+                    // Usar o segmentId completo com prefixo LINHA_
+                    return "LINHA_" + segmentId;
+                }
+                
+                // Se não conseguir extrair, usar o início após o prefixo
+                if (afterPrefix.Length > 0)
+                {
+                    var firstPart = afterPrefix.Split(new[] { ' ', '\t', '_' }, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+                    if (!string.IsNullOrEmpty(firstPart))
+                        return "LINHA_" + firstPart;
+                }
+            }
+            
             // Estratégia 1: Verificar padrões conhecidos (HEADER, TRAILER, etc.)
             if (normalizedLine.StartsWith("HEADER", StringComparison.OrdinalIgnoreCase) ||
                 normalizedLine.Contains("HEADER", StringComparison.OrdinalIgnoreCase))
