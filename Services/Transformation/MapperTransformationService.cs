@@ -7,11 +7,16 @@ using LayoutParserApi.Services.Parsing.Interfaces;
 using LayoutParserApi.Services.XmlAnalysis;
 using LayoutParserApi.Services.Transformation;
 using Microsoft.Extensions.Configuration;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Text;
+using System.Threading.Tasks;
+using System.Xml;
 using System.Xml.Linq;
 using System.Xml.Xsl;
-using System.Xml;
-using System.IO;
+using Microsoft.Extensions.Logging;
 
 namespace LayoutParserApi.Services.Transformation
 {
@@ -557,14 +562,31 @@ namespace LayoutParserApi.Services.Transformation
                 var tclContent = await File.ReadAllTextAsync(tclPath, Encoding.UTF8);
                 var tclDoc = XDocument.Parse(tclContent);
                 
+                // Log: Listar todas as definições de LINE disponíveis no TCL
+                var availableLineDefinitions = tclDoc.Descendants("LINE").ToList();
+                _logger.LogInformation("📋 TCL contém {Count} definições de LINE:", availableLineDefinitions.Count);
+                foreach (var lineDef in availableLineDefinitions)
+                {
+                    var identifier = lineDef.Attribute("identifier")?.Value ?? "null";
+                    var name = lineDef.Attribute("name")?.Value ?? "null";
+                    var fieldCount = lineDef.Descendants("FIELD").Count();
+                    _logger.LogInformation("  - identifier: '{Identifier}', name: '{Name}', campos: {FieldCount}",
+                        identifier, name, fieldCount);
+                }
+                
                 // Processar TXT usando o TCL (MAP)
                 // O TCL define a estrutura de linhas e campos
                 var txtLines = txtContent.Split(new[] { "\r\n", "\n", "\r" }, StringSplitOptions.None)
                     .Where(l => !string.IsNullOrWhiteSpace(l))
                     .ToList();
                 
+                _logger.LogInformation("📄 TXT contém {Count} linhas (após remover linhas vazias)", txtLines.Count);
+                
                 var root = new XElement("ROOT");
                 var currentLineIndex = 0;
+                var processedLines = 0;
+                var skippedLines = 0;
+                var skippedIdentifiers = new Dictionary<string, int>();
                 
                 // Processar cada linha do TXT
                 foreach (var txtLine in txtLines)
@@ -572,32 +594,114 @@ namespace LayoutParserApi.Services.Transformation
                     if (string.IsNullOrWhiteSpace(txtLine))
                         continue;
                     
+                    // Log: Mostrar primeiros caracteres da linha para debug
+                    var linePreview = txtLine.Length > 50 ? txtLine.Substring(0, 50) + "..." : txtLine;
+                    _logger.LogInformation("🔍 Processando linha {Index}: '{LinePreview}' (tamanho: {Length})",
+                        currentLineIndex + 1, linePreview, txtLine.Length);
+                    
                     // Detectar tipo de linha baseado no identificador
                     var lineIdentifier = DetectLineIdentifierFromTxt(txtLine);
+                    _logger.LogInformation("  → Identificador detectado: '{Identifier}'", lineIdentifier);
                     
                     // Encontrar definição correspondente no TCL (MAP)
+                    // Tentar múltiplas estratégias de correspondência
                     var lineDefinition = tclDoc.Descendants("LINE")
                         .FirstOrDefault(l => 
-                            l.Attribute("identifier")?.Value == lineIdentifier ||
-                            l.Attribute("name")?.Value == lineIdentifier ||
-                            l.Attribute("name")?.Value?.Equals(lineIdentifier, StringComparison.OrdinalIgnoreCase) == true);
+                        {
+                            var lIdentifier = l.Attribute("identifier")?.Value?.Trim();
+                            var lName = l.Attribute("name")?.Value?.Trim();
+                            
+                            // Estratégia 1: Correspondência exata (case-insensitive)
+                            if (!string.IsNullOrEmpty(lIdentifier) && 
+                                lIdentifier.Equals(lineIdentifier, StringComparison.OrdinalIgnoreCase))
+                                return true;
+                            
+                            if (!string.IsNullOrEmpty(lName) && 
+                                lName.Equals(lineIdentifier, StringComparison.OrdinalIgnoreCase))
+                                return true;
+                            
+                            // Estratégia 2: HEADER pode corresponder a "H" ou "HEADER"
+                            if (lineIdentifier.Equals("HEADER", StringComparison.OrdinalIgnoreCase))
+                            {
+                                if (lIdentifier?.Equals("H", StringComparison.OrdinalIgnoreCase) == true ||
+                                    lName?.Equals("H", StringComparison.OrdinalIgnoreCase) == true)
+                                    return true;
+                            }
+                            
+                            if (lineIdentifier.Equals("H", StringComparison.OrdinalIgnoreCase))
+                            {
+                                if (lIdentifier?.Equals("HEADER", StringComparison.OrdinalIgnoreCase) == true ||
+                                    lName?.Equals("HEADER", StringComparison.OrdinalIgnoreCase) == true)
+                                    return true;
+                            }
+                            
+                            // Estratégia 3: TRAILER pode corresponder a "T" ou "TRAILER"
+                            if (lineIdentifier.Equals("TRAILER", StringComparison.OrdinalIgnoreCase))
+                            {
+                                if (lIdentifier?.Equals("T", StringComparison.OrdinalIgnoreCase) == true ||
+                                    lName?.Equals("T", StringComparison.OrdinalIgnoreCase) == true)
+                                    return true;
+                            }
+                            
+                            // Estratégia 4: Correspondência parcial (se um contém o outro)
+                            if (!string.IsNullOrEmpty(lIdentifier) && 
+                                (lIdentifier.Contains(lineIdentifier, StringComparison.OrdinalIgnoreCase) ||
+                                 lineIdentifier.Contains(lIdentifier, StringComparison.OrdinalIgnoreCase)))
+                                return true;
+                            
+                            if (!string.IsNullOrEmpty(lName) && 
+                                (lName.Contains(lineIdentifier, StringComparison.OrdinalIgnoreCase) ||
+                                 lineIdentifier.Contains(lName, StringComparison.OrdinalIgnoreCase)))
+                                return true;
+                            
+                            return false;
+                        });
                     
                     if (lineDefinition != null)
                     {
+                        _logger.LogInformation("  ✅ Definição de LINE encontrada no TCL para identificador '{Identifier}'", lineIdentifier);
+                        
                         // Extrair campos da linha baseado na definição do TCL
                         var lineElement = ExtractLineFromTxtUsingTcl(txtLine, lineDefinition);
                         if (lineElement != null)
                         {
+                            var fieldCount = lineElement.Elements().Count();
+                            _logger.LogInformation("  ✅ Linha processada: {FieldCount} campos extraídos", fieldCount);
                             root.Add(lineElement);
+                            processedLines++;
+                        }
+                        else
+                        {
+                            _logger.LogWarning("  ⚠️ Linha {Index}: Falha ao extrair campos (lineElement é null)", currentLineIndex + 1);
+                            skippedLines++;
                         }
                     }
                     else
                     {
-                        _logger.LogWarning("Linha {Index}: Identificador '{Identifier}' não encontrado no TCL", 
+                        _logger.LogWarning("  ❌ Linha {Index}: Identificador '{Identifier}' não encontrado no TCL", 
                             currentLineIndex + 1, lineIdentifier);
+                        
+                        // Contar quantas vezes cada identificador foi ignorado
+                        if (skippedIdentifiers.ContainsKey(lineIdentifier))
+                            skippedIdentifiers[lineIdentifier]++;
+                        else
+                            skippedIdentifiers[lineIdentifier] = 1;
+                        
+                        skippedLines++;
                     }
                     
                     currentLineIndex++;
+                }
+                
+                // Log resumo do processamento
+                _logger.LogInformation("📊 Resumo do processamento TCL:");
+                _logger.LogInformation("  - Total de linhas: {Total}", txtLines.Count);
+                _logger.LogInformation("  - Linhas processadas: {Processed}", processedLines);
+                _logger.LogInformation("  - Linhas ignoradas: {Skipped}", skippedLines);
+                if (skippedIdentifiers.Any())
+                {
+                    _logger.LogWarning("  - Identificadores ignorados: {SkippedIds}",
+                        string.Join(", ", skippedIdentifiers.Select(kvp => $"{kvp.Key}({kvp.Value}x)")));
                 }
                 
                 var doc = new XDocument(new XDeclaration("1.0", "utf-8", "yes"), root);
@@ -810,26 +914,88 @@ namespace LayoutParserApi.Services.Transformation
             if (string.IsNullOrWhiteSpace(txtLine))
                 return "UNKNOWN";
             
-            // Para MQSeries: pode ter identificador no início (ex: "A", "B", "H")
-            if (txtLine.Length >= 1)
+            // Normalizar linha (trim)
+            var normalizedLine = txtLine.Trim();
+            if (normalizedLine.Length == 0)
+                return "UNKNOWN";
+            
+            // Estratégia 1: Verificar padrões conhecidos (HEADER, TRAILER, etc.)
+            if (normalizedLine.StartsWith("HEADER", StringComparison.OrdinalIgnoreCase) ||
+                normalizedLine.Contains("HEADER", StringComparison.OrdinalIgnoreCase))
+                return "HEADER";
+            
+            if (normalizedLine.StartsWith("TRAILER", StringComparison.OrdinalIgnoreCase) ||
+                normalizedLine.Contains("TRAILER", StringComparison.OrdinalIgnoreCase))
+                return "TRAILER";
+            
+            if (normalizedLine.Contains("LINHA000", StringComparison.OrdinalIgnoreCase))
+                return "LINHA000";
+            
+            if (normalizedLine.Contains("LINHA001", StringComparison.OrdinalIgnoreCase))
+                return "LINHA001";
+            
+            // Estratégia 2: Para MQSeries: pode ter identificador no início (ex: "A", "B", "H")
+            // Verificar se o primeiro caractere é uma letra
+            var firstChar = normalizedLine[0];
+            if (char.IsLetter(firstChar))
             {
-                var firstChar = txtLine[0];
-                if (char.IsLetter(firstChar))
+                // Verificar se é um identificador simples seguido de espaço ou dígito
+                if (normalizedLine.Length > 1)
                 {
-                    // Verificar se é um identificador simples (A, B, C, etc.)
-                    if (txtLine.Length > 1 && (char.IsDigit(txtLine[1]) || char.IsWhiteSpace(txtLine[1])))
+                    var secondChar = normalizedLine[1];
+                    if (char.IsDigit(secondChar) || char.IsWhiteSpace(secondChar))
                     {
-                        return firstChar.ToString();
+                        // Retornar primeira letra como identificador (A, B, C, H, etc.)
+                        return firstChar.ToString().ToUpperInvariant();
                     }
+                }
+                else
+                {
+                    // Linha com apenas uma letra
+                    return firstChar.ToString().ToUpperInvariant();
                 }
             }
             
-            // Verificar padrões conhecidos
-            if (txtLine.Contains("HEADER", StringComparison.OrdinalIgnoreCase)) return "HEADER";
-            if (txtLine.Contains("TRAILER", StringComparison.OrdinalIgnoreCase)) return "TRAILER";
-            if (txtLine.Contains("LINHA000", StringComparison.OrdinalIgnoreCase)) return "LINHA000";
-            if (txtLine.Contains("LINHA001", StringComparison.OrdinalIgnoreCase)) return "LINHA001";
+            // Estratégia 3: Verificar se começa com dígito seguido de letra (ex: "1A", "2B")
+            if (normalizedLine.Length >= 2 && char.IsDigit(normalizedLine[0]) && char.IsLetter(normalizedLine[1]))
+            {
+                return normalizedLine[1].ToString().ToUpperInvariant();
+            }
             
+            // Estratégia 4: Verificar padrões numéricos comuns (ex: "0001", "0010")
+            if (normalizedLine.Length >= 4 && normalizedLine.All(char.IsDigit))
+            {
+                // Se for um número, pode ser um código de linha
+                return normalizedLine.Substring(0, Math.Min(4, normalizedLine.Length));
+            }
+            
+            // Estratégia 5: Usar os primeiros caracteres alfanuméricos como identificador
+            var alphanumericStart = new System.Text.StringBuilder();
+            foreach (var c in normalizedLine)
+            {
+                if (char.IsLetterOrDigit(c))
+                {
+                    alphanumericStart.Append(c);
+                    if (alphanumericStart.Length >= 10) // Limitar a 10 caracteres
+                        break;
+                }
+                else if (alphanumericStart.Length > 0)
+                {
+                    // Parar ao encontrar caractere não alfanumérico
+                    break;
+                }
+            }
+            
+            if (alphanumericStart.Length > 0)
+            {
+                var identifier = alphanumericStart.ToString();
+                // Se for muito longo, usar apenas os primeiros caracteres
+                if (identifier.Length > 10)
+                    identifier = identifier.Substring(0, 10);
+                return identifier;
+            }
+            
+            // Fallback: usar "UNKNOWN"
             return "UNKNOWN";
         }
 
