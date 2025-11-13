@@ -278,15 +278,15 @@ namespace LayoutParserApi.Services.Database
 
                 // Buscar InputLayoutGuid e TargetLayoutGuid do XML
                 // Podem estar diretamente no root ou dentro de um elemento MapperVO
-                var mapperVo = root.Name.LocalName == "MapperVO" ? root : root.Element("MapperVO");
-                if (mapperVo == null)
+                var mapperVoElement = root.Name.LocalName == "MapperVO" ? root : root.Element("MapperVO");
+                if (mapperVoElement == null)
                 {
                     // Tentar buscar diretamente no root
-                    mapperVo = root;
+                    mapperVoElement = root;
                 }
 
-                var inputLayoutGuidElement = mapperVo.Element("InputLayoutGuid");
-                var targetLayoutGuidElement = mapperVo.Element("TargetLayoutGuid");
+                var inputLayoutGuidElement = mapperVoElement.Element("InputLayoutGuid");
+                var targetLayoutGuidElement = mapperVoElement.Element("TargetLayoutGuid");
 
                 // Se encontrados no XML, usar esses valores (podem ser mais precisos que as colunas do banco)
                 if (inputLayoutGuidElement != null && !string.IsNullOrEmpty(inputLayoutGuidElement.Value))
@@ -324,16 +324,16 @@ namespace LayoutParserApi.Services.Database
                 // Isso permite processar Rules e LinkMappings adequadamente
                 try
                 {
-                    var mapperVo = MapperVo.FromXml(doc);
-                    if (mapperVo != null)
+                    var parsedMapperVo = MapperVo.FromXml(doc);
+                    if (parsedMapperVo != null)
                     {
                         _logger.LogInformation("📋 MapperVO parseado para mapeador {Name} (ID: {Id}): {RulesCount} Rules, {LinkMappingsCount} LinkMappings", 
-                            mapper.Name, mapper.Id, mapperVo.Rules.Count, mapperVo.LinkMappings.Count);
+                            mapper.Name, mapper.Id, parsedMapperVo.Rules.Count, parsedMapperVo.LinkMappings.Count);
                         
                         // Se o mapper tem XSL no MapperVO, usar esse
-                        if (!string.IsNullOrEmpty(mapperVo.XslContent) && string.IsNullOrEmpty(mapper.XslContent))
+                        if (!string.IsNullOrEmpty(parsedMapperVo.XslContent) && string.IsNullOrEmpty(mapper.XslContent))
                         {
-                            mapper.XslContent = mapperVo.XslContent;
+                            mapper.XslContent = parsedMapperVo.XslContent;
                             _logger.LogInformation("✅ XSL encontrado no MapperVO para mapeador {Name} (ID: {Id})", mapper.Name, mapper.Id);
                         }
                     }
