@@ -1,7 +1,11 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 
 namespace LayoutParserApi.Services.Learning
 {
@@ -16,7 +20,7 @@ namespace LayoutParserApi.Services.Learning
         public FileStorageService(IConfiguration configuration, ILogger<FileStorageService> logger)
         {
             _logger = logger;
-            _basePath = configuration["Learning:BasePath"] ?? @"C:\inetpub\wwwroot\layoutparser\Exemplo";
+            _basePath = configuration["TransformationPipeline:ExamplesPath"] ?? @"C:\inetpub\wwwroot\layoutparser\Examples";
             
             // Garantir que o diretório base existe
             if (!Directory.Exists(_basePath))
