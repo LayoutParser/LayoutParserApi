@@ -296,36 +296,36 @@ try
     // Inicializar cache permanente de layouts e mapeadores na inicialização
     try
     {
-        Log.Information("🔄 Iniciando população do cache permanente...");
+        Log.Information("Iniciando populacao do cache permanente...");
         
         using (var scope = app.Services.CreateScope())
         {
             var cachedLayoutService = scope.ServiceProvider.GetRequiredService<ICachedLayoutService>();
             var cachedMapperService = scope.ServiceProvider.GetRequiredService<ICachedMapperService>();
             
-            Log.Information("📦 Populando cache de layouts...");
+            Log.Information("Populando cache de layouts...");
             
             // Popular cache de layouts
             try
             {
                 await cachedLayoutService.RefreshCacheFromDatabaseAsync();
-                Log.Information("✅ Cache de layouts populado com sucesso");
+                Log.Information("Cache de layouts populado com sucesso");
             }
             catch (Exception ex)
             {
-                Log.Error(ex, "❌ Erro ao popular cache de layouts: {Message}", ex.Message);
+                Log.Error(ex, "Erro ao popular cache de layouts: {Message}", ex.Message);
             }
             
             // Popular cache de mapeadores
-            Log.Information("📦 Populando cache de mapeadores...");
+            Log.Information("Populando cache de mapeadores...");
             try
             {
                 await cachedMapperService.RefreshCacheFromDatabaseAsync();
-                Log.Information("✅ Cache de mapeadores populado com sucesso");
+                Log.Information("Cache de mapeadores populado com sucesso");
             }
             catch (Exception ex)
             {
-                Log.Error(ex, "❌ Erro ao popular cache de mapeadores: {Message}", ex.Message);
+                Log.Error(ex, "Erro ao popular cache de mapeadores: {Message}", ex.Message);
                 Log.Error(ex, "Stack trace: {StackTrace}", ex.StackTrace);
             }
             
@@ -333,19 +333,19 @@ try
             try
             {
                 var allMappers = await cachedMapperService.GetAllMappersAsync();
-                Log.Information("✅ Verificação: {Count} mapeadores disponíveis no cache", allMappers?.Count ?? 0);
+                Log.Information("Verificacao: {Count} mapeadores disponiveis no cache", allMappers?.Count ?? 0);
             }
             catch (Exception ex)
             {
-                Log.Warning(ex, "⚠️ Erro ao verificar cache de mapeadores: {Message}", ex.Message);
+                Log.Warning(ex, "Erro ao verificar cache de mapeadores: {Message}", ex.Message);
             }
             
-            Log.Information("✅ Cache permanente inicializado com sucesso");
+            Log.Information("Cache permanente inicializado com sucesso");
         }
     }
     catch (Exception ex)
     {
-        Log.Error(ex, "❌ Erro ao inicializar cache permanente. A aplicação continuará, mas o cache pode estar vazio.");
+        Log.Error(ex, "Erro ao inicializar cache permanente. A aplicacao continuara, mas o cache pode estar vazio.");
         Log.Error(ex, "Stack trace: {StackTrace}", ex.StackTrace);
     }
 

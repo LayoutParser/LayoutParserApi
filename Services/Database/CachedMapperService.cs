@@ -32,18 +32,18 @@ namespace LayoutParserApi.Services.Database
         {
             try
             {
-                _logger.LogInformation("🔍 Buscando mapeadores por InputLayoutGuid: {Guid}", inputLayoutGuid);
+                _logger.LogInformation("Buscando mapeadores por InputLayoutGuid: {Guid}", inputLayoutGuid);
                 
                 // Normalizar o GUID (remover prefixo LAY_ se houver)
                 var normalizedGuid = NormalizeLayoutGuid(inputLayoutGuid);
-                _logger.LogInformation("📝 GUID normalizado: {NormalizedGuid}", normalizedGuid);
+                _logger.LogInformation("GUID normalizado: {NormalizedGuid}", normalizedGuid);
                 
                 // Primeiro, buscar todos os mapeadores do cache permanente
                 var allMappers = await GetAllMappersAsync();
                 
                 if (allMappers != null && allMappers.Any())
                 {
-                    _logger.LogInformation("📊 Total de mapeadores no cache: {Count}", allMappers.Count);
+                    _logger.LogInformation("Total de mapeadores no cache: {Count}", allMappers.Count);
                     
                     // Filtrar mapeadores que têm este layout como entrada
                     // PRIORIZAR InputLayoutGuidFromXml (do XML descriptografado) sobre InputLayoutGuid (da coluna do banco)
@@ -59,7 +59,7 @@ namespace LayoutParserApi.Services.Database
                         
                         if (matches)
                         {
-                            _logger.LogInformation("✅ Mapeador encontrado: {Name} (ID: {Id}) - InputGuid (XML): {InputXml}, InputGuid (DB): {InputDb}", 
+                            _logger.LogInformation("Mapeador encontrado: {Name} (ID: {Id}) - InputGuid (XML): {InputXml}, InputGuid (DB): {InputDb}", 
                                 m.Name, m.Id, m.InputLayoutGuidFromXml ?? "null", m.InputLayoutGuid ?? "null");
                         }
                         
@@ -68,7 +68,7 @@ namespace LayoutParserApi.Services.Database
 
                     if (matchingMappers.Any())
                     {
-                        _logger.LogInformation("✅ Mapeadores com InputLayoutGuid {Guid} encontrados no cache: {Count}", inputLayoutGuid, matchingMappers.Count);
+                        _logger.LogInformation("Mapeadores com InputLayoutGuid {Guid} encontrados no cache: {Count}", inputLayoutGuid, matchingMappers.Count);
                         
                         // Log dos mapeadores encontrados
                         foreach (var mapper in matchingMappers)
@@ -81,8 +81,8 @@ namespace LayoutParserApi.Services.Database
                     }
                     else
                     {
-                        _logger.LogWarning("⚠️ Nenhum mapeador encontrado no cache para InputLayoutGuid: {Guid}", inputLayoutGuid);
-                        _logger.LogWarning("⚠️ Verificando primeiros 3 mapeadores para debug:");
+                        _logger.LogWarning("Nenhum mapeador encontrado no cache para InputLayoutGuid: {Guid}", inputLayoutGuid);
+                        _logger.LogWarning("Verificando primeiros 3 mapeadores para debug:");
                         
                         foreach (var mapper in allMappers.Take(3))
                         {
@@ -95,7 +95,7 @@ namespace LayoutParserApi.Services.Database
                 }
 
                 // Se não encontrou no cache, buscar do banco
-                _logger.LogInformation("🔍 Mapeadores com InputLayoutGuid {Guid} não encontrados no cache, buscando do banco", inputLayoutGuid);
+                _logger.LogInformation("Mapeadores com InputLayoutGuid {Guid} nao encontrados no cache, buscando do banco", inputLayoutGuid);
                 var mapperFromDb = await _mapperDatabaseService.GetMapperByInputLayoutGuidAsync(inputLayoutGuid);
                 
                 var mappers = mapperFromDb != null ? new List<Mapper> { mapperFromDb } : new List<Mapper>();
@@ -103,20 +103,20 @@ namespace LayoutParserApi.Services.Database
                 // Se encontrou no banco, atualizar o cache permanente
                 if (mappers.Any())
                 {
-                    _logger.LogInformation("✅ Mapeador encontrado no banco, atualizando cache...");
+                    _logger.LogInformation("Mapeador encontrado no banco, atualizando cache...");
                     // Recarregar todos os mapeadores e atualizar cache
                     await RefreshCacheFromDatabaseAsync();
                 }
                 else
                 {
-                    _logger.LogWarning("⚠️ Nenhum mapeador encontrado no banco para InputLayoutGuid: {Guid}", inputLayoutGuid);
+                    _logger.LogWarning("Nenhum mapeador encontrado no banco para InputLayoutGuid: {Guid}", inputLayoutGuid);
                 }
 
                 return mappers;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ Erro ao buscar mapeadores por InputLayoutGuid: {Guid} - {Message}", inputLayoutGuid, ex.Message);
+                _logger.LogError(ex, "Erro ao buscar mapeadores por InputLayoutGuid: {Guid} - {Message}", inputLayoutGuid, ex.Message);
                 _logger.LogError(ex, "Stack trace: {StackTrace}", ex.StackTrace);
                 return new List<Mapper>();
             }
@@ -255,10 +255,10 @@ namespace LayoutParserApi.Services.Database
         {
             try
             {
-                _logger.LogInformation("🔄 Iniciando atualização do cache de mapeadores a partir do banco de dados");
+                _logger.LogInformation("Iniciando atualizacao do cache de mapeadores a partir do banco de dados");
                 var mappers = await _mapperDatabaseService.GetAllMappersAsync();
                 
-                _logger.LogInformation("📊 Mapeadores encontrados no banco: {Count}", mappers?.Count ?? 0);
+                _logger.LogInformation("Mapeadores encontrados no banco: {Count}", mappers?.Count ?? 0);
                 
                 if (mappers != null && mappers.Any())
                 {
@@ -273,16 +273,16 @@ namespace LayoutParserApi.Services.Database
                     
                     // Popular cache permanente "mappers:search:all"
                     await _cacheService.SetAllCachedMappersAsync(mappers);
-                    _logger.LogInformation("✅ Cache permanente de mapeadores atualizado: {Count} mapeadores", mappers.Count);
+                    _logger.LogInformation("Cache permanente de mapeadores atualizado: {Count} mapeadores", mappers.Count);
                 }
                 else
                 {
-                    _logger.LogWarning("⚠️ Nenhum mapeador encontrado no banco de dados para atualizar o cache");
+                    _logger.LogWarning("Nenhum mapeador encontrado no banco de dados para atualizar o cache");
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ Erro ao atualizar cache de mapeadores a partir do banco de dados: {Message}", ex.Message);
+                _logger.LogError(ex, "Erro ao atualizar cache de mapeadores a partir do banco de dados: {Message}", ex.Message);
                 _logger.LogError(ex, "Stack trace: {StackTrace}", ex.StackTrace);
             }
         }

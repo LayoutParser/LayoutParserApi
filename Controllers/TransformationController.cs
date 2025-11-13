@@ -35,27 +35,27 @@ namespace LayoutParserApi.Controllers
         {
             try
             {
-                _logger.LogInformation("🔍 ===== INÍCIO DA BUSCA DE LAYOUTS DE DESTINO =====");
-                _logger.LogInformation("🔍 InputLayoutGuid recebido: {Guid}", inputLayoutGuid);
+                _logger.LogInformation("===== INICIO DA BUSCA DE LAYOUTS DE DESTINO =====");
+                _logger.LogInformation("InputLayoutGuid recebido: {Guid}", inputLayoutGuid);
                 
                 // Tentar também buscar pelo nome do layout se o GUID não funcionar
                 // Primeiro, vamos tentar com o GUID recebido
 
                 // Normalizar o GUID recebido (pode vir com ou sem prefixo LAY_, com ou sem chaves {}, etc.)
                 var normalizedInputGuid = NormalizeLayoutGuid(inputLayoutGuid);
-                _logger.LogInformation("📝 GUID recebido: {OriginalGuid}, GUID normalizado: {NormalizedGuid}", inputLayoutGuid, normalizedInputGuid);
+                _logger.LogInformation("GUID recebido: {OriginalGuid}, GUID normalizado: {NormalizedGuid}", inputLayoutGuid, normalizedInputGuid);
                 
                 // Extrair apenas a parte do GUID (sem prefixos) para comparação mais robusta
                 var extractedInputGuid = ExtractGuidOnly(normalizedInputGuid);
-                _logger.LogInformation("📝 GUID extraído (apenas parte do GUID): {ExtractedGuid}", extractedInputGuid);
+                _logger.LogInformation("GUID extraido (apenas parte do GUID): {ExtractedGuid}", extractedInputGuid);
 
                 // Buscar todos os mapeadores do cache
                 var allMappers = await _cachedMapperService.GetAllMappersAsync();
-                _logger.LogInformation("📊 Total de mapeadores no cache: {Count}", allMappers?.Count ?? 0);
+                _logger.LogInformation("Total de mapeadores no cache: {Count}", allMappers?.Count ?? 0);
                 
                 if (allMappers == null || !allMappers.Any())
                 {
-                    _logger.LogWarning("⚠️ Nenhum mapeador encontrado no cache");
+                    _logger.LogWarning("Nenhum mapeador encontrado no cache");
                     return Ok(new
                     {
                         success = true,
@@ -64,7 +64,7 @@ namespace LayoutParserApi.Controllers
                 }
 
                 // Log detalhado dos primeiros mapeadores para debug
-                _logger.LogInformation("📋 Primeiros 5 mapeadores no cache:");
+                _logger.LogInformation("Primeiros 5 mapeadores no cache:");
                 foreach (var mapper in allMappers.Take(5))
                 {
                     var inputGuidFromXml = mapper.InputLayoutGuidFromXml ?? "null";
@@ -83,7 +83,7 @@ namespace LayoutParserApi.Controllers
                     
                     if (matches)
                     {
-                        _logger.LogInformation("    ✅ MATCH encontrado! InputGuid corresponde ao layout de entrada");
+                        _logger.LogInformation("    MATCH encontrado! InputGuid corresponde ao layout de entrada");
                     }
                 }
 
@@ -114,7 +114,7 @@ namespace LayoutParserApi.Controllers
                         matches = string.Equals(extractedMapperInputGuid, extractedInputGuid, StringComparison.OrdinalIgnoreCase);
                         if (matches)
                         {
-                            _logger.LogInformation("    ✅ MATCH por GUID extraído: {ExtractedMapper} == {ExtractedInput}", 
+                            _logger.LogInformation("    MATCH por GUID extraido: {ExtractedMapper} == {ExtractedInput}", 
                                 extractedMapperInputGuid, extractedInputGuid);
                         }
                     }
@@ -125,7 +125,7 @@ namespace LayoutParserApi.Controllers
                         matches = string.Equals(normalizedMapperInputGuid, normalizedInputGuid, StringComparison.OrdinalIgnoreCase);
                         if (matches)
                         {
-                            _logger.LogInformation("    ✅ MATCH por GUID normalizado: {NormalizedMapper} == {NormalizedInput}", 
+                            _logger.LogInformation("    MATCH por GUID normalizado: {NormalizedMapper} == {NormalizedInput}", 
                                 normalizedMapperInputGuid, normalizedInputGuid);
                         }
                     }
@@ -137,7 +137,7 @@ namespace LayoutParserApi.Controllers
                                  GuidMatches(extractedMapperInputGuid, extractedInputGuid);
                         if (matches)
                         {
-                            _logger.LogInformation("    ✅ MATCH por GuidMatches: {MapperGuid} matches {InputGuid}", 
+                            _logger.LogInformation("    MATCH por GuidMatches: {MapperGuid} matches {InputGuid}", 
                                 mapperInputGuid, inputLayoutGuid);
                         }
                     }
@@ -149,14 +149,14 @@ namespace LayoutParserApi.Controllers
                                  string.Equals(mapperInputGuid, inputLayoutGuid, StringComparison.OrdinalIgnoreCase);
                         if (matches)
                         {
-                            _logger.LogInformation("    ✅ MATCH por comparação direta: {MapperGuid} == {InputGuid}", 
+                            _logger.LogInformation("    MATCH por comparacao direta: {MapperGuid} == {InputGuid}", 
                                 mapperInputGuid, inputLayoutGuid);
                         }
                     }
                     
                     if (matches)
                     {
-                        _logger.LogInformation("✅ Mapeador encontrado: {Name} (ID: {Id})", m.Name, m.Id);
+                        _logger.LogInformation("Mapeador encontrado: {Name} (ID: {Id})", m.Name, m.Id);
                         _logger.LogInformation("    InputGuid (XML): {InputXml}", m.InputLayoutGuidFromXml ?? "null");
                         _logger.LogInformation("    InputGuid (DB): {InputDb}", m.InputLayoutGuid ?? "null");
                         _logger.LogInformation("    TargetGuid (XML): {TargetXml}", m.TargetLayoutGuidFromXml ?? "null");
@@ -166,26 +166,26 @@ namespace LayoutParserApi.Controllers
                     return matches;
                 }).ToList();
 
-                _logger.LogInformation("🎯 Mapeadores encontrados para InputLayoutGuid {Guid}: {Count}", inputLayoutGuid, matchingMappers.Count);
+                _logger.LogInformation("Mapeadores encontrados para InputLayoutGuid {Guid}: {Count}", inputLayoutGuid, matchingMappers.Count);
                 
                 if (!matchingMappers.Any())
                 {
-                    _logger.LogWarning("⚠️ Nenhum mapeador encontrado na busca direta no cache para InputLayoutGuid: {Guid}", inputLayoutGuid);
-                    _logger.LogWarning("⚠️ Tentando buscar diretamente do serviço...");
+                    _logger.LogWarning("Nenhum mapeador encontrado na busca direta no cache para InputLayoutGuid: {Guid}", inputLayoutGuid);
+                    _logger.LogWarning("Tentando buscar diretamente do servico...");
                     
                     // Tentar buscar diretamente do serviço (pode ter lógica adicional)
                     var mappersFromService = await _cachedMapperService.GetMappersByInputLayoutGuidAsync(inputLayoutGuid);
-                    _logger.LogInformation("📊 Mapeadores retornados pelo serviço: {Count}", mappersFromService?.Count ?? 0);
+                    _logger.LogInformation("Mapeadores retornados pelo servico: {Count}", mappersFromService?.Count ?? 0);
                     
                     if (mappersFromService != null && mappersFromService.Any())
                     {
                         matchingMappers = mappersFromService;
-                        _logger.LogInformation("✅ {Count} mapeador(es) encontrado(s) via serviço", matchingMappers.Count);
+                        _logger.LogInformation("{Count} mapeador(es) encontrado(s) via servico", matchingMappers.Count);
                     }
                     else
                     {
                         // Se ainda não encontrou, tentar buscar layouts pelo nome ou GUID parcial
-                        _logger.LogWarning("⚠️ Tentando busca alternativa...");
+                        _logger.LogWarning("Tentando busca alternativa...");
                         
                         // Buscar todos os layouts para verificar se o GUID recebido corresponde a algum layout
                         var allLayoutsResponse = await _cachedLayoutService.SearchLayoutsAsync(new LayoutSearchRequest
@@ -211,7 +211,7 @@ namespace LayoutParserApi.Controllers
                             
                             if (matchingLayout != null)
                             {
-                                _logger.LogInformation("✅ Layout encontrado: {Name} (ID: {Id}) - GUID: {Guid}", 
+                                _logger.LogInformation("Layout encontrado: {Name} (ID: {Id}) - GUID: {Guid}", 
                                     matchingLayout.Name, matchingLayout.Id, matchingLayout.LayoutGuid.ToString() ?? "null");
                                 
                                 // Tentar buscar mapeadores novamente com o GUID do layout encontrado
@@ -221,7 +221,7 @@ namespace LayoutParserApi.Controllers
                                 if (mappersFromService != null && mappersFromService.Any())
                                 {
                                     matchingMappers = mappersFromService;
-                                    _logger.LogInformation("✅ {Count} mapeador(es) encontrado(s) usando GUID do layout encontrado", matchingMappers.Count);
+                                    _logger.LogInformation("{Count} mapeador(es) encontrado(s) usando GUID do layout encontrado", matchingMappers.Count);
                                 }
                             }
                         }
@@ -229,11 +229,11 @@ namespace LayoutParserApi.Controllers
                     
                     if (!matchingMappers.Any())
                     {
-                        _logger.LogWarning("⚠️ Nenhum mapeador encontrado após todas as tentativas para InputLayoutGuid: {Guid}", inputLayoutGuid);
-                        _logger.LogWarning("⚠️ GUID normalizado: {NormalizedGuid}, GUID extraído: {ExtractedGuid}", normalizedInputGuid, extractedInputGuid);
+                        _logger.LogWarning("Nenhum mapeador encontrado apos todas as tentativas para InputLayoutGuid: {Guid}", inputLayoutGuid);
+                        _logger.LogWarning("GUID normalizado: {NormalizedGuid}, GUID extraido: {ExtractedGuid}", normalizedInputGuid, extractedInputGuid);
                         
                         // Log de todos os InputLayoutGuids disponíveis nos mapeadores para debug
-                        _logger.LogInformation("📋 Listando todos os InputLayoutGuids disponíveis nos mapeadores:");
+                        _logger.LogInformation("Listando todos os InputLayoutGuids disponiveis nos mapeadores:");
                         foreach (var mapper in allMappers.Take(10))
                         {
                             var inputXml = mapper.InputLayoutGuidFromXml ?? "null";
@@ -273,11 +273,11 @@ namespace LayoutParserApi.Controllers
 
                 if (!layoutsResponse.Success || layoutsResponse.Layouts == null)
                 {
-                    _logger.LogError("❌ Não foi possível buscar layouts do cache");
+                    _logger.LogError("Nao foi possivel buscar layouts do cache");
                     return StatusCode(500, new { error = "Não foi possível buscar layouts do cache" });
                 }
 
-                _logger.LogInformation("📊 Total de layouts no cache: {Count}", layoutsResponse.Layouts.Count());
+                _logger.LogInformation("Total de layouts no cache: {Count}", layoutsResponse.Layouts.Count());
 
                 // Filtrar layouts de destino baseado nos mapeadores
                 // PRIORIZAR TargetLayoutGuidFromXml (do XML descriptografado) sobre TargetLayoutGuid (da coluna do banco)
@@ -287,7 +287,7 @@ namespace LayoutParserApi.Controllers
                         // Usar TargetLayoutGuidFromXml (do XML descriptografado) como fonte primária
                         var targetGuid = m.TargetLayoutGuidFromXml ?? m.TargetLayoutGuid ?? "";
                         var normalized = NormalizeLayoutGuid(targetGuid);
-                        _logger.LogInformation("🎯 TargetGuid encontrado: {TargetGuid} (normalizado: {Normalized}) para mapeador {MapperName}", 
+                        _logger.LogInformation("TargetGuid encontrado: {TargetGuid} (normalizado: {Normalized}) para mapeador {MapperName}", 
                             targetGuid, normalized, m.Name);
                         return normalized;
                     })
@@ -295,7 +295,7 @@ namespace LayoutParserApi.Controllers
                     .Distinct()
                     .ToList();
 
-                _logger.LogInformation("🎯 GUIDs de destino únicos encontrados: {Count} - {Guids}", 
+                _logger.LogInformation("GUIDs de destino unicos encontrados: {Count} - {Guids}", 
                     targetLayoutGuids.Count, string.Join(", ", targetLayoutGuids));
 
                 // Buscar layouts que correspondem aos GUIDs de destino
@@ -328,7 +328,7 @@ namespace LayoutParserApi.Controllers
                         
                         if (matches)
                         {
-                            _logger.LogInformation("✅ Layout de destino encontrado: {Name} (ID: {Id}) - GUID: {Guid} (normalizado: {Normalized})", 
+                            _logger.LogInformation("Layout de destino encontrado: {Name} (ID: {Id}) - GUID: {Guid} (normalizado: {Normalized})", 
                                 l.Name, l.Id, layoutGuidStr, normalizedLayoutGuid);
                         }
                         
@@ -343,7 +343,7 @@ namespace LayoutParserApi.Controllers
                     })
                     .ToList();
 
-                _logger.LogInformation("✅ Layouts de destino encontrados: {Count}", targetLayouts.Count);
+                _logger.LogInformation("Layouts de destino encontrados: {Count}", targetLayouts.Count);
 
                 return Ok(new
                 {
@@ -357,7 +357,7 @@ namespace LayoutParserApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ Erro ao buscar layouts de destino: {Message}", ex.Message);
+                _logger.LogError(ex, "Erro ao buscar layouts de destino: {Message}", ex.Message);
                 _logger.LogError(ex, "Stack trace: {StackTrace}", ex.StackTrace);
                 return StatusCode(500, new { error = ex.Message });
             }
