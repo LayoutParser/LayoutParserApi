@@ -318,6 +318,67 @@ namespace LayoutParserApi.Services.Implementations
                     }
                     return matches;
                 }
+                // CORREÇÃO: Para IDOC (EDI_DC40, ZRSDM_NFE_400_*), verificar no início absoluto
+                else if (lineConfig.InitialValue.StartsWith("EDI_", StringComparison.OrdinalIgnoreCase) ||
+                         lineConfig.InitialValue.StartsWith("ZRSDM_", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Para IDOC, verificar se a linha começa exatamente com o InitialValue
+                    bool matches = line.StartsWith(lineConfig.InitialValue, StringComparison.OrdinalIgnoreCase);
+                    
+                    if (matches)
+                    {
+                        _techLogger.LogTechnical(new TechLogEntry
+                        {
+                            RequestId = Guid.NewGuid().ToString(),
+                            Endpoint = "IsLineValidForConfig",
+                            Level = "Info",
+                            Message = $"Match por InitialValue IDOC: '{lineConfig.InitialValue}' para {lineConfig.Name}"
+                        });
+                    }
+                    else
+                    {
+                        // Para IDOC com ZRSDM_NFE_400_*, verificar se a linha começa com o prefixo e contém o segmento
+                        // Exemplo: InitialValue="ZRSDM_NFE_400_IDE000" -> linha "ZRSDM_NFE_400_IDE000          6100000000..."
+                        if (lineConfig.InitialValue.StartsWith("ZRSDM_NFE_400_", StringComparison.OrdinalIgnoreCase))
+                        {
+                            // Extrair o segmento esperado (ex: "IDE000")
+                            var expectedSegment = lineConfig.InitialValue.Substring("ZRSDM_NFE_400_".Length);
+                            // Remover zeros finais para comparação flexível (ex: "IDE000" -> "IDE")
+                            var expectedSegmentBase = expectedSegment.TrimEnd('0');
+                            if (string.IsNullOrEmpty(expectedSegmentBase))
+                                expectedSegmentBase = expectedSegment;
+                            
+                            // Verificar se a linha começa com ZRSDM_NFE_400_ seguido do segmento esperado
+                            if (line.StartsWith("ZRSDM_NFE_400_", StringComparison.OrdinalIgnoreCase))
+                            {
+                                var afterPrefix = line.Substring("ZRSDM_NFE_400_".Length);
+                                var actualSegment = afterPrefix.IndexOfAny(new[] { ' ', '\t' }) > 0
+                                    ? afterPrefix.Substring(0, afterPrefix.IndexOfAny(new[] { ' ', '\t' }))
+                                    : afterPrefix;
+                                
+                                var actualSegmentBase = actualSegment.TrimEnd('0');
+                                if (string.IsNullOrEmpty(actualSegmentBase))
+                                    actualSegmentBase = actualSegment;
+                                
+                                matches = actualSegmentBase.Equals(expectedSegmentBase, StringComparison.OrdinalIgnoreCase) ||
+                                         actualSegment.StartsWith(expectedSegmentBase, StringComparison.OrdinalIgnoreCase);
+                                
+                                if (matches)
+                                {
+                                    _techLogger.LogTechnical(new TechLogEntry
+                                    {
+                                        RequestId = Guid.NewGuid().ToString(),
+                                        Endpoint = "IsLineValidForConfig",
+                                        Level = "Info",
+                                        Message = $"Match por InitialValue IDOC (segmento flexível): esperado '{expectedSegmentBase}', encontrado '{actualSegmentBase}' para {lineConfig.Name}"
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    
+                    return matches;
+                }
                 else
                 {
                     // CORREÇÃO: Para LINHA000, LINHA001, etc., verificar após a sequência
