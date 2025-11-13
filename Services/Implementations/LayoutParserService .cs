@@ -74,7 +74,22 @@ namespace LayoutParserApi.Services.Implementations
             if (string.IsNullOrEmpty(text) || layout?.Elements == null)
                 return parsedFields;
 
-            var lines = _lineSplitter.SplitTextIntoLines(text, layout.LayoutType);
+            // Para IDOC, usar quebras de linha ao invés de tamanho fixo
+            // Verificar se o texto parece ser IDOC (começa com EDI_DC40 ou ZRSDM_NFE)
+            var detectedType = "TextPositional"; // Padrão
+            if (!string.IsNullOrEmpty(text))
+            {
+                var trimmedText = text.TrimStart();
+                if (trimmedText.StartsWith("EDI_DC40", StringComparison.OrdinalIgnoreCase) ||
+                    trimmedText.StartsWith("ZRSDM_NFE", StringComparison.OrdinalIgnoreCase))
+                {
+                    detectedType = "idoc";
+                }
+            }
+            
+            // Usar detectedType para IDOC, senão usar layoutType do banco
+            var splitType = detectedType == "idoc" ? "idoc" : layout.LayoutType;
+            var lines = _lineSplitter.SplitTextIntoLines(text, splitType);
 
             _techLogger.LogTechnical(new TechLogEntry
             {
