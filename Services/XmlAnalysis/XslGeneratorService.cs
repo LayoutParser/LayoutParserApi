@@ -281,6 +281,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
         /// <summary>
         /// Processa LinkMappings do MapperVO (mapeamento direto de campos)
         /// LinkMappingItem mapeia campos diretamente do layout de entrada para o layout de saída
+        /// O XML intermediário (ROOT) contém os campos extraídos do TXT via TCL
         /// </summary>
         private void ProcessLinkMappings(StringBuilder sb, List<LinkMappingItem> linkMappings, XDocument mapDoc)
         {
@@ -292,27 +293,208 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 _logger.LogInformation("Processando LinkMapping: {Name} (InputGuid: {InputGuid}, TargetGuid: {TargetGuid})", 
                     linkMapping.Name, linkMapping.InputLayoutGuid, linkMapping.TargetLayoutGuid);
 
-                // LinkMapping mapeia campos diretamente usando InputLayoutGuid e TargetLayoutGuid
-                // Por enquanto, gerar elemento baseado no nome
-                // TODO: Implementar mapeamento direto usando os GUIDs dos layouts
-                if (!string.IsNullOrEmpty(linkMapping.Name))
-                {
-                    // Extrair nome do elemento (remover prefixo se houver)
-                    var elementName = linkMapping.Name;
-                    if (elementName.Contains("_"))
-                    {
-                        var parts = elementName.Split('_');
-                        elementName = parts.Last();
-                    }
+                if (string.IsNullOrEmpty(linkMapping.Name))
+                    continue;
 
-                    // Gerar elemento XSL básico
-                    // Por enquanto, usar valor vazio (será preenchido quando tivermos os layouts)
-                    sb.AppendLine($"\t\t\t\t\t<{elementName}>");
-                    sb.AppendLine($"\t\t\t\t\t\t<!-- LinkMapping: {linkMapping.Name} (InputGuid: {linkMapping.InputLayoutGuid}, TargetGuid: {linkMapping.TargetLayoutGuid}) -->");
-                    sb.AppendLine($"\t\t\t\t\t\t<xsl:text></xsl:text>");
-                    sb.AppendLine($"\t\t\t\t\t</{elementName}>");
+                // Extrair nome do elemento (remover prefixo se houver)
+                var elementName = linkMapping.Name;
+                if (elementName.Contains("_"))
+                {
+                    var parts = elementName.Split('_');
+                    elementName = parts.Last();
+                }
+
+                // Gerar XPath para buscar o valor no XML intermediário (ROOT)
+                // Estratégias de mapeamento:
+                // 1. Tentar buscar pelo nome completo do LinkMapping
+                // 2. Tentar buscar pelo nome do elemento (sem prefixo)
+                // 3. Tentar buscar em diferentes estruturas do XML intermediário (HEADER, LINHA000, etc.)
+                var xpathOptions = GenerateXPathOptionsForLinkMapping(linkMapping.Name, elementName);
+                
+                // Gerar elemento XSL que busca valor do XML intermediário usando múltiplas estratégias
+                sb.AppendLine($"\t\t\t\t\t<{elementName}>");
+                sb.AppendLine($"\t\t\t\t\t\t<!-- LinkMapping: {linkMapping.Name} (InputGuid: {linkMapping.InputLayoutGuid}, TargetGuid: {linkMapping.TargetLayoutGuid}) -->");
+                
+                // Gerar XSL que tenta múltiplos XPaths até encontrar um valor
+                // Usar xsl:choose para tentar cada XPath em ordem
+                GenerateXslWithMultipleXPaths(sb, elementName, xpathOptions, linkMapping.DefaultValue, linkMapping.AllowEmpty);
+                
+                sb.AppendLine($"\t\t\t\t\t</{elementName}>");
+            }
+        }
+
+        /// <summary>
+        /// Gera opções de XPath para buscar um campo no XML intermediário baseado no nome do LinkMapping
+        /// </summary>
+        private List<string> GenerateXPathOptionsForLinkMapping(string linkMappingName, string elementName)
+        {
+            var xpathOptions = new List<string>();
+
+            // Normalizar nome (remover caracteres especiais, converter para lowercase)
+            var normalizedName = linkMappingName.ToLowerInvariant()
+                .Replace("_", "")
+                .Replace("-", "")
+                .Replace(" ", "");
+
+            // Estratégia 1: Buscar diretamente pelo nome do elemento em estruturas comuns (mais provável)
+            var commonStructures = new[] { "HEADER", "LINHA000", "LINHA001", "LINHA002", "LINHA003", "TRAILER", "chave", "A", "B", "C", "H" };
+            foreach (var structure in commonStructures)
+            {
+                // Tentar nome do elemento diretamente
+                xpathOptions.Add($"ROOT/{structure}/{elementName}");
+                // Tentar nome completo do LinkMapping
+                xpathOptions.Add($"ROOT/{structure}/{linkMappingName}");
+                // Tentar usando local-name() para correspondência case-insensitive
+                xpathOptions.Add($"ROOT/{structure}/*[translate(local-name(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')='{elementName.ToLowerInvariant()}']");
+            }
+
+            // Estratégia 2: Buscar pelo nome completo em qualquer lugar do ROOT (busca recursiva)
+            xpathOptions.Add($"ROOT//*[local-name()='{elementName}']");
+            xpathOptions.Add($"ROOT//*[local-name()='{linkMappingName}']");
+            
+            // Estratégia 3: Buscar usando correspondência parcial (se o nome contém o elemento)
+            if (linkMappingName.ToLowerInvariant().Contains(elementName.ToLowerInvariant()))
+            {
+                xpathOptions.Add($"ROOT//*[contains(translate(local-name(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{elementName.ToLowerInvariant()}')]");
+            }
+
+            // Estratégia 4: Buscar pelo nome normalizado (sem prefixos, underscores, etc.)
+            if (normalizedName != elementName.ToLowerInvariant())
+            {
+                xpathOptions.Add($"ROOT//*[translate(translate(local-name(), '_', ''), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')='{normalizedName}']");
+            }
+
+            // Estratégia 5: Buscar diretamente no ROOT (menos provável, mas possível)
+            xpathOptions.Add($"ROOT/{elementName}");
+            xpathOptions.Add($"ROOT/{linkMappingName}");
+
+            // Estratégia 6: Buscar em qualquer elemento filho direto do ROOT
+            xpathOptions.Add($"ROOT/*/{elementName}");
+            xpathOptions.Add($"ROOT/*/{linkMappingName}");
+
+            // Remover duplicatas mantendo a ordem
+            var uniqueOptions = new List<string>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var option in xpathOptions)
+            {
+                if (!seen.Contains(option))
+                {
+                    seen.Add(option);
+                    uniqueOptions.Add(option);
                 }
             }
+
+            return uniqueOptions;
+        }
+
+        /// <summary>
+        /// Gera XSL que tenta múltiplos XPaths até encontrar um valor
+        /// </summary>
+        private void GenerateXslWithMultipleXPaths(StringBuilder sb, string elementName, List<string> xpathOptions, string defaultValue, bool allowEmpty)
+        {
+            if (xpathOptions == null || !xpathOptions.Any())
+            {
+                // Se não há opções de XPath, usar valor padrão ou vazio
+                if (!string.IsNullOrEmpty(defaultValue))
+                {
+                    sb.AppendLine($"\t\t\t\t\t\t<xsl:value-of select=\"{EscapeXslString(defaultValue)}\"/>");
+                }
+                else if (allowEmpty)
+                {
+                    sb.AppendLine($"\t\t\t\t\t\t<xsl:text></xsl:text>");
+                }
+                return;
+            }
+
+            // Se temos apenas um XPath, usar diretamente
+            if (xpathOptions.Count == 1)
+            {
+                var xpath = xpathOptions[0];
+                if (!string.IsNullOrEmpty(defaultValue))
+                {
+                    sb.AppendLine($"\t\t\t\t\t\t<xsl:choose>");
+                    sb.AppendLine($"\t\t\t\t\t\t\t<xsl:when test=\"string-length({xpath}) > 0\">");
+                    sb.AppendLine($"\t\t\t\t\t\t\t\t<xsl:value-of select=\"normalize-space({xpath})\"/>");
+                    sb.AppendLine($"\t\t\t\t\t\t\t</xsl:when>");
+                    sb.AppendLine($"\t\t\t\t\t\t\t<xsl:otherwise>");
+                    sb.AppendLine($"\t\t\t\t\t\t\t\t<xsl:value-of select=\"{EscapeXslString(defaultValue)}\"/>");
+                    sb.AppendLine($"\t\t\t\t\t\t\t</xsl:otherwise>");
+                    sb.AppendLine($"\t\t\t\t\t\t</xsl:choose>");
+                }
+                else
+                {
+                    if (!allowEmpty)
+                    {
+                        sb.AppendLine($"\t\t\t\t\t\t<xsl:if test=\"string-length({xpath}) > 0\">");
+                        sb.AppendLine($"\t\t\t\t\t\t\t<xsl:value-of select=\"normalize-space({xpath})\"/>");
+                        sb.AppendLine($"\t\t\t\t\t\t</xsl:if>");
+                    }
+                    else
+                    {
+                        sb.AppendLine($"\t\t\t\t\t\t<xsl:value-of select=\"normalize-space({xpath})\"/>");
+                    }
+                }
+                return;
+            }
+
+            // Se temos múltiplos XPaths, tentar cada um em ordem
+            // Usar xsl:choose aninhado para tentar cada XPath
+            sb.AppendLine($"\t\t\t\t\t\t<xsl:choose>");
+            
+            // Tentar cada XPath em ordem (usar apenas os primeiros 5 para não tornar o XSL muito complexo)
+            var xpathsToTry = xpathOptions.Take(5).ToList();
+            for (int i = 0; i < xpathsToTry.Count; i++)
+            {
+                var xpath = xpathsToTry[i];
+                var isLast = i == xpathsToTry.Count - 1;
+                
+                sb.AppendLine($"\t\t\t\t\t\t\t<xsl:when test=\"string-length({xpath}) > 0\">");
+                sb.AppendLine($"\t\t\t\t\t\t\t\t<xsl:value-of select=\"normalize-space({xpath})\"/>");
+                sb.AppendLine($"\t\t\t\t\t\t\t</xsl:when>");
+                
+                if (!isLast)
+                {
+                    // Continuar para o próximo XPath
+                }
+                else
+                {
+                    // Último XPath: usar default value ou vazio
+                    if (!string.IsNullOrEmpty(defaultValue))
+                    {
+                        sb.AppendLine($"\t\t\t\t\t\t\t<xsl:otherwise>");
+                        sb.AppendLine($"\t\t\t\t\t\t\t\t<xsl:value-of select=\"{EscapeXslString(defaultValue)}\"/>");
+                        sb.AppendLine($"\t\t\t\t\t\t\t</xsl:otherwise>");
+                    }
+                    else if (allowEmpty)
+                    {
+                        sb.AppendLine($"\t\t\t\t\t\t\t<xsl:otherwise>");
+                        sb.AppendLine($"\t\t\t\t\t\t\t\t<xsl:text></xsl:text>");
+                        sb.AppendLine($"\t\t\t\t\t\t\t</xsl:otherwise>");
+                    }
+                    // Se não permite vazio e não tem default, não criar o elemento (já tratado acima)
+                }
+            }
+            
+            sb.AppendLine($"\t\t\t\t\t\t</xsl:choose>");
+        }
+
+        /// <summary>
+        /// Escapa string para uso em XSL (evita problemas com aspas)
+        /// </summary>
+        private string EscapeXslString(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+                return "''";
+            
+            // Se contém aspas simples, usar concat
+            if (value.Contains("'"))
+            {
+                var parts = value.Split('\'');
+                var concatParts = parts.Select(p => $"'{p}'").ToList();
+                return $"concat({string.Join(", \"'\", ", concatParts)})";
+            }
+            
+            return $"'{value}'";
         }
 
         /// <summary>
@@ -325,21 +507,31 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 var name = linkMappingElement.Element("Name")?.Value;
                 var inputGuid = linkMappingElement.Element("InputLayoutGuid")?.Value;
                 var targetGuid = linkMappingElement.Element("TargetLayoutGuid")?.Value;
+                var defaultValue = linkMappingElement.Element("DefaultValue")?.Value;
+                var allowEmptyElement = linkMappingElement.Element("AllowEmpty")?.Value;
+                var allowEmpty = allowEmptyElement != null && bool.TryParse(allowEmptyElement, out var allow) && allow;
 
-                if (!string.IsNullOrEmpty(name))
+                if (string.IsNullOrEmpty(name))
+                    continue;
+
+                var elementName = name;
+                if (elementName.Contains("_"))
                 {
-                    var elementName = name;
-                    if (elementName.Contains("_"))
-                    {
-                        var parts = elementName.Split('_');
-                        elementName = parts.Last();
-                    }
-
-                    sb.AppendLine($"\t\t\t\t\t<{elementName}>");
-                    sb.AppendLine($"\t\t\t\t\t\t<!-- LinkMapping: {name} (InputGuid: {inputGuid}, TargetGuid: {targetGuid}) -->");
-                    sb.AppendLine($"\t\t\t\t\t\t<xsl:text></xsl:text>");
-                    sb.AppendLine($"\t\t\t\t\t</{elementName}>");
+                    var parts = elementName.Split('_');
+                    elementName = parts.Last();
                 }
+
+                // Gerar XPath para buscar o valor no XML intermediário
+                var xpathOptions = GenerateXPathOptionsForLinkMapping(name, elementName);
+
+                // Gerar elemento XSL
+                sb.AppendLine($"\t\t\t\t\t<{elementName}>");
+                sb.AppendLine($"\t\t\t\t\t\t<!-- LinkMapping: {name} (InputGuid: {inputGuid}, TargetGuid: {targetGuid}) -->");
+                
+                // Gerar XSL que tenta múltiplos XPaths até encontrar um valor
+                GenerateXslWithMultipleXPaths(sb, elementName, xpathOptions, defaultValue, allowEmpty);
+                
+                sb.AppendLine($"\t\t\t\t\t</{elementName}>");
             }
         }
 
