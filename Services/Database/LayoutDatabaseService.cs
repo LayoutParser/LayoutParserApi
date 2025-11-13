@@ -306,7 +306,7 @@ namespace LayoutParserApi.Services.Database
             {
                 if (string.IsNullOrEmpty(layout.DecryptedContent))
                 {
-                    _logger.LogWarning("⚠️ DecryptedContent vazio para layout {Id} ({Name}). Não é possível extrair LayoutGuid do XML.", 
+                    _logger.LogWarning("DecryptedContent vazio para layout {Id} ({Name}). Nao e possivel extrair LayoutGuid do XML.", 
                         layout.Id, layout.Name);
                     return;
                 }
@@ -320,7 +320,7 @@ namespace LayoutParserApi.Services.Database
                 
                 if (root == null)
                 {
-                    _logger.LogWarning("⚠️ XML root é nulo para layout {Id} ({Name})", layout.Id, layout.Name);
+                    _logger.LogWarning("XML root e nulo para layout {Id} ({Name})", layout.Id, layout.Name);
                     return;
                 }
 
@@ -339,7 +339,7 @@ namespace LayoutParserApi.Services.Database
                 if (layoutGuidElement != null && !string.IsNullOrEmpty(layoutGuidElement.Value))
                 {
                     var layoutGuidFromXml = layoutGuidElement.Value.Trim();
-                    _logger.LogInformation("📝 LayoutGuid encontrado no XML para layout {Id} ({Name}): {Guid}", 
+                    _logger.LogInformation("LayoutGuid encontrado no XML para layout {Id} ({Name}): {Guid}", 
                         layout.Id, layout.Name, layoutGuidFromXml);
                     
                     // Remover prefixo LAY_ se houver (o XML pode ter LAY_xxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
@@ -347,7 +347,7 @@ namespace LayoutParserApi.Services.Database
                     if (guidString.StartsWith("LAY_", StringComparison.OrdinalIgnoreCase))
                     {
                         guidString = guidString.Substring(4);
-                        _logger.LogInformation("📝 Prefixo LAY_ removido: {Guid}", guidString);
+                        _logger.LogInformation("Prefixo LAY_ removido: {Guid}", guidString);
                     }
                     
                     // Tentar converter para Guid
@@ -359,24 +359,24 @@ namespace LayoutParserApi.Services.Database
                         
                         if (wasEmpty)
                         {
-                            _logger.LogInformation("✅ LayoutGuid preenchido do XML para layout {Id} ({Name}): {Guid} (estava vazio no banco)", 
+                            _logger.LogInformation("LayoutGuid preenchido do XML para layout {Id} ({Name}): {Guid} (estava vazio no banco)", 
                                 layout.Id, layout.Name, layout.LayoutGuid);
                         }
                         else
                         {
-                            _logger.LogInformation("✅ LayoutGuid atualizado do XML para layout {Id} ({Name}): {Guid} (banco tinha: {DbGuid})", 
+                            _logger.LogInformation("LayoutGuid atualizado do XML para layout {Id} ({Name}): {Guid} (banco tinha: {DbGuid})", 
                                 layout.Id, layout.Name, layout.LayoutGuid, layoutGuidFromDb);
                         }
                     }
                     else
                     {
-                        _logger.LogWarning("⚠️ Não foi possível converter LayoutGuid do XML para Guid: {GuidString} (layout {Id})", 
+                        _logger.LogWarning("Nao foi possivel converter LayoutGuid do XML para Guid: {GuidString} (layout {Id})", 
                             guidString, layout.Id);
                     }
                 }
                 else
                 {
-                    _logger.LogWarning("⚠️ LayoutGuid não encontrado no XML descriptografado para layout {Id} ({Name}). Mantendo valor do banco: {DbGuid}", 
+                    _logger.LogWarning("LayoutGuid nao encontrado no XML descriptografado para layout {Id} ({Name}). Mantendo valor do banco: {DbGuid}", 
                         layout.Id, layout.Name, layoutGuidFromDb);
                 }
             }

@@ -69,18 +69,18 @@ namespace LayoutParserApi.Services.Cache
         {
             if (!_redisAvailable || _redis == null)
             {
-                _logger.LogWarning("⚠️ Redis não disponível - não é possível buscar cache de mapeadores");
+                _logger.LogWarning("Redis nao disponivel - nao e possivel buscar cache de mapeadores");
                 return null;
             }
 
             try
             {
-                _logger.LogInformation("🔍 Buscando mapeadores no cache (chave: {Key})...", 
+                _logger.LogInformation("Buscando mapeadores no cache (chave: {Key})...", 
                     ALL_MAPPERS_SEARCH_KEY);
                 
                 // Verificar se a chave existe
                 var exists = await _redis.KeyExistsAsync(ALL_MAPPERS_SEARCH_KEY);
-                _logger.LogInformation("🔍 Verificação de chave no Redis: {Key}={Exists}", 
+                _logger.LogInformation("Verificacao de chave no Redis: {Key}={Exists}", 
                     ALL_MAPPERS_SEARCH_KEY, exists);
                 
                 // Buscar na chave "mappers:search:all"
@@ -88,19 +88,19 @@ namespace LayoutParserApi.Services.Cache
                 
                 if (cachedData.HasValue)
                 {
-                    _logger.LogInformation("✅ Cache encontrado - tamanho: {Size} bytes", cachedData.Length());
+                    _logger.LogInformation("Cache encontrado - tamanho: {Size} bytes", cachedData.Length());
                     
                     var mappers = JsonSerializer.Deserialize<List<Mapper>>(cachedData.ToString(), JsonOptions);
-                    _logger.LogInformation("✅ Cache hit para todos os mapeadores - {Count} mapeadores", mappers?.Count ?? 0);
+                    _logger.LogInformation("Cache hit para todos os mapeadores - {Count} mapeadores", mappers?.Count ?? 0);
                     return mappers;
                 }
 
-                _logger.LogWarning("⚠️ Cache miss para todos os mapeadores - nenhuma chave encontrada");
+                _logger.LogWarning("Cache miss para todos os mapeadores - nenhuma chave encontrada");
                 return null;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ Erro ao buscar todos os mapeadores no cache: {Message}", ex.Message);
+                _logger.LogError(ex, "Erro ao buscar todos os mapeadores no cache: {Message}", ex.Message);
                 _logger.LogError(ex, "Stack trace: {StackTrace}", ex.StackTrace);
                 return null;
             }
@@ -118,22 +118,22 @@ namespace LayoutParserApi.Services.Cache
             {
                 if (mappers == null || !mappers.Any())
                 {
-                    _logger.LogWarning("⚠️ Tentativa de salvar lista vazia de mapeadores no cache");
+                    _logger.LogWarning("Tentativa de salvar lista vazia de mapeadores no cache");
                     return;
                 }
 
                 var jsonData = JsonSerializer.Serialize(mappers, JsonOptions);
-                _logger.LogInformation("📦 Serializando {Count} mapeadores para cache (tamanho JSON: {Size} bytes)", 
+                _logger.LogInformation("Serializando {Count} mapeadores para cache (tamanho JSON: {Size} bytes)", 
                     mappers.Count, jsonData.Length);
                 
                 // Verificar se o Redis está realmente disponível
                 if (_redis == null)
                 {
-                    _logger.LogError("❌ Redis não está disponível (null)");
+                    _logger.LogError("Redis nao esta disponivel (null)");
                     return;
                 }
 
-                _logger.LogInformation("🔄 Salvando cache no Redis (chave: {Key})...", 
+                _logger.LogInformation("Salvando cache no Redis (chave: {Key})...", 
                     ALL_MAPPERS_SEARCH_KEY);
                 
                 // Cache permanente (sem expiração) para múltiplos computadores
@@ -142,32 +142,32 @@ namespace LayoutParserApi.Services.Cache
                 
                 if (result)
                 {
-                    _logger.LogInformation("✅ Cache permanente atualizado com sucesso para todos os mapeadores - {Count} mapeadores (chave: {Key})", 
+                    _logger.LogInformation("Cache permanente atualizado com sucesso para todos os mapeadores - {Count} mapeadores (chave: {Key})", 
                         mappers.Count, ALL_MAPPERS_SEARCH_KEY);
                     
                     // Verificar se a chave foi realmente criada
                     await Task.Delay(100); // Pequeno delay para garantir que o Redis processou
                     var verify = await _redis.KeyExistsAsync(ALL_MAPPERS_SEARCH_KEY);
-                    _logger.LogInformation("🔍 Verificação de chave no Redis: {Key}={Exists}", 
+                    _logger.LogInformation("Verificacao de chave no Redis: {Key}={Exists}", 
                         ALL_MAPPERS_SEARCH_KEY, verify);
                     
                     if (verify)
                     {
                         // Verificar o tamanho da chave
                         var length = await _redis.StringLengthAsync(ALL_MAPPERS_SEARCH_KEY);
-                        _logger.LogInformation("📊 Tamanho da chave no Redis: {Key}={Length} bytes", 
+                        _logger.LogInformation("Tamanho da chave no Redis: {Key}={Length} bytes", 
                             ALL_MAPPERS_SEARCH_KEY, length);
                     }
                 }
                 else
                 {
-                    _logger.LogError("❌ Falha ao salvar cache de mapeadores no Redis. Result={Result}", 
+                    _logger.LogError("Falha ao salvar cache de mapeadores no Redis. Result={Result}", 
                         result);
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ Erro ao salvar todos os mapeadores no cache: {Message}", ex.Message);
+                _logger.LogError(ex, "Erro ao salvar todos os mapeadores no cache: {Message}", ex.Message);
                 _logger.LogError(ex, "Stack trace: {StackTrace}", ex.StackTrace);
             }
         }

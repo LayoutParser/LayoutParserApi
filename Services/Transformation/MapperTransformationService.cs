@@ -252,7 +252,7 @@ namespace LayoutParserApi.Services.Transformation
                     // Formatar XML para facilitar visualização
                     var formattedXml = FormatXmlForLogging(intermediateXml);
                     _logger.LogInformation("═══════════════════════════════════════════════════════════════");
-                    _logger.LogInformation("📄 XML INTERMEDIÁRIO GERADO (TXT -> XML via TCL)");
+                    _logger.LogInformation("XML INTERMEDIARIO GERADO (TXT -> XML via TCL)");
                     _logger.LogInformation("═══════════════════════════════════════════════════════════════");
                     _logger.LogInformation("{IntermediateXml}", formattedXml);
                     _logger.LogInformation("═══════════════════════════════════════════════════════════════");
@@ -260,7 +260,7 @@ namespace LayoutParserApi.Services.Transformation
                 catch (Exception ex)
                 {
                     _logger.LogWarning(ex, "Erro ao formatar XML intermediário para logging. Logando XML original.");
-                    _logger.LogInformation("📄 XML INTERMEDIÁRIO (não formatado):");
+                    _logger.LogInformation("XML INTERMEDIARIO (nao formatado):");
                     _logger.LogInformation("{IntermediateXml}", intermediateXml);
                 }
 
@@ -368,7 +368,7 @@ namespace LayoutParserApi.Services.Transformation
                         {
                             foreach (var warning in tclResult.Warnings)
                             {
-                                _logger.LogWarning("⚠️ Aviso TCL: {Warning}", warning);
+                                _logger.LogWarning("Aviso TCL: {Warning}", warning);
                             }
                         }
                         
@@ -424,7 +424,7 @@ namespace LayoutParserApi.Services.Transformation
                 // PRIORIDADE 1: Verificar se o mapper tem XSL armazenado (do Redis/cache)
                 if (!string.IsNullOrEmpty(mapper.XslContent))
                 {
-                    _logger.LogInformation("✅ XSL encontrado no mapeador {Name} (ID: {Id}) do Redis - tamanho: {Size} chars", 
+                    _logger.LogInformation("XSL encontrado no mapeador {Name} (ID: {Id}) do Redis - tamanho: {Size} chars", 
                         mapper.Name, mapper.Id, mapper.XslContent.Length);
                     
                     // Limpar XSL do mapper (remove namespace 'ng', corrige namespaces)
@@ -439,7 +439,7 @@ namespace LayoutParserApi.Services.Transformation
                     
                     // Salvar XSL do mapper em arquivo
                     await File.WriteAllTextAsync(xslPath, cleanedXsl, Encoding.UTF8);
-                    _logger.LogInformation("✅ XSL do mapper salvo em arquivo: {Path}", xslPath);
+                    _logger.LogInformation("XSL do mapper salvo em arquivo: {Path}", xslPath);
                     
                     return xslPath;
                 }
@@ -450,19 +450,19 @@ namespace LayoutParserApi.Services.Transformation
                 
                 if (File.Exists(xslPath2))
                 {
-                    _logger.LogInformation("✅ Arquivo XSL já existe: {Path}", xslPath2);
+                    _logger.LogInformation("Arquivo XSL ja existe: {Path}", xslPath2);
                     return xslPath2;
                 }
                 
                 // PRIORIDADE 3: Gerar XSL apenas se não existir no mapper nem no disco
                 // NOTA: A geração de XSL deve ser extinta no futuro, exceto para atualizações de NT ou demandas novas
-                _logger.LogWarning("⚠️ XSL não encontrado no mapeador nem em arquivo. Gerando XSL para mapeador: {Name} (ID: {Id})", 
+                _logger.LogWarning("XSL nao encontrado no mapeador nem em arquivo. Gerando XSL para mapeador: {Name} (ID: {Id})",
                     mapper.Name, mapper.Id);
-                _logger.LogWarning("⚠️ ATENÇÃO: Geração de XSL deve ser extinta no futuro. XSL deve vir do mapeador no Redis.");
+                _logger.LogWarning("ATENCAO: Geracao de XSL deve ser extinta no futuro. XSL deve vir do mapeador no Redis.");
                 
                 if (string.IsNullOrEmpty(mapper.DecryptedContent))
                 {
-                    _logger.LogError("❌ DecryptedContent vazio para mapeador: {Name}. Não é possível gerar XSL.", mapper.Name);
+                    _logger.LogError("DecryptedContent vazio para mapeador: {Name}. Nao e possivel gerar XSL.", mapper.Name);
                     return null;
                 }
                 
@@ -488,14 +488,14 @@ namespace LayoutParserApi.Services.Transformation
                     {
                         // Salvar arquivo XSL gerado
                         await File.WriteAllTextAsync(xslPath2, xslResult.SuggestedXsl, Encoding.UTF8);
-                        _logger.LogWarning("⚠️ XSL gerado (fallback) usando ML: {Path}", xslPath2);
-                        _logger.LogWarning("⚠️ RECOMENDAÇÃO: Adicionar XSL ao mapeador no banco de dados para evitar geração futura.");
+                        _logger.LogWarning("XSL gerado (fallback) usando ML: {Path}", xslPath2);
+                        _logger.LogWarning("RECOMENDACAO: Adicionar XSL ao mapeador no banco de dados para evitar geracao futura.");
                         
                         if (xslResult.Warnings.Any())
                         {
                             foreach (var warning in xslResult.Warnings)
                             {
-                                _logger.LogWarning("⚠️ Aviso XSL: {Warning}", warning);
+                                _logger.LogWarning("Aviso XSL: {Warning}", warning);
                             }
                         }
                         
@@ -505,8 +505,8 @@ namespace LayoutParserApi.Services.Transformation
                     {
                         // Usar XSL base se ML não retornou sugestão
                         await File.WriteAllTextAsync(xslPath2, xslResult.GeneratedXsl, Encoding.UTF8);
-                        _logger.LogWarning("⚠️ XSL gerado (base, fallback): {Path}", xslPath2);
-                        _logger.LogWarning("⚠️ RECOMENDAÇÃO: Adicionar XSL ao mapeador no banco de dados para evitar geração futura.");
+                        _logger.LogWarning("XSL gerado (base, fallback): {Path}", xslPath2);
+                        _logger.LogWarning("RECOMENDACAO: Adicionar XSL ao mapeador no banco de dados para evitar geracao futura.");
                         return xslPath2;
                     }
                     else
@@ -515,8 +515,8 @@ namespace LayoutParserApi.Services.Transformation
                         var baseXsl = await _xslGenerator.GenerateXslFromMapAsync(tempMapperPath, xslPath2);
                         if (!string.IsNullOrEmpty(baseXsl))
                         {
-                            _logger.LogWarning("⚠️ XSL gerado (fallback final): {Path}", xslPath2);
-                            _logger.LogWarning("⚠️ RECOMENDAÇÃO: Adicionar XSL ao mapeador no banco de dados para evitar geração futura.");
+                            _logger.LogWarning("XSL gerado (fallback final): {Path}", xslPath2);
+                            _logger.LogWarning("RECOMENDACAO: Adicionar XSL ao mapeador no banco de dados para evitar geracao futura.");
                             return xslPath2;
                         }
                     }
@@ -532,12 +532,12 @@ namespace LayoutParserApi.Services.Transformation
                     catch { }
                 }
                 
-                _logger.LogError("❌ Não foi possível gerar XSL para mapeador: {Name}", mapper.Name);
+                _logger.LogError("Nao foi possivel gerar XSL para mapeador: {Name}", mapper.Name);
                 return null;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ Erro ao carregar/gerar XSL para mapeador: {Name}", mapper.Name);
+                _logger.LogError(ex, "Erro ao carregar/gerar XSL para mapeador: {Name}", mapper.Name);
                 return null;
             }
         }
@@ -564,7 +564,7 @@ namespace LayoutParserApi.Services.Transformation
                 
                 // Log: Listar todas as definições de LINE disponíveis no TCL
                 var availableLineDefinitions = tclDoc.Descendants("LINE").ToList();
-                _logger.LogInformation("📋 TCL contém {Count} definições de LINE:", availableLineDefinitions.Count);
+                _logger.LogInformation("TCL contem {Count} definicoes de LINE:", availableLineDefinitions.Count);
                 foreach (var lineDef in availableLineDefinitions)
                 {
                     var identifier = lineDef.Attribute("identifier")?.Value ?? "null";
@@ -576,11 +576,48 @@ namespace LayoutParserApi.Services.Transformation
                 
                 // Processar TXT usando o TCL (MAP)
                 // O TCL define a estrutura de linhas e campos
-                var txtLines = txtContent.Split(new[] { "\r\n", "\n", "\r" }, StringSplitOptions.None)
-                    .Where(l => !string.IsNullOrWhiteSpace(l))
-                    .ToList();
+                // MQSeries: arquivos podem ser de largura fixa (600 caracteres por linha) sem quebras de linha
+                List<string> txtLines;
                 
-                _logger.LogInformation("📄 TXT contém {Count} linhas (após remover linhas vazias)", txtLines.Count);
+                // Verificar se o arquivo tem quebras de linha
+                var hasLineBreaks = txtContent.Contains("\r\n") || txtContent.Contains("\n") || txtContent.Contains("\r");
+                
+                if (!hasLineBreaks && txtContent.Length > 0)
+                {
+                    // Arquivo sem quebras de linha - provavelmente formato MQSeries de largura fixa
+                    // Dividir em segmentos de 600 caracteres (tamanho padrão de linha MQSeries)
+                    const int mqseriesLineLength = 600;
+                    txtLines = new List<string>();
+                    
+                    _logger.LogInformation("Arquivo TXT sem quebras de linha detectado. Tamanho total: {TotalChars} chars. Dividindo em segmentos de {LineLength} caracteres.", 
+                        txtContent.Length, mqseriesLineLength);
+                    
+                    for (int i = 0; i < txtContent.Length; i += mqseriesLineLength)
+                    {
+                        var segmentLength = Math.Min(mqseriesLineLength, txtContent.Length - i);
+                        var segment = txtContent.Substring(i, segmentLength);
+                        
+                        // Adicionar segmento mesmo se for parcialmente espaço em branco
+                        // Linhas MQSeries podem ter espaços em branco, mas ainda conter dados válidos
+                        // Se o segmento tem exatamente 600 caracteres ou é o último (pode ser menor), adicionar
+                        if (segmentLength >= 1)
+                        {
+                            txtLines.Add(segment);
+                        }
+                    }
+                    
+                    _logger.LogInformation("TXT dividido em {Count} linhas logicas (largura fixa de {LineLength} caracteres)", 
+                        txtLines.Count, mqseriesLineLength);
+                }
+                else
+                {
+                    // Arquivo com quebras de linha - processar normalmente
+                    txtLines = txtContent.Split(new[] { "\r\n", "\n", "\r" }, StringSplitOptions.None)
+                        .Where(l => !string.IsNullOrWhiteSpace(l))
+                        .ToList();
+                    
+                    _logger.LogInformation("TXT contem {Count} linhas (apos remover linhas vazias)", txtLines.Count);
+                }
                 
                 var root = new XElement("ROOT");
                 var currentLineIndex = 0;
@@ -596,12 +633,12 @@ namespace LayoutParserApi.Services.Transformation
                     
                     // Log: Mostrar primeiros caracteres da linha para debug
                     var linePreview = txtLine.Length > 50 ? txtLine.Substring(0, 50) + "..." : txtLine;
-                    _logger.LogInformation("🔍 Processando linha {Index}: '{LinePreview}' (tamanho: {Length})",
+                    _logger.LogInformation("Processando linha {Index}: '{LinePreview}' (tamanho: {Length})",
                         currentLineIndex + 1, linePreview, txtLine.Length);
                     
                     // Detectar tipo de linha baseado no identificador
                     var lineIdentifier = DetectLineIdentifierFromTxt(txtLine);
-                    _logger.LogInformation("  → Identificador detectado: '{Identifier}'", lineIdentifier);
+                    _logger.LogInformation("  Identificador detectado: '{Identifier}'", lineIdentifier);
                     
                     // Encontrar definição correspondente no TCL (MAP)
                     // Tentar múltiplas estratégias de correspondência
@@ -659,26 +696,26 @@ namespace LayoutParserApi.Services.Transformation
                     
                     if (lineDefinition != null)
                     {
-                        _logger.LogInformation("  ✅ Definição de LINE encontrada no TCL para identificador '{Identifier}'", lineIdentifier);
+                        _logger.LogInformation("  Definicao de LINE encontrada no TCL para identificador '{Identifier}'", lineIdentifier);
                         
                         // Extrair campos da linha baseado na definição do TCL
                         var lineElement = ExtractLineFromTxtUsingTcl(txtLine, lineDefinition);
                         if (lineElement != null)
                         {
                             var fieldCount = lineElement.Elements().Count();
-                            _logger.LogInformation("  ✅ Linha processada: {FieldCount} campos extraídos", fieldCount);
+                            _logger.LogInformation("  Linha processada: {FieldCount} campos extraidos", fieldCount);
                             root.Add(lineElement);
                             processedLines++;
                         }
                         else
                         {
-                            _logger.LogWarning("  ⚠️ Linha {Index}: Falha ao extrair campos (lineElement é null)", currentLineIndex + 1);
+                            _logger.LogWarning("  Linha {Index}: Falha ao extrair campos (lineElement e null)", currentLineIndex + 1);
                             skippedLines++;
                         }
                     }
                     else
                     {
-                        _logger.LogWarning("  ❌ Linha {Index}: Identificador '{Identifier}' não encontrado no TCL", 
+                        _logger.LogWarning("  Linha {Index}: Identificador '{Identifier}' nao encontrado no TCL", 
                             currentLineIndex + 1, lineIdentifier);
                         
                         // Contar quantas vezes cada identificador foi ignorado
@@ -694,7 +731,7 @@ namespace LayoutParserApi.Services.Transformation
                 }
                 
                 // Log resumo do processamento
-                _logger.LogInformation("📊 Resumo do processamento TCL:");
+                _logger.LogInformation("Resumo do processamento TCL:");
                 _logger.LogInformation("  - Total de linhas: {Total}", txtLines.Count);
                 _logger.LogInformation("  - Linhas processadas: {Processed}", processedLines);
                 _logger.LogInformation("  - Linhas ignoradas: {Skipped}", skippedLines);
@@ -718,7 +755,7 @@ namespace LayoutParserApi.Services.Transformation
                     {
                         var elementCount = rootElement.Elements().Count();
                         var elementNames = rootElement.Elements().Select(e => e.Name.LocalName).Distinct().ToList();
-                        _logger.LogInformation("📊 Estrutura do XML intermediário: {ElementCount} elementos raiz, tipos: {ElementTypes}",
+                        _logger.LogInformation("Estrutura do XML intermediario: {ElementCount} elementos raiz, tipos: {ElementTypes}",
                             elementCount, string.Join(", ", elementNames));
                         
                         // Log de cada elemento raiz com seus campos

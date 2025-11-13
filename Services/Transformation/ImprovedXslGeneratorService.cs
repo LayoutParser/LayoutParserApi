@@ -66,13 +66,13 @@ namespace LayoutParserApi.Services.Transformation
                 var tclExamples = await _learningService.LoadTclExamplesAsync(layoutName);
                 if (tclExamples != null && tclExamples.Any())
                 {
-                    _logger.LogInformation("✅ Carregados {Count} exemplos TCL constantemente para layout: {LayoutName}", tclExamples.Count, layoutName);
+                    _logger.LogInformation("Carregados {Count} exemplos TCL constantemente para layout: {LayoutName}", tclExamples.Count, layoutName);
                     
                     // Aprender padrões TCL constantemente
                     var tclLearningResult = await _learningService.LearnTclPatternsAsync(layoutName, tclExamples);
                     if (tclLearningResult.Success && tclLearningResult.PatternsLearned.Any())
                     {
-                        _logger.LogInformation("✅ Padrões TCL aprendidos: {Count} padrões", tclLearningResult.PatternsLearned.Count);
+                        _logger.LogInformation("Padroes TCL aprendidos: {Count} padroes", tclLearningResult.PatternsLearned.Count);
                         result.Suggestions.Add($"Aprendizado TCL: {tclLearningResult.PatternsLearned.Count} padrões aprendidos de {tclExamples.Count} exemplo(s)");
                     }
                 }
@@ -81,13 +81,13 @@ namespace LayoutParserApi.Services.Transformation
                 var xslExamples = await _learningService.LoadXslExamplesAsync(layoutName);
                 if (xslExamples != null && xslExamples.Any())
                 {
-                    _logger.LogInformation("✅ Carregados {Count} exemplos XSL constantemente para layout: {LayoutName}", xslExamples.Count, layoutName);
+                    _logger.LogInformation("Carregados {Count} exemplos XSL constantemente para layout: {LayoutName}", xslExamples.Count, layoutName);
                     
                     // Aprender padrões XSL constantemente
                     var xslLearningResult = await _learningService.LearnXslPatternsAsync(layoutName, xslExamples);
                     if (xslLearningResult.Success && xslLearningResult.PatternsLearned.Any())
                     {
-                        _logger.LogInformation("✅ Padrões XSL aprendidos: {Count} padrões", xslLearningResult.PatternsLearned.Count);
+                        _logger.LogInformation("Padroes XSL aprendidos: {Count} padroes", xslLearningResult.PatternsLearned.Count);
                         result.Suggestions.Add($"Aprendizado XSL: {xslLearningResult.PatternsLearned.Count} padrões aprendidos de {xslExamples.Count} exemplo(s)");
                         
                         // Usar padrões XSL aprendidos para melhorar o XSL gerado
@@ -105,7 +105,7 @@ namespace LayoutParserApi.Services.Transformation
                             {
                                 baseXsl = improvedXslFromExamples;
                                 result.Suggestions.Add($"XSL melhorado usando {xslExamples.Count} exemplo(s) XSL aprendido(s)");
-                                _logger.LogInformation("✅ XSL melhorado usando padrões XSL aprendidos");
+                                _logger.LogInformation("XSL melhorado usando padroes XSL aprendidos");
                             }
                         }
                     }

@@ -45,14 +45,14 @@ namespace LayoutParserApi.Services.Database
 
             try
             {
-                _logger.LogInformation("🔍 Conectando ao banco de dados para buscar todos os mapeadores...");
+                _logger.LogInformation("Conectando ao banco de dados para buscar todos os mapeadores...");
                 _logger.LogInformation("Connection string: Server={Server}, Database={Database}", 
                     _connectionString.Contains("Server=") ? _connectionString.Split(';').FirstOrDefault(s => s.StartsWith("Server=")) : "N/A",
                     _connectionString.Contains("Database=") ? _connectionString.Split(';').FirstOrDefault(s => s.StartsWith("Database=")) : "N/A");
                 
                 using var connection = new SqlConnection(_connectionString);
                 await connection.OpenAsync();
-                _logger.LogInformation("✅ Conexão com banco de dados estabelecida");
+                _logger.LogInformation("Conexao com banco de dados estabelecida");
 
                 var query = @"
                     SELECT 
@@ -62,7 +62,7 @@ namespace LayoutParserApi.Services.Database
                     FROM [ConnectUS_Macgyver].[dbo].[tbMapper]
                     ORDER BY [LastUpdateDate] DESC";
 
-                _logger.LogInformation("📝 Executando query para buscar mapeadores...");
+                _logger.LogInformation("Executando query para buscar mapeadores...");
                 using var command = new SqlCommand(query, connection);
                 using var reader = await command.ExecuteReaderAsync();
 
@@ -87,7 +87,7 @@ namespace LayoutParserApi.Services.Database
                     catch (Exception ex)
                     {
                         errorCount++;
-                        _logger.LogError(ex, "❌ Erro ao mapear mapeador (linha {Count}): {Message}", count + 1, ex.Message);
+                        _logger.LogError(ex, "Erro ao mapear mapeador (linha {Count}): {Message}", count + 1, ex.Message);
                         _logger.LogError(ex, "Stack trace: {StackTrace}", ex.StackTrace);
                         // Continuar processando os próximos mapeadores mesmo se um falhar
                     }
@@ -95,15 +95,15 @@ namespace LayoutParserApi.Services.Database
                 
                 if (errorCount > 0)
                 {
-                    _logger.LogWarning("⚠️ Total de erros ao mapear mapeadores: {ErrorCount} de {Total}", errorCount, count + errorCount);
+                    _logger.LogWarning("Total de erros ao mapear mapeadores: {ErrorCount} de {Total}", errorCount, count + errorCount);
                 }
 
-                _logger.LogInformation("✅ Total de mapeadores encontrados: {Count}", mappers.Count);
+                _logger.LogInformation("Total de mapeadores encontrados: {Count}", mappers.Count);
                 return mappers;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ Erro ao buscar todos os mapeadores: {Message}", ex.Message);
+                _logger.LogError(ex, "Erro ao buscar todos os mapeadores: {Message}", ex.Message);
                 _logger.LogError(ex, "Stack trace: {StackTrace}", ex.StackTrace);
                 return mappers;
             }
@@ -293,7 +293,7 @@ namespace LayoutParserApi.Services.Database
                 {
                     var inputGuidFromXml = inputLayoutGuidElement.Value.Trim();
                     mapper.InputLayoutGuidFromXml = inputGuidFromXml;
-                    _logger.LogInformation("📝 InputLayoutGuid extraído do XML para mapeador {Name} (ID: {Id}): {Guid}", 
+                    _logger.LogInformation("InputLayoutGuid extraido do XML para mapeador {Name} (ID: {Id}): {Guid}", 
                         mapper.Name, mapper.Id, inputGuidFromXml);
                     
                     // Atualizar também InputLayoutGuid se estiver vazio na coluna
@@ -307,7 +307,7 @@ namespace LayoutParserApi.Services.Database
                 {
                     var targetGuidFromXml = targetLayoutGuidElement.Value.Trim();
                     mapper.TargetLayoutGuidFromXml = targetGuidFromXml;
-                    _logger.LogInformation("📝 TargetLayoutGuid extraído do XML para mapeador {Name} (ID: {Id}): {Guid}", 
+                    _logger.LogInformation("TargetLayoutGuid extraido do XML para mapeador {Name} (ID: {Id}): {Guid}", 
                         mapper.Name, mapper.Id, targetGuidFromXml);
                     
                     // Atualizar também TargetLayoutGuid se estiver vazio na coluna
@@ -327,14 +327,14 @@ namespace LayoutParserApi.Services.Database
                     var parsedMapperVo = MapperVo.FromXml(doc);
                     if (parsedMapperVo != null)
                     {
-                        _logger.LogInformation("📋 MapperVO parseado para mapeador {Name} (ID: {Id}): {RulesCount} Rules, {LinkMappingsCount} LinkMappings", 
+                        _logger.LogInformation("MapperVO parseado para mapeador {Name} (ID: {Id}): {RulesCount} Rules, {LinkMappingsCount} LinkMappings", 
                             mapper.Name, mapper.Id, parsedMapperVo.Rules.Count, parsedMapperVo.LinkMappings.Count);
                         
                         // Se o mapper tem XSL no MapperVO, usar esse
                         if (!string.IsNullOrEmpty(parsedMapperVo.XslContent) && string.IsNullOrEmpty(mapper.XslContent))
                         {
                             mapper.XslContent = parsedMapperVo.XslContent;
-                            _logger.LogInformation("✅ XSL encontrado no MapperVO para mapeador {Name} (ID: {Id})", mapper.Name, mapper.Id);
+                            _logger.LogInformation("XSL encontrado no MapperVO para mapeador {Name} (ID: {Id})", mapper.Name, mapper.Id);
                         }
                     }
                 }
@@ -373,7 +373,7 @@ namespace LayoutParserApi.Services.Database
                 if (xslContentElement != null && !string.IsNullOrEmpty(xslContentElement.Value))
                 {
                     mapper.XslContent = xslContentElement.Value.Trim();
-                    _logger.LogInformation("✅ XSL encontrado no XML do mapeador {Name} (ID: {Id}) - tamanho: {Size} chars", 
+                    _logger.LogInformation("XSL encontrado no XML do mapeador {Name} (ID: {Id}) - tamanho: {Size} chars", 
                         mapper.Name, mapper.Id, mapper.XslContent.Length);
                     return;
                 }
@@ -383,7 +383,7 @@ namespace LayoutParserApi.Services.Database
                 if (xslElement != null && !string.IsNullOrEmpty(xslElement.Value))
                 {
                     mapper.XslContent = xslElement.Value.Trim();
-                    _logger.LogInformation("✅ XSL encontrado no XML do mapeador {Name} (ID: {Id}) - tamanho: {Size} chars", 
+                    _logger.LogInformation("XSL encontrado no XML do mapeador {Name} (ID: {Id}) - tamanho: {Size} chars", 
                         mapper.Name, mapper.Id, mapper.XslContent.Length);
                     return;
                 }
@@ -399,12 +399,12 @@ namespace LayoutParserApi.Services.Database
                 {
                     // Extrair XSL completo incluindo o elemento xsl:stylesheet
                     mapper.XslContent = xslStylesheet.ToString();
-                    _logger.LogInformation("✅ XSL (stylesheet) encontrado no XML do mapeador {Name} (ID: {Id}) - tamanho: {Size} chars", 
+                    _logger.LogInformation("XSL (stylesheet) encontrado no XML do mapeador {Name} (ID: {Id}) - tamanho: {Size} chars", 
                         mapper.Name, mapper.Id, mapper.XslContent.Length);
                     return;
                 }
 
-                _logger.LogInformation("ℹ️ XSL não encontrado no XML do mapeador {Name} (ID: {Id}). Será gerado se necessário.", 
+                _logger.LogInformation("XSL nao encontrado no XML do mapeador {Name} (ID: {Id}). Sera gerado se necessario.", 
                     mapper.Name, mapper.Id);
             }
             catch (Exception ex)

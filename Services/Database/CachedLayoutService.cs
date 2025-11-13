@@ -138,7 +138,7 @@ namespace LayoutParserApi.Services.Database
 
                     if (layout != null)
                     {
-                        _logger.LogInformation("✅ Layout encontrado no cache por GUID: {Name} (GUID: {Guid})", layout.Name, layoutGuid);
+                        _logger.LogInformation("Layout encontrado no cache por GUID: {Name} (GUID: {Guid})", layout.Name, layoutGuid);
                         return layout;
                     }
                 }
@@ -167,14 +167,14 @@ namespace LayoutParserApi.Services.Database
 
                     if (layout != null)
                     {
-                        _logger.LogInformation("✅ Layout encontrado no banco por GUID: {Name} (GUID: {Guid})", layout.Name, layoutGuid);
+                        _logger.LogInformation("Layout encontrado no banco por GUID: {Name} (GUID: {Guid})", layout.Name, layoutGuid);
                         // Atualizar cache
                         await _cacheService.SetCachedLayoutByIdAsync(layout.Id, layout);
                         return layout;
                     }
                 }
 
-                _logger.LogWarning("⚠️ Layout não encontrado por GUID: {Guid}", layoutGuid);
+                _logger.LogWarning("Layout nao encontrado por GUID: {Guid}", layoutGuid);
                 return null;
             }
             catch (Exception ex)
