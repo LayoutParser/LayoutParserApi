@@ -1,6 +1,11 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
 using LayoutParserApi.Models.Database;
 using LayoutParserApi.Services.Database;
 using LayoutParserApi.Services.Cache;
+using Microsoft.Extensions.Logging;
 
 namespace LayoutParserApi.Services.Database
 {
@@ -8,6 +13,7 @@ namespace LayoutParserApi.Services.Database
     {
         Task<LayoutSearchResponse> SearchLayoutsAsync(LayoutSearchRequest request);
         Task<LayoutRecord?> GetLayoutByIdAsync(int id);
+        Task<LayoutRecord?> GetLayoutByGuidAsync(string layoutGuid);
         Task RefreshCacheFromDatabaseAsync();
         Task ClearCacheAsync();
         ILayoutDatabaseService GetLayoutDatabaseService();
@@ -98,6 +104,134 @@ namespace LayoutParserApi.Services.Database
                 _logger.LogError(ex, "Erro ao buscar layout por ID: {Id}", id);
                 return null;
             }
+        }
+
+        public async Task<LayoutRecord?> GetLayoutByGuidAsync(string layoutGuid)
+        {
+            try
+            {
+                _logger.LogInformation("Buscando layout por GUID: {Guid}", layoutGuid);
+
+                if (string.IsNullOrEmpty(layoutGuid))
+                {
+                    _logger.LogWarning("GUID do layout é nulo ou vazio");
+                    return null;
+                }
+
+                // Normalizar GUID (remover prefixos como LAY_ se houver)
+                var normalizedGuid = NormalizeLayoutGuid(layoutGuid);
+
+                // Tentar buscar no cache primeiro (chave "all")
+                var cachedLayouts = await _cacheService.GetCachedLayoutsAsync("all");
+                if (cachedLayouts != null && cachedLayouts.Any())
+                {
+                    // Buscar layout no cache por GUID
+                    var layout = cachedLayouts.FirstOrDefault(l =>
+                    {
+                        var layoutGuidStr = l.LayoutGuid != Guid.Empty 
+                            ? l.LayoutGuid.ToString() 
+                            : "";
+                        var normalizedLayoutGuid = NormalizeLayoutGuid(layoutGuidStr);
+                        return GuidMatches(normalizedLayoutGuid, normalizedGuid) ||
+                               GuidMatches(normalizedLayoutGuid, layoutGuid);
+                    });
+
+                    if (layout != null)
+                    {
+                        _logger.LogInformation("✅ Layout encontrado no cache por GUID: {Name} (GUID: {Guid})", layout.Name, layoutGuid);
+                        return layout;
+                    }
+                }
+
+                // Se não encontrou no cache, buscar no banco usando SearchLayoutsAsync
+                _logger.LogInformation("Layout não encontrado no cache, buscando no banco por GUID: {Guid}", layoutGuid);
+                var request = new LayoutSearchRequest
+                {
+                    SearchTerm = layoutGuid,
+                    MaxResults = 100
+                };
+
+                var response = await _layoutDatabaseService.SearchLayoutsAsync(request);
+                if (response.Success && response.Layouts.Any())
+                {
+                    // Buscar layout que corresponde ao GUID
+                    var layout = response.Layouts.FirstOrDefault(l =>
+                    {
+                        var layoutGuidStr = l.LayoutGuid != Guid.Empty 
+                            ? l.LayoutGuid.ToString() 
+                            : "";
+                        var normalizedLayoutGuid = NormalizeLayoutGuid(layoutGuidStr);
+                        return GuidMatches(normalizedLayoutGuid, normalizedGuid) ||
+                               GuidMatches(normalizedLayoutGuid, layoutGuid);
+                    });
+
+                    if (layout != null)
+                    {
+                        _logger.LogInformation("✅ Layout encontrado no banco por GUID: {Name} (GUID: {Guid})", layout.Name, layoutGuid);
+                        // Atualizar cache
+                        await _cacheService.SetCachedLayoutByIdAsync(layout.Id, layout);
+                        return layout;
+                    }
+                }
+
+                _logger.LogWarning("⚠️ Layout não encontrado por GUID: {Guid}", layoutGuid);
+                return null;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Erro ao buscar layout por GUID: {Guid}", layoutGuid);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Normaliza GUID do layout (remove prefixos como LAY_)
+        /// </summary>
+        private string NormalizeLayoutGuid(string guid)
+        {
+            if (string.IsNullOrEmpty(guid))
+                return "";
+
+            var normalized = guid.Trim();
+
+            // Remover prefixo LAY_ se houver (case-insensitive)
+            if (normalized.StartsWith("LAY_", StringComparison.OrdinalIgnoreCase))
+                normalized = normalized.Substring(4);
+
+            // Remover espaços e converter para minúsculas
+            normalized = normalized.Trim().ToLowerInvariant();
+
+            // Remover chaves {} se houver (caso venha de Guid.ToString())
+            normalized = normalized.Replace("{", "").Replace("}", "");
+
+            return normalized;
+        }
+
+        /// <summary>
+        /// Verifica se dois GUIDs correspondem (após normalização)
+        /// </summary>
+        private bool GuidMatches(string guid1, string guid2)
+        {
+            if (string.IsNullOrEmpty(guid1) || string.IsNullOrEmpty(guid2))
+                return false;
+
+            var norm1 = NormalizeLayoutGuid(guid1);
+            var norm2 = NormalizeLayoutGuid(guid2);
+
+            // Comparação exata após normalização
+            if (string.Equals(norm1, norm2, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            // Comparação parcial (caso um contenha o outro)
+            if (norm1.Contains(norm2, StringComparison.OrdinalIgnoreCase) ||
+                norm2.Contains(norm1, StringComparison.OrdinalIgnoreCase))
+            {
+                // Verificar se não é apenas uma coincidência parcial muito pequena
+                if (norm1.Length >= 8 && norm2.Length >= 8)
+                    return true;
+            }
+
+            return false;
         }
 
         public async Task RefreshCacheFromDatabaseAsync()
