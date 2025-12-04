@@ -91,7 +91,7 @@ namespace LayoutParserApi.Controllers
                 var request = new LayoutSearchRequest
                 {
                     SearchTerm = "", // String vazia = buscar todos os layouts (sem filtro WHERE)
-                    MaxResults = 1000
+                    MaxResults = 300 // TOP (300) conforme especificado
                 };
 
                 var response = await _cachedLayoutService.SearchLayoutsAsync(request);
