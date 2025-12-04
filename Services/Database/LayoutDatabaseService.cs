@@ -84,25 +84,26 @@ namespace LayoutParserApi.Services.Database
                 string query;
                 if (hasSearchTerm)
                 {
-                    // Busca com filtro por nome
+                    // Busca com filtro por nome na tabela tbMapper
                     query = @"
                         SELECT TOP (@MaxResults) 
-                            [Id], [LayoutGuid], [PackageGuid], [Name], [Description], 
-                            [LayoutType], [ValueContent], [XmlShemaValidatorPath], 
+                            [Id], [MapperGuid] AS [LayoutGuid], [PackageGuid], [Name], [Description], 
+                            '' AS [LayoutType], [ValueContent], '' AS [XmlShemaValidatorPath], 
                             [ProjectId], [LastUpdateDate]
-                        FROM [ConnectUS_Macgyver].[dbo].[tbLayout] 
-                        WHERE [Name] LIKE @SearchPattern
+                        FROM [ConnectUS_Macgyver].[dbo].[tbMapper] WITH (NOLOCK)
+                        WHERE [ProjectId] = 2 AND [Name] LIKE @SearchPattern
                         ORDER BY [LastUpdateDate] DESC";
                 }
                 else
                 {
-                    // Busca todos os layouts (sem WHERE)
+                    // Busca todos os layouts da tabela tbMapper com ProjectId = 2
                     query = @"
                         SELECT TOP (@MaxResults) 
-                            [Id], [LayoutGuid], [PackageGuid], [Name], [Description], 
-                            [LayoutType], [ValueContent], [XmlShemaValidatorPath], 
+                            [Id], [MapperGuid] AS [LayoutGuid], [PackageGuid], [Name], [Description], 
+                            '' AS [LayoutType], [ValueContent], '' AS [XmlShemaValidatorPath], 
                             [ProjectId], [LastUpdateDate]
-                        FROM [ConnectUS_Macgyver].[dbo].[tbLayout] 
+                        FROM [ConnectUS_Macgyver].[dbo].[tbMapper] WITH (NOLOCK)
+                        WHERE [ProjectId] = 2
                         ORDER BY [LastUpdateDate] DESC";
                 }
 
