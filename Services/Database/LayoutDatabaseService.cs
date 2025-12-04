@@ -84,25 +84,25 @@ namespace LayoutParserApi.Services.Database
                 string query;
                 if (hasSearchTerm)
                 {
-                    // Busca com filtro por nome na tabela tbMapper
+                    // Busca com filtro por nome na tabela tbLayout
                     query = @"
-                        SELECT TOP (@MaxResults) 
-                            [Id], [MapperGuid] AS [LayoutGuid], [PackageGuid], [Name], [Description], 
-                            '' AS [LayoutType], [ValueContent], '' AS [XmlShemaValidatorPath], 
+                        SELECT TOP (200) 
+                            [Id], [LayoutGuid], [PackageGuid], [Name], [Description], 
+                            [LayoutType], [ValueContent], [XmlShemaValidatorPath], 
                             [ProjectId], [LastUpdateDate]
-                        FROM [ConnectUS_Macgyver].[dbo].[tbMapper] WITH (NOLOCK)
+                        FROM [ConnectUS_Macgyver].[dbo].[tbLayout] WITH (NOLOCK)
                         WHERE [ProjectId] = 2 AND [Name] LIKE @SearchPattern
                         ORDER BY [LastUpdateDate] DESC";
                 }
                 else
                 {
-                    // Busca todos os layouts da tabela tbMapper com ProjectId = 2
+                    // Busca todos os layouts da tabela tbLayout com ProjectId = 2 (TOP 200)
                     query = @"
-                        SELECT TOP (@MaxResults) 
-                            [Id], [MapperGuid] AS [LayoutGuid], [PackageGuid], [Name], [Description], 
-                            '' AS [LayoutType], [ValueContent], '' AS [XmlShemaValidatorPath], 
+                        SELECT TOP (200) 
+                            [Id], [LayoutGuid], [PackageGuid], [Name], [Description], 
+                            [LayoutType], [ValueContent], [XmlShemaValidatorPath], 
                             [ProjectId], [LastUpdateDate]
-                        FROM [ConnectUS_Macgyver].[dbo].[tbMapper] WITH (NOLOCK)
+                        FROM [ConnectUS_Macgyver].[dbo].[tbLayout] WITH (NOLOCK)
                         WHERE [ProjectId] = 2
                         ORDER BY [LastUpdateDate] DESC";
                 }
@@ -112,7 +112,7 @@ namespace LayoutParserApi.Services.Database
                 {
                     command.Parameters.AddWithValue("@SearchPattern", $"%{request.SearchTerm}%");
                 }
-                command.Parameters.AddWithValue("@MaxResults", request.MaxResults);
+                // Nota: TOP (200) é fixo na query, não usa parâmetro @MaxResults
 
                 var layouts = new List<LayoutRecord>();
                 var totalRead = 0;
