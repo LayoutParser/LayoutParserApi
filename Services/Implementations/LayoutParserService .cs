@@ -2,9 +2,11 @@
 using LayoutParserApi.Models.Enums;
 using LayoutParserApi.Models.Logging;
 using LayoutParserApi.Models.Parsing;
+using LayoutParserApi.Models.Responses;
 using LayoutParserApi.Models.Structure;
 using LayoutParserApi.Models.Summaries;
 using LayoutParserApi.Models.Validation;
+using LayoutParserApi.Models.Configuration;
 using LayoutParserApi.Services.Interfaces;
 using LayoutParserApi.Services.Parsing.Interfaces;
 
@@ -2803,6 +2805,135 @@ namespace LayoutParserApi.Services.Implementations
                 Level = "Info",
                 Message = $"ESTATÍSTICAS: Total de {results.Count} linhas validadas - {validLines.Count} válidas, {invalidLines.Count} inválidas, {linesWithChildren.Count} com filhos"
             });
+        }
+
+        /// <summary>
+        /// Calcula validações e posições dos campos para cada linha do layout
+        /// </summary>
+        public List<LineValidationInfo> CalculateLineValidations(Layout layout, int expectedLineLength = 600)
+        {
+            var lineValidations = new List<LineValidationInfo>();
+
+            if (layout?.Elements == null)
+                return lineValidations;
+
+            foreach (var lineElement in layout.Elements)
+            {
+                CalculateLineValidationRecursive(lineElement, lineValidations, expectedLineLength);
+            }
+
+            return lineValidations;
+        }
+
+        private void CalculateLineValidationRecursive(LineElement lineConfig, List<LineValidationInfo> validations, int expectedLineLength)
+        {
+            try
+            {
+                var (fieldElements, childLineElements) = SeparateElementsRobust(lineConfig);
+
+                int initialValueLength = !string.IsNullOrEmpty(lineConfig.InitialValue) ? lineConfig.InitialValue.Length : 0;
+
+                // Separar campos normais da tag Sequencia
+                var fieldsToCalculate = fieldElements
+                    .Where(f => !f.Name.Equals("Sequencia", StringComparison.OrdinalIgnoreCase))
+                    .OrderBy(f => f.Sequence)
+                    .ToList();
+
+                // Buscar tag Sequencia (pertence à próxima linha, mas completa esta até 600)
+                var sequenciaField = fieldElements
+                    .FirstOrDefault(f => f.Name.Equals("Sequencia", StringComparison.OrdinalIgnoreCase));
+                int sequenciaLength = sequenciaField?.LengthField ?? 6;
+
+                int fieldsLength = fieldsToCalculate.Sum(f => f.LengthField);
+
+                // Adicionar 6 chars (Sequencia da linha anterior) para todas as linhas EXCETO HEADER
+                int sequenceFromPreviousLine = lineConfig.Name?.Equals("HEADER", StringComparison.OrdinalIgnoreCase) == true ? 0 : 6;
+
+                // Total = initialValue + campos (sem Sequencia própria) + sequencia anterior + sequencia própria
+                int totalLength = initialValueLength + fieldsLength + sequenceFromPreviousLine + sequenciaLength;
+
+                bool hasChildren = childLineElements.Any();
+                bool isValid = hasChildren ? totalLength <= expectedLineLength : totalLength == expectedLineLength;
+
+                // Calcular posições dos campos (1-based)
+                var calculatedPositions = new Dictionary<string, int>();
+                int currentPosition = sequenceFromPreviousLine + initialValueLength;
+
+                foreach (var field in fieldsToCalculate)
+                {
+                    calculatedPositions[field.Name] = currentPosition + 1; // 1-based
+                    currentPosition += field.LengthField;
+                }
+
+                var validationInfo = new LineValidationInfo
+                {
+                    LineName = lineConfig.Name,
+                    InitialValue = lineConfig.InitialValue ?? "",
+                    InitialValueLength = initialValueLength,
+                    SequenceFromPreviousLine = sequenceFromPreviousLine,
+                    FieldsLength = fieldsLength,
+                    SequenciaLength = sequenciaLength,
+                    TotalLength = totalLength,
+                    IsValid = isValid,
+                    HasChildren = hasChildren,
+                    FieldCount = fieldsToCalculate.Count,
+                    CalculatedPositions = calculatedPositions
+                };
+
+                validations.Add(validationInfo);
+
+                // Processar elementos filhos recursivamente
+                if (childLineElements.Any())
+                {
+                    foreach (var childLine in childLineElements)
+                    {
+                        CalculateLineValidationRecursive(childLine, validations);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _techLogger.LogTechnical(new TechLogEntry
+                {
+                    RequestId = Guid.NewGuid().ToString(),
+                    Endpoint = "CalculateLineValidationRecursive",
+                    Level = "Error",
+                    Message = $"Erro ao calcular validação para {lineConfig.Name}: {ex.Message}"
+                });
+            }
+        }
+
+        /// <summary>
+        /// Parseia XML do layout para objeto Layout (sem precisar de arquivo txt)
+        /// </summary>
+        public async Task<Layout?> ParseLayoutFromXmlAsync(string xmlContent)
+        {
+            try
+            {
+                using var stream = new MemoryStream(Encoding.UTF8.GetBytes(xmlContent));
+                var layout = await LoadLayoutAsync(stream);
+                
+                if (layout != null)
+                {
+                    // Reestruturar e reordenar o layout
+                    var reestruturado = ReestruturarLayout(layout);
+                    var reordenado = ReordenarSequences(reestruturado);
+                    return reordenado;
+                }
+                
+                return null;
+            }
+            catch (Exception ex)
+            {
+                _techLogger.LogTechnical(new TechLogEntry
+                {
+                    RequestId = Guid.NewGuid().ToString(),
+                    Endpoint = "ParseLayoutFromXmlAsync",
+                    Level = "Error",
+                    Message = $"Erro ao parsear XML do layout: {ex.Message}"
+                });
+                return null;
+            }
         }
     }
 }

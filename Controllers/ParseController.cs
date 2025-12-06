@@ -1,4 +1,6 @@
 ﻿using LayoutParserApi.Models.Entities;
+using LayoutParserApi.Models.Responses;
+using LayoutParserApi.Models.Configuration;
 using LayoutParserApi.Services.Filters;
 using LayoutParserApi.Services.Parsing.Interfaces;
 using LayoutParserApi.Services.Interfaces;
@@ -101,6 +103,15 @@ namespace LayoutParserApi.Controllers
 
                 var documentStructure = _parserService.BuildDocumentStructure(result);
 
+                // Calcular validações e posições das linhas para o front-end (apenas para layouts configurados)
+                List<LineValidationInfo>? lineValidations = null;
+                var expectedLineLength = LayoutLineSizeConfiguration.GetLineSizeForLayout(flattenedLayout.LayoutGuid);
+                
+                if (expectedLineLength.HasValue)
+                {
+                    lineValidations = _parserService.CalculateLineValidations(flattenedLayout, expectedLineLength.Value);
+                }
+
                 return Ok(new
                 {
                     success = true,
@@ -109,7 +120,8 @@ namespace LayoutParserApi.Controllers
                     fields = result.ParsedFields,
                     text = result.RawText,
                     summary = result.Summary,
-                    documentStructure = documentStructure
+                    documentStructure = documentStructure,
+                    lineValidations = lineValidations // Validações e posições calculadas (apenas para layouts configurados)
                 });
             }
             catch (Exception ex)
