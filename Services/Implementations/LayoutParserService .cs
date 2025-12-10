@@ -2887,7 +2887,7 @@ namespace LayoutParserApi.Services.Implementations
                 {
                     foreach (var childLine in childLineElements)
                     {
-                        CalculateLineValidationRecursive(childLine, validations);
+                        CalculateLineValidationRecursive(childLine, validations, expectedLineLength);
                     }
                 }
             }

@@ -60,6 +60,7 @@ namespace LayoutParserApi.Controllers
                 int totalLayouts = layoutsResponse.Layouts.Count;
                 int validLayouts = 0;
                 int invalidLayouts = 0;
+                int notConfiguredLayouts = 0;
                 int layoutsWithErrors = 0;
 
                 foreach (var layoutRecord in layoutsResponse.Layouts)
@@ -98,7 +99,8 @@ namespace LayoutParserApi.Controllers
                         }
 
                         // Verificar se o layout deve ter cálculo de validação
-                        var expectedLineLength = LayoutLineSizeConfiguration.GetLineSizeForLayout(layoutRecord.LayoutGuid);
+                        var layoutGuidString = layoutRecord.LayoutGuid.ToString();
+                        var expectedLineLength = LayoutLineSizeConfiguration.GetLineSizeForLayout(layoutGuidString);
                         
                         List<LineValidationInfo>? lineValidations = null;
                         int validLines = 0;
@@ -124,23 +126,11 @@ namespace LayoutParserApi.Controllers
                         {
                             // Layout não configurado para cálculo
                             lineValidations = new List<LineValidationInfo>();
+                            notConfiguredLayouts++;
                         }
 
-                        analysisResults.Add(new
-                        {
-                            layoutGuid = layoutRecord.LayoutGuid,
-                            name = layoutRecord.Name,
-                            description = layoutRecord.Description,
-                            layoutType = layoutRecord.LayoutType,
-                            status = expectedLineLength.HasValue 
-                                ? (isLayoutValid ? "valid" : "invalid") 
-                                : "not_configured",
-                            expectedLineLength = expectedLineLength,
-                            totalLines = totalLines,
-                            validLines = validLines,
-                            invalidLines = invalidLines,
-                            linesWithChildren = lineValidations?.Count(lv => lv.HasChildren) ?? 0,
-                            lineValidations = lineValidations?.Select(lv => new
+                        var lineValidationsList = lineValidations != null && lineValidations.Any()
+                            ? lineValidations.Select(lv => new
                             {
                                 lineName = lv.LineName,
                                 initialValue = lv.InitialValue,
@@ -153,7 +143,24 @@ namespace LayoutParserApi.Controllers
                                 hasChildren = lv.HasChildren,
                                 fieldCount = lv.FieldCount,
                                 calculatedPositions = lv.CalculatedPositions
-                            }) ?? new List<object>()
+                            }).ToList<object>()
+                            : new List<object>();
+
+                        analysisResults.Add(new
+                        {
+                            layoutGuid = layoutGuidString,
+                            name = layoutRecord.Name,
+                            description = layoutRecord.Description,
+                            layoutType = layoutRecord.LayoutType,
+                            status = expectedLineLength.HasValue 
+                                ? (isLayoutValid ? "valid" : "invalid") 
+                                : "not_configured",
+                            expectedLineLength = expectedLineLength,
+                            totalLines = totalLines,
+                            validLines = validLines,
+                            invalidLines = invalidLines,
+                            linesWithChildren = lineValidations?.Count(lv => lv.HasChildren) ?? 0,
+                            lineValidations = lineValidationsList
                         });
                     }
                     catch (Exception ex)
@@ -180,6 +187,7 @@ namespace LayoutParserApi.Controllers
                         totalLayouts = totalLayouts,
                         validLayouts = validLayouts,
                         invalidLayouts = invalidLayouts,
+                        notConfiguredLayouts = notConfiguredLayouts,
                         layoutsWithErrors = layoutsWithErrors,
                         validationRate = totalLayouts > 0 ? (double)validLayouts / totalLayouts * 100 : 0
                     },
