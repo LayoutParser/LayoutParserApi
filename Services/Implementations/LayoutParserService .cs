@@ -955,7 +955,7 @@ namespace LayoutParserApi.Services.Implementations
             int totalLength = CalculateLineLengthForValidation(line);
             if (totalLength > 0) // Se tiver campos
             {
-                string validationStatus = totalLength == 600 ? "✓ OK" : $"⚠️ AVISO: {totalLength} posições (esperado: 600)";
+                string validationStatus = totalLength == 600 ? "✓ OK" : $" AVISO: {totalLength} posições (esperado: 600)";
                 _techLogger.LogTechnical(new TechLogEntry
                 {
                     RequestId = Guid.NewGuid().ToString(),
@@ -1941,7 +1941,7 @@ namespace LayoutParserApi.Services.Implementations
                 RequestId = Guid.NewGuid().ToString(),
                 Endpoint = "SumLengthFieldFromFieldElements",
                 Level = totalLength == 600 ? "Info" : "Warn",
-                Message = $"Linha: {lineElement.Name ?? "Desconhecida"} | Campos: {fieldCount} ({fieldsLength} chars) + InitialValue ({initialValueLength}) + Seq. anterior ({sequenceFromPreviousLine}) = {totalLength}" + (totalLength != 600 ? " ⚠️ DIFERENTE DE 600!" : " ✓")
+                Message = $"Linha: {lineElement.Name ?? "Desconhecida"} | Campos: {fieldCount} ({fieldsLength} chars) + InitialValue ({initialValueLength}) + Seq. anterior ({sequenceFromPreviousLine}) = {totalLength}" + (totalLength != 600 ? "  DIFERENTE DE 600!" : " ✓")
             });
 
             return totalLength;
@@ -2224,7 +2224,7 @@ namespace LayoutParserApi.Services.Implementations
                     // Os filhos são linhas SEPARADAS de 600 caracteres cada
                     isValid = totalLength <= 600;
 
-                    string validationMsg = isValid ? "✅ VÁLIDO (linha com filhos)" : "⚠️ AVISO: Linha com filhos";
+                    string validationMsg = isValid ? "✅ VÁLIDO (linha com filhos)" : " AVISO: Linha com filhos";
 
                     if (lineConfig.Name == "LINHA020" && totalLength != 600)
                     {
@@ -2337,7 +2337,7 @@ namespace LayoutParserApi.Services.Implementations
                         RequestId = Guid.NewGuid().ToString(),
                         Endpoint = "ValidateLineLayout",
                         Level = "Info",
-                        Message = $"ℹ️ {lineConfig.Name} não possui elementos filhos"
+                        Message = $"{lineConfig.Name} não possui elementos filhos"
                     });
                 }
 
@@ -2369,7 +2369,7 @@ namespace LayoutParserApi.Services.Implementations
                 RequestId = Guid.NewGuid().ToString(),
                 Endpoint = "SeparateElementsRobust",
                 Level = "Debug",
-                Message = $"🔍 ANALISANDO {lineConfig.Elements.Count} ELEMENTOS EM {lineConfig.Name}"
+                Message = $"ANALISANDO {lineConfig.Elements.Count} ELEMENTOS EM {lineConfig.Name}"
             });
 
             for (int i = 0; i < lineConfig.Elements.Count; i++)
@@ -2401,7 +2401,7 @@ namespace LayoutParserApi.Services.Implementations
                                 RequestId = Guid.NewGuid().ToString(),
                                 Endpoint = "SeparateElementsRobust",
                                 Level = "Debug",
-                                Message = $"  ✅ FieldElement: {field.Name}"
+                                Message = $"FieldElement: {field.Name}"
                             });
                             continue;
                         }
@@ -2413,7 +2413,7 @@ namespace LayoutParserApi.Services.Implementations
                             RequestId = Guid.NewGuid().ToString(),
                             Endpoint = "SeparateElementsRobust",
                             Level = "Error",
-                            Message = $"❌ Erro FieldElement: {ex.Message}"
+                            Message = $"Erro FieldElement: {ex.Message}"
                         });
                     }
                 }
@@ -2432,7 +2432,7 @@ namespace LayoutParserApi.Services.Implementations
                                 RequestId = Guid.NewGuid().ToString(),
                                 Endpoint = "SeparateElementsRobust",
                                 Level = "Debug",
-                                Message = $"  🔍 LineElement desserializado: Name='{childLine.Name}', InitialValue='{childLine.InitialValue}', Elements.Count={childLine.Elements?.Count}"
+                                Message = $" LineElement desserializado: Name='{childLine.Name}', InitialValue='{childLine.InitialValue}', Elements.Count={childLine.Elements?.Count}"
                             });
 
                             if (!string.IsNullOrEmpty(childLine.Name) && childLine.Name != lineConfig.Name)
@@ -2443,7 +2443,7 @@ namespace LayoutParserApi.Services.Implementations
                                     RequestId = Guid.NewGuid().ToString(),
                                     Endpoint = "SeparateElementsRobust",
                                     Level = "Info",
-                                    Message = $"✅ LineElement FILHO ADICIONADO: {childLine.Name}"
+                                    Message = $"LineElement FILHO ADICIONADO: {childLine.Name}"
                                 });
                             }
                             else
@@ -2453,7 +2453,7 @@ namespace LayoutParserApi.Services.Implementations
                                     RequestId = Guid.NewGuid().ToString(),
                                     Endpoint = "SeparateElementsRobust",
                                     Level = "Debug",
-                                    Message = $"  ⚠️ LineElement ignorado (mesmo nome ou vazio): {childLine.Name}"
+                                    Message = $"LineElement ignorado (mesmo nome ou vazio): {childLine.Name}"
                                 });
                             }
                             continue;
@@ -2465,7 +2465,7 @@ namespace LayoutParserApi.Services.Implementations
                                 RequestId = Guid.NewGuid().ToString(),
                                 Endpoint = "SeparateElementsRobust",
                                 Level = "Error",
-                                Message = $"❌ LineElement desserializado como NULL"
+                                Message = $"LineElement desserializado como NULL"
                             });
                         }
                     }
@@ -2476,7 +2476,7 @@ namespace LayoutParserApi.Services.Implementations
                             RequestId = Guid.NewGuid().ToString(),
                             Endpoint = "SeparateElementsRobust",
                             Level = "Error",
-                            Message = $"❌ Erro LineElement: {ex.Message}\nJSON: {elementJson}"
+                            Message = $"Erro LineElement: {ex.Message}\nJSON: {elementJson}"
                         });
                     }
                 }
@@ -2489,7 +2489,7 @@ namespace LayoutParserApi.Services.Implementations
                         RequestId = Guid.NewGuid().ToString(),
                         Endpoint = "SeparateElementsRobust",
                         Level = "Warn",
-                        Message = $"⚠️ Elemento não identificado: {elementJson.Substring(0, Math.Min(200, elementJson.Length))}"
+                        Message = $" Elemento não identificado: {elementJson.Substring(0, Math.Min(200, elementJson.Length))}"
                     });
                 }
             }
@@ -2499,7 +2499,7 @@ namespace LayoutParserApi.Services.Implementations
                 RequestId = Guid.NewGuid().ToString(),
                 Endpoint = "SeparateElementsRobust",
                 Level = "Info",
-                Message = $"📊 SEPARAÇÃO FINAL EM {lineConfig.Name}: {fieldElements.Count} FieldElements, {childLineElements.Count} LineElements filhos"
+                Message = $" SEPARAÇÃO FINAL EM {lineConfig.Name}: {fieldElements.Count} FieldElements, {childLineElements.Count} LineElements filhos"
             });
 
             // ✅ DEBUG: Listar todos os filhos encontrados
@@ -2510,7 +2510,7 @@ namespace LayoutParserApi.Services.Implementations
                     RequestId = Guid.NewGuid().ToString(),
                     Endpoint = "SeparateElementsRobust",
                     Level = "Info",
-                    Message = $"👥 FILHOS ENCONTRADOS: {string.Join(", ", childLineElements.Select(f => f.Name))}"
+                    Message = $" FILHOS ENCONTRADOS: {string.Join(", ", childLineElements.Select(f => f.Name))}"
                 });
             }
 

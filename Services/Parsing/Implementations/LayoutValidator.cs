@@ -305,7 +305,7 @@ namespace LayoutParserApi.Services.Parsing.Implementations
                                 RequestId = Guid.NewGuid().ToString(),
                                 Endpoint = "SeparateElementsRobust",
                                 Level = "Info",
-                                Message = $"✅ LineElement FILHO encontrado: {childLine.Name} dentro de {lineElement.Name}"
+                                Message = $" LineElement FILHO encontrado: {childLine.Name} dentro de {lineElement.Name}"
                             });
                         }
                     }
@@ -329,7 +329,7 @@ namespace LayoutParserApi.Services.Parsing.Implementations
                     RequestId = Guid.NewGuid().ToString(),
                     Endpoint = "SeparateElementsRobust",
                     Level = "Info",
-                    Message = $"📊 SEPARAÇÃO EM {lineElement.Name}: {fieldElements.Count} FieldElements, {childLineElements.Count} LineElements filhos ({string.Join(", ", childLineElements.Select(c => c.Name))})"
+                    Message = $" SEPARAÇÃO EM {lineElement.Name}: {fieldElements.Count} FieldElements, {childLineElements.Count} LineElements filhos ({string.Join(", ", childLineElements.Select(c => c.Name))})"
                 });
             }
 
