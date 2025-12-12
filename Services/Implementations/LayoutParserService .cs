@@ -553,6 +553,10 @@ namespace LayoutParserApi.Services.Implementations
             });
 
             string paddedLine = line.PadRight(600);
+            
+            // ✅ EXTRAIR SEQUENCIAL DAS PRIMEIRAS 6 POSIÇÕES DA LINHA ORIGINAL (ANTES DE QUALQUER PROCESSAMENTO)
+            // IMPORTANTE: Extrair diretamente da linha original, não do paddedLine, para garantir que seja o valor correto
+            string lineSequence = line.Length >= 6 ? line.Substring(0, 6) : line.PadRight(6).Substring(0, 6);
 
             // ✅ OBTER CAMPOS ORDENADOS POR SEQUENCE
             var fieldsToProcess = lineConfig.Elements
@@ -662,7 +666,7 @@ namespace LayoutParserApi.Services.Implementations
                     Status = status,
                     IsRequired = field.IsRequired,
                     Occurrence = occurrenceIndex + 1,
-                    LineSequence = paddedLine.Substring(0, Math.Min(6, paddedLine.Length))
+                    LineSequence = lineSequence
                 });
 
                 // ✅ ATUALIZAR POSIÇÃO PARA PRÓXIMO CAMPO
