@@ -40,7 +40,7 @@ jobs:
     - name: Setup .NET
       uses: actions/setup-dotnet@v4
       with:
-        dotnet-version: '9.0.x'
+        dotnet-version: '10.0.x'
     
     - name: Setup MSBuild for .NET Framework
       uses: microsoft/setup-msbuild@v1.1
@@ -117,7 +117,7 @@ jobs:
         
         Write-Host "LayoutParserDecrypt compilado com sucesso"
     
-    - name: Build LayoutParserApi (.NET Core 9.0)
+    - name: Build LayoutParserApi (.NET 10.0)
       run: |
         $WORK_DIR = $PWD.Path
         $API_DIR = Join-Path $WORK_DIR "LayoutParserApi"
