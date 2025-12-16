@@ -1,3 +1,5 @@
+using LayoutParserApi.Services.Interfaces;
+
 using Serilog;
 
 namespace LayoutParserApi.Services.Logging

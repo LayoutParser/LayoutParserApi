@@ -1,11 +1,7 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
 using System.Text;
-using System.Threading.Tasks;
 using System.Xml.Linq;
-using Microsoft.Extensions.Logging;
+
+using LayoutParserApi.Services.XmlAnalysis.Models;
 
 namespace LayoutParserApi.Services.XmlAnalysis
 {
@@ -67,42 +63,38 @@ namespace LayoutParserApi.Services.XmlAnalysis
             // Ordenar linhas por sequência
             var orderedLines = lineElements.OrderBy(l => GetLineSequence(l.Key)).ToList();
 
-                // Gerar definições de linha no formato TCL
-                foreach (var line in orderedLines)
+            // Gerar definições de linha no formato TCL
+            foreach (var line in orderedLines)
+            {
+                var lineIdentifier = GetLineIdentifier(line.Key);
+                var lineName = line.Key;
+                var fields = line.Value;
+
+                sb.AppendLine($"\t<LINE identifier=\"{lineIdentifier}\" name=\"{lineName}\">");
+
+                // Adicionar campos (ordenados por posição)
+                var sortedFields = fields.OrderBy(f => f.StartPosition).ToList();
+                foreach (var field in sortedFields)
                 {
-                    var lineIdentifier = GetLineIdentifier(line.Key);
-                    var lineName = line.Key;
-                    var fields = line.Value;
+                    var fieldName = SanitizeFieldName(field.Name);
+                    var fieldLength = field.Length;
+                    var lengthAttr = fieldLength.ToString();
 
-                    sb.AppendLine($"\t<LINE identifier=\"{lineIdentifier}\" name=\"{lineName}\">");
+                    // Para campos decimais, usar formato "15,2,0"
+                    if (field.IsDecimal && field.DecimalPlaces > 0)
+                        lengthAttr = $"{fieldLength},{field.DecimalPlaces},0";
 
-                    // Adicionar campos (ordenados por posição)
-                    var sortedFields = fields.OrderBy(f => f.StartPosition).ToList();
-                    foreach (var field in sortedFields)
-                    {
-                        var fieldName = SanitizeFieldName(field.Name);
-                        var fieldLength = field.Length;
-                        var lengthAttr = fieldLength.ToString();
-
-                        // Para campos decimais, usar formato "15,2,0"
-                        if (field.IsDecimal && field.DecimalPlaces > 0)
-                        {
-                            lengthAttr = $"{fieldLength},{field.DecimalPlaces},0";
-                        }
-
-                        sb.AppendLine($"\t\t<FIELD name=\"{fieldName}\" length=\"{lengthAttr}\"/>");
-                    }
-
-                    // Adicionar filhos se houver (buscar linhas filhas no layout)
-                    var children = GetChildrenElements(layoutDoc, lineName);
-                    foreach (var child in children)
-                    {
-                        sb.AppendLine($"\t\t<CHILD>{child}</CHILD>");
-                    }
-
-                    sb.AppendLine("\t</LINE>");
-                    sb.AppendLine();
+                    sb.AppendLine($"\t\t<FIELD name=\"{fieldName}\" length=\"{lengthAttr}\"/>");
                 }
+
+                // Adicionar filhos se houver (buscar linhas filhas no layout)
+                var children = GetChildrenElements(layoutDoc, lineName);
+                foreach (var child in children)
+                    sb.AppendLine($"\t\t<CHILD>{child}</CHILD>");
+
+                sb.AppendLine("\t</LINE>");
+                sb.AppendLine();
+            }
 
             sb.AppendLine("</MAP>");
             return sb.ToString();
@@ -123,8 +115,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 // Procurar elementos de linha (LineElementVO)
                 var lineElements = root.Descendants()
                     .Where(e => e.Attribute(XName.Get("type", "http://www.w3.org/2001/XMLSchema-instance"))?.Value == "LineElementVO" ||
-                               (e.Name.LocalName == "Element" && e.Parent?.Name.LocalName == "Elements"))
-                    .ToList();
+                               (e.Name.LocalName == "Element" && e.Parent?.Name.LocalName == "Elements")).ToList();
 
                 foreach (var lineElement in lineElements)
                 {
@@ -133,8 +124,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
                     if (typeAttr?.Value != "LineElementVO")
                     {
                         // Verificar se tem filhos que são FieldElementVO
-                        var hasFields = lineElement.Descendants()
-                            .Any(e => e.Attribute(XName.Get("type", "http://www.w3.org/2001/XMLSchema-instance"))?.Value == "FieldElementVO");
+                        var hasFields = lineElement.Descendants().Any(e => e.Attribute(XName.Get("type", "http://www.w3.org/2001/XMLSchema-instance"))?.Value == "FieldElementVO");
                         if (!hasFields) continue;
                     }
 
@@ -143,46 +133,12 @@ namespace LayoutParserApi.Services.XmlAnalysis
 
                     var fields = ExtractFieldsFromLine(lineElement);
                     if (fields.Any())
-                    {
                         lines[lineName] = fields;
-                    }
                 }
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Erro ao extrair elementos de linha");
-            }
-
-            return lines;
-        }
-
-        /// <summary>
-        /// Método alternativo para extrair linhas
-        /// </summary>
-        private Dictionary<string, List<FieldInfo>> ExtractLinesAlternative(XDocument layoutDoc)
-        {
-            var lines = new Dictionary<string, List<FieldInfo>>();
-
-            // Procurar por padrões comuns de linha
-            var allElements = layoutDoc.Descendants().ToList();
-
-            foreach (var elem in allElements)
-            {
-                // Procurar por Name que contenha "LINHA" ou "HEADER" ou "TRAILER"
-                var nameElem = elem.Descendants().FirstOrDefault(e => e.Name.LocalName == "Name");
-                if (nameElem != null)
-                {
-                    var name = nameElem.Value;
-                    if (name.Contains("LINHA") || name.Contains("HEADER") || name.Contains("TRAILER"))
-                    {
-                        // Esta é uma linha
-                        var fields = ExtractFieldsFromElement(elem);
-                        if (fields.Any())
-                        {
-                            lines[name] = fields;
-                        }
-                    }
-                }
             }
 
             return lines;
@@ -197,15 +153,12 @@ namespace LayoutParserApi.Services.XmlAnalysis
 
             // Procurar campos filhos (FieldElementVO)
             var fieldElements = lineElement.Descendants()
-                .Where(e => e.Attribute(XName.Get("type", "http://www.w3.org/2001/XMLSchema-instance"))?.Value == "FieldElementVO")
-                .ToList();
+                .Where(e => e.Attribute(XName.Get("type", "http://www.w3.org/2001/XMLSchema-instance"))?.Value == "FieldElementVO").ToList();
 
             // Se não encontrou, procurar elementos filhos diretos
             if (!fieldElements.Any())
             {
-                fieldElements = lineElement.Elements()
-                    .Where(e => e.Name.LocalName == "Element" || e.Name.LocalName == "FieldElement")
-                    .ToList();
+                fieldElements = lineElement.Elements().Where(e => e.Name.LocalName == "Element" || e.Name.LocalName == "FieldElement").ToList();
             }
 
             int currentPosition = 1; // Posição acumulativa
@@ -239,58 +192,9 @@ namespace LayoutParserApi.Services.XmlAnalysis
             var sequenceElem = fieldElement.Descendants().FirstOrDefault(e => e.Name.LocalName == "Sequence")
                               ?? fieldElement.Element("Sequence");
             if (int.TryParse(sequenceElem?.Value, out var seq))
-            {
                 return seq;
-            }
+            
             return 0;
-        }
-
-        /// <summary>
-        /// Extrai campos de um elemento
-        /// </summary>
-        private List<FieldInfo> ExtractFieldsFromElement(XElement element)
-        {
-            var fields = new List<FieldInfo>();
-
-            // Procurar elementos filhos que podem ser campos
-            var children = element.Elements().ToList();
-            foreach (var child in children)
-            {
-                // Procurar por Name, Size, StartValue
-                var nameElem = child.Descendants().FirstOrDefault(e => e.Name.LocalName == "Name") 
-                             ?? child.Element("Name");
-                
-                // Buscar Size como atributo ou elemento
-                var sizeValue = child.Attribute("Size")?.Value 
-                             ?? child.Element("Size")?.Value 
-                             ?? child.Descendants("Size").FirstOrDefault()?.Value;
-                
-                // Buscar StartValue como atributo ou elemento
-                var startValueValue = child.Attribute("StartValue")?.Value 
-                                   ?? child.Element("StartValue")?.Value 
-                                   ?? child.Descendants("StartValue").FirstOrDefault()?.Value;
-
-                if (nameElem != null && !string.IsNullOrEmpty(sizeValue))
-                {
-                    var fieldName = nameElem.Value;
-                    var size = int.TryParse(sizeValue, out var s) ? s : 0;
-                    var startValue = int.TryParse(startValueValue, out var sv) ? sv : 0;
-
-                    if (size > 0)
-                    {
-                        fields.Add(new FieldInfo
-                        {
-                            Name = fieldName,
-                            Length = size,
-                            StartPosition = startValue,
-                            IsDecimal = false,
-                            DecimalPlaces = 0
-                        });
-                    }
-                }
-            }
-
-            return fields.OrderBy(f => f.StartPosition).ToList();
         }
 
         /// <summary>
@@ -301,28 +205,23 @@ namespace LayoutParserApi.Services.XmlAnalysis
             try
             {
                 // Nome do campo
-                var nameElem = fieldElement.Descendants().FirstOrDefault(e => e.Name.LocalName == "Name") 
-                              ?? fieldElement.Element("Name");
+                var nameElem = fieldElement.Descendants().FirstOrDefault(e => e.Name.LocalName == "Name") ?? fieldElement.Element("Name");
                 var name = nameElem?.Value;
 
                 // Tamanho do campo (LengthField)
-                var lengthElem = fieldElement.Descendants().FirstOrDefault(e => e.Name.LocalName == "LengthField")
-                                ?? fieldElement.Element("LengthField");
+                var lengthElem = fieldElement.Descendants().FirstOrDefault(e => e.Name.LocalName == "LengthField") ?? fieldElement.Element("LengthField");
                 var length = int.TryParse(lengthElem?.Value, out var l) ? l : 0;
 
                 // StartValue (posição inicial relativa)
-                var startValueElem = fieldElement.Descendants().FirstOrDefault(e => e.Name.LocalName == "StartValue")
-                                    ?? fieldElement.Element("StartValue");
+                var startValueElem = fieldElement.Descendants().FirstOrDefault(e => e.Name.LocalName == "StartValue") ?? fieldElement.Element("StartValue");
                 var startValue = int.TryParse(startValueElem?.Value, out var sv) ? sv : 1;
 
                 if (string.IsNullOrEmpty(name) || length == 0)
                     return null;
 
                 // Detectar se é decimal (procura por campos de valor monetário)
-                var isDecimal = name.Contains("Valor") || name.Contains("Preco") || 
-                               name.Contains("Total") || 
-                               (name.Length > 1 && name.StartsWith("v") && char.IsUpper(name[1])) ||
-                               name.Contains("vBC") || name.Contains("vICMS") || name.Contains("vST");
+                var isDecimal = name.Contains("Valor") || name.Contains("Preco") || name.Contains("Total") ||
+                               (name.Length > 1 && name.StartsWith("v") && char.IsUpper(name[1])) || name.Contains("vBC") || name.Contains("vICMS") || name.Contains("vST");
 
                 // Para campos decimais, tentar detectar casas decimais
                 var decimalPlaces = 2; // Padrão
@@ -333,9 +232,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
                     var desc = descElem?.Value ?? "";
                     var decimalMatch = System.Text.RegularExpressions.Regex.Match(desc, @"(\d+),(\d+)");
                     if (decimalMatch.Success && int.TryParse(decimalMatch.Groups[2].Value, out var dp))
-                    {
                         decimalPlaces = dp;
-                    }
                 }
 
                 return new FieldInfo
@@ -363,11 +260,11 @@ namespace LayoutParserApi.Services.XmlAnalysis
                           ?? element.Element("Name");
             if (nameElem != null)
                 return nameElem.Value;
-            
+
             var nameAttr = element.Attribute("Name");
             if (nameAttr != null)
                 return nameAttr.Value;
-            
+
             return null;
         }
 
@@ -392,9 +289,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
                     // Mapear números para letras sequenciais
                     // 000 -> A (65), 001 -> B (66), etc.
                     if (num <= 25)
-                    {
                         return ((char)('A' + num)).ToString();
-                    }
                     else if (num <= 51)
                     {
                         // AA, AB, AC, etc.
@@ -403,19 +298,15 @@ namespace LayoutParserApi.Services.XmlAnalysis
                         return first.ToString() + second.ToString();
                     }
                     else
-                    {
                         // Usar número formatado: Z01, Z02, etc.
                         return "Z" + num.ToString("00");
-                    }
                 }
             }
 
             // Para outras linhas, usar primeira letra
             var firstChar = lineName.Where(char.IsLetter).FirstOrDefault();
             if (firstChar != default(char))
-            {
                 return firstChar.ToString().ToUpper();
-            }
 
             return "UNKNOWN";
         }
@@ -432,9 +323,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
             {
                 var number = lineName.Replace("LINHA", "");
                 if (int.TryParse(number, out var num))
-                {
                     return num + 1;
-                }
             }
 
             return 5000;
@@ -451,8 +340,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
             {
                 // Procurar linhas que têm ParentElement apontando para esta linha
                 var allLines = layoutDoc.Descendants()
-                    .Where(e => e.Attribute(XName.Get("type", "http://www.w3.org/2001/XMLSchema-instance"))?.Value == "LineElementVO")
-                    .ToList();
+                    .Where(e => e.Attribute(XName.Get("type", "http://www.w3.org/2001/XMLSchema-instance"))?.Value == "LineElementVO").ToList();
 
                 foreach (var line in allLines)
                 {
@@ -464,9 +352,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
                         {
                             var childName = GetLineName(line);
                             if (!string.IsNullOrEmpty(childName) && childName != lineName)
-                            {
                                 children.Add(childName);
-                            }
                         }
                     }
                 }
@@ -488,40 +374,13 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 return "Unknown";
 
             // Remover caracteres especiais e espaços
-            var sanitized = fieldName
-                .Replace(" ", "")
-                .Replace("-", "")
-                .Replace("_", "");
+            var sanitized = fieldName.Replace(" ", "").Replace("-", "").Replace("_", "");
 
             // Primeira letra minúscula (camelCase)
             if (sanitized.Length > 0)
-            {
                 sanitized = char.ToLower(sanitized[0]) + sanitized.Substring(1);
-            }
 
             return sanitized;
         }
-
-        /// <summary>
-        /// Verifica se elemento tem atributos de campo
-        /// </summary>
-        private bool HasFieldAttributes(XElement element)
-        {
-            return element.Attribute("Size") != null ||
-                   element.Descendants().Any(e => e.Name.LocalName == "Size");
-        }
-
-        /// <summary>
-        /// Informações de um campo
-        /// </summary>
-        private class FieldInfo
-        {
-            public string Name { get; set; }
-            public int Length { get; set; }
-            public int StartPosition { get; set; }
-            public bool IsDecimal { get; set; }
-            public int DecimalPlaces { get; set; }
-        }
     }
 }
-

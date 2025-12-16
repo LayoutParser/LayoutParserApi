@@ -1,10 +1,8 @@
 using LayoutParserApi.Models.Entities;
-using LayoutParserApi.Models.XmlAnalysis;
-using LayoutParserApi.Services.XmlAnalysis;
 using LayoutParserApi.Services.Generation.Implementations;
+using LayoutParserApi.Services.XmlAnalysis;
+
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.DependencyInjection;
-using System.Linq;
 
 namespace LayoutParserApi.Controllers
 {
@@ -137,8 +135,8 @@ namespace LayoutParserApi.Controllers
 
                 // Validar com detecção automática (xsdVersion e layoutName são opcionais)
                 var result = await _xsdValidationService.ValidateXmlAgainstXsdAsync(
-                    request.XmlContent, 
-                    request.XsdVersion, 
+                    request.XmlContent,
+                    request.XsdVersion,
                     request.LayoutName);
 
                 // Se houver erros, obter orientações
@@ -194,7 +192,7 @@ namespace LayoutParserApi.Controllers
                     var transformer = HttpContext.RequestServices.GetRequiredService<MqSeriesToXmlTransformer>();
 
                     var transformationResult = await transformer.TransformToXmlAsync(
-                        originalContent, 
+                        originalContent,
                         request.LayoutName ?? "");
 
                     if (transformationResult.Success && !string.IsNullOrEmpty(transformationResult.TransformedXml))
@@ -208,7 +206,7 @@ namespace LayoutParserApi.Controllers
                 {
                     // Para XML→XML, usar pipeline de transformação XML→XML
                     var pipelineService = HttpContext.RequestServices.GetRequiredService<TransformationPipelineService>();
-                    
+
                     // Detectar tipo de documento de origem e destino
                     var docTypeDetector = HttpContext.RequestServices.GetRequiredService<XmlDocumentTypeDetector>();
                     var sourceDocType = docTypeDetector.DetectDocumentType(originalContent);
@@ -321,14 +319,14 @@ Seja objetivo e direto, focando na solução prática.";
             // Tentar extrair informação do erro que indique elemento XML
             // Exemplo: "Falha da analise do elemento '{http://www.portalfiscal.inf.br/nfe}ide'"
             var elementMatch = System.Text.RegularExpressions.Regex.Match(
-                xsdError, 
+                xsdError,
                 @"elemento\s+['{]([^'{}]+)['}]",
                 System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
             if (elementMatch.Success)
             {
                 var xmlElement = elementMatch.Groups[1].Value.Split(':').Last();
-                
+
                 // Tentar encontrar mapeamento (lógica simplificada - pode ser melhorada)
                 // Por enquanto, retornar o primeiro segmento que contém o elemento
                 return segmentMappings.Values.FirstOrDefault();
@@ -374,7 +372,7 @@ Seja objetivo e direto, focando na solução prática.";
             {
                 var errorCodesList = errorCodes?.ToList();
                 var result = await _xsdValidationService.GetOrientationsAsync(xsdVersion, errorCodesList);
-                
+
                 return Ok(new
                 {
                     success = result.Success,

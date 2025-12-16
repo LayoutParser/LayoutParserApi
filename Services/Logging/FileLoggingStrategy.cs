@@ -1,3 +1,5 @@
+using LayoutParserApi.Services.Interfaces;
+
 using System.Text;
 
 namespace LayoutParserApi.Services.Logging

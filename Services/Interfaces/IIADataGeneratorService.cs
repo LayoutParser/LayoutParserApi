@@ -1,5 +1,5 @@
 ﻿using LayoutParserApi.Models.Entities;
-using LayoutParserApi.Services.Implementations;
+using LayoutParserApi.Models.Generation;
 
 namespace LayoutParserApi.Services.Interfaces
 {

@@ -1,5 +1,3 @@
-using System;
-
 namespace LayoutParserApi.Services.Generation.TxtGenerator.Models
 {
     /// <summary>
@@ -25,4 +23,3 @@ namespace LayoutParserApi.Services.Generation.TxtGenerator.Models
         public Dictionary<string, string> BusinessRules { get; set; } = new(); // Regras de negócio adicionais
     }
 }
-

@@ -1,12 +1,9 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
+using LayoutParserApi.Models.Learning;
+using LayoutParserApi.Services.Learning.Models;
+
 using System.Text;
 using System.Text.RegularExpressions;
-using System.Threading.Tasks;
 using System.Xml.Linq;
-using LayoutParserApi.Models.Learning;
 
 namespace LayoutParserApi.Services.Learning
 {
@@ -35,9 +32,7 @@ namespace LayoutParserApi.Services.Learning
                 _logger.LogInformation("Iniciando aprendizado de layout para arquivo: {Path}", filePath);
 
                 var content = await File.ReadAllTextAsync(filePath, Encoding.UTF8);
-                var lines = content.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
-                    .Where(l => !string.IsNullOrWhiteSpace(l))
-                    .ToList();
+                var lines = content.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).Where(l => !string.IsNullOrWhiteSpace(l)).ToList();
 
                 if (!lines.Any())
                 {
@@ -49,21 +44,16 @@ namespace LayoutParserApi.Services.Learning
                 LayoutModel model;
 
                 if (fileType.ToLower() == "xml")
-                {
                     model = await LearnXmlStructureAsync(lines, filePath);
-                }
                 else
-                {
                     model = await LearnTextPositionalStructureAsync(lines, filePath);
-                }
 
                 result.Success = true;
                 result.LearnedModel = model;
                 result.Message = $"Layout aprendido com sucesso: {model.TotalFields} campos detectados";
                 result.ProcessingTime = DateTime.Now - startTime;
 
-                _logger.LogInformation("Aprendizado concluído: {Fields} campos, {Time}ms", 
-                    model.TotalFields, result.ProcessingTime.TotalMilliseconds);
+                _logger.LogInformation("Aprendizado concluído: {Fields} campos, {Time}ms",model.TotalFields, result.ProcessingTime.TotalMilliseconds);
 
                 return result;
             }
@@ -97,13 +87,13 @@ namespace LayoutParserApi.Services.Learning
 
             // Detectar padrões de quebra de linha (HEADER, LINHA000, etc.)
             var linePatterns = DetectLinePatterns(lines);
-            
+
             // Para cada tipo de linha, detectar campos
             foreach (var linePattern in linePatterns)
             {
                 var lineSamples = lines.Where(l => linePattern.IsMatch(l)).Take(100).ToList();
                 var fields = DetectFieldsInLine(lineSamples, linePattern.Name);
-                
+
                 model.Fields.AddRange(fields);
             }
 
@@ -128,10 +118,10 @@ namespace LayoutParserApi.Services.Learning
             };
 
             var xmlContent = string.Join("\n", lines);
-            
+
             // Parse XML básico
             var doc = XDocument.Parse(xmlContent);
-            
+
             // Extrair elementos e atributos
             var fields = ExtractXmlFields(doc.Root, "");
             model.Fields = fields;
@@ -153,10 +143,10 @@ namespace LayoutParserApi.Services.Learning
             foreach (var line in lines.Take(1000)) // Limitar para performance
             {
                 var prefix = line.Length > 10 ? line.Substring(0, 10) : line;
-                
+
                 if (!lineGroups.ContainsKey(prefix))
                     lineGroups[prefix] = new List<string>();
-                
+
                 lineGroups[prefix].Add(line);
             }
 
@@ -183,7 +173,7 @@ namespace LayoutParserApi.Services.Learning
                 return prefix.Substring(0, Math.Min(10, prefix.Length));
             if (prefix.StartsWith("TRAILER", StringComparison.OrdinalIgnoreCase))
                 return "TRAILER";
-            
+
             return "UNKNOWN";
         }
 
@@ -193,7 +183,7 @@ namespace LayoutParserApi.Services.Learning
         private List<FieldDefinition> DetectFieldsInLine(List<string> lineSamples, string lineName)
         {
             var fields = new List<FieldDefinition>();
-            
+
             if (!lineSamples.Any())
                 return fields;
 
@@ -204,7 +194,7 @@ namespace LayoutParserApi.Services.Learning
             for (int pos = 0; pos < lineLength; pos++)
             {
                 var columnValues = lineSamples.Select(l => pos < l.Length ? l[pos] : ' ').ToList();
-                
+
                 // Detectar transições (mudança de padrão)
                 if (DetectFieldTransition(columnValues, pos, lineSamples))
                 {
@@ -256,7 +246,7 @@ namespace LayoutParserApi.Services.Learning
             for (int i = startPos; i < samples.First().Length; i++)
             {
                 var columnValues = samples.Select(s => i < s.Length ? s[i] : ' ').ToList();
-                
+
                 // Se todas são espaços, pode ser fim do campo
                 if (columnValues.All(c => char.IsWhiteSpace(c)) && i > startPos)
                 {
@@ -366,7 +356,7 @@ namespace LayoutParserApi.Services.Learning
                 return "Right";
             if (rightPadded > leftPadded)
                 return "Left";
-            
+
             return "Left";
         }
 
@@ -455,35 +445,16 @@ namespace LayoutParserApi.Services.Learning
             {
                 if (!stats.DataTypeDistribution.ContainsKey(field.DataType))
                     stats.DataTypeDistribution[field.DataType] = 0;
+
                 stats.DataTypeDistribution[field.DataType]++;
 
                 stats.FieldConfidence[field.Name] = field.Confidence;
             }
 
             // Padrões detectados
-            stats.DetectedPatterns = model.Fields
-                .Where(f => !string.IsNullOrEmpty(f.Pattern))
-                .Select(f => f.Pattern)
-                .Distinct()
-                .ToList();
+            stats.DetectedPatterns = model.Fields.Where(f => !string.IsNullOrEmpty(f.Pattern)).Select(f => f.Pattern).Distinct().ToList();
 
             return stats;
         }
     }
-
-    internal class LinePattern
-    {
-        public string Name { get; set; }
-        public string Prefix { get; set; }
-        public int SampleCount { get; set; }
-        public bool IsMatch(string line) => line.StartsWith(Prefix);
-    }
-
-    internal class FieldCandidate
-    {
-        public int StartPosition { get; set; }
-        public int EndPosition { get; set; }
-        public List<string> Values { get; set; } = new();
-    }
 }
-

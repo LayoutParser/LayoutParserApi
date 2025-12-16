@@ -1,5 +1,4 @@
-using Microsoft.Extensions.DependencyInjection;
-using LayoutParserApi.Services.Generation.TxtGenerator.Generators;
+using LayoutParserApi.Services.Generation.TxtGenerator.Enum;
 using LayoutParserApi.Services.Generation.TxtGenerator.Parsers;
 using LayoutParserApi.Services.Generation.TxtGenerator.Validators;
 
@@ -24,15 +23,7 @@ namespace LayoutParserApi.Services.Generation.TxtGenerator
             var excelParser = _serviceProvider.GetRequiredService<ExcelRulesParser>();
             var validator = _serviceProvider.GetRequiredService<LayoutValidator>();
 
-            return new TxtFileGeneratorService(
-                logger,
-                xmlParser,
-                excelParser,
-                validator,
-                _serviceProvider,
-                mode
-            );
+            return new TxtFileGeneratorService(logger, xmlParser, excelParser, validator, _serviceProvider, mode);
         }
     }
 }
-

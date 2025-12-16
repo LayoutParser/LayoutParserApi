@@ -1,15 +1,12 @@
-using Microsoft.Data.SqlClient;
 using LayoutParserApi.Models.Database;
-using LayoutParserApi.Services.Database;
+using LayoutParserApi.Services.Interfaces;
+
+using Microsoft.Data.SqlClient;
+
 using System.Xml.Linq;
 
 namespace LayoutParserApi.Services.Database
 {
-    public interface ILayoutDatabaseService
-    {
-        Task<LayoutSearchResponse> SearchLayoutsAsync(LayoutSearchRequest request);
-        Task<LayoutRecord?> GetLayoutByIdAsync(int id);
-    }
 
     public class LayoutDatabaseService : ILayoutDatabaseService
     {
@@ -24,25 +21,25 @@ namespace LayoutParserApi.Services.Database
         {
             _logger = logger;
             _decryptionService = decryptionService;
-            
+
             // Construir connection string
             var server = configuration["Database:Server"] ?? "172.31.249.51";
             var database = configuration["Database:Database"] ?? "ConnectUS_Macgyver";
             var userId = configuration["Database:UserId"] ?? "macgyver";
             var password = configuration["Database:Password"] ?? "eb8XNsww3D@U&HyZe4";
-            
+
             // Configurar connection string com timeout e SSL adequado
             // Encrypt=false desabilita SSL/TLS (pode resolver timeout)
             // Ou Encrypt=true com TrustServerCertificate=true para SSL sem validação
             var encrypt = configuration["Database:Encrypt"]?.ToLower() ?? "false";
             var connectionTimeout = configuration["Database:ConnectionTimeout"] ?? "30";
             var commandTimeout = configuration["Database:CommandTimeout"] ?? "30";
-            
+
             _connectionString = $"Server={server};Database={database};User Id={userId};Password={password};" +
                               $"TrustServerCertificate=true;Encrypt={encrypt};" +
                               $"Connection Timeout={connectionTimeout};Command Timeout={commandTimeout};" +
                               $"Pooling=true;Min Pool Size=5;Max Pool Size=100;";
-            
+
             _logger.LogInformation("LayoutDatabaseService configurado para servidor: {Server}", server);
         }
 
@@ -51,13 +48,10 @@ namespace LayoutParserApi.Services.Database
             try
             {
                 if (string.IsNullOrWhiteSpace(request.SearchTerm))
-                {
                     _logger.LogInformation("Buscando todos os layouts (sem filtro)");
-                }
                 else
-                {
                     _logger.LogInformation("Buscando layouts com termo: {SearchTerm}", request.SearchTerm);
-                }
+
                 return await SearchLayoutsFromDatabase(request);
             }
             catch (Exception ex)
@@ -80,7 +74,7 @@ namespace LayoutParserApi.Services.Database
 
                 // Se SearchTerm estiver vazio ou null, buscar todos os layouts
                 bool hasSearchTerm = !string.IsNullOrWhiteSpace(request.SearchTerm);
-                
+
                 string query;
                 if (hasSearchTerm)
                 {
@@ -109,9 +103,8 @@ namespace LayoutParserApi.Services.Database
 
                 using var command = new SqlCommand(query, connection);
                 if (hasSearchTerm)
-                {
                     command.Parameters.AddWithValue("@SearchPattern", $"%{request.SearchTerm}%");
-                }
+
                 // Nota: TOP (200) é fixo na query, não usa parâmetro @MaxResults
 
                 var layouts = new List<LayoutRecord>();
@@ -143,10 +136,10 @@ namespace LayoutParserApi.Services.Database
                         try
                         {
                             layout.DecryptedContent = _decryptionService.DecryptContent(layout.ValueContent);
-                            
+
                             // Extrair LayoutGuid do XML descriptografado (sempre priorizar XML sobre banco)
                             ExtractLayoutGuidFromDecryptedContent(layout);
-                            
+
                             // Verificar se o layout é do tipo TextPositional
                             // Apenas layouts TextPositional devem ser incluídos no Redis
                             if (!IsTextPositionalLayout(layout))
@@ -155,7 +148,7 @@ namespace LayoutParserApi.Services.Database
                                 _logger.LogDebug("Layout {Id} ({Name}) ignorado - nao e TextPositional", layout.Id, layout.Name);
                                 continue; // Pular este layout, não adicionar à lista
                             }
-                            
+
                             textPositionalCount++;
                         }
                         catch (Exception ex)
@@ -178,8 +171,7 @@ namespace LayoutParserApi.Services.Database
                     layouts.Add(layout);
                 }
 
-                _logger.LogInformation("✅ Processamento de layouts concluido: {TotalRead} lidos do banco, {TextPositionalCount} TextPositional incluidos, {SkippedCount} ignorados (nao-TextPositional ou sem conteudo)", 
-                    totalRead, textPositionalCount, skippedCount);
+                _logger.LogInformation("✅ Processamento de layouts concluido: {TotalRead} lidos do banco, {TextPositionalCount} TextPositional incluidos, {SkippedCount} ignorados (nao-TextPositional ou sem conteudo)", totalRead, textPositionalCount, skippedCount);
                 _logger.LogInformation("Encontrados {Count} layouts TextPositional para incluir no Redis", layouts.Count);
 
                 return new LayoutSearchResponse
@@ -254,7 +246,7 @@ namespace LayoutParserApi.Services.Database
                         try
                         {
                             layout.DecryptedContent = _decryptionService.DecryptContent(layout.ValueContent);
-                            
+
                             // Extrair LayoutGuid do XML descriptografado (sempre priorizar XML sobre banco)
                             ExtractLayoutGuidFromDecryptedContent(layout);
                         }
@@ -265,9 +257,8 @@ namespace LayoutParserApi.Services.Database
                         }
                     }
                     else
-                    {
                         layout.DecryptedContent = "";
-                    }
+
 
                     _logger.LogInformation("Layout encontrado no banco: {Name}", layout.Name);
                     return layout;
@@ -331,7 +322,7 @@ namespace LayoutParserApi.Services.Database
             {
                 if (string.IsNullOrEmpty(layout.DecryptedContent))
                 {
-                    _logger.LogWarning("DecryptedContent vazio para layout {Id} ({Name}). Nao e possivel extrair LayoutGuid do XML.", 
+                    _logger.LogWarning("DecryptedContent vazio para layout {Id} ({Name}). Nao e possivel extrair LayoutGuid do XML.",
                         layout.Id, layout.Name);
                     return;
                 }
@@ -343,7 +334,7 @@ namespace LayoutParserApi.Services.Database
                 // Parse do XML descriptografado
                 var doc = XDocument.Parse(layout.DecryptedContent);
                 var root = doc.Root;
-                
+
                 if (root == null)
                 {
                     _logger.LogWarning("XML root e nulo para layout {Id} ({Name})", layout.Id, layout.Name);
@@ -354,7 +345,7 @@ namespace LayoutParserApi.Services.Database
                 // O root pode ser LayoutVO ou pode ter um elemento LayoutVO filho
                 XElement? layoutVo = null;
                 XElement? layoutGuidElement = null;
-                
+
                 // Primeiro, verificar se o root é LayoutVO
                 if (root.Name.LocalName == "LayoutVO")
                 {
@@ -366,80 +357,62 @@ namespace LayoutParserApi.Services.Database
                     // Tentar buscar elemento LayoutVO filho
                     layoutVo = root.Element("LayoutVO");
                     if (layoutVo != null)
-                    {
                         layoutGuidElement = layoutVo.Element("LayoutGuid");
-                    }
                     else
                     {
                         // Tentar buscar LayoutGuid diretamente no root (caso o XML tenha estrutura diferente)
                         layoutGuidElement = root.Element("LayoutGuid");
                         if (layoutGuidElement != null)
-                        {
                             layoutVo = root;
-                        }
+
                     }
                 }
 
                 if (layoutVo == null || layoutGuidElement == null)
                 {
-                    _logger.LogWarning("Elemento LayoutVO ou LayoutGuid nao encontrado no XML (XPath /LayoutVO/LayoutGuid) para layout {Id} ({Name})", 
-                        layout.Id, layout.Name);
+                    _logger.LogWarning("Elemento LayoutVO ou LayoutGuid nao encontrado no XML (XPath /LayoutVO/LayoutGuid) para layout {Id} ({Name})", layout.Id, layout.Name);
                     return;
                 }
-                
+
                 // Se encontrado no XML, usar esse valor (sempre priorizar XML sobre banco)
                 if (!string.IsNullOrEmpty(layoutGuidElement.Value))
                 {
                     var layoutGuidFromXml = layoutGuidElement.Value.Trim();
-                    _logger.LogInformation("LayoutGuid encontrado no XML (XPath /LayoutVO/LayoutGuid) para layout {Id} ({Name}): {Guid}", 
-                        layout.Id, layout.Name, layoutGuidFromXml);
-                    
-                    // Remover prefixo LAY_ se houver (o XML pode ter LAY_xxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
+                    _logger.LogInformation("LayoutGuid encontrado no XML (XPath /LayoutVO/LayoutGuid) para layout {Id} ({Name}): {Guid}", layout.Id, layout.Name, layoutGuidFromXml);
+
                     var guidString = layoutGuidFromXml;
                     if (guidString.StartsWith("LAY_", StringComparison.OrdinalIgnoreCase))
                     {
                         guidString = guidString.Substring(4);
                         _logger.LogInformation("Prefixo LAY_ removido: {Guid}", guidString);
                     }
-                    
+
                     // Tentar converter para Guid
                     if (Guid.TryParse(guidString, out var parsedGuid))
                     {
                         // SEMPRE atualizar com o valor do XML (priorizar XML sobre banco)
                         // Isso é especialmente importante quando o banco tem Guid zerado
                         layout.LayoutGuid = parsedGuid;
-                        
+
                         if (wasEmpty)
-                        {
-                            _logger.LogInformation("✅ LayoutGuid PREENCHIDO do XML para layout {Id} ({Name}): {Guid} (estava ZERADO no banco)", 
-                                layout.Id, layout.Name, layout.LayoutGuid);
-                        }
+                            _logger.LogInformation("LayoutGuid PREENCHIDO do XML para layout {Id} ({Name}): {Guid} (estava ZERADO no banco)", layout.Id, layout.Name, layout.LayoutGuid);
                         else if (layoutGuidFromDb != parsedGuid)
-                        {
-                            _logger.LogInformation("✅ LayoutGuid ATUALIZADO do XML para layout {Id} ({Name}): {Guid} (banco tinha: {DbGuid})", 
-                                layout.Id, layout.Name, layout.LayoutGuid, layoutGuidFromDb);
-                        }
+                            _logger.LogInformation("LayoutGuid ATUALIZADO do XML para layout {Id} ({Name}): {Guid} (banco tinha: {DbGuid})", layout.Id, layout.Name, layout.LayoutGuid, layoutGuidFromDb);
                         else
-                        {
-                            _logger.LogDebug("LayoutGuid do XML confere com o do banco para layout {Id} ({Name}): {Guid}", 
-                                layout.Id, layout.Name, layout.LayoutGuid);
-                        }
+                            _logger.LogDebug("LayoutGuid do XML confere com o do banco para layout {Id} ({Name}): {Guid}", layout.Id, layout.Name, layout.LayoutGuid);
+
                     }
                     else
-                    {
-                        _logger.LogWarning("❌ Nao foi possivel converter LayoutGuid do XML para Guid: {GuidString} (layout {Id} - {Name})", 
-                            guidString, layout.Id, layout.Name);
-                    }
+                        _logger.LogWarning("Nao foi possivel converter LayoutGuid do XML para Guid: {GuidString} (layout {Id} - {Name})", guidString, layout.Id, layout.Name);
+
                 }
                 else
-                {
-                    _logger.LogWarning("❌ LayoutGuid nao encontrado no XML (XPath /LayoutVO/LayoutGuid) para layout {Id} ({Name}). Mantendo valor do banco: {DbGuid}", 
-                        layout.Id, layout.Name, layoutGuidFromDb);
-                }
+                    _logger.LogWarning("❌ LayoutGuid nao encontrado no XML (XPath /LayoutVO/LayoutGuid) para layout {Id} ({Name}). Mantendo valor do banco: {DbGuid}", layout.Id, layout.Name, layoutGuidFromDb);
+
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "❌ Erro ao extrair LayoutGuid do XML descriptografado para layout {Id} ({Name}). Continuando com LayoutGuid do banco: {DbGuid}", 
+                _logger.LogWarning(ex, "❌ Erro ao extrair LayoutGuid do XML descriptografado para layout {Id} ({Name}). Continuando com LayoutGuid do banco: {DbGuid}",
                     layout.Id, layout.Name, layout.LayoutGuid);
             }
         }
@@ -454,15 +427,14 @@ namespace LayoutParserApi.Services.Database
             {
                 if (string.IsNullOrEmpty(layout.DecryptedContent))
                 {
-                    _logger.LogWarning("DecryptedContent vazio para layout {Id} ({Name}). Nao e possivel verificar LayoutType.", 
-                        layout.Id, layout.Name);
+                    _logger.LogWarning("DecryptedContent vazio para layout {Id} ({Name}). Nao e possivel verificar LayoutType.", layout.Id, layout.Name);
                     return false; // Sem conteúdo, não pode verificar
                 }
 
                 // Parse do XML descriptografado
                 var doc = XDocument.Parse(layout.DecryptedContent);
                 var root = doc.Root;
-                
+
                 if (root == null)
                 {
                     _logger.LogWarning("XML root e nulo para layout {Id} ({Name})", layout.Id, layout.Name);
@@ -472,7 +444,7 @@ namespace LayoutParserApi.Services.Database
                 // Usar XPath /LayoutVO/LayoutType conforme especificado
                 XElement? layoutVo = null;
                 XElement? layoutTypeElement = null;
-                
+
                 // Primeiro, verificar se o root é LayoutVO
                 if (root.Name.LocalName == "LayoutVO")
                 {
@@ -484,47 +456,37 @@ namespace LayoutParserApi.Services.Database
                     // Tentar buscar elemento LayoutVO filho
                     layoutVo = root.Element("LayoutVO");
                     if (layoutVo != null)
-                    {
                         layoutTypeElement = layoutVo.Element("LayoutType");
-                    }
                     else
                     {
                         // Tentar buscar LayoutType diretamente no root (caso o XML tenha estrutura diferente)
                         layoutTypeElement = root.Element("LayoutType");
                         if (layoutTypeElement != null)
-                        {
                             layoutVo = root;
-                        }
+
                     }
                 }
 
                 if (layoutVo == null || layoutTypeElement == null)
                 {
-                    _logger.LogWarning("Elemento LayoutVO ou LayoutType nao encontrado no XML (XPath /LayoutVO/LayoutType) para layout {Id} ({Name})", 
-                        layout.Id, layout.Name);
+                    _logger.LogWarning("Elemento LayoutVO ou LayoutType nao encontrado no XML (XPath /LayoutVO/LayoutType) para layout {Id} ({Name})", layout.Id, layout.Name);
                     return false;
                 }
-                
+
                 // Verificar se o LayoutType é "TextPositional"
                 var layoutType = layoutTypeElement.Value.Trim();
                 var isTextPositional = string.Equals(layoutType, "TextPositional", StringComparison.OrdinalIgnoreCase);
-                
+
                 if (isTextPositional)
-                {
-                    _logger.LogDebug("✅ Layout {Id} ({Name}) e TextPositional - sera incluido no Redis", layout.Id, layout.Name);
-                }
+                    _logger.LogDebug("Layout {Id} ({Name}) e TextPositional - sera incluido no Redis", layout.Id, layout.Name);
                 else
-                {
-                    _logger.LogDebug("❌ Layout {Id} ({Name}) nao e TextPositional (tipo: {LayoutType}) - sera ignorado", 
-                        layout.Id, layout.Name, layoutType);
-                }
-                
+                    _logger.LogDebug("Layout {Id} ({Name}) nao e TextPositional (tipo: {LayoutType}) - sera ignorado", layout.Id, layout.Name, layoutType);
+
                 return isTextPositional;
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "❌ Erro ao verificar LayoutType do XML descriptografado para layout {Id} ({Name}). Considerando como nao-TextPositional.", 
-                    layout.Id, layout.Name);
+                _logger.LogWarning(ex, "Erro ao verificar LayoutType do XML descriptografado para layout {Id} ({Name}). Considerando como nao-TextPositional.", layout.Id, layout.Name);
                 return false; // Em caso de erro, não incluir no Redis
             }
         }

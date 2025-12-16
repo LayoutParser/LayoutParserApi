@@ -1,9 +1,4 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
-using System.Xml.Linq;
-using Microsoft.Extensions.Logging;
+using LayoutParserApi.Services.Transformation.Models;
 
 namespace LayoutParserApi.Services.Transformation
 {
@@ -55,7 +50,7 @@ namespace LayoutParserApi.Services.Transformation
             // Usar algoritmo de Levenshtein simplificado
             var distance = LevenshteinDistance(pattern1, pattern2);
             var maxLength = Math.Max(pattern1.Length, pattern2.Length);
-            
+
             if (maxLength == 0)
                 return 1.0;
 
@@ -85,9 +80,7 @@ namespace LayoutParserApi.Services.Transformation
                 for (int j = 1; j <= m; j++)
                 {
                     int cost = (t[j - 1] == s[i - 1]) ? 0 : 1;
-                    d[i, j] = Math.Min(
-                        Math.Min(d[i - 1, j] + 1, d[i, j - 1] + 1),
-                        d[i - 1, j - 1] + cost);
+                    d[i, j] = Math.Min(Math.Min(d[i - 1, j] + 1, d[i, j - 1] + 1),d[i - 1, j - 1] + cost);
                 }
             }
 
@@ -98,7 +91,7 @@ namespace LayoutParserApi.Services.Transformation
         /// Calcula similaridade entre metadados
         /// </summary>
         private double CalculateMetadataSimilarity(
-            Dictionary<string, object> metadata1, 
+            Dictionary<string, object> metadata1,
             Dictionary<string, object> metadata2)
         {
             if (metadata1 == null || metadata2 == null || !metadata1.Any() || !metadata2.Any())
@@ -124,20 +117,14 @@ namespace LayoutParserApi.Services.Transformation
         /// <summary>
         /// Encontra padrões mais similares a um padrão gerado
         /// </summary>
-        public List<SimilarityResult> FindMostSimilarPatterns(
-            LearnedPattern generatedPattern,
-            List<LearnedPattern> learnedPatterns,
-            double threshold = 0.7)
+        public List<SimilarityResult> FindMostSimilarPatterns( LearnedPattern generatedPattern, List<LearnedPattern> learnedPatterns, double threshold = 0.7)
         {
             var similarities = learnedPatterns
                 .Select(lp => new SimilarityResult
                 {
                     Pattern = lp,
                     Similarity = CalculateSimilarity(generatedPattern, lp)
-                })
-                .Where(sr => sr.Similarity >= threshold)
-                .OrderByDescending(sr => sr.Similarity)
-                .ToList();
+                }).Where(sr => sr.Similarity >= threshold).OrderByDescending(sr => sr.Similarity).ToList();
 
             return similarities;
         }
@@ -163,33 +150,17 @@ namespace LayoutParserApi.Services.Transformation
 
             // Sugerir melhorias baseadas no melhor match
             if (bestMatch.Similarity < 0.8)
-            {
                 suggestions.Add($"Padrão similar encontrado com {bestMatch.Similarity:P0} de similaridade. Considere revisar.");
-            }
 
             // Comparar confiança
             if (generatedPattern.Confidence < bestMatch.Pattern.Confidence)
-            {
                 suggestions.Add($"Padrão aprendido tem maior confiança ({bestMatch.Pattern.Confidence:P0}). Considere usar como referência.");
-            }
-
+            
             // Comparar frequência
             if (generatedPattern.Frequency < bestMatch.Pattern.Frequency)
-            {
                 suggestions.Add($"Padrão aprendido aparece mais frequentemente ({bestMatch.Pattern.Frequency} vezes). Pode ser mais comum.");
-            }
 
             return suggestions;
         }
     }
-
-    /// <summary>
-    /// Resultado de similaridade
-    /// </summary>
-    public class SimilarityResult
-    {
-        public LearnedPattern Pattern { get; set; }
-        public double Similarity { get; set; }
-    }
 }
-

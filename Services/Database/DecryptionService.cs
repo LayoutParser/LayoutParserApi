@@ -1,12 +1,10 @@
+using LayoutParserApi.Services.Interfaces;
+
 using System.Diagnostics;
 using System.Text;
 
 namespace LayoutParserApi.Services.Database
 {
-    public interface IDecryptionService
-    {
-        string DecryptContent(string encryptedContent);
-    }
 
     public class DecryptionService : IDecryptionService
     {
@@ -18,8 +16,6 @@ namespace LayoutParserApi.Services.Database
             _logger = logger;
             _layoutParserDecryptPath = string.Empty; // Inicializar para evitar null
             
-            // IMPORTANTE: A descriptografia só funciona no .NET Framework 4.8.1
-            // Devido à tecnologia de criptografia utilizada, é necessário usar o executável
             var configuredPath = configuration["LayoutParserDecrypt:Path"];
             
             if (string.IsNullOrWhiteSpace(configuredPath))
@@ -46,21 +42,16 @@ namespace LayoutParserApi.Services.Database
                 }
 
                 if (string.IsNullOrEmpty(_layoutParserDecryptPath))
-                {
                     _logger.LogWarning("LayoutParserDecrypt.exe não encontrado automaticamente. Configure o caminho em 'LayoutParserDecrypt:Path' no appsettings.json");
-                }
+                
             }
             else
             {
                 _layoutParserDecryptPath = configuredPath;
                 if (!File.Exists(_layoutParserDecryptPath))
-                {
                     _logger.LogWarning("LayoutParserDecrypt.exe não encontrado no caminho configurado: {Path}", _layoutParserDecryptPath);
-                }
                 else
-                {
                     _logger.LogInformation("Usando LayoutParserDecrypt.exe do caminho configurado: {Path}", _layoutParserDecryptPath);
-                }
             }
         }
 
@@ -159,9 +150,8 @@ namespace LayoutParserApi.Services.Database
             }
 
             if (process.ExitCode != 0)
-            {
                 throw new Exception($"Legacy decryptor failed (Exit code: {process.ExitCode}): {error}");
-            }
+            
 
             _logger.LogDebug("Processo legado finalizado: {Output}", output);
         }

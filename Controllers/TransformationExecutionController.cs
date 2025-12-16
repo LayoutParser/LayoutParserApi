@@ -1,8 +1,9 @@
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Logging;
 using LayoutParserApi.Services.Transformation;
 using LayoutParserApi.Services.XmlAnalysis;
-using System.Threading.Tasks;
+using LayoutParserApi.Models;
+
+using Microsoft.AspNetCore.Mvc;
+using LayoutParserApi.Services.XmlAnalysis.Models;
 
 namespace LayoutParserApi.Controllers
 {
@@ -52,9 +53,9 @@ namespace LayoutParserApi.Controllers
 
                 // Detectar tipo de entrada
                 var isXmlInput = request.InputContent.TrimStart().StartsWith("<");
-                
+
                 TransformationPipelineResult result;
-                
+
                 if (isXmlInput)
                 {
                     // Transformação XML -> XML
@@ -161,7 +162,7 @@ namespace LayoutParserApi.Controllers
                     var tclResult = await _learningService.LearnTclPatternsAsync(
                         request.LayoutName,
                         request.TclExamples);
-                    
+
                     learningResult = new { success = tclResult.Success, patterns = tclResult.PatternsLearned };
                 }
 
@@ -170,7 +171,7 @@ namespace LayoutParserApi.Controllers
                     var xslResult = await _learningService.LearnXslPatternsAsync(
                         request.LayoutName,
                         request.XslExamples);
-                    
+
                     learningResult = new { success = xslResult.Success, patterns = xslResult.PatternsLearned };
                 }
 
@@ -217,7 +218,7 @@ namespace LayoutParserApi.Controllers
                     transformationResult.XslPath,
                     request.ExpectedOutputXml);
 
-                var testPassed = validationResult.Success && 
+                var testPassed = validationResult.Success &&
                                 validationResult.ValidationSteps.All(s => s.Success);
 
                 return Ok(new
@@ -236,40 +237,4 @@ namespace LayoutParserApi.Controllers
             }
         }
     }
-
-    // Models de request
-    public class TransformationRequest
-    {
-        public string InputContent { get; set; }
-        public string LayoutName { get; set; }
-        public string SourceDocumentType { get; set; }
-        public string TargetDocumentType { get; set; }
-        public bool Validate { get; set; } = false;
-        public string ExpectedOutput { get; set; }
-    }
-
-    public class ValidationRequest
-    {
-        public string InputTxt { get; set; }
-        public string LayoutName { get; set; }
-        public string TclPath { get; set; }
-        public string XslPath { get; set; }
-        public string ExpectedOutputXml { get; set; }
-    }
-
-    public class LearnFromExamplesRequest
-    {
-        public string LayoutName { get; set; }
-        public List<TclExample> TclExamples { get; set; }
-        public List<XslExample> XslExamples { get; set; }
-    }
-
-    public class TransformationTestRequest
-    {
-        public string InputTxt { get; set; }
-        public string LayoutName { get; set; }
-        public string TargetDocumentType { get; set; }
-        public string ExpectedOutputXml { get; set; }
-    }
 }
-

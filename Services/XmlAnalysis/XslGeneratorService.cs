@@ -1,12 +1,8 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using System.Xml.Linq;
 using LayoutParserApi.Models.Entities;
-using Microsoft.Extensions.Logging;
+using LayoutParserApi.Services.XmlAnalysis.Models;
+
+using System.Text;
+using System.Xml.Linq;
 
 namespace LayoutParserApi.Services.XmlAnalysis
 {
@@ -43,8 +39,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
                     {
                         var exampleXml = await File.ReadAllTextAsync(exampleXmlPath, Encoding.UTF8);
                         exampleStructure = AnalyzeXmlStructure(exampleXml);
-                        _logger.LogInformation("Estrutura do XML exemplo analisada: Raiz={RootElement}, Namespaces={NamespacesCount}", 
-                            exampleStructure.RootElementName, exampleStructure.Namespaces.Count);
+                        _logger.LogInformation("Estrutura do XML exemplo analisada: Raiz={RootElement}, Namespaces={NamespacesCount}", exampleStructure.RootElementName, exampleStructure.Namespaces.Count);
                     }
                     catch (Exception ex)
                     {
@@ -100,7 +95,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
 
             // Template raiz
             sb.AppendLine("\t<xsl:template match=\"/\">");
-            
+
             // Gerar elemento raiz baseado no exemplo (enviNFe se disponível)
             if (rootElementName.Equals("enviNFe", StringComparison.OrdinalIgnoreCase))
             {
@@ -109,7 +104,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 sb.AppendLine("\t\t\t xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"");
                 sb.AppendLine("\t\t\t xsi:schemaLocation=\"http://www.portalfiscal.inf.br/nfe\"");
                 sb.AppendLine("\t\t\t versao=\"4.00\">");
-                
+
                 // Adicionar idLote e indSinc se estiverem no exemplo
                 if (hasIdLoteAndIndSinc)
                 {
@@ -118,7 +113,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
                     sb.AppendLine("\t\t\t</idLote>");
                     sb.AppendLine("\t\t\t<indSinc>0</indSinc>");
                 }
-                
+
                 sb.AppendLine("\t\t\t<NFe>");
                 sb.AppendLine("\t\t\t\t<infNFe versao=\"4.00\">");
                 sb.AppendLine("\t\t\t\t\t<xsl:attribute name=\"Id\">");
@@ -174,7 +169,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
             }
 
             sb.AppendLine("\t\t\t\t</infNFe>");
-            
+
             // Fechar elementos baseado na estrutura
             if (rootElementName.Equals("enviNFe", StringComparison.OrdinalIgnoreCase))
             {
@@ -182,50 +177,36 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 sb.AppendLine("\t\t</enviNFe>");
             }
             else
-            {
                 sb.AppendLine("\t\t</NFe>");
-            }
-            
+
             sb.AppendLine("\t</xsl:template>");
             sb.AppendLine();
             sb.AppendLine("</xsl:stylesheet>");
 
             return sb.ToString();
         }
-        
-        /// <summary>
-        /// Informações sobre a estrutura de um XML de exemplo
-        /// </summary>
-        private class XmlStructureInfo
-        {
-            public string RootElementName { get; set; }
-            public string DefaultNamespace { get; set; }
-            public Dictionary<string, string> Namespaces { get; set; } = new();
-            public bool HasIdLoteAndIndSinc { get; set; }
-            public string Versao { get; set; }
-        }
-        
+
         /// <summary>
         /// Analisa a estrutura de um XML de exemplo para determinar como gerar o XSL
         /// </summary>
         private XmlStructureInfo AnalyzeXmlStructure(string exampleXml)
         {
             var structure = new XmlStructureInfo();
-            
+
             try
             {
                 var doc = XDocument.Parse(exampleXml);
                 var root = doc.Root;
-                
+
                 if (root == null)
                     return structure;
-                
+
                 // Extrair nome do elemento raiz
                 structure.RootElementName = root.Name.LocalName;
-                
+
                 // Extrair namespace padrão
                 structure.DefaultNamespace = root.Name.Namespace.NamespaceName;
-                
+
                 // Extrair todos os namespaces
                 foreach (var attr in root.Attributes())
                 {
@@ -234,25 +215,23 @@ namespace LayoutParserApi.Services.XmlAnalysis
                         var prefix = attr.Name.LocalName == "xmlns" ? "" : attr.Name.LocalName;
                         structure.Namespaces[prefix] = attr.Value;
                     }
-                    else if (attr.Name == XName.Get("versao"))
-                    {
-                        structure.Versao = attr.Value;
-                    }
+                    else if (attr.Name == XName.Get("versao"))                    
+                        structure.Versao = attr.Value;                    
                 }
-                
+
                 // Verificar se tem idLote e indSinc como filhos diretos do raiz
                 var idLote = root.Element(root.Name.Namespace + "idLote");
                 var indSinc = root.Element(root.Name.Namespace + "indSinc");
                 structure.HasIdLoteAndIndSinc = idLote != null && indSinc != null;
-                
-                _logger.LogInformation("Estrutura XML analisada: Raiz={Root}, Namespace={Namespace}, TemIdLoteIndSinc={HasIdLote}", 
+
+                _logger.LogInformation("Estrutura XML analisada: Raiz={Root}, Namespace={Namespace}, TemIdLoteIndSinc={HasIdLote}",
                     structure.RootElementName, structure.DefaultNamespace, structure.HasIdLoteAndIndSinc);
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Erro ao analisar estrutura do XML exemplo");
             }
-            
+
             return structure;
         }
 
@@ -286,11 +265,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
             var contentValue = rule.ContentValue ?? "";
 
             // Remover marcadores %beginRuleContent; e %endRuleContent; se existirem
-            contentValue = System.Text.RegularExpressions.Regex.Replace(
-                contentValue,
-                @"%beginRuleContent;|%endRuleContent;",
-                "",
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            contentValue = System.Text.RegularExpressions.Regex.Replace(contentValue,@"%beginRuleContent;|%endRuleContent;","",System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
             // Remover quebras de linha e normalizar espaços para facilitar parsing
             contentValue = System.Text.RegularExpressions.Regex.Replace(contentValue, @"\r\n|\n|\r", " ");
@@ -363,7 +338,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 // Converter para XPath e XSL
                 var xpath = ConvertToXPath(sourcePath);
                 var targetElement = GetElementFromPath(targetPath);
-                
+
                 // Sanitizar nome do elemento (já está sanitizado em GetElementFromPath, mas garantir)
                 targetElement = SanitizeElementName(targetElement);
 
@@ -383,7 +358,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
             // GetConfigParametersValue('parametro') -> retorna texto fixo ou XSL equivalente
             var getConfigPattern = @"GetConfigParametersValue\s*\(\s*'([^']+)'\s*\)";
             var getConfigMatch = System.Text.RegularExpressions.Regex.Match(functionCall, getConfigPattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            
+
             if (getConfigMatch.Success)
             {
                 var parameter = getConfigMatch.Groups[1].Value;
@@ -395,7 +370,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
             // ConcatString('texto1', 'texto2') -> concat('texto1', 'texto2')
             var concatPattern = @"ConcatString\s*\(\s*'([^']+)'\s*,\s*'([^']+)'\s*\)";
             var concatMatch = System.Text.RegularExpressions.Regex.Match(functionCall, concatPattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            
+
             if (concatMatch.Success)
             {
                 var text1 = concatMatch.Groups[1].Value;
@@ -421,7 +396,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
 
             foreach (var linkMapping in orderedLinkMappings)
             {
-                _logger.LogInformation("Processando LinkMapping: {Name} (InputGuid: {InputGuid}, TargetGuid: {TargetGuid})", 
+                _logger.LogInformation("Processando LinkMapping: {Name} (InputGuid: {InputGuid}, TargetGuid: {TargetGuid})",
                     linkMapping.Name, linkMapping.InputLayoutGuid, linkMapping.TargetLayoutGuid);
 
                 if (string.IsNullOrEmpty(linkMapping.Name))
@@ -434,7 +409,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
                     var parts = elementName.Split('_');
                     elementName = parts.Last();
                 }
-                
+
                 // Sanitizar nome do elemento (remover caracteres inválidos, prefixos reservados)
                 elementName = SanitizeElementName(elementName);
 
@@ -444,15 +419,15 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 // 2. Tentar buscar pelo nome do elemento (sem prefixo)
                 // 3. Tentar buscar em diferentes estruturas do XML intermediário (HEADER, LINHA000, etc.)
                 var xpathOptions = GenerateXPathOptionsForLinkMapping(linkMapping.Name, elementName);
-                
+
                 // Gerar elemento XSL que busca valor do XML intermediário usando múltiplas estratégias
                 sb.AppendLine($"\t\t\t\t\t<{elementName}>");
                 sb.AppendLine($"\t\t\t\t\t\t<!-- LinkMapping: {linkMapping.Name} (InputGuid: {linkMapping.InputLayoutGuid}, TargetGuid: {linkMapping.TargetLayoutGuid}) -->");
-                
+
                 // Gerar XSL que tenta múltiplos XPaths até encontrar um valor
                 // Usar xsl:choose para tentar cada XPath em ordem
                 GenerateXslWithMultipleXPaths(sb, elementName, xpathOptions, linkMapping.DefaultValue, linkMapping.AllowEmpty);
-                
+
                 sb.AppendLine($"\t\t\t\t\t</{elementName}>");
             }
         }
@@ -465,10 +440,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
             var xpathOptions = new List<string>();
 
             // Normalizar nome (remover caracteres especiais, converter para lowercase)
-            var normalizedName = linkMappingName.ToLowerInvariant()
-                .Replace("_", "")
-                .Replace("-", "")
-                .Replace(" ", "");
+            var normalizedName = linkMappingName.ToLowerInvariant().Replace("_", "").Replace("-", "").Replace(" ", "");
 
             // Estratégia 1: Buscar diretamente pelo nome do elemento em estruturas comuns (mais provável)
             var commonStructures = new[] { "HEADER", "LINHA000", "LINHA001", "LINHA002", "LINHA003", "TRAILER", "chave", "A", "B", "C", "H" };
@@ -485,18 +457,14 @@ namespace LayoutParserApi.Services.XmlAnalysis
             // Estratégia 2: Buscar pelo nome completo em qualquer lugar do ROOT (busca recursiva)
             xpathOptions.Add($"ROOT//*[local-name()='{elementName}']");
             xpathOptions.Add($"ROOT//*[local-name()='{linkMappingName}']");
-            
+
             // Estratégia 3: Buscar usando correspondência parcial (se o nome contém o elemento)
-            if (linkMappingName.ToLowerInvariant().Contains(elementName.ToLowerInvariant()))
-            {
-                xpathOptions.Add($"ROOT//*[contains(translate(local-name(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{elementName.ToLowerInvariant()}')]");
-            }
+            if (linkMappingName.ToLowerInvariant().Contains(elementName.ToLowerInvariant()))            
+                xpathOptions.Add($"ROOT//*[contains(translate(local-name(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{elementName.ToLowerInvariant()}')]");            
 
             // Estratégia 4: Buscar pelo nome normalizado (sem prefixos, underscores, etc.)
-            if (normalizedName != elementName.ToLowerInvariant())
-            {
-                xpathOptions.Add($"ROOT//*[translate(translate(local-name(), '_', ''), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')='{normalizedName}']");
-            }
+            if (normalizedName != elementName.ToLowerInvariant())            
+                xpathOptions.Add($"ROOT//*[translate(translate(local-name(), '_', ''), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')='{normalizedName}']");           
 
             // Estratégia 5: Buscar diretamente no ROOT (menos provável, mas possível)
             xpathOptions.Add($"ROOT/{elementName}");
@@ -529,14 +497,11 @@ namespace LayoutParserApi.Services.XmlAnalysis
             if (xpathOptions == null || !xpathOptions.Any())
             {
                 // Se não há opções de XPath, usar valor padrão ou vazio
-                if (!string.IsNullOrEmpty(defaultValue))
-                {
-                    sb.AppendLine($"\t\t\t\t\t\t<xsl:value-of select=\"{EscapeXslString(defaultValue)}\"/>");
-                }
-                else if (allowEmpty)
-                {
+                if (!string.IsNullOrEmpty(defaultValue))                
+                    sb.AppendLine($"\t\t\t\t\t\t<xsl:value-of select=\"{EscapeXslString(defaultValue)}\"/>");                
+                else if (allowEmpty)                
                     sb.AppendLine($"\t\t\t\t\t\t<xsl:text></xsl:text>");
-                }
+                
                 return;
             }
 
@@ -563,10 +528,8 @@ namespace LayoutParserApi.Services.XmlAnalysis
                         sb.AppendLine($"\t\t\t\t\t\t\t<xsl:value-of select=\"normalize-space({xpath})\"/>");
                         sb.AppendLine($"\t\t\t\t\t\t</xsl:if>");
                     }
-                    else
-                    {
-                        sb.AppendLine($"\t\t\t\t\t\t<xsl:value-of select=\"normalize-space({xpath})\"/>");
-                    }
+                    else                    
+                        sb.AppendLine($"\t\t\t\t\t\t<xsl:value-of select=\"normalize-space({xpath})\"/>");                    
                 }
                 return;
             }
@@ -574,18 +537,18 @@ namespace LayoutParserApi.Services.XmlAnalysis
             // Se temos múltiplos XPaths, tentar cada um em ordem
             // Usar xsl:choose aninhado para tentar cada XPath
             sb.AppendLine($"\t\t\t\t\t\t<xsl:choose>");
-            
+
             // Tentar cada XPath em ordem (usar apenas os primeiros 5 para não tornar o XSL muito complexo)
             var xpathsToTry = xpathOptions.Take(5).ToList();
             for (int i = 0; i < xpathsToTry.Count; i++)
             {
                 var xpath = xpathsToTry[i];
                 var isLast = i == xpathsToTry.Count - 1;
-                
+
                 sb.AppendLine($"\t\t\t\t\t\t\t<xsl:when test=\"string-length({xpath}) > 0\">");
                 sb.AppendLine($"\t\t\t\t\t\t\t\t<xsl:value-of select=\"normalize-space({xpath})\"/>");
                 sb.AppendLine($"\t\t\t\t\t\t\t</xsl:when>");
-                
+
                 if (!isLast)
                 {
                     // Continuar para o próximo XPath
@@ -608,7 +571,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
                     // Se não permite vazio e não tem default, não criar o elemento (já tratado acima)
                 }
             }
-            
+
             sb.AppendLine($"\t\t\t\t\t\t</xsl:choose>");
         }
 
@@ -619,7 +582,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
         {
             if (string.IsNullOrEmpty(value))
                 return "''";
-            
+
             // Se contém aspas simples, usar concat
             if (value.Contains("'"))
             {
@@ -627,7 +590,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 var concatParts = parts.Select(p => $"'{p}'").ToList();
                 return $"concat({string.Join(", \"'\", ", concatParts)})";
             }
-            
+
             return $"'{value}'";
         }
 
@@ -654,7 +617,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
                     var parts = elementName.Split('_');
                     elementName = parts.Last();
                 }
-                
+
                 // Sanitizar nome do elemento (remover caracteres inválidos, prefixos reservados)
                 elementName = SanitizeElementName(elementName);
 
@@ -664,10 +627,10 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 // Gerar elemento XSL
                 sb.AppendLine($"\t\t\t\t\t<{elementName}>");
                 sb.AppendLine($"\t\t\t\t\t\t<!-- LinkMapping: {name} (InputGuid: {inputGuid}, TargetGuid: {targetGuid}) -->");
-                
+
                 // Gerar XSL que tenta múltiplos XPaths até encontrar um valor
                 GenerateXslWithMultipleXPaths(sb, elementName, xpathOptions, defaultValue, allowEmpty);
-                
+
                 sb.AppendLine($"\t\t\t\t\t</{elementName}>");
             }
         }
@@ -678,9 +641,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
         private void ProcessRules(StringBuilder sb, List<XElement> rules, XDocument mapDoc)
         {
             // Agrupar regras por elemento de destino
-            var rulesByTarget = rules
-                .GroupBy(r => GetTargetElement(r))
-                .ToList();
+            var rulesByTarget = rules.GroupBy(r => GetTargetElement(r)).ToList();
 
             foreach (var group in rulesByTarget)
             {
@@ -703,15 +664,10 @@ namespace LayoutParserApi.Services.XmlAnalysis
 
             // Extrair caminho de destino do ContentValue
             // Exemplo: T.enviNFe/NFe/infNFe/Id
-            var match = System.Text.RegularExpressions.Regex.Match(
-                contentValue,
-                @"T\.([^\s=]+)",
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            var match = System.Text.RegularExpressions.Regex.Match(contentValue,@"T\.([^\s=]+)",System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
-            if (match.Success)
-            {
-                return match.Groups[1].Value;
-            }
+            if (match.Success)            
+                return match.Groups[1].Value;            
 
             // Fallback: usar nome da regra
             var ruleName = rule.Element("Name")?.Value ?? "Unknown";
@@ -755,10 +711,8 @@ namespace LayoutParserApi.Services.XmlAnalysis
             }
 
             // Processar cada regra
-            foreach (var rule in rules)
-            {
-                GenerateXslRule(sb, rule, mapDoc);
-            }
+            foreach (var rule in rules)            
+                GenerateXslRule(sb, rule, mapDoc);            
 
             // Fechar elementos
             foreach (var part in System.Linq.Enumerable.Reverse(elementPath))
@@ -791,7 +745,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 // Converter para XPath e XSL
                 var xpath = ConvertToXPath(sourcePath);
                 var targetElement = GetElementFromPath(targetPath);
-                
+
                 // Sanitizar nome do elemento (já está sanitizado em GetElementFromPath, mas garantir)
                 targetElement = SanitizeElementName(targetElement);
 
@@ -842,7 +796,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
             var parts = targetPath.Split('/');
             return SanitizeElementName(parts.Last());
         }
-        
+
         /// <summary>
         /// Sanitiza nome de elemento XML:
         /// - Remove ou substitui prefixos reservados (xmlns, xml)
@@ -853,109 +807,79 @@ namespace LayoutParserApi.Services.XmlAnalysis
         {
             if (string.IsNullOrWhiteSpace(elementName))
                 return "element";
-            
+
             var sanitized = elementName.Trim();
-            
+
             // Remover prefixo "xmlns" se houver (reservado pelo XML)
             // Não substituir por "ns" pois isso criaria prefixos não declarados
             if (sanitized.StartsWith("xmlns", StringComparison.OrdinalIgnoreCase))
             {
                 // Se começa com "xmlns", remover completamente
-                if (sanitized.Length > 5 && sanitized[5] == ':')
-                {
+                if (sanitized.Length > 5 && sanitized[5] == ':')                
                     // Caso "xmlns:xxx", remover "xmlns:" e usar apenas "xxx"
-                    sanitized = sanitized.Substring(6); // Remover "xmlns:"
-                }
-                else if (sanitized.Length == 5)
-                {
+                    sanitized = sanitized.Substring(6); // Remover "xmlns:"                
+                else if (sanitized.Length == 5)                
                     // Caso apenas "xmlns", substituir por "element"
-                    sanitized = "element";
-                }
-                else
-                {
+                    sanitized = "element";                
+                else                
                     // Caso "xmlnsAlgo", remover "xmlns" e usar apenas "Algo"
-                    sanitized = sanitized.Substring(5);
-                }
-                
+                    sanitized = sanitized.Substring(5);                
+
                 // Se após remover "xmlns" ficou vazio, usar "element"
-                if (string.IsNullOrWhiteSpace(sanitized))
-                {
-                    sanitized = "element";
-                }
+                if (string.IsNullOrWhiteSpace(sanitized))                
+                    sanitized = "element";                
             }
-            
+
             // Remover prefixo "xml" se houver no início (reservado pelo XML)
             // Mas apenas se for exatamente "xml" ou "xml:" ou "xmlAlgo"
             if (sanitized.StartsWith("xml", StringComparison.OrdinalIgnoreCase))
             {
-                if (sanitized.Length == 3)
-                {
+                if (sanitized.Length == 3)                
                     // Caso apenas "xml", substituir por "element"
-                    sanitized = "element";
-                }
-                else if (sanitized.Length > 3 && sanitized[3] == ':')
-                {
+                    sanitized = "element";                
+                else if (sanitized.Length > 3 && sanitized[3] == ':')                
                     // Caso "xml:xxx", remover "xml:" e usar apenas "xxx" (sem criar prefixo)
-                    sanitized = sanitized.Substring(4); // Remover "xml:"
-                }
-                else if (sanitized.Length > 3 && (char.IsLetter(sanitized[3]) || char.IsDigit(sanitized[3])))
-                {
+                    sanitized = sanitized.Substring(4); // Remover "xml:"                
+                else if (sanitized.Length > 3 && (char.IsLetter(sanitized[3]) || char.IsDigit(sanitized[3])))                
                     // Caso "xmlAlgo", remover "xml" e usar apenas "Algo"
-                    sanitized = sanitized.Substring(3);
-                }
-                
+                    sanitized = sanitized.Substring(3);                
+
                 // Se após remover "xml" ficou vazio, usar "element"
-                if (string.IsNullOrWhiteSpace(sanitized))
-                {
-                    sanitized = "element";
-                }
+                if (string.IsNullOrWhiteSpace(sanitized))                
+                    sanitized = "element";                
             }
-            
+
             // Remover ou substituir caracteres inválidos para nomes XML
             // XML não permite: < > " ' & espaços no início, : em algumas posições
             var invalidChars = new[] { '<', '>', '"', '\'', '&', ' ', '\t', '\n', '\r' };
-            foreach (var invalidChar in invalidChars)
-            {
-                sanitized = sanitized.Replace(invalidChar, '_');
-            }
-            
+            foreach (var invalidChar in invalidChars)            
+                sanitized = sanitized.Replace(invalidChar, '_');            
+
             // Remover caracteres de controle
             sanitized = new string(sanitized.Where(c => !char.IsControl(c)).ToArray());
-            
+
             // Garantir que o nome não começa com número (inválido em XML)
-            if (sanitized.Length > 0 && char.IsDigit(sanitized[0]))
-            {
-                sanitized = "elem" + sanitized;
-            }
-            
+            if (sanitized.Length > 0 && char.IsDigit(sanitized[0]))            
+                sanitized = "elem" + sanitized;            
+
             // Garantir que o nome não está vazio
-            if (string.IsNullOrWhiteSpace(sanitized))
-            {
-                sanitized = "element";
-            }
-            
+            if (string.IsNullOrWhiteSpace(sanitized))           
+                sanitized = "element";            
+
             // Remover caracteres inválidos adicionais (caracteres especiais exceto _ - .)
             // IMPORTANTE: Remover ":" para evitar prefixos de namespace não declarados
-            sanitized = System.Text.RegularExpressions.Regex.Replace(
-                sanitized,
-                @"[^\w._-]",
-                "_");
-            
+            sanitized = System.Text.RegularExpressions.Regex.Replace(sanitized,@"[^\w._-]","_");
+
             // Remover múltiplos underscores consecutivos
-            sanitized = System.Text.RegularExpressions.Regex.Replace(
-                sanitized,
-                @"_+",
-                "_");
-            
+            sanitized = System.Text.RegularExpressions.Regex.Replace(sanitized,@"_+","_");
+
             // Remover underscore no início ou fim
             sanitized = sanitized.Trim('_');
-            
+
             // Garantir que o nome não está vazio após sanitização
-            if (string.IsNullOrWhiteSpace(sanitized))
-            {
-                sanitized = "element";
-            }
-            
+            if (string.IsNullOrWhiteSpace(sanitized))            
+                sanitized = "element";            
+
             return sanitized;
         }
 
@@ -970,40 +894,22 @@ namespace LayoutParserApi.Services.XmlAnalysis
             try
             {
                 // Remover namespace 'ng' do xsl:stylesheet
-                xslContent = System.Text.RegularExpressions.Regex.Replace(
-                    xslContent,
-                    @"\s*xmlns:ng=""[^""]*""",
-                    "",
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                xslContent = System.Text.RegularExpressions.Regex.Replace(xslContent,@"\s*xmlns:ng=""[^""]*""","",System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
                 // Remover exclude-result-prefixes="ng"
-                xslContent = System.Text.RegularExpressions.Regex.Replace(
-                    xslContent,
-                    @"\s*exclude-result-prefixes=""ng""",
-                    "",
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                xslContent = System.Text.RegularExpressions.Regex.Replace(xslContent,@"\s*exclude-result-prefixes=""ng""","",System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
                 // Remover extension-element-prefixes="ng"
-                xslContent = System.Text.RegularExpressions.Regex.Replace(
-                    xslContent,
-                    @"\s*extension-element-prefixes=""ng""",
-                    "",
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                xslContent = System.Text.RegularExpressions.Regex.Replace(xslContent,@"\s*extension-element-prefixes=""ng""","",System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
                 // Verificar se XSL usa xsi: (xsi:type, xsi:nil, etc.)
-                bool usesXsi = System.Text.RegularExpressions.Regex.IsMatch(
-                    xslContent,
-                    @"xsi:",
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                bool usesXsi = System.Text.RegularExpressions.Regex.IsMatch(xslContent,@"xsi:",System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
                 // Se usa xsi:, garantir que o namespace esteja declarado no xsl:stylesheet
                 if (usesXsi)
                 {
                     // Verificar se o namespace xsi já está declarado no xsl:stylesheet
-                    bool hasXsiInStylesheet = System.Text.RegularExpressions.Regex.IsMatch(
-                        xslContent,
-                        @"<xsl:stylesheet[^>]*xmlns:xsi=""http://www\.w3\.org/2001/XMLSchema-instance""",
-                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                    bool hasXsiInStylesheet = System.Text.RegularExpressions.Regex.IsMatch(xslContent,@"<xsl:stylesheet[^>]*xmlns:xsi=""http://www\.w3\.org/2001/XMLSchema-instance""",System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
                     if (!hasXsiInStylesheet)
                     {
@@ -1013,7 +919,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
                             @"(<xsl:stylesheet[^>]*xmlns:xsl=""http://www\.w3\.org/1999/XSL/Transform"")([^>]*>)",
                             @"$1" + Environment.NewLine + "\txmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"$2",
                             System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                        
+
                         _logger.LogInformation("Namespace 'xsi' adicionado ao xsl:stylesheet");
                     }
                 }
@@ -1021,16 +927,13 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 // Garantir que o namespace xsi esteja declarado no elemento de saída se for usado
                 // (já está sendo feito no GenerateXslContent, mas vamos garantir)
                 if (usesXsi && !System.Text.RegularExpressions.Regex.IsMatch(
-                    xslContent,
-                    @"<NFe[^>]*xmlns:xsi=""http://www\.w3\.org/2001/XMLSchema-instance""",
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+                    xslContent,@"<NFe[^>]*xmlns:xsi=""http://www\.w3\.org/2001/XMLSchema-instance""",System.Text.RegularExpressions.RegexOptions.IgnoreCase))
                 {
                     // Adicionar xmlns:xsi no elemento NFe
                     xslContent = System.Text.RegularExpressions.Regex.Replace(
                         xslContent,
                         @"(<NFe[^>]*xmlns=""http://www\.portalfiscal\.inf\.br/nfe"")(>)",
-                        @"$1" + Environment.NewLine + "\t\t\t xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"$2",
-                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                        @"$1" + Environment.NewLine + "\t\t\t xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"$2",System.Text.RegularExpressions.RegexOptions.IgnoreCase);
                 }
 
                 _logger.LogInformation("XSL limpo e corrigido: namespace 'ng' removido, namespace 'xsi' verificado");
@@ -1044,4 +947,3 @@ namespace LayoutParserApi.Services.XmlAnalysis
         }
     }
 }
-

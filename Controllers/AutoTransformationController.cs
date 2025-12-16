@@ -1,10 +1,6 @@
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.DependencyInjection;
 using LayoutParserApi.Services.XmlAnalysis;
-using LayoutParserApi.Models.Database;
-using System.Threading.Tasks;
-using System.Linq;
+
+using Microsoft.AspNetCore.Mvc;
 
 namespace LayoutParserApi.Controllers
 {
@@ -15,7 +11,7 @@ namespace LayoutParserApi.Controllers
         private readonly ILogger<AutoTransformationController> _logger;
         private readonly AutoTransformationGeneratorService _autoGenerator;
 
-        public AutoTransformationController(ILogger<AutoTransformationController> logger,AutoTransformationGeneratorService autoGenerator)
+        public AutoTransformationController(ILogger<AutoTransformationController> logger, AutoTransformationGeneratorService autoGenerator)
         {
             _logger = logger;
             _autoGenerator = autoGenerator;
@@ -74,7 +70,7 @@ namespace LayoutParserApi.Controllers
                     return BadRequest("LayoutGuid ou LayoutName é obrigatório");
                 }
 
-                _logger.LogInformation("Gerando transformações para layout: {LayoutGuid} / {LayoutName}", 
+                _logger.LogInformation("Gerando transformações para layout: {LayoutGuid} / {LayoutName}",
                     request.LayoutGuid, request.LayoutName);
 
                 // Buscar layout do Redis

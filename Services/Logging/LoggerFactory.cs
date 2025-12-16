@@ -1,13 +1,8 @@
-﻿using LayoutParserApi.Services.Interfaces;
+﻿using LayoutParserApi.Enum;
+using LayoutParserApi.Services.Interfaces;
 
 namespace LayoutParserApi.Services.Logging
 {
-    public enum LoggerType
-    {
-        TextFile,
-        ElasticSearch
-    }
-
     public class LoggerFactory
     {
         private readonly IServiceProvider _serviceProvider;

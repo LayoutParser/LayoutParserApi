@@ -1,8 +1,6 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Xml.Linq;
 using LayoutParserApi.Services.Generation.TxtGenerator.Models;
+
+using System.Xml.Linq;
 
 namespace LayoutParserApi.Services.Generation.TxtGenerator.Parsers
 {
@@ -42,9 +40,7 @@ namespace LayoutParserApi.Services.Generation.TxtGenerator.Parsers
                 {
                     var recordLayout = ParseRecordLayout(lineElement, fileLayout.LimitOfCharacters);
                     if (recordLayout != null)
-                    {
                         fileLayout.Records.Add(recordLayout);
-                    }
                 }
 
                 _logger.LogInformation("Layout XML parseado: {RecordCount} registros encontrados", fileLayout.Records.Count);
@@ -80,19 +76,15 @@ namespace LayoutParserApi.Services.Generation.TxtGenerator.Parsers
             bool isHeader = recordLayout.Name.Equals("HEADER", StringComparison.OrdinalIgnoreCase);
 
             if (!isHeader)
-            {
                 currentPosition = 6; // Sequencia da linha anterior (6 caracteres)
-            }
 
             if (!string.IsNullOrEmpty(recordLayout.InitialValue))
-            {
                 currentPosition += recordLayout.InitialValue.Length;
-            }
 
             foreach (var fieldElement in fieldElements)
             {
                 var fieldName = fieldElement.Element("Name")?.Value;
-                
+
                 // Ignorar campo Sequencia (ele pertence à próxima linha)
                 if (fieldName?.Equals("Sequencia", StringComparison.OrdinalIgnoreCase) == true)
                     continue;
@@ -151,4 +143,3 @@ namespace LayoutParserApi.Services.Generation.TxtGenerator.Parsers
         }
     }
 }
-

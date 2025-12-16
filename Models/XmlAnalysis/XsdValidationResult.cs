@@ -1,5 +1,3 @@
-using System.Collections.Generic;
-
 namespace LayoutParserApi.Models.XmlAnalysis
 {
     public class XsdValidationResult
@@ -12,19 +10,4 @@ namespace LayoutParserApi.Models.XmlAnalysis
         public string XsdVersion { get; set; }
         public XsdOrientationResult Orientations { get; set; }
     }
-
-    public class XsdValidationError
-    {
-        public int LineNumber { get; set; }
-        public int LinePosition { get; set; }
-        public string Severity { get; set; }
-        public string Message { get; set; }
-    }
-
-    public class XsdOrientationResult
-    {
-        public bool Success { get; set; }
-        public List<string> Orientations { get; set; } = new();
-    }
 }
-

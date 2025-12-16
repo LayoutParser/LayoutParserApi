@@ -1,14 +1,6 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Threading.Tasks;
 using System.Xml.Linq;
-using LayoutParserApi.Models.Entities;
-using LayoutParserApi.Models.Database;
-using LayoutParserApi.Services.Database;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Logging;
+
+using LayoutParserApi.Services.Transformation.Models;
 
 namespace LayoutParserApi.Services.Transformation
 {
@@ -31,14 +23,10 @@ namespace LayoutParserApi.Services.Transformation
         {
             _logger = logger;
             _configuration = configuration;
-            _examplesBasePath = configuration["TransformationPipeline:ExamplesPath"] 
-                ?? @"C:\inetpub\wwwroot\layoutparser\Exemplo";
-            _examplesTclPath = configuration["TransformationPipeline:ExamplesTclPath"] 
-                ?? @"C:\inetpub\wwwroot\layoutparser\Examples\tcl";
-            _examplesXslPath = configuration["TransformationPipeline:ExamplesXslPath"] 
-                ?? @"C:\inetpub\wwwroot\layoutparser\Examples\xsl";
-            _learningModelsPath = configuration["TransformationPipeline:LearningModelsPath"] 
-                ?? @"C:\inetpub\wwwroot\layoutparser\LearningModels";
+            _examplesBasePath = configuration["TransformationPipeline:ExamplesPath"] ?? @"C:\inetpub\wwwroot\layoutparser\Exemplo";
+            _examplesTclPath = configuration["TransformationPipeline:ExamplesTclPath"] ?? @"C:\inetpub\wwwroot\layoutparser\Examples\tcl";
+            _examplesXslPath = configuration["TransformationPipeline:ExamplesXslPath"] ?? @"C:\inetpub\wwwroot\layoutparser\Examples\xsl";
+            _learningModelsPath = configuration["TransformationPipeline:LearningModelsPath"] ?? @"C:\inetpub\wwwroot\layoutparser\LearningModels";
 
             Directory.CreateDirectory(_examplesBasePath);
             Directory.CreateDirectory(_examplesTclPath);
@@ -170,13 +158,13 @@ namespace LayoutParserApi.Services.Transformation
             {
                 // Analisar templates XSL com análise de estrutura
                 var allTemplates = examples.SelectMany(e => ParseXslTemplates(e.Content)).ToList();
-                
+
                 var templateGroups = allTemplates.GroupBy(t => t.TemplateName).ToList();
 
                 foreach (var group in templateGroups)
                 {
                     var representative = FindMostRepresentativeTemplate(group.ToList());
-                    
+
                     patterns.Add(new LearnedPattern
                     {
                         Type = "XslTemplate",
@@ -197,11 +185,9 @@ namespace LayoutParserApi.Services.Transformation
 
                 // Analisar transformações XSL com análise de XPath
                 var allTransforms = examples.SelectMany(e => ParseXslTransforms(e.Content)).ToList();
-                
+
                 // Agrupar por tipo de transformação e XPath
-                var transformGroups = allTransforms
-                    .GroupBy(t => new { t.TransformType, t.SourceXPath })
-                    .ToList();
+                var transformGroups = allTransforms.GroupBy(t => new { t.TransformType, t.SourceXPath }).ToList();
 
                 foreach (var group in transformGroups)
                 {
@@ -355,46 +341,38 @@ namespace LayoutParserApi.Services.Transformation
         /// <summary>
         /// Analisa padrões hierárquicos de transformação XML
         /// </summary>
-        private List<LearnedPattern> AnalyzeXmlHierarchyPatterns(
-            List<XslTemplateInfo> templates, 
-            List<XslTransformInfo> transforms)
+        private List<LearnedPattern> AnalyzeXmlHierarchyPatterns(List<XslTemplateInfo> templates, List<XslTransformInfo> transforms)
         {
             var patterns = new List<LearnedPattern>();
 
             try
             {
                 // Analisar hierarquia de templates (templates que chamam outros templates)
-                var templateHierarchy = templates
-                    .Where(t => t.HasApplyTemplates)
-                    .Select(t => new LearnedPattern
+                var templateHierarchy = templates.Where(t => t.HasApplyTemplates).Select(t => new LearnedPattern
+                {
+                    Type = "TemplateHierarchy",
+                    Name = t.TemplateName,
+                    Pattern = $"Template '{t.TemplateName}' uses apply-templates",
+                    Frequency = 1,
+                    Confidence = 1.0,
+                    Metadata = new Dictionary<string, object>
                     {
-                        Type = "TemplateHierarchy",
-                        Name = t.TemplateName,
-                        Pattern = $"Template '{t.TemplateName}' uses apply-templates",
-                        Frequency = 1,
-                        Confidence = 1.0,
-                        Metadata = new Dictionary<string, object>
-                        {
-                            ["MatchPattern"] = t.MatchPattern,
-                            ["HasForEach"] = t.HasForEach
-                        }
-                    })
-                    .ToList();
+                        ["MatchPattern"] = t.MatchPattern,
+                        ["HasForEach"] = t.HasForEach
+                    }
+                }).ToList();
 
                 patterns.AddRange(templateHierarchy);
 
                 // Analisar padrões de aninhamento (for-each dentro de templates)
-                var nestingPatterns = templates
-                    .Where(t => t.HasForEach)
-                    .Select(t => new LearnedPattern
-                    {
-                        Type = "NestingPattern",
-                        Name = t.TemplateName,
-                        Pattern = $"Template '{t.TemplateName}' contains for-each",
-                        Frequency = 1,
-                        Confidence = 1.0
-                    })
-                    .ToList();
+                var nestingPatterns = templates.Where(t => t.HasForEach).Select(t => new LearnedPattern
+                {
+                    Type = "NestingPattern",
+                    Name = t.TemplateName,
+                    Pattern = $"Template '{t.TemplateName}' contains for-each",
+                    Frequency = 1,
+                    Confidence = 1.0
+                }).ToList();
 
                 patterns.AddRange(nestingPatterns);
             }
@@ -460,23 +438,17 @@ namespace LayoutParserApi.Services.Transformation
                 }
 
                 // Agrupar regras similares e calcular confiança
-                var groupedRules = rules
-                    .GroupBy(r => new { r.SourceField, r.TargetElement })
-                    .Select(g => new MappingRule
-                    {
-                        SourceField = g.Key.SourceField,
-                        TargetElement = g.Key.TargetElement,
-                        TransformType = g.GroupBy(r => r.TransformType)
-                            .OrderByDescending(gr => gr.Count())
-                            .First().Key,
-                        SourcePosition = (int)g.Average(r => r.SourcePosition),
-                        SourceLength = (int)g.Average(r => r.SourceLength),
-                        SourceType = g.First().SourceType,
-                        TargetXPath = g.First().TargetXPath,
-                        Confidence = g.Average(r => r.Confidence)
-                    })
-                    .OrderByDescending(r => r.Confidence)
-                    .ToList();
+                var groupedRules = rules.GroupBy(r => new { r.SourceField, r.TargetElement }).Select(g => new MappingRule
+                {
+                    SourceField = g.Key.SourceField,
+                    TargetElement = g.Key.TargetElement,
+                    TransformType = g.GroupBy(r => r.TransformType).OrderByDescending(gr => gr.Count()).First().Key,
+                    SourcePosition = (int)g.Average(r => r.SourcePosition),
+                    SourceLength = (int)g.Average(r => r.SourceLength),
+                    SourceType = g.First().SourceType,
+                    TargetXPath = g.First().TargetXPath,
+                    Confidence = g.Average(r => r.Confidence)
+                }).OrderByDescending(r => r.Confidence).ToList();
 
                 return groupedRules;
             }
@@ -498,9 +470,7 @@ namespace LayoutParserApi.Services.Transformation
             {
                 var lineIdentifier = DetectLineIdentifierForField(line, field);
                 if (lineIdentifier == field.LineName)
-                {
                     return line;
-                }
             }
 
             return null;
@@ -515,9 +485,7 @@ namespace LayoutParserApi.Services.Transformation
             if (txtLine.StartsWith("HEADER")) return "HEADER";
             if (txtLine.StartsWith("TRAILER")) return "TRAILER";
             if (txtLine.Length > 0 && char.IsLetter(txtLine[0]))
-            {
                 return txtLine[0].ToString();
-            }
 
             return field.LineName;
         }
@@ -549,19 +517,14 @@ namespace LayoutParserApi.Services.Transformation
                 return null;
 
             // Buscar elemento que contém o valor
-            var elements = xmlDoc.Descendants()
-                .Where(e => e.Value.Contains(value) || 
-                           e.Attributes().Any(a => a.Value.Contains(value)))
-                .ToList();
+            var elements = xmlDoc.Descendants().Where(e => e.Value.Contains(value) || e.Attributes().Any(a => a.Value.Contains(value))).ToList();
 
             if (!elements.Any())
                 return null;
 
             // Priorizar elementos com nome similar ao campo
             var fieldNameLower = field.FieldName.ToLower();
-            var matchingName = elements.FirstOrDefault(e => 
-                e.Name.LocalName.ToLower().Contains(fieldNameLower) ||
-                fieldNameLower.Contains(e.Name.LocalName.ToLower()));
+            var matchingName = elements.FirstOrDefault(e => e.Name.LocalName.ToLower().Contains(fieldNameLower) || fieldNameLower.Contains(e.Name.LocalName.ToLower()));
 
             return matchingName ?? elements.First();
         }
@@ -593,15 +556,11 @@ namespace LayoutParserApi.Services.Transformation
             var fieldNameLower = field.FieldName.ToLower();
             var elementNameLower = xmlElement.Name.LocalName.ToLower();
             if (fieldNameLower.Contains(elementNameLower) || elementNameLower.Contains(fieldNameLower))
-            {
                 confidence += 0.3;
-            }
 
             // Aumentar confiança se o valor corresponde
             if (xmlElement.Value.Contains(value) || value.Contains(xmlElement.Value))
-            {
                 confidence += 0.2;
-            }
 
             return Math.Min(1.0, confidence);
         }
@@ -668,9 +627,7 @@ namespace LayoutParserApi.Services.Transformation
                         TargetElement = g.First().TargetElement,
                         TransformPattern = g.First().TransformPattern,
                         Confidence = g.Average(r => r.Confidence)
-                    })
-                    .OrderByDescending(r => r.Confidence)
-                    .ToList();
+                    }).OrderByDescending(r => r.Confidence).ToList();
 
                 return groupedRules;
             }
@@ -701,14 +658,10 @@ namespace LayoutParserApi.Services.Transformation
                 var parentXPath = GetXPath(inputElement.Parent);
                 var outputParent = FindElementByXPath(outputDoc, parentXPath);
                 if (outputParent != null)
-                {
-                    return outputParent.Elements()
-                        .FirstOrDefault(e => e.Value == inputElement.Value);
-                }
+                    return outputParent.Elements().FirstOrDefault(e => e.Value == inputElement.Value);
 
                 // Fallback: buscar qualquer elemento com valor similar
-                return outputDoc.Descendants()
-                    .FirstOrDefault(e => e.Value == inputElement.Value);
+                return outputDoc.Descendants().FirstOrDefault(e => e.Value == inputElement.Value);
             }
             catch
             {
@@ -725,15 +678,11 @@ namespace LayoutParserApi.Services.Transformation
 
             // Aumentar confiança se elementos têm nomes similares
             if (inputElement.Name.LocalName == outputElement.Name.LocalName)
-            {
                 confidence += 0.3;
-            }
 
             // Aumentar confiança se valores correspondem
             if (inputElement.Value == outputElement.Value)
-            {
                 confidence += 0.2;
-            }
 
             return Math.Min(1.0, confidence);
         }
@@ -778,43 +727,37 @@ namespace LayoutParserApi.Services.Transformation
                 }
 
                 // Agrupar padrões por tipo de linha
-                var linePatterns = allLines
-                    .GroupBy(l => l.LineType)
-                    .Select(g => new LearnedPattern
+                var linePatterns = allLines.GroupBy(l => l.LineType).Select(g => new LearnedPattern
+                {
+                    Type = "TclLine",
+                    Name = g.Key,
+                    Pattern = g.First().Structure,
+                    Frequency = g.Count(),
+                    Confidence = CalculateConfidence(g.Count(), allLines.Count),
+                    Metadata = new Dictionary<string, object>
                     {
-                        Type = "TclLine",
-                        Name = g.Key,
-                        Pattern = g.First().Structure,
-                        Frequency = g.Count(),
-                        Confidence = CalculateConfidence(g.Count(), allLines.Count),
-                        Metadata = new Dictionary<string, object>
-                        {
-                            ["LineType"] = g.Key,
-                            ["FieldCount"] = g.Average(l => l.FieldCount)
-                        }
-                    })
-                    .ToList();
+                        ["LineType"] = g.Key,
+                        ["FieldCount"] = g.Average(l => l.FieldCount)
+                    }
+                }).ToList();
 
                 patterns.AddRange(linePatterns);
 
                 // Agrupar padrões por tipo de campo
-                var fieldPatterns = allFields
-                    .GroupBy(f => f.FieldType)
-                    .Select(g => new LearnedPattern
+                var fieldPatterns = allFields.GroupBy(f => f.FieldType).Select(g => new LearnedPattern
+                {
+                    Type = "TclField",
+                    Name = g.Key,
+                    Pattern = g.First().Mapping,
+                    Frequency = g.Count(),
+                    Confidence = CalculateConfidence(g.Count(), allFields.Count),
+                    Metadata = new Dictionary<string, object>
                     {
-                        Type = "TclField",
-                        Name = g.Key,
-                        Pattern = g.First().Mapping,
-                        Frequency = g.Count(),
-                        Confidence = CalculateConfidence(g.Count(), allFields.Count),
-                        Metadata = new Dictionary<string, object>
-                        {
-                            ["FieldType"] = g.Key,
-                            ["AverageLength"] = g.Average(f => f.Length),
-                            ["AverageStartPosition"] = g.Average(f => f.StartPosition)
-                        }
-                    })
-                    .ToList();
+                        ["FieldType"] = g.Key,
+                        ["AverageLength"] = g.Average(f => f.Length),
+                        ["AverageStartPosition"] = g.Average(f => f.StartPosition)
+                    }
+                }).ToList();
 
                 patterns.AddRange(fieldPatterns);
             }
@@ -888,8 +831,7 @@ namespace LayoutParserApi.Services.Transformation
                 }
 
                 // Buscar todos os arquivos TCL
-                var tclFiles = Directory.GetFiles(_examplesTclPath, "*.tcl", SearchOption.AllDirectories)
-                    .ToList();
+                var tclFiles = Directory.GetFiles(_examplesTclPath, "*.tcl", SearchOption.AllDirectories).ToList();
 
                 _logger.LogInformation("Encontrados {Count} arquivos TCL", tclFiles.Count);
 
@@ -901,8 +843,7 @@ namespace LayoutParserApi.Services.Transformation
                     {
                         var fileName = Path.GetFileNameWithoutExtension(f);
                         var normalizedFileName = NormalizeLayoutName(fileName);
-                        return normalizedFileName.Contains(normalizedLayoutName) ||
-                               normalizedLayoutName.Contains(normalizedFileName);
+                        return normalizedFileName.Contains(normalizedLayoutName) || normalizedLayoutName.Contains(normalizedFileName);
                     }).ToList();
                 }
 
@@ -911,13 +852,11 @@ namespace LayoutParserApi.Services.Transformation
                     try
                     {
                         var tclContent = await File.ReadAllTextAsync(tclFile);
-                        
+
                         // Tentar encontrar arquivos relacionados (input TXT e output XML)
                         var directory = Path.GetDirectoryName(tclFile);
-                        var inputTxt = Directory.GetFiles(directory, "*.txt", SearchOption.TopDirectoryOnly)
-                            .FirstOrDefault();
-                        var outputXml = Directory.GetFiles(directory, "*.xml", SearchOption.TopDirectoryOnly)
-                            .FirstOrDefault();
+                        var inputTxt = Directory.GetFiles(directory, "*.txt", SearchOption.TopDirectoryOnly).FirstOrDefault();
+                        var outputXml = Directory.GetFiles(directory, "*.xml", SearchOption.TopDirectoryOnly).FirstOrDefault();
 
                         var example = new TclExample
                         {
@@ -977,8 +916,7 @@ namespace LayoutParserApi.Services.Transformation
                     {
                         var fileName = Path.GetFileNameWithoutExtension(f);
                         var normalizedFileName = NormalizeLayoutName(fileName);
-                        return normalizedFileName.Contains(normalizedLayoutName) ||
-                               normalizedLayoutName.Contains(normalizedFileName);
+                        return normalizedFileName.Contains(normalizedLayoutName) || normalizedLayoutName.Contains(normalizedFileName);
                     }).ToList();
                 }
 
@@ -987,15 +925,13 @@ namespace LayoutParserApi.Services.Transformation
                     try
                     {
                         var xslContent = await File.ReadAllTextAsync(xslFile);
-                        
+
                         // Tentar encontrar arquivos relacionados (input XML e output XML)
                         var directory = Path.GetDirectoryName(xslFile);
                         var inputXml = Directory.GetFiles(directory, "input*.xml", SearchOption.TopDirectoryOnly)
-                            .Concat(Directory.GetFiles(directory, "*input*.xml", SearchOption.TopDirectoryOnly))
-                            .FirstOrDefault();
+                            .Concat(Directory.GetFiles(directory, "*input*.xml", SearchOption.TopDirectoryOnly)).FirstOrDefault();
                         var outputXml = Directory.GetFiles(directory, "output*.xml", SearchOption.TopDirectoryOnly)
-                            .Concat(Directory.GetFiles(directory, "*output*.xml", SearchOption.TopDirectoryOnly))
-                            .FirstOrDefault();
+                            .Concat(Directory.GetFiles(directory, "*output*.xml", SearchOption.TopDirectoryOnly)).FirstOrDefault();
 
                         var example = new XslExample
                         {
@@ -1044,60 +980,43 @@ namespace LayoutParserApi.Services.Transformation
                 // Buscar diretórios que correspondem ao layout (por nome ou GUID)
                 // Normalizar o nome do layout para comparação (remover prefixos, espaços, etc.)
                 var normalizedLayoutName = NormalizeLayoutName(layoutName);
-                
-                var layoutDirs = Directory.GetDirectories(_examplesBasePath, "*", SearchOption.TopDirectoryOnly)
-                    .Where(d =>
+
+                var layoutDirs = Directory.GetDirectories(_examplesBasePath, "*", SearchOption.TopDirectoryOnly).Where(d =>
                     {
                         var dirName = Path.GetFileName(d);
                         var normalizedDirName = NormalizeLayoutName(dirName);
-                        
+
                         // Verificar se o nome do diretório contém o nome do layout ou GUID
                         // Comparação mais flexível: verificar se partes do nome correspondem
-                        var layoutNameParts = normalizedLayoutName.Split(new[] { '_', '-', ' ' }, StringSplitOptions.RemoveEmptyEntries)
-                            .Where(p => p.Length > 3) // Ignorar partes muito pequenas
-                            .ToList();
-                        
-                        var dirNameParts = normalizedDirName.Split(new[] { '_', '-', ' ' }, StringSplitOptions.RemoveEmptyEntries)
-                            .Where(p => p.Length > 3)
-                            .ToList();
-                        
+                        var layoutNameParts = normalizedLayoutName.Split(new[] { '_', '-', ' ' }, StringSplitOptions.RemoveEmptyEntries).Where(p => p.Length > 3).ToList();
+
+                        var dirNameParts = normalizedDirName.Split(new[] { '_', '-', ' ' }, StringSplitOptions.RemoveEmptyEntries).Where(p => p.Length > 3).ToList();
+
                         // Verificar se há correspondência entre partes do nome
-                        var matchingParts = layoutNameParts.Count(part => 
-                            dirNameParts.Any(dirPart => 
-                                dirPart.Contains(part, StringComparison.OrdinalIgnoreCase) || 
-                                part.Contains(dirPart, StringComparison.OrdinalIgnoreCase)));
-                        
+                        var matchingParts = layoutNameParts.Count(part => dirNameParts.Any(dirPart => dirPart.Contains(part, StringComparison.OrdinalIgnoreCase) || part.Contains(dirPart, StringComparison.OrdinalIgnoreCase)));
+
                         // Se pelo menos 2 partes correspondem, considerar como match
-                        var isMatch = matchingParts >= 2 || 
-                                     dirName.Contains(layoutName, StringComparison.OrdinalIgnoreCase) ||
-                                     normalizedDirName.Contains(normalizedLayoutName, StringComparison.OrdinalIgnoreCase) ||
-                                     (!string.IsNullOrEmpty(targetLayoutGuid) && dirName.Contains(targetLayoutGuid, StringComparison.OrdinalIgnoreCase));
-                        
+                        var isMatch = matchingParts >= 2 || dirName.Contains(layoutName, StringComparison.OrdinalIgnoreCase) || normalizedDirName.Contains(normalizedLayoutName, StringComparison.OrdinalIgnoreCase) || (!string.IsNullOrEmpty(targetLayoutGuid) && dirName.Contains(targetLayoutGuid, StringComparison.OrdinalIgnoreCase));
+
                         if (isMatch)
-                        {
                             _logger.LogInformation("Diretório de exemplo encontrado: {DirName} (match com layout: {LayoutName})", dirName, layoutName);
-                        }
-                        
+
                         return isMatch;
-                    })
-                    .ToList();
+                    }).ToList();
 
                 _logger.LogInformation("Encontrados {Count} diretórios de exemplo para layout {LayoutName}", layoutDirs.Count, layoutName);
-                
+
                 // Se não encontrou diretórios específicos, buscar em todos os subdiretórios
                 if (!layoutDirs.Any())
                 {
                     _logger.LogInformation("Nenhum diretório específico encontrado. Buscando em todos os subdiretórios...");
-                    layoutDirs = Directory.GetDirectories(_examplesBasePath, "*", SearchOption.AllDirectories)
-                        .Take(20) // Limitar a 20 diretórios
-                        .ToList();
+                    layoutDirs = Directory.GetDirectories(_examplesBasePath, "*", SearchOption.AllDirectories).Take(20).ToList();
                 }
 
                 // Buscar arquivos XML em cada diretório
                 foreach (var layoutDir in layoutDirs)
                 {
-                    var xmlFiles = Directory.GetFiles(layoutDir, "*.xml", SearchOption.AllDirectories)
-                        .ToList();
+                    var xmlFiles = Directory.GetFiles(layoutDir, "*.xml", SearchOption.AllDirectories).ToList();
 
                     _logger.LogInformation("Encontrados {Count} arquivos XML no diretório: {Dir}", xmlFiles.Count, layoutDir);
 
@@ -1106,10 +1025,10 @@ namespace LayoutParserApi.Services.Transformation
                         try
                         {
                             var xmlContent = await File.ReadAllTextAsync(xmlFile);
-                            
+
                             // Verificar se é um XML válido
                             var xmlDoc = XDocument.Parse(xmlContent);
-                            
+
                             // Criar exemplo (sem InputXml e Content por enquanto, apenas OutputXml)
                             var example = new XslExample
                             {
@@ -1131,10 +1050,8 @@ namespace LayoutParserApi.Services.Transformation
                 if (!examples.Any())
                 {
                     _logger.LogInformation("Nenhum exemplo específico encontrado. Buscando em todos os subdiretórios...");
-                    
-                    var allXmlFiles = Directory.GetFiles(_examplesBasePath, "*.xml", SearchOption.AllDirectories)
-                        .Take(10) // Limitar a 10 exemplos para não sobrecarregar
-                        .ToList();
+
+                    var allXmlFiles = Directory.GetFiles(_examplesBasePath, "*.xml", SearchOption.AllDirectories).Take(10).ToList();
 
                     foreach (var xmlFile in allXmlFiles)
                     {
@@ -1142,7 +1059,7 @@ namespace LayoutParserApi.Services.Transformation
                         {
                             var xmlContent = await File.ReadAllTextAsync(xmlFile);
                             var xmlDoc = XDocument.Parse(xmlContent);
-                            
+
                             var example = new XslExample
                             {
                                 LayoutName = layoutName,
@@ -1182,9 +1099,7 @@ namespace LayoutParserApi.Services.Transformation
                 }
 
                 // Buscar diretórios que correspondem ao layout
-                var layoutDirs = Directory.GetDirectories(_examplesBasePath, "*", SearchOption.TopDirectoryOnly)
-                    .Where(d => Path.GetFileName(d).Contains(layoutName, StringComparison.OrdinalIgnoreCase))
-                    .ToList();
+                var layoutDirs = Directory.GetDirectories(_examplesBasePath, "*", SearchOption.TopDirectoryOnly).Where(d => Path.GetFileName(d).Contains(layoutName, StringComparison.OrdinalIgnoreCase)).ToList();
 
                 foreach (var layoutDir in layoutDirs)
                 {
@@ -1239,10 +1154,7 @@ namespace LayoutParserApi.Services.Transformation
                 normalized = normalized.Substring(4);
 
             // Converter para minúsculas e remover espaços extras
-            normalized = normalized.ToLowerInvariant()
-                .Replace(" ", "")
-                .Replace("_", "")
-                .Replace("-", "");
+            normalized = normalized.ToLowerInvariant().Replace(" ", "").Replace("_", "").Replace("-", "");
 
             return normalized;
         }
@@ -1287,14 +1199,10 @@ namespace LayoutParserApi.Services.Transformation
                 {
                     var lineInfo = new TclLineInfo
                     {
-                        LineType = lineElement.Attribute("identifier")?.Value ?? 
-                                  lineElement.Attribute("name")?.Value ?? 
-                                  "UNKNOWN",
+                        LineType = lineElement.Attribute("identifier")?.Value ?? lineElement.Attribute("name")?.Value ?? "UNKNOWN",
                         Structure = ExtractLineStructure(lineElement),
                         FieldCount = lineElement.Elements("FIELD").Count(),
-                        Attributes = lineElement.Attributes().ToDictionary(
-                            a => a.Name.LocalName, 
-                            a => a.Value)
+                        Attributes = lineElement.Attributes().ToDictionary(a => a.Name.LocalName, a => a.Value)
                     };
 
                     lines.Add(lineInfo);
@@ -1313,10 +1221,8 @@ namespace LayoutParserApi.Services.Transformation
         /// </summary>
         private string ExtractLineStructure(XElement lineElement)
         {
-            var fields = lineElement.Elements("FIELD")
-                .Select(f => $"{f.Attribute("name")?.Value}:{f.Attribute("length")?.Value}")
-                .ToList();
-            
+            var fields = lineElement.Elements("FIELD").Select(f => $"{f.Attribute("name")?.Value}:{f.Attribute("length")?.Value}").ToList();
+
             return string.Join("|", fields);
         }
 
@@ -1338,8 +1244,7 @@ namespace LayoutParserApi.Services.Transformation
 
                 foreach (var lineElement in lineElements)
                 {
-                    var lineName = lineElement.Attribute("identifier")?.Value ?? 
-                                  lineElement.Attribute("name")?.Value;
+                    var lineName = lineElement.Attribute("identifier")?.Value ?? lineElement.Attribute("name")?.Value;
 
                     var fieldElements = lineElement.Elements("FIELD").ToList();
                     var currentPosition = 0;
@@ -1348,8 +1253,7 @@ namespace LayoutParserApi.Services.Transformation
                     {
                         var fieldName = fieldElement.Attribute("name")?.Value;
                         var lengthAttr = fieldElement.Attribute("length")?.Value;
-                        var startPos = fieldElement.Attribute("startPosition")?.Value ?? 
-                                      currentPosition.ToString();
+                        var startPos = fieldElement.Attribute("startPosition")?.Value ?? currentPosition.ToString();
 
                         if (!string.IsNullOrEmpty(fieldName) && !string.IsNullOrEmpty(lengthAttr))
                         {
@@ -1467,20 +1371,13 @@ namespace LayoutParserApi.Services.Transformation
             var structure = new List<string>();
 
             // Extrair elementos principais
-            var valueOfs = templateElement.Descendants(ns + "value-of")
-                .Select(e => $"value-of:{e.Attribute("select")?.Value}")
-                .ToList();
+            var valueOfs = templateElement.Descendants(ns + "value-of").Select(e => $"value-of:{e.Attribute("select")?.Value}").ToList();
             structure.AddRange(valueOfs);
 
-            var elements = templateElement.Descendants()
-                .Where(e => e.Name.Namespace != ns && e.Parent == templateElement)
-                .Select(e => $"element:{e.Name.LocalName}")
-                .ToList();
+            var elements = templateElement.Descendants().Where(e => e.Name.Namespace != ns && e.Parent == templateElement).Select(e => $"element:{e.Name.LocalName}").ToList();
             structure.AddRange(elements);
 
-            var attributes = templateElement.Descendants(ns + "attribute")
-                .Select(e => $"attr:{e.Attribute("name")?.Value}")
-                .ToList();
+            var attributes = templateElement.Descendants(ns + "attribute").Select(e => $"attr:{e.Attribute("name")?.Value}").ToList();
             structure.AddRange(attributes);
 
             return string.Join("|", structure);
@@ -1567,10 +1464,10 @@ namespace LayoutParserApi.Services.Transformation
 
             // Remover funções e manter apenas o caminho
             var xpath = select;
-            
+
             // Remover funções comuns
             xpath = System.Text.RegularExpressions.Regex.Replace(xpath, @"\w+\(([^)]+)\)", "$1");
-            
+
             // Normalizar
             xpath = xpath.Trim().TrimStart('/');
 
@@ -1590,9 +1487,8 @@ namespace LayoutParserApi.Services.Transformation
                 var ancestors = element.Ancestors().Reverse();
                 var path = string.Join("/", ancestors.Select(e => e.Name.LocalName));
                 if (!string.IsNullOrEmpty(path))
-                {
                     return $"/{path}/{element.Name.LocalName}";
-                }
+
                 return $"/{element.Name.LocalName}";
             }
             catch
@@ -1601,121 +1497,4 @@ namespace LayoutParserApi.Services.Transformation
             }
         }
     }
-
-    // Modelos de dados
-    public class LearningResult
-    {
-        public bool Success { get; set; }
-        public List<LearnedPattern> PatternsLearned { get; set; } = new();
-        public List<string> Errors { get; set; } = new();
-        public List<string> Warnings { get; set; } = new();
-    }
-
-    public class LearnedPattern
-    {
-        public string Type { get; set; }
-        public string Name { get; set; }
-        public string Pattern { get; set; }
-        public int Frequency { get; set; }
-        public double Confidence { get; set; }
-        public Dictionary<string, object> Metadata { get; set; } = new();
-    }
-
-    public class TclExample
-    {
-        public string LayoutName { get; set; }
-        public string Content { get; set; }
-        public string InputTxt { get; set; }
-        public string OutputXml { get; set; }
-    }
-
-    public class XslExample
-    {
-        public string LayoutName { get; set; }
-        public string Content { get; set; }
-        public string InputXml { get; set; }
-        public string OutputXml { get; set; }
-    }
-
-    public class LearnedTclModel
-    {
-        public string LayoutName { get; set; }
-        public List<LearnedPattern> Patterns { get; set; } = new();
-        public List<MappingRule> MappingRules { get; set; } = new();
-        public int ExamplesCount { get; set; }
-        public DateTime LearnedAt { get; set; }
-        public DateTime LastUpdatedAt { get; set; }
-    }
-
-    public class LearnedXslModel
-    {
-        public string LayoutName { get; set; }
-        public List<LearnedPattern> Patterns { get; set; } = new();
-        public List<TransformationRule> TransformationRules { get; set; } = new();
-        public int ExamplesCount { get; set; }
-        public DateTime LearnedAt { get; set; }
-        public DateTime LastUpdatedAt { get; set; }
-    }
-
-    public class MappingRule
-    {
-        public string SourceField { get; set; }
-        public string TargetElement { get; set; }
-        public string TransformType { get; set; }
-        public int SourcePosition { get; set; }
-        public int SourceLength { get; set; }
-        public string SourceType { get; set; }
-        public string TargetXPath { get; set; }
-        public double Confidence { get; set; }
-    }
-
-    public class TransformationRule
-    {
-        public string SourceXPath { get; set; }
-        public string TargetXPath { get; set; }
-        public string TransformType { get; set; }
-        public string SourceElement { get; set; }
-        public string TargetElement { get; set; }
-        public string TransformPattern { get; set; }
-        public double Confidence { get; set; }
-    }
-
-    // Info classes para parsing
-    public class TclLineInfo
-    {
-        public string LineType { get; set; }
-        public string Structure { get; set; }
-        public int FieldCount { get; set; }
-        public Dictionary<string, string> Attributes { get; set; } = new();
-    }
-
-    public class TclFieldInfo
-    {
-        public string FieldType { get; set; }
-        public string Mapping { get; set; }
-        public int StartPosition { get; set; }
-        public int Length { get; set; }
-        public string FieldName { get; set; }
-        public string LineName { get; set; }
-    }
-
-    public class XslTemplateInfo
-    {
-        public string TemplateName { get; set; }
-        public string TemplateStructure { get; set; }
-        public string MatchPattern { get; set; }
-        public bool HasApplyTemplates { get; set; }
-        public bool HasForEach { get; set; }
-        public bool HasChoose { get; set; }
-        public int ElementCount { get; set; }
-    }
-
-    public class XslTransformInfo
-    {
-        public string TransformType { get; set; }
-        public string TransformPattern { get; set; }
-        public string SourceXPath { get; set; }
-        public string ParentElement { get; set; }
-    }
 }
-

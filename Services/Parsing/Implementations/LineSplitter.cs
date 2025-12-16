@@ -1,4 +1,3 @@
-using LayoutParserApi.Models.Entities;
 using LayoutParserApi.Models.Logging;
 using LayoutParserApi.Services.Interfaces;
 using LayoutParserApi.Services.Parsing.Interfaces;
@@ -88,5 +87,3 @@ namespace LayoutParserApi.Services.Parsing.Implementations
         }
     }
 }
-
-

@@ -1,8 +1,7 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
+using LayoutParserApi.Services.Generation.TxtGenerator.Generators.Interfaces;
 using LayoutParserApi.Services.Generation.TxtGenerator.Models;
+
+using System.Text;
 
 namespace LayoutParserApi.Services.Generation.TxtGenerator.Generators
 {
@@ -157,17 +156,15 @@ namespace LayoutParserApi.Services.Generation.TxtGenerator.Generators
         {
             // Se tem exemplo, usar como base com variação
             if (!string.IsNullOrEmpty(field.Example))
-            {
                 return field.Example.Substring(0, Math.Min(field.Example.Length, field.Length));
-            }
+            
 
             // Gerar string aleatória
             var chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 ";
             var result = new StringBuilder();
             for (int i = 0; i < field.Length; i++)
-            {
                 result.Append(chars[_random.Next(chars.Length)]);
-            }
+            
             return result.ToString();
         }
 
@@ -225,4 +222,3 @@ namespace LayoutParserApi.Services.Generation.TxtGenerator.Generators
         }
     }
 }
-

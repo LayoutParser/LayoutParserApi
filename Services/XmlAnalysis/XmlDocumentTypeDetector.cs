@@ -1,7 +1,6 @@
-using System;
-using System.Linq;
 using System.Xml.Linq;
-using Microsoft.Extensions.Logging;
+
+using LayoutParserApi.Services.XmlAnalysis.Models;
 
 namespace LayoutParserApi.Services.XmlAnalysis
 {
@@ -131,7 +130,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
                     };
                 }
 
-                _logger.LogWarning("Tipo de documento não identificado. Root: {RootName}, Namespace: {Namespace}", 
+                _logger.LogWarning("Tipo de documento não identificado. Root: {RootName}, Namespace: {Namespace}",
                     rootName, namespaceUri);
 
                 return new DocumentTypeInfo
@@ -203,16 +202,4 @@ namespace LayoutParserApi.Services.XmlAnalysis
             return new DocumentTypeInfo { Type = "UNKNOWN", XsdVersion = null };
         }
     }
-
-    /// <summary>
-    /// Informações sobre o tipo de documento detectado
-    /// </summary>
-    public class DocumentTypeInfo
-    {
-        public string Type { get; set; } = "UNKNOWN";
-        public string XsdVersion { get; set; }
-        public string Namespace { get; set; }
-        public string RootElement { get; set; }
-    }
 }
-

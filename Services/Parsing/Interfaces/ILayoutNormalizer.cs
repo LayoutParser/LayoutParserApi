@@ -8,5 +8,3 @@ namespace LayoutParserApi.Services.Parsing.Interfaces
         Layout ReordenarSequences(Layout layout);
     }
 }
-
-

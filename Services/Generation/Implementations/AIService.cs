@@ -1,3 +1,4 @@
+using LayoutParserApi.Models;
 using LayoutParserApi.Models.Analysis;
 using LayoutParserApi.Models.Entities;
 using LayoutParserApi.Models.Generation;
@@ -45,8 +46,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
                 var json = JsonSerializer.Serialize(request);
                 var content = new StringContent(json, Encoding.UTF8, "application/json");
 
-                _httpClient.DefaultRequestHeaders.Authorization = 
-                    new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _apiKey);
+                _httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _apiKey);
 
                 var response = await _httpClient.PostAsync(_apiUrl, content);
                 response.EnsureSuccessStatusCode();
@@ -145,9 +145,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
             prompt.AppendLine();
             
             foreach (var value in sampleValues.Take(10))
-            {
                 prompt.AppendLine($"- {value}");
-            }
             
             prompt.AppendLine();
             prompt.AppendLine("Identifique:");
@@ -168,16 +166,13 @@ namespace LayoutParserApi.Services.Generation.Implementations
             
             prompt.AppendLine("Campos do Layout:");
             foreach (var lineElement in layout.Elements)
-            {
                 prompt.AppendLine($"- {lineElement.Name}: {lineElement.InitialValue}");
-            }
             
             prompt.AppendLine();
             prompt.AppendLine("Colunas do Excel:");
             foreach (var header in excelData.Headers)
-            {
                 prompt.AppendLine($"- {header}");
-            }
+            
             
             prompt.AppendLine();
             prompt.AppendLine("Sugira mapeamentos baseados na semelhança de nomes e tipos de dados.");
@@ -198,9 +193,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
             {
                 prompt.AppendLine("Valores de exemplo:");
                 foreach (var value in sampleValues.Take(3))
-                {
                     prompt.AppendLine($"- {value}");
-                }
             }
             
             prompt.AppendLine();
@@ -223,9 +216,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
                 {
                     var samples = excelData.ColumnData[header].Take(3);
                     foreach (var sample in samples)
-                    {
                         prompt.AppendLine($"- {sample}");
-                    }
                 }
                 prompt.AppendLine();
             }
@@ -293,18 +284,5 @@ namespace LayoutParserApi.Services.Generation.Implementations
         }
     }
 
-    public class OpenAIResponse
-    {
-        public Choice[] choices { get; set; }
-    }
 
-    public class Choice
-    {
-        public Message message { get; set; }
-    }
-
-    public class Message
-    {
-        public string content { get; set; }
-    }
 }

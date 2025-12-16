@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using LayoutParserApi.Models.Database;
 using LayoutParserApi.Services.Database;
+using LayoutParserApi.Services.Interfaces;
 
 namespace LayoutParserApi.Controllers
 {

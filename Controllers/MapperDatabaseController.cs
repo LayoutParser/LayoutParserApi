@@ -1,6 +1,7 @@
-using Microsoft.AspNetCore.Mvc;
 using LayoutParserApi.Services.Database;
-using LayoutParserApi.Models.Entities;
+using LayoutParserApi.Services.Interfaces;
+
+using Microsoft.AspNetCore.Mvc;
 
 namespace LayoutParserApi.Controllers
 {
@@ -103,7 +104,7 @@ namespace LayoutParserApi.Controllers
                 return StatusCode(500, new { error = ex.Message });
             }
         }
-        
+
         /// <summary>
         /// Exporta um mapeador específico como JSON completo (incluindo DecryptedContent)
         /// </summary>

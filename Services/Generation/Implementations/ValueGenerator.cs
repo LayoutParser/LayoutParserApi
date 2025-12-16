@@ -1,8 +1,4 @@
 using LayoutParserApi.Services.Generation.Interfaces;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 
 namespace LayoutParserApi.Services.Generation.Implementations
 {
@@ -25,14 +21,10 @@ namespace LayoutParserApi.Services.Generation.Implementations
 
             // Se temos itens, calcular total baseado na soma
             if (itemValues != null && itemValues.Any())
-            {
                 value = itemValues.Sum();
-            }
             // Se temos um total alvo, usar ele
             else if (targetTotal.HasValue)
-            {
                 value = targetTotal.Value;
-            }
             // Caso contrário, gerar valor aleatório realista
             else
             {
@@ -66,13 +58,9 @@ namespace LayoutParserApi.Services.Generation.Implementations
             var valueStr = value.ToString();
 
             if (padWithZeros && valueStr.Length < length)
-            {
                 valueStr = valueStr.PadLeft(length, '0');
-            }
             else if (valueStr.Length > length)
-            {
                 valueStr = valueStr.Substring(0, length);
-            }
 
             return valueStr;
         }
@@ -83,7 +71,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
             if (excelSamples != null && excelSamples.Any())
             {
                 var sample = excelSamples[_random.Next(excelSamples.Count)];
-                
+
                 // Aplicar variação leve no texto
                 var variation = ApplyTextVariation(sample, length);
                 return FormatField(variation, length);
@@ -91,31 +79,18 @@ namespace LayoutParserApi.Services.Generation.Implementations
 
             // Fallback: gerar texto baseado no tipo de campo
             var normalizedName = fieldName.ToUpperInvariant();
-            
             if (normalizedName.Contains("NOME") || normalizedName.Contains("RAZAO"))
-            {
                 return GenerateCompanyName(length);
-            }
             else if (normalizedName.Contains("PRODUTO") || normalizedName.Contains("DESCRICAO"))
-            {
                 return GenerateProductDescription(length);
-            }
             else if (normalizedName.Contains("ENDERECO") || normalizedName.Contains("LOGRADOURO"))
-            {
                 return GenerateAddress(length);
-            }
             else if (normalizedName.Contains("BAIRRO"))
-            {
                 return GenerateNeighborhood(length);
-            }
             else if (normalizedName.Contains("CIDADE") || normalizedName.Contains("MUNICIPIO"))
-            {
                 return GenerateCity(length);
-            }
             else if (normalizedName.Contains("EMAIL"))
-            {
                 return GenerateEmail(length);
-            }
 
             // Fallback genérico
             return new string(' ', length);
@@ -142,9 +117,8 @@ namespace LayoutParserApi.Services.Generation.Implementations
                     {
                         var key = part.Trim();
                         if (values.ContainsKey(key))
-                        {
                             sum += values[key];
-                        }
+                       
                     }
 
                     if (values.ContainsKey(leftSide))
@@ -154,8 +128,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
 
                         if (Math.Abs(total - sum) > tolerance)
                         {
-                            _logger.LogWarning("Inconsistência detectada: {LeftSide} ({Total}) != soma de {RightSide} ({Sum})", 
-                                leftSide, total, rightSide, sum);
+                            _logger.LogWarning("Inconsistência detectada: {LeftSide} ({Total}) != soma de {RightSide} ({Sum})",leftSide, total, rightSide, sum);
                             return false;
                         }
                     }
@@ -181,7 +154,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
             };
 
             var selected = variations[_random.Next(variations.Length)];
-            
+
             if (selected.Length > maxLength)
                 selected = selected.Substring(0, maxLength);
 
@@ -283,4 +256,3 @@ namespace LayoutParserApi.Services.Generation.Implementations
         }
     }
 }
-

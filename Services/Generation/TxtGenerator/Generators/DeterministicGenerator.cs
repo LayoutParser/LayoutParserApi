@@ -1,7 +1,4 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
+using LayoutParserApi.Services.Generation.TxtGenerator.Generators.Interfaces;
 using LayoutParserApi.Services.Generation.TxtGenerator.Models;
 
 namespace LayoutParserApi.Services.Generation.TxtGenerator.Generators
@@ -90,4 +87,3 @@ namespace LayoutParserApi.Services.Generation.TxtGenerator.Generators
         }
     }
 }
-

@@ -51,28 +51,22 @@ namespace LayoutParserApi.Services.Generation.Implementations
 
             // Detectar por padrões no nome
             if (upperName.Contains("XML") || upperName.Contains("NFe") || upperName.Contains("NFE"))
-            {
                 return "Xml";
-            }
+            
 
             if (upperName.Contains("IDOC") || upperName.Contains("SAP") || upperName.Contains("EDI_DC40"))
-            {
                 return "TextPositional"; // IDOC é TextPositional mas com estrutura específica
-            }
+            
 
             if (upperName.Contains("MQSERIES") || upperName.Contains("MQ_SERIES"))
-            {
                 return "TextPositional";
-            }
+            
 
-            if (upperName.Contains("JSON"))
-            {
+            if (upperName.Contains("JSON"))            
                 return "Json";
-            }
 
             // Padrão: TextPositional
             return "TextPositional";
         }
     }
 }
-

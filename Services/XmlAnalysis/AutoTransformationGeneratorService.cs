@@ -1,16 +1,12 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using System.Xml.Linq;
-using LayoutParserApi.Models.Entities;
 using LayoutParserApi.Models.Database;
+using LayoutParserApi.Models.Entities;
 using LayoutParserApi.Services.Database;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Logging;
+using LayoutParserApi.Services.Interfaces;
 using LayoutParserApi.Services.Transformation;
+using LayoutParserApi.Services.XmlAnalysis.Models;
+
+using System.Text;
+using System.Xml.Linq;
 
 namespace LayoutParserApi.Services.XmlAnalysis
 {
@@ -55,10 +51,8 @@ namespace LayoutParserApi.Services.XmlAnalysis
             _mapperDatabaseService = mapperDatabaseService;
             _learningService = learningService;
 
-            _tclBasePath = configuration["TransformationPipeline:TclPath"] 
-                ?? @"C:\inetpub\wwwroot\layoutparser\TCL";
-            _xslBasePath = configuration["TransformationPipeline:XslPath"] 
-                ?? @"C:\inetpub\wwwroot\layoutparser\XSL";
+            _tclBasePath = configuration["TransformationPipeline:TclPath"] ?? @"C:\inetpub\wwwroot\layoutparser\TCL";
+            _xslBasePath = configuration["TransformationPipeline:XslPath"] ?? @"C:\inetpub\wwwroot\layoutparser\XSL";
 
             // Garantir que os diretórios existam
             Directory.CreateDirectory(_tclBasePath);
@@ -90,7 +84,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 };
 
                 var layoutsResponse = await _cachedLayoutService.SearchLayoutsAsync(layoutsRequest);
-                
+
                 if (layoutsResponse == null || !layoutsResponse.Layouts.Any())
                 {
                     result.Warnings.Add("Nenhum layout encontrado no Redis");
@@ -108,13 +102,9 @@ namespace LayoutParserApi.Services.XmlAnalysis
                         result.ProcessedLayouts.Add(processed);
 
                         if (!processed.Success)
-                        {
                             result.Errors.AddRange(processed.Errors);
-                        }
                         if (processed.Warnings.Any())
-                        {
                             result.Warnings.AddRange(processed.Warnings);
-                        }
                     }
                     catch (Exception ex)
                     {
@@ -124,10 +114,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 }
 
                 result.Success = !result.Errors.Any();
-                _logger.LogInformation("Geração automática concluída. Processados: {Count}, Sucessos: {SuccessCount}, Erros: {ErrorCount}",
-                    result.ProcessedLayouts.Count,
-                    result.ProcessedLayouts.Count(p => p.Success),
-                    result.Errors.Count);
+                _logger.LogInformation("Geração automática concluída. Processados: {Count}, Sucessos: {SuccessCount}, Erros: {ErrorCount}", result.ProcessedLayouts.Count, result.ProcessedLayouts.Count(p => p.Success), result.Errors.Count);
 
                 return result;
             }
@@ -147,8 +134,8 @@ namespace LayoutParserApi.Services.XmlAnalysis
         {
             var processed = new ProcessedLayout
             {
-                LayoutGuid = layout.LayoutGuid != Guid.Empty 
-                    ? layout.LayoutGuid.ToString() 
+                LayoutGuid = layout.LayoutGuid != Guid.Empty
+                    ? layout.LayoutGuid.ToString()
                     : layout.Id.ToString(),
                 LayoutName = layout.Name,
                 LayoutType = layout.LayoutType,
@@ -160,20 +147,15 @@ namespace LayoutParserApi.Services.XmlAnalysis
 
             try
             {
-                _logger.LogInformation("Processando layout: {Name} (Type: {Type}, Guid: {Guid})", 
-                    layout.Name, layout.LayoutType, layout.LayoutGuid);
+                _logger.LogInformation("Processando layout: {Name} (Type: {Type}, Guid: {Guid})", layout.Name, layout.LayoutType, layout.LayoutGuid);
 
                 // Verificar tipo do layout
                 if (layout.LayoutType == "TextPositional")
-                {
                     // TextPositional: gerar TCL e XSL
                     await ProcessTextPositionalLayoutAsync(layout, processed);
-                }
                 else if (layout.LayoutType == "XML")
-                {
                     // XML: gerar apenas XSL
                     await ProcessXmlLayoutAsync(layout, processed);
-                }
                 else
                 {
                     processed.Warnings.Add($"Tipo de layout não suportado: {layout.LayoutType}");
@@ -200,9 +182,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
             {
                 // 1. Gerar TCL a partir do layout XML
                 // Usar DecryptedContent se disponível, senão ValueContent
-                var layoutXml = !string.IsNullOrEmpty(layout.DecryptedContent) 
-                    ? layout.DecryptedContent 
-                    : layout.ValueContent;
+                var layoutXml = !string.IsNullOrEmpty(layout.DecryptedContent) ? layout.DecryptedContent : layout.ValueContent;
 
                 if (string.IsNullOrEmpty(layoutXml))
                 {
@@ -212,57 +192,47 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 }
 
                 // Salvar layout XML temporariamente
-                var layoutGuidStr = layout.LayoutGuid != Guid.Empty 
-                    ? layout.LayoutGuid.ToString() 
-                    : layout.Id.ToString();
+                var layoutGuidStr = layout.LayoutGuid != Guid.Empty ? layout.LayoutGuid.ToString() : layout.Id.ToString();
                 var tempLayoutPath = Path.Combine(Path.GetTempPath(), $"layout_{layoutGuidStr}.xml");
                 await File.WriteAllTextAsync(tempLayoutPath, layoutXml, Encoding.UTF8);
 
-                       try
-                       {
-                           // Gerar TCL usando aprendizado de máquina se disponível
-                           var tclFileName = SanitizeFileName($"{layout.Name}.tcl");
-                           var tclPath = Path.Combine(_tclBasePath, tclFileName);
-                           
-                           // Tentar usar gerador melhorado com ML
-                           var improvedResult = await _improvedTclGenerator.GenerateTclWithMLAsync(
-                               tempLayoutPath, 
-                               layout.Name, 
-                               tclPath);
-                           
-                           if (improvedResult.Success && !string.IsNullOrEmpty(improvedResult.SuggestedTcl))
-                           {
-                               // Usar TCL melhorado pela ML
-                               await File.WriteAllTextAsync(tclPath, improvedResult.SuggestedTcl, Encoding.UTF8);
-                               processed.GeneratedFiles.Add(tclPath);
-                               
-                               if (improvedResult.Suggestions.Any())
-                               {
-                                   processed.Warnings.AddRange(improvedResult.Suggestions.Take(5));
-                               }
-                               
-                               _logger.LogInformation("TCL gerado com ML: {Path}. Sugestões: {Count}", 
-                                   tclPath, improvedResult.Suggestions.Count);
-                           }
-                           else
-                           {
-                               // Fallback para gerador base
-                               var tclContent = await _tclGenerator.GenerateTclFromLayoutAsync(tempLayoutPath, tclPath);
-                               processed.GeneratedFiles.Add(tclPath);
-                               _logger.LogInformation("TCL gerado (base): {Path}", tclPath);
-                               
-                               if (improvedResult.Warnings.Any())
-                               {
-                                   processed.Warnings.AddRange(improvedResult.Warnings.Take(3));
-                               }
-                           }
-                       }
-                       catch (Exception ex)
-                       {
-                           _logger.LogError(ex, "Erro ao gerar TCL para layout: {LayoutName}", layout.Name);
-                           processed.Errors.Add($"Erro ao gerar TCL: {ex.Message}");
-                           processed.Success = false;
-                       }
+                try
+                {
+                    // Gerar TCL usando aprendizado de máquina se disponível
+                    var tclFileName = SanitizeFileName($"{layout.Name}.tcl");
+                    var tclPath = Path.Combine(_tclBasePath, tclFileName);
+
+                    // Tentar usar gerador melhorado com ML
+                    var improvedResult = await _improvedTclGenerator.GenerateTclWithMLAsync(tempLayoutPath, layout.Name, tclPath);
+
+                    if (improvedResult.Success && !string.IsNullOrEmpty(improvedResult.SuggestedTcl))
+                    {
+                        // Usar TCL melhorado pela ML
+                        await File.WriteAllTextAsync(tclPath, improvedResult.SuggestedTcl, Encoding.UTF8);
+                        processed.GeneratedFiles.Add(tclPath);
+
+                        if (improvedResult.Suggestions.Any())
+                            processed.Warnings.AddRange(improvedResult.Suggestions.Take(5));
+
+                        _logger.LogInformation("TCL gerado com ML: {Path}. Sugestões: {Count}", tclPath, improvedResult.Suggestions.Count);
+                    }
+                    else
+                    {
+                        // Fallback para gerador base
+                        var tclContent = await _tclGenerator.GenerateTclFromLayoutAsync(tempLayoutPath, tclPath);
+                        processed.GeneratedFiles.Add(tclPath);
+                        _logger.LogInformation("TCL gerado (base): {Path}", tclPath);
+
+                        if (improvedResult.Warnings.Any())
+                            processed.Warnings.AddRange(improvedResult.Warnings.Take(3));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Erro ao gerar TCL para layout: {LayoutName}", layout.Name);
+                    processed.Errors.Add($"Erro ao gerar TCL: {ex.Message}");
+                    processed.Success = false;
+                }
 
                 // 2. Buscar mapeador e gerar XSL
                 await GenerateXslForLayoutAsync(layout, processed);
@@ -270,14 +240,11 @@ namespace LayoutParserApi.Services.XmlAnalysis
             finally
             {
                 // Limpar arquivo temporário se existir
-                var layoutGuidStr = layout.LayoutGuid != Guid.Empty 
-                    ? layout.LayoutGuid.ToString() 
-                    : layout.Id.ToString();
+                var layoutGuidStr = layout.LayoutGuid != Guid.Empty ? layout.LayoutGuid.ToString() : layout.Id.ToString();
                 var tempLayoutPath = Path.Combine(Path.GetTempPath(), $"layout_{layoutGuidStr}.xml");
                 if (File.Exists(tempLayoutPath))
-                {
                     try { File.Delete(tempLayoutPath); } catch { }
-                }
+
             }
         }
 
@@ -298,30 +265,24 @@ namespace LayoutParserApi.Services.XmlAnalysis
             try
             {
                 // Buscar mapeador pelo InputLayoutGuid ou TargetLayoutGuid
-                var layoutGuidStr = layout.LayoutGuid != Guid.Empty 
-                    ? layout.LayoutGuid.ToString() 
-                    : layout.Id.ToString();
-                
+                var layoutGuidStr = layout.LayoutGuid != Guid.Empty ? layout.LayoutGuid.ToString() : layout.Id.ToString();
+
                 // Para layouts TextPositional, buscar mapeador onde este layout é a entrada (InputLayoutGuid)
                 // Para layouts XML, buscar mapeador onde este layout pode ser entrada ou saída
                 Mapper mapper = null;
-                
+
                 if (layout.LayoutType == "TextPositional")
-                {
                     // TextPositional geralmente é entrada (transforma TXT -> XML)
                     mapper = await _mapperDatabaseService.GetMapperByInputLayoutGuidAsync(layoutGuidStr);
-                }
                 else if (layout.LayoutType == "XML")
                 {
                     // XML pode ser entrada ou saída
                     // Tentar primeiro como entrada, depois como saída
                     mapper = await _mapperDatabaseService.GetMapperByInputLayoutGuidAsync(layoutGuidStr);
                     if (mapper == null)
-                    {
                         mapper = await _mapperDatabaseService.GetMapperByTargetLayoutGuidAsync(layoutGuidStr);
-                    }
                 }
-                
+
                 // Fallback: buscar qualquer mapeador relacionado
                 if (mapper == null)
                 {
@@ -340,9 +301,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 }
 
                 // Usar DecryptedContent (já descriptografado) se disponível, senão ValueContent
-                string mapperXml = !string.IsNullOrEmpty(mapper.DecryptedContent) 
-                    ? mapper.DecryptedContent 
-                    : mapper.ValueContent;
+                string mapperXml = !string.IsNullOrEmpty(mapper.DecryptedContent) ? mapper.DecryptedContent : mapper.ValueContent;
 
                 if (string.IsNullOrEmpty(mapperXml))
                 {
@@ -357,10 +316,8 @@ namespace LayoutParserApi.Services.XmlAnalysis
                     var testDoc = XDocument.Parse(mapperXml);
                     // Se já for um XML válido com estrutura MapperVO, usar como está
                     if (testDoc.Root?.Name.LocalName == "MapperVO")
-                    {
                         // XML válido e completo, usar diretamente
                         _logger.LogInformation("XML do mapeador válido e completo com estrutura MapperVO");
-                    }
                     else
                     {
                         // XML válido mas sem estrutura MapperVO, envolver
@@ -379,69 +336,62 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 var tempMapperPath = Path.Combine(Path.GetTempPath(), $"mapper_{mapper.MapperGuid}.xml");
                 await File.WriteAllTextAsync(tempMapperPath, mapperXml, Encoding.UTF8);
 
-                       try
-                       {
-                           // Gerar XSL usando aprendizado de máquina se disponível
-                           var xslFileName = SanitizeFileName($"{layout.Name}.xsl");
-                           var xslPath = Path.Combine(_xslBasePath, xslFileName);
-                           
-                           _logger.LogInformation("Gerando XSL para layout: {LayoutName} -> {XslPath}", layout.Name, xslPath);
-                           
-                           // Tentar usar gerador melhorado com ML
-                           var improvedResult = await _improvedXslGenerator.GenerateXslWithMLAsync(
-                               tempMapperPath, 
-                               layout.Name, 
-                               xslPath);
-                           
-                           if (improvedResult.Success && !string.IsNullOrEmpty(improvedResult.SuggestedXsl))
-                           {
-                               // Usar XSL melhorado pela ML
-                               await File.WriteAllTextAsync(xslPath, improvedResult.SuggestedXsl, Encoding.UTF8);
-                               processed.GeneratedFiles.Add(xslPath);
-                               
-                               if (improvedResult.Suggestions.Any())
-                               {
-                                   processed.Warnings.AddRange(improvedResult.Suggestions.Take(5));
-                               }
-                               
-                               _logger.LogInformation("XSL gerado com ML: {Path}. Sugestões: {Count}", 
-                                   xslPath, improvedResult.Suggestions.Count);
-                           }
-                           else
-                           {
-                               // Fallback para gerador base
-                               var xslContent = await _xslGenerator.GenerateXslFromMapAsync(tempMapperPath, xslPath);
+                try
+                {
+                    // Gerar XSL usando aprendizado de máquina se disponível
+                    var xslFileName = SanitizeFileName($"{layout.Name}.xsl");
+                    var xslPath = Path.Combine(_xslBasePath, xslFileName);
 
-                               if (!string.IsNullOrEmpty(xslContent))
-                               {
-                                   processed.GeneratedFiles.Add(xslPath);
-                                   _logger.LogInformation("XSL gerado (base): {Path}", xslPath);
-                               }
-                               else
-                               {
-                                   processed.Errors.Add("XSL gerado está vazio");
-                                   processed.Success = false;
-                               }
-                               
-                               if (improvedResult.Warnings.Any())
-                               {
-                                   processed.Warnings.AddRange(improvedResult.Warnings.Take(3));
-                               }
-                           }
-                       }
-                       catch (Exception ex)
-                       {
-                           _logger.LogError(ex, "Erro ao gerar XSL para layout: {LayoutName}", layout.Name);
-                           processed.Errors.Add($"Erro ao gerar XSL: {ex.Message}");
-                           processed.Success = false;
-                       }
+                    _logger.LogInformation("Gerando XSL para layout: {LayoutName} -> {XslPath}", layout.Name, xslPath);
+
+                    // Tentar usar gerador melhorado com ML
+                    var improvedResult = await _improvedXslGenerator.GenerateXslWithMLAsync(
+                        tempMapperPath,
+                        layout.Name,
+                        xslPath);
+
+                    if (improvedResult.Success && !string.IsNullOrEmpty(improvedResult.SuggestedXsl))
+                    {
+                        // Usar XSL melhorado pela ML
+                        await File.WriteAllTextAsync(xslPath, improvedResult.SuggestedXsl, Encoding.UTF8);
+                        processed.GeneratedFiles.Add(xslPath);
+
+                        if (improvedResult.Suggestions.Any())
+                            processed.Warnings.AddRange(improvedResult.Suggestions.Take(5));
+
+                        _logger.LogInformation("XSL gerado com ML: {Path}. Sugestões: {Count}", xslPath, improvedResult.Suggestions.Count);
+                    }
+                    else
+                    {
+                        // Fallback para gerador base
+                        var xslContent = await _xslGenerator.GenerateXslFromMapAsync(tempMapperPath, xslPath);
+
+                        if (!string.IsNullOrEmpty(xslContent))
+                        {
+                            processed.GeneratedFiles.Add(xslPath);
+                            _logger.LogInformation("XSL gerado (base): {Path}", xslPath);
+                        }
+                        else
+                        {
+                            processed.Errors.Add("XSL gerado está vazio");
+                            processed.Success = false;
+                        }
+
+                        if (improvedResult.Warnings.Any())
+                            processed.Warnings.AddRange(improvedResult.Warnings.Take(3));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Erro ao gerar XSL para layout: {LayoutName}", layout.Name);
+                    processed.Errors.Add($"Erro ao gerar XSL: {ex.Message}");
+                    processed.Success = false;
+                }
                 finally
                 {
                     // Limpar arquivo temporário
                     if (File.Exists(tempMapperPath))
-                    {
                         try { File.Delete(tempMapperPath); } catch { }
-                    }
                 }
             }
             catch (Exception ex)
@@ -487,13 +437,13 @@ namespace LayoutParserApi.Services.XmlAnalysis
             {
                 // Fallback: criar estrutura mínima
                 return $@"<?xml version=""1.0"" encoding=""utf-8""?>
-<MapperVO>
-    <Rules>
-        <Rule>
-            <ContentValue>{System.Security.SecurityElement.Escape(valueContent ?? "")}</ContentValue>
-        </Rule>
-    </Rules>
-</MapperVO>";
+                            <MapperVO>
+                                <Rules>
+                                    <Rule>
+                                        <ContentValue>{System.Security.SecurityElement.Escape(valueContent ?? "")}</ContentValue>
+                                    </Rule>
+                                </Rules>
+                            </MapperVO>";
             }
         }
 
@@ -505,36 +455,9 @@ namespace LayoutParserApi.Services.XmlAnalysis
             var invalidChars = Path.GetInvalidFileNameChars();
             var sanitized = fileName;
             foreach (var c in invalidChars)
-            {
                 sanitized = sanitized.Replace(c, '_');
-            }
+
             return sanitized;
         }
     }
-
-    /// <summary>
-    /// Resultado da geração automática
-    /// </summary>
-    public class AutoGenerationResult
-    {
-        public bool Success { get; set; }
-        public List<ProcessedLayout> ProcessedLayouts { get; set; } = new();
-        public List<string> Errors { get; set; } = new();
-        public List<string> Warnings { get; set; } = new();
-    }
-
-    /// <summary>
-    /// Layout processado
-    /// </summary>
-    public class ProcessedLayout
-    {
-        public string LayoutGuid { get; set; }
-        public string LayoutName { get; set; }
-        public string LayoutType { get; set; }
-        public bool Success { get; set; }
-        public List<string> GeneratedFiles { get; set; } = new();
-        public List<string> Errors { get; set; } = new();
-        public List<string> Warnings { get; set; } = new();
-    }
 }
-

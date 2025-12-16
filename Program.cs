@@ -1,17 +1,24 @@
 using LayoutParserApi.Services.Cache;
 using LayoutParserApi.Services.Database;
-using LayoutParserApi.Services.XmlAnalysis;
-using LayoutParserApi.Services.Transformation;
-using LayoutParserApi.Services.Learning;
-using LayoutParserApi.Services.Testing;
-using LayoutParserApi.Services.Interfaces;
+using LayoutParserApi.Services.Filters;
 using LayoutParserApi.Services.Implementations;
-using StackExchange.Redis;
+using LayoutParserApi.Services.Interfaces;
+using LayoutParserApi.Services.Learning;
+using LayoutParserApi.Services.Parsing.Implementations;
+using LayoutParserApi.Services.Parsing.Interfaces;
+using LayoutParserApi.Services.Testing;
+using LayoutParserApi.Services.Transformation;
+using LayoutParserApi.Services.Transformation.Interface;
+using LayoutParserApi.Services.XmlAnalysis;
+
+using Microsoft.AspNetCore.Diagnostics;
+
 using Serilog;
 using Serilog.Events;
-using Microsoft.AspNetCore.Diagnostics;
+
+using StackExchange.Redis;
+
 using System.Text.Encodings.Web;
-using System.Text.Json;
 using System.Text.Json.Serialization;
 
 // Bootstrap logger for errors before Serilog is configured
@@ -32,7 +39,7 @@ try
     {
         Console.WriteLine($"[BOOTSTRAP] Configuring log directory: {logDirectory}");
         Console.WriteLine($"[BOOTSTRAP] Current working directory: {Directory.GetCurrentDirectory()}");
-        
+
         if (string.IsNullOrEmpty(logDirectory))
         {
             logDirectory = Path.Combine(Directory.GetCurrentDirectory(), "Logs");
@@ -156,7 +163,7 @@ try
     // Redis Configuration - Make it optional to prevent startup failure
     var redisConnectionString = builder.Configuration["Redis:ConnectionString"] ?? "localhost:6379";
     Log.Information("Configuring Redis connection at {RedisConnection}", redisConnectionString);
-    
+
     // Try to connect to Redis, but don't fail if it's not available
     IConnectionMultiplexer? redisConnection = null;
     try
@@ -213,23 +220,23 @@ try
     builder.Services.AddScoped<TransformationValidatorService>();
 
     // Parsing Services
-    builder.Services.AddScoped<LayoutParserApi.Services.Parsing.Interfaces.ILineSplitter, LayoutParserApi.Services.Parsing.Implementations.LineSplitter>();
-    builder.Services.AddScoped<LayoutParserApi.Services.Parsing.Interfaces.ILayoutValidator, LayoutParserApi.Services.Parsing.Implementations.LayoutValidator>();
-    builder.Services.AddScoped<LayoutParserApi.Services.Parsing.Interfaces.ILayoutNormalizer, LayoutParserApi.Services.Parsing.Implementations.LayoutNormalizer>();
-    builder.Services.AddScoped<LayoutParserApi.Services.Parsing.Interfaces.ILayoutDetector, LayoutParserApi.Services.Parsing.Implementations.LayoutDetector>();
-    builder.Services.AddScoped<ILayoutParserService, LayoutParserApi.Services.Implementations.LayoutParserService>();
+    builder.Services.AddScoped<ILineSplitter, LineSplitter>();
+    builder.Services.AddScoped<ILayoutValidator, LayoutValidator>();
+    builder.Services.AddScoped<ILayoutNormalizer, LayoutNormalizer>();
+    builder.Services.AddScoped<ILayoutDetector, LayoutDetector>();
+    builder.Services.AddScoped<ILayoutParserService, LayoutParserService>();
 
     // Mapper Cache Services
-    builder.Services.AddScoped<LayoutParserApi.Services.Cache.IMapperCacheService>(sp =>
+    builder.Services.AddScoped<IMapperCacheService>(sp =>
     {
         var redis = sp.GetService<IConnectionMultiplexer>();
-        var logger = sp.GetRequiredService<ILogger<LayoutParserApi.Services.Cache.MapperCacheService>>();
-        return new LayoutParserApi.Services.Cache.MapperCacheService(redis, logger);
+        var logger = sp.GetRequiredService<ILogger<MapperCacheService>>();
+        return new MapperCacheService(redis, logger);
     });
     builder.Services.AddScoped<ICachedMapperService, CachedMapperService>();
 
     // Transformation Services
-    builder.Services.AddScoped<LayoutParserApi.Services.Transformation.IMapperTransformationService, LayoutParserApi.Services.Transformation.MapperTransformationService>();
+    builder.Services.AddScoped<IMapperTransformationService, MapperTransformationService>();
 
     // Learning Services
     builder.Services.AddScoped<ExampleLearningService>();
@@ -243,7 +250,7 @@ try
     // Audit and Logging Services
     builder.Services.AddScoped<IAuditLogger, AuditLogger>();
     builder.Services.AddScoped<ITechLogger, TechLogger>();
-    builder.Services.AddScoped<LayoutParserApi.Services.Filters.AuditActionFilter>();
+    builder.Services.AddScoped<AuditActionFilter>();
 
     var app = builder.Build();
 
@@ -253,7 +260,7 @@ try
     // CORS must be early in the pipeline - before routing and other middleware
     // This ensures CORS headers are sent even when errors occur
     app.UseCors();
-    
+
     // Enable detailed error pages in development
     if (app.Environment.IsDevelopment())
     {
@@ -273,13 +280,13 @@ try
                 var exception = context.Features.Get<IExceptionHandlerFeature>()?.Error;
                 context.Response.StatusCode = 500;
                 context.Response.ContentType = "application/json";
-                
+
                 var response = new
                 {
                     error = "An error occurred while processing your request.",
                     message = app.Environment.IsDevelopment() ? exception?.Message : null
                 };
-                
+
                 await context.Response.WriteAsync(System.Text.Json.JsonSerializer.Serialize(response));
             });
         });
@@ -297,14 +304,14 @@ try
     try
     {
         Log.Information("Iniciando populacao do cache permanente...");
-        
+
         using (var scope = app.Services.CreateScope())
         {
             var cachedLayoutService = scope.ServiceProvider.GetRequiredService<ICachedLayoutService>();
             var cachedMapperService = scope.ServiceProvider.GetRequiredService<ICachedMapperService>();
-            
+
             Log.Information("Populando cache de layouts...");
-            
+
             // Popular cache de layouts
             try
             {
@@ -315,7 +322,7 @@ try
             {
                 Log.Error(ex, "Erro ao popular cache de layouts: {Message}", ex.Message);
             }
-            
+
             // Popular cache de mapeadores
             Log.Information("Populando cache de mapeadores...");
             try
@@ -328,7 +335,7 @@ try
                 Log.Error(ex, "Erro ao popular cache de mapeadores: {Message}", ex.Message);
                 Log.Error(ex, "Stack trace: {StackTrace}", ex.StackTrace);
             }
-            
+
             // Verificar se o cache foi criado
             try
             {
@@ -339,7 +346,7 @@ try
             {
                 Log.Warning(ex, "Erro ao verificar cache de mapeadores: {Message}", ex.Message);
             }
-            
+
             Log.Information("Cache permanente inicializado com sucesso");
         }
     }
@@ -353,7 +360,7 @@ try
     Log.Information("LayoutParserApi started successfully. Listening on: {Url}", kestrelUrl);
     Log.Information("CORS enabled for frontend origins");
     Log.Information("Log files are being written to: {LogDirectory}", logDirectory);
-    
+
     Console.WriteLine("=".PadRight(80, '='));
     Console.WriteLine($"LayoutParserApi is starting...");
     Console.WriteLine($"Listening on: {kestrelUrl}");
@@ -366,7 +373,7 @@ catch (Exception ex)
 {
     Console.WriteLine($"[FATAL ERROR] Application start-up failed: {ex.Message}");
     Console.WriteLine($"[FATAL ERROR] Stack trace: {ex.StackTrace}");
-    
+
     try
     {
         Log.Fatal(ex, "Application start-up failed");
@@ -375,7 +382,7 @@ catch (Exception ex)
     {
         // If logging fails, at least we have console output
     }
-    
+
     throw;
 }
 finally

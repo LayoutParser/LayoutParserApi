@@ -1,9 +1,9 @@
-using LayoutParserApi.Models.Database;
-using LayoutParserApi.Models.Entities;
-using LayoutParserApi.Models.Responses;
 using LayoutParserApi.Models.Configuration;
+using LayoutParserApi.Models.Database;
+using LayoutParserApi.Models.Responses;
 using LayoutParserApi.Services.Database;
 using LayoutParserApi.Services.Interfaces;
+
 using Microsoft.AspNetCore.Mvc;
 
 namespace LayoutParserApi.Controllers
@@ -101,7 +101,7 @@ namespace LayoutParserApi.Controllers
                         // Verificar se o layout deve ter cálculo de validação
                         var layoutGuidString = layoutRecord.LayoutGuid.ToString();
                         var expectedLineLength = LayoutLineSizeConfiguration.GetLineSizeForLayout(layoutGuidString);
-                        
+
                         List<LineValidationInfo>? lineValidations = null;
                         int validLines = 0;
                         int invalidLines = 0;
@@ -119,6 +119,7 @@ namespace LayoutParserApi.Controllers
                             totalLines = lineValidations.Count;
 
                             isLayoutValid = invalidLines == 0 && totalLines > 0;
+
                             if (isLayoutValid) validLayouts++;
                             else invalidLayouts++;
                         }
@@ -129,22 +130,20 @@ namespace LayoutParserApi.Controllers
                             notConfiguredLayouts++;
                         }
 
-                        var lineValidationsList = lineValidations != null && lineValidations.Any()
-                            ? lineValidations.Select(lv => new
-                            {
-                                lineName = lv.LineName,
-                                initialValue = lv.InitialValue,
-                                initialValueLength = lv.InitialValueLength,
-                                sequenceFromPreviousLine = lv.SequenceFromPreviousLine,
-                                fieldsLength = lv.FieldsLength,
-                                sequenciaLength = lv.SequenciaLength,
-                                totalLength = lv.TotalLength,
-                                isValid = lv.IsValid,
-                                hasChildren = lv.HasChildren,
-                                fieldCount = lv.FieldCount,
-                                calculatedPositions = lv.CalculatedPositions
-                            }).ToList<object>()
-                            : new List<object>();
+                        var lineValidationsList = lineValidations != null && lineValidations.Any() ? lineValidations.Select(lv => new
+                        {
+                            lineName = lv.LineName,
+                            initialValue = lv.InitialValue,
+                            initialValueLength = lv.InitialValueLength,
+                            sequenceFromPreviousLine = lv.SequenceFromPreviousLine,
+                            fieldsLength = lv.FieldsLength,
+                            sequenciaLength = lv.SequenciaLength,
+                            totalLength = lv.TotalLength,
+                            isValid = lv.IsValid,
+                            hasChildren = lv.HasChildren,
+                            fieldCount = lv.FieldCount,
+                            calculatedPositions = lv.CalculatedPositions
+                        }).ToList<object>() : new List<object>();
 
                         analysisResults.Add(new
                         {
@@ -152,8 +151,8 @@ namespace LayoutParserApi.Controllers
                             name = layoutRecord.Name,
                             description = layoutRecord.Description,
                             layoutType = layoutRecord.LayoutType,
-                            status = expectedLineLength.HasValue 
-                                ? (isLayoutValid ? "valid" : "invalid") 
+                            status = expectedLineLength.HasValue
+                                ? (isLayoutValid ? "valid" : "invalid")
                                 : "not_configured",
                             expectedLineLength = expectedLineLength,
                             totalLines = totalLines,
@@ -206,4 +205,3 @@ namespace LayoutParserApi.Controllers
         }
     }
 }
-
