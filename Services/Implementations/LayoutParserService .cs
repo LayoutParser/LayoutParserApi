@@ -2358,8 +2358,6 @@ namespace LayoutParserApi.Services.Implementations
             }
         }
 
-        // ✅ NOVO MÉTODO: Separar elementos de forma mais robusta
-        // ✅ CORREÇÃO: Método com debug detalhado para identificar o problema
         private (List<FieldElement> fieldElements, List<LineElement> childLineElements) SeparateElementsRobust(LineElement lineConfig)
         {
             var fieldElements = new List<FieldElement>();
@@ -2380,7 +2378,6 @@ namespace LayoutParserApi.Services.Implementations
             {
                 var elementJson = lineConfig.Elements[i];
 
-                // ✅ DEBUG DETALHADO: Mostrar o JSON completo para elementos LineElementVO
                 bool isLineElement = elementJson.Contains("\"Type\":\"LineElementVO\"");
                 bool isFieldElement = elementJson.Contains("\"Type\":\"FieldElementVO\"");
 

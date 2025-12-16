@@ -22,9 +22,7 @@ using System.Text.Encodings.Web;
 using System.Text.Json.Serialization;
 
 // Bootstrap logger for errors before Serilog is configured
-Log.Logger = new LoggerConfiguration()
-    .WriteTo.Console()
-    .CreateBootstrapLogger();
+Log.Logger = new LoggerConfiguration().WriteTo.Console().CreateBootstrapLogger();
 
 try
 {
@@ -71,9 +69,8 @@ try
             // Fallback to current directory
             logDirectory = Path.Combine(Directory.GetCurrentDirectory(), "Logs");
             if (!Directory.Exists(logDirectory))
-            {
                 Directory.CreateDirectory(logDirectory);
-            }
+            
             Console.WriteLine($"[BOOTSTRAP] Using fallback log directory: {logDirectory}");
         }
     }
@@ -86,9 +83,8 @@ try
         try
         {
             if (!Directory.Exists(logDirectory))
-            {
                 Directory.CreateDirectory(logDirectory);
-            }
+            
             Console.WriteLine($"[BOOTSTRAP] Using fallback log directory: {logDirectory}");
         }
         catch
@@ -104,15 +100,12 @@ try
             .MinimumLevel.Information()
             .MinimumLevel.Override("Microsoft.AspNetCore", LogEventLevel.Warning)
             .Enrich.FromLogContext()
-            .WriteTo.Console(
-                outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff}] [{Level:u3}] {Message:lj}{NewLine}{Exception}")
+            .WriteTo.Console(outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff}] [{Level:u3}] {Message:lj}{NewLine}{Exception}")
             .WriteTo.File(
                 Path.Combine(logDirectory, logFileName),
                 rollingInterval: RollingInterval.Day,
                 retainedFileCountLimit: 30,
-                outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff}] [{Level:u3}] {Message:lj}{NewLine}{Exception}",
-                shared: true)
-            .CreateLogger();
+                outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff}] [{Level:u3}] {Message:lj}{NewLine}{Exception}",shared: true).CreateLogger();
 
         builder.Host.UseSerilog();
         Log.Information("Serilog configured successfully. Log directory: {LogDirectory}", logDirectory);
@@ -154,9 +147,7 @@ try
                     "http://127.0.0.1:81",
                     "http://127.0.0.1:8080"
                   )
-                  .AllowAnyMethod()
-                  .AllowAnyHeader()
-                  .WithExposedHeaders("*");
+                  .AllowAnyMethod().AllowAnyHeader().WithExposedHeaders("*");
         });
     });
 
@@ -184,9 +175,8 @@ try
         Log.Information("Redis service registered successfully");
     }
     else
-    {
         Log.Warning("Redis is not available. Cache services will operate without Redis.");
-    }
+    
 
     // Cache Services - will handle null Redis connection gracefully
     builder.Services.AddScoped<ILayoutCacheService>(sp =>
