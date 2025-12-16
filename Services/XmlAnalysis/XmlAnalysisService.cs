@@ -1,10 +1,9 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Xml.Linq;
 using LayoutParserApi.Models.Entities;
-using LayoutParserApi.Models.Parsing;
+using LayoutParserApi.Services.XmlAnalysis.Models;
+
+using Newtonsoft.Json;
+
+using System.Xml.Linq;
 
 namespace LayoutParserApi.Services.XmlAnalysis
 {
@@ -50,9 +49,8 @@ namespace LayoutParserApi.Services.XmlAnalysis
                     result.Success = false;
                     result.Errors.Add($"Erro de estrutura XML: {xmlEx.Message}");
                     if (xmlEx.LineNumber > 0)
-                    {
                         result.Errors.Add($"Linha {xmlEx.LineNumber}, Posição {xmlEx.LinePosition}");
-                    }
+
                     _logger.LogWarning("XML inválido estruturalmente: {Errors}", string.Join(", ", result.Errors));
                     return result;
                 }
@@ -78,7 +76,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
                     result.ValidationDetails["layout"] = layoutValidation;
                     result.Errors.AddRange(layoutValidation.Errors);
                     result.Warnings.AddRange(layoutValidation.Warnings);
-                    
+
                     if (layoutValidation.Errors.Any())
                         result.Success = false;
                 }
@@ -113,24 +111,15 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 RootElement = doc.Root?.Name.LocalName ?? "Unknown",
                 TotalElements = doc.Descendants().Count(),
                 TotalAttributes = doc.Descendants().SelectMany(e => e.Attributes()).Count(),
-                Namespaces = doc.Descendants()
-                    .SelectMany(e => e.Attributes().Where(a => a.IsNamespaceDeclaration))
-                    .Select(a => a.Name.LocalName)
-                    .Distinct()
-                    .ToList()
+                Namespaces = doc.Descendants().SelectMany(e => e.Attributes().Where(a => a.IsNamespaceDeclaration)).Select(a => a.Name.LocalName).Distinct().ToList()
             };
 
             // Calcular profundidade máxima
             if (doc.Root != null)
-            {
                 analysis.MaxDepth = CalculateMaxDepth(doc.Root);
-            }
 
             // Coletar tipos de elementos
-            analysis.ElementTypes = doc.Descendants()
-                .Select(e => e.Name.LocalName)
-                .Distinct()
-                .ToList();
+            analysis.ElementTypes = doc.Descendants().Select(e => e.Name.LocalName).Distinct().ToList();
 
             return analysis;
         }
@@ -154,22 +143,269 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 Warnings = new List<string>()
             };
 
-            // Extrair elementos do layout que são relevantes para XML
-            if (layout?.Elements != null)
+            if (layout?.Elements == null || !layout.Elements.Any())
             {
-                var layoutElements = layout.Elements
-                    .Where(e => e.GetType().Name.Contains("Element"))
+                result.Warnings.Add("Layout não possui elementos para validação");
+                return result;
+            }
+
+            if (doc?.Root == null)
+            {
+                result.Errors.Add("XML não possui elemento raiz");
+                return result;
+            }
+
+            try
+            {
+                var rootElement = doc.Root;
+                var rootName = rootElement.Name.LocalName;
+
+                // Validar elemento raiz (geralmente "ROOT")
+                if (rootName != "ROOT")
+                {
+                    result.Warnings.Add($"Elemento raiz esperado: 'ROOT', encontrado: '{rootName}'");
+                }
+
+                // Processar cada LineElement do layout
+                foreach (var lineElement in layout.Elements)
+                {
+                    ValidateLineElement(doc, rootElement, lineElement, result);
+                }
+
+                // Validar elementos no XML que não estão no layout (aviso)
+                var xmlLineNames = rootElement.Elements()
+                    .Select(e => e.Name.LocalName)
+                    .Distinct()
                     .ToList();
 
-                // Validar presença de elementos esperados
-                foreach (var layoutElement in layoutElements)
+                var layoutLineNames = layout.Elements
+                    .Where(e => !string.IsNullOrEmpty(e.Name))
+                    .Select(e => e.Name)
+                    .Distinct()
+                    .ToList();
+
+                var unexpectedElements = xmlLineNames
+                    .Where(xmlName => !layoutLineNames.Contains(xmlName, StringComparer.OrdinalIgnoreCase))
+                    .ToList();
+
+                if (unexpectedElements.Any())
                 {
-                    // Implementar validação específica baseada no layout
-                    // Por enquanto, apenas verificar estrutura básica
+                    result.Warnings.Add(
+                        $"Elementos no XML não encontrados no layout: {string.Join(", ", unexpectedElements)}");
                 }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Erro ao validar XML contra layout");
+                result.Errors.Add($"Erro durante validação: {ex.Message}");
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// Valida um LineElement específico contra o XML
+        /// </summary>
+        private void ValidateLineElement(XDocument doc, XElement rootElement, LineElement lineElement, LayoutValidationResult result)
+        {
+            if (lineElement == null || string.IsNullOrEmpty(lineElement.Name))
+            {
+                return;
+            }
+
+            var lineName = lineElement.Name;
+            var xmlLineElements = rootElement.Elements()
+                .Where(e => e.Name.LocalName.Equals(lineName, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            var occurrenceCount = xmlLineElements.Count;
+
+            // Validar ocorrências mínimas
+            if (lineElement.MinimalOccurrence > 0 && occurrenceCount < lineElement.MinimalOccurrence)
+            {
+                result.Errors.Add(
+                    $"Linha '{lineName}': Ocorrência mínima esperada: {lineElement.MinimalOccurrence}, encontrada: {occurrenceCount}");
+            }
+
+            // Validar ocorrências máximas
+            if (lineElement.MaximumOccurrence > 0 && occurrenceCount > lineElement.MaximumOccurrence)
+            {
+                result.Warnings.Add(
+                    $"Linha '{lineName}': Ocorrência máxima esperada: {lineElement.MaximumOccurrence}, encontrada: {occurrenceCount}");
+            }
+
+            // Validar se elemento obrigatório está presente
+            if (lineElement.IsRequired && occurrenceCount == 0)
+            {
+                result.Errors.Add($"Linha obrigatória '{lineName}' não encontrada no XML");
+                return;
+            }
+
+            // Se não há ocorrências e não é obrigatório, pular validação de campos
+            if (occurrenceCount == 0)
+            {
+                return;
+            }
+
+            // Separar FieldElements e LineElements filhos
+            var (fieldElements, childLineElements) = SeparateElements(lineElement);
+
+            // Validar campos de cada ocorrência da linha
+            foreach (var xmlLineElement in xmlLineElements)
+            {
+                ValidateLineFields(xmlLineElement, lineName, fieldElements, result);
+            }
+
+            // Validar linhas filhas recursivamente
+            foreach (var childLine in childLineElements)
+            {
+                // Para linhas filhas, procurar dentro das ocorrências da linha pai
+                foreach (var xmlLineElement in xmlLineElements)
+                {
+                    ValidateLineElement(doc, xmlLineElement, childLine, result);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Valida campos de uma linha específica
+        /// </summary>
+        private void ValidateLineFields(XElement xmlLineElement, string lineName, List<FieldElement> fieldElements, LayoutValidationResult result)
+        {
+            if (fieldElements == null || !fieldElements.Any())
+            {
+                return;
+            }
+
+            foreach (var fieldElement in fieldElements)
+            {
+                if (fieldElement == null || string.IsNullOrEmpty(fieldElement.Name))
+                {
+                    continue;
+                }
+
+                var fieldName = fieldElement.Name;
+                var xmlFieldElements = xmlLineElement.Elements()
+                    .Where(e => e.Name.LocalName.Equals(fieldName, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                var fieldOccurrenceCount = xmlFieldElements.Count;
+
+                // Validar campo obrigatório
+                if (fieldElement.IsRequired && fieldOccurrenceCount == 0)
+                {
+                    result.Errors.Add(
+                        $"Linha '{lineName}': Campo obrigatório '{fieldName}' não encontrado");
+                    continue;
+                }
+
+                // Validar se campo tem valor quando presente
+                if (fieldOccurrenceCount > 0)
+                {
+                    var emptyFields = xmlFieldElements
+                        .Where(e => string.IsNullOrWhiteSpace(e.Value))
+                        .ToList();
+
+                    if (emptyFields.Any() && fieldElement.IsRequired)
+                    {
+                        result.Warnings.Add(
+                            $"Linha '{lineName}': Campo obrigatório '{fieldName}' encontrado mas está vazio");
+                    }
+
+                    // Validar comprimento do campo (se especificado)
+                    if (fieldElement.LengthField > 0)
+                    {
+                        foreach (var xmlField in xmlFieldElements)
+                        {
+                            var fieldValue = xmlField.Value ?? string.Empty;
+                            if (fieldValue.Length > fieldElement.LengthField)
+                            {
+                                result.Warnings.Add(
+                                    $"Linha '{lineName}': Campo '{fieldName}' excede comprimento esperado. " +
+                                    $"Esperado: {fieldElement.LengthField}, encontrado: {fieldValue.Length}");
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Verificar campos no XML que não estão no layout (aviso)
+            var xmlFieldNames = xmlLineElement.Elements()
+                .Select(e => e.Name.LocalName)
+                .Distinct()
+                .ToList();
+
+            var layoutFieldNames = fieldElements
+                .Where(f => !string.IsNullOrEmpty(f.Name))
+                .Select(f => f.Name)
+                .Distinct()
+                .ToList();
+
+            var unexpectedFields = xmlFieldNames
+                .Where(xmlName => !layoutFieldNames.Contains(xmlName, StringComparer.OrdinalIgnoreCase))
+                .ToList();
+
+            if (unexpectedFields.Any())
+            {
+                result.Warnings.Add(
+                    $"Linha '{lineName}': Campos no XML não encontrados no layout: {string.Join(", ", unexpectedFields)}");
+            }
+        }
+
+        /// <summary>
+        /// Separa FieldElements e LineElements filhos de um LineElement
+        /// </summary>
+        private (List<FieldElement> fieldElements, List<LineElement> childLineElements) SeparateElements(LineElement lineElement)
+        {
+            var fieldElements = new List<FieldElement>();
+            var childLineElements = new List<LineElement>();
+
+            if (lineElement?.Elements == null || !lineElement.Elements.Any())
+            {
+                return (fieldElements, childLineElements);
+            }
+
+            foreach (var elementJson in lineElement.Elements)
+            {
+                if (string.IsNullOrWhiteSpace(elementJson))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    // Verificar o tipo do elemento antes de desserializar
+                    bool isLineElement = elementJson.Contains("\"Type\":\"LineElementVO\"", StringComparison.OrdinalIgnoreCase) ||
+                                        elementJson.Contains("\"type\":\"LineElementVO\"", StringComparison.OrdinalIgnoreCase);
+                    bool isFieldElement = elementJson.Contains("\"Type\":\"FieldElementVO\"", StringComparison.OrdinalIgnoreCase) ||
+                                         elementJson.Contains("\"type\":\"FieldElementVO\"", StringComparison.OrdinalIgnoreCase);
+
+                    if (isFieldElement)
+                    {
+                        var field = JsonConvert.DeserializeObject<FieldElement>(elementJson);
+                        if (field != null && !string.IsNullOrEmpty(field.Name))
+                        {
+                            fieldElements.Add(field);
+                        }
+                    }
+                    else if (isLineElement)
+                    {
+                        var childLine = JsonConvert.DeserializeObject<LineElement>(elementJson);
+                        if (childLine != null && !string.IsNullOrEmpty(childLine.Name) &&
+                            childLine.Name != lineElement.Name)
+                        {
+                            childLineElements.Add(childLine);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Erro ao desserializar elemento do layout: {LineName}", lineElement.Name);
+                    // Continuar processamento mesmo se houver erro em um elemento
+                }
+            }
+
+            return (fieldElements, childLineElements);
         }
 
         /// <summary>
@@ -183,67 +419,18 @@ namespace LayoutParserApi.Services.XmlAnalysis
             };
 
             // Verificar elementos vazios
-            var emptyElements = doc.Descendants()
-                .Where(e => !e.Elements().Any() && string.IsNullOrWhiteSpace(e.Value))
-                .ToList();
+            var emptyElements = doc.Descendants().Where(e => !e.Elements().Any() && string.IsNullOrWhiteSpace(e.Value)).ToList();
 
             if (emptyElements.Any())
-            {
                 result.Warnings.Add($"{emptyElements.Count} elementos vazios encontrados");
-            }
 
             // Verificar atributos sem valor
-            var emptyAttributes = doc.Descendants()
-                .SelectMany(e => e.Attributes())
-                .Where(a => string.IsNullOrWhiteSpace(a.Value))
-                .ToList();
+            var emptyAttributes = doc.Descendants().SelectMany(e => e.Attributes()).Where(a => string.IsNullOrWhiteSpace(a.Value)).ToList();
 
             if (emptyAttributes.Any())
-            {
                 result.Warnings.Add($"{emptyAttributes.Count} atributos vazios encontrados");
-            }
 
             return result;
         }
     }
-
-    public class XmlAnalysisResult
-    {
-        public bool Success { get; set; }
-        public List<string> Errors { get; set; } = new();
-        public List<string> Warnings { get; set; } = new();
-        public int TotalElements { get; set; }
-        public int TotalAttributes { get; set; }
-        public int Depth { get; set; }
-        public Dictionary<string, object> ValidationDetails { get; set; } = new();
-    }
-
-    public class XmlValidationResult
-    {
-        public bool IsValid { get; set; }
-        public List<string> Errors { get; set; } = new();
-        public List<string> Warnings { get; set; } = new();
-    }
-
-    public class XmlStructureAnalysis
-    {
-        public string RootElement { get; set; }
-        public int TotalElements { get; set; }
-        public int TotalAttributes { get; set; }
-        public int MaxDepth { get; set; }
-        public List<string> Namespaces { get; set; } = new();
-        public List<string> ElementTypes { get; set; } = new();
-    }
-
-    public class LayoutValidationResult
-    {
-        public List<string> Errors { get; set; } = new();
-        public List<string> Warnings { get; set; } = new();
-    }
-
-    public class BusinessRulesValidation
-    {
-        public List<string> Warnings { get; set; } = new();
-    }
 }
-

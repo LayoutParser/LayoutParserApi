@@ -87,15 +87,10 @@ namespace LayoutParserApi.Services.Parsing.Implementations
 
                 int initialValueLength = !string.IsNullOrEmpty(lineConfig.InitialValue) ? lineConfig.InitialValue.Length : 0;
 
-                // Calcular todos os FieldElements EXCETO "Sequencia" (que pertence à próxima linha)
-                var fieldsToCalculate = fieldElements
-                    .Where(f => !f.Name.Equals("Sequencia", StringComparison.OrdinalIgnoreCase))
-                    .OrderBy(f => f.Sequence)
-                    .ToList();
+                var fieldsToCalculate = fieldElements.Where(f => !f.Name.Equals("Sequencia", StringComparison.OrdinalIgnoreCase)).OrderBy(f => f.Sequence).ToList();
 
                 int fieldsLength = fieldsToCalculate.Sum(f => f.LengthField);
 
-                // Adicionar 6 chars (Sequencia da linha anterior) para todas as linhas EXCETO HEADER
                 int sequenceFromPreviousLine = lineConfig.Name?.Equals("HEADER", StringComparison.OrdinalIgnoreCase) == true ? 0 : 6;
 
                 int totalLength = initialValueLength + fieldsLength + sequenceFromPreviousLine;
@@ -277,9 +272,8 @@ namespace LayoutParserApi.Services.Parsing.Implementations
                     {
                         var field = JsonConvert.DeserializeObject<FieldElement>(elementJson);
                         if (field != null && !string.IsNullOrEmpty(field.Name))
-                        {
                             fieldElements.Add(field);
-                        }
+                        
                     }
                     catch (Exception ex)
                     {
@@ -337,5 +331,3 @@ namespace LayoutParserApi.Services.Parsing.Implementations
         }
     }
 }
-
-

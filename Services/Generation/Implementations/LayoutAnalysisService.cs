@@ -2,6 +2,7 @@ using LayoutParserApi.Models.Analysis;
 using LayoutParserApi.Models.Entities;
 using LayoutParserApi.Models.Enums;
 using LayoutParserApi.Services.Generation.Interfaces;
+
 using System.Text.RegularExpressions;
 
 namespace LayoutParserApi.Services.Generation.Implementations
@@ -39,7 +40,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
                 result.Fields = await ExtractFieldMetadataAsync(layout);
                 result.TotalFields = result.Fields.Count;
 
-                _logger.LogInformation("Análise concluída: {FieldCount} campos, {LineCount} linhas", 
+                _logger.LogInformation("Análise concluída: {FieldCount} campos, {LineCount} linhas",
                     result.TotalFields, result.TotalLines);
             }
             catch (Exception ex)
@@ -64,16 +65,10 @@ namespace LayoutParserApi.Services.Generation.Implementations
             try
             {
                 // Analisar frequência de valores
-                analysis.ValueFrequency = sampleValues
-                    .GroupBy(v => v)
-                    .ToDictionary(g => g.Key, g => g.Count());
+                analysis.ValueFrequency = sampleValues.GroupBy(v => v).ToDictionary(g => g.Key, g => g.Count());
 
                 // Identificar valores mais comuns
-                analysis.CommonValues = analysis.ValueFrequency
-                    .OrderByDescending(kv => kv.Value)
-                    .Take(10)
-                    .Select(kv => kv.Key)
-                    .ToList();
+                analysis.CommonValues = analysis.ValueFrequency.OrderByDescending(kv => kv.Value).Take(10).Select(kv => kv.Key).ToList();
 
                 // Detectar padrões
                 analysis.DetectedPattern = DetectPattern(sampleValues);
@@ -217,10 +212,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
                         if (field != null)
                             totalLength += field.LengthField;
                     }
-                    catch
-                    {
-                        // Ignorar elementos inválidos
-                    }
+                    catch { }
                 }
             }
 
@@ -230,7 +222,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
         private string InferDataType(FieldElement field)
         {
             var name = field.Name.ToLower();
-            
+
             if (name.Contains("cnpj")) return "cnpj";
             if (name.Contains("cpf")) return "cpf";
             if (name.Contains("data") || name.Contains("date")) return "date";
@@ -240,14 +232,14 @@ namespace LayoutParserApi.Services.Generation.Implementations
             if (name.Contains("email")) return "email";
             if (name.Contains("telefone") || name.Contains("phone")) return "phone";
             if (name.Contains("sequencia") || name.Contains("sequence")) return "sequence";
-            
+
             return "string";
         }
 
         private string InferPattern(FieldElement field)
         {
             var dataType = InferDataType(field);
-            
+
             return dataType switch
             {
                 "cnpj" => "##############",
@@ -291,26 +283,26 @@ namespace LayoutParserApi.Services.Generation.Implementations
                 return "unknown";
 
             var firstValue = sampleValues.First();
-            
+
             // Detectar padrões comuns
             if (IsNumericPattern(firstValue))
                 return "numeric";
-            
+
             if (IsDatePattern(firstValue))
                 return "date";
-            
+
             if (IsEmailPattern(firstValue))
                 return "email";
-            
+
             if (IsCnpjCpfPattern(firstValue))
                 return "cnpj_cpf";
-            
+
             if (IsSequentialPattern(sampleValues))
                 return "sequential";
-            
+
             if (IsFixedLengthPattern(sampleValues))
                 return "fixed_length";
-            
+
             return "text";
         }
 
@@ -321,9 +313,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
 
         private bool IsDatePattern(string value)
         {
-            return DateTime.TryParse(value, out _) || 
-                   Regex.IsMatch(value, @"^\d{8}$") || 
-                   Regex.IsMatch(value, @"^\d{4}-\d{2}-\d{2}$");
+            return DateTime.TryParse(value, out _) || Regex.IsMatch(value, @"^\d{8}$") || Regex.IsMatch(value, @"^\d{4}-\d{2}-\d{2}$");
         }
 
         private bool IsEmailPattern(string value)
@@ -340,27 +330,20 @@ namespace LayoutParserApi.Services.Generation.Implementations
         private bool IsSequentialPattern(List<string> values)
         {
             if (values.Count < 2) return false;
-            
-            var numericValues = values
-                .Where(v => int.TryParse(v, out _))
-                .Select(int.Parse)
-                .OrderBy(x => x)
-                .ToList();
-            
+
+            var numericValues = values.Where(v => int.TryParse(v, out _)).Select(int.Parse).OrderBy(x => x).ToList();
+
             if (numericValues.Count < 2) return false;
-            
-            var differences = numericValues
-                .Skip(1)
-                .Zip(numericValues, (a, b) => a - b)
-                .ToList();
-            
+
+            var differences = numericValues.Skip(1).Zip(numericValues, (a, b) => a - b).ToList();
+
             return differences.All(d => d == differences.First());
         }
 
         private bool IsFixedLengthPattern(List<string> values)
         {
             if (!values.Any()) return false;
-            
+
             var firstLength = values.First().Length;
             return values.All(v => v.Length == firstLength);
         }

@@ -1,6 +1,8 @@
 using LayoutParserApi.Models.Database;
 using LayoutParserApi.Services.Database;
+using LayoutParserApi.Services.Interfaces;
 using LayoutParserApi.Services.Transformation;
+using LayoutParserApi.Services.Transformation.Interface;
 using LayoutParserApi.Services.XmlAnalysis;
 using Microsoft.AspNetCore.Mvc;
 

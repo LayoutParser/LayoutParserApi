@@ -1,9 +1,5 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text.RegularExpressions;
-using LayoutParserApi.Services.Generation.TxtGenerator.Models;
 using LayoutParserApi.Models.Generation;
+using LayoutParserApi.Services.Generation.TxtGenerator.Models;
 
 namespace LayoutParserApi.Services.Generation.TxtGenerator.Parsers
 {
@@ -28,12 +24,8 @@ namespace LayoutParserApi.Services.Generation.TxtGenerator.Parsers
                 return;
 
             foreach (var record in fileLayout.Records)
-            {
                 foreach (var field in record.Fields)
-                {
                     ApplyFieldRules(field, excelContext);
-                }
-            }
 
             _logger.LogInformation("Regras do Excel aplicadas ao layout");
         }
@@ -49,10 +41,7 @@ namespace LayoutParserApi.Services.Generation.TxtGenerator.Parsers
             // Extrair descrição
             if (excelContext.ColumnData.ContainsKey(matchingColumn))
             {
-                var samples = excelContext.ColumnData[matchingColumn]
-                    .Where(v => !string.IsNullOrWhiteSpace(v))
-                    .Take(5)
-                    .ToList();
+                var samples = excelContext.ColumnData[matchingColumn].Where(v => !string.IsNullOrWhiteSpace(v)).Take(5).ToList();
 
                 if (samples.Any())
                 {
@@ -67,16 +56,10 @@ namespace LayoutParserApi.Services.Generation.TxtGenerator.Parsers
             // Extrair domínio (valores possíveis)
             if (excelContext.ColumnData.ContainsKey(matchingColumn))
             {
-                var distinctValues = excelContext.ColumnData[matchingColumn]
-                    .Where(v => !string.IsNullOrWhiteSpace(v))
-                    .Distinct()
-                    .Take(20)
-                    .ToList();
+                var distinctValues = excelContext.ColumnData[matchingColumn].Where(v => !string.IsNullOrWhiteSpace(v)).Distinct().Take(20).ToList();
 
                 if (distinctValues.Count <= 10) // Se poucos valores distintos, pode ser um domínio
-                {
                     field.Domain = string.Join(",", distinctValues);
-                }
             }
 
             // Detectar tipo de dado do Excel
@@ -102,15 +85,12 @@ namespace LayoutParserApi.Services.Generation.TxtGenerator.Parsers
             var fieldNameLower = fieldName.ToLowerInvariant();
 
             // Match exato
-            var exactMatch = excelContext.Headers.FirstOrDefault(h => 
-                h.Equals(fieldName, StringComparison.OrdinalIgnoreCase));
+            var exactMatch = excelContext.Headers.FirstOrDefault(h => h.Equals(fieldName, StringComparison.OrdinalIgnoreCase));
             if (exactMatch != null)
                 return exactMatch;
 
             // Match parcial
-            var partialMatch = excelContext.Headers.FirstOrDefault(h => 
-                h.ToLowerInvariant().Contains(fieldNameLower) || 
-                fieldNameLower.Contains(h.ToLowerInvariant()));
+            var partialMatch = excelContext.Headers.FirstOrDefault(h => h.ToLowerInvariant().Contains(fieldNameLower) || fieldNameLower.Contains(h.ToLowerInvariant()));
             if (partialMatch != null)
                 return partialMatch;
 
@@ -120,8 +100,7 @@ namespace LayoutParserApi.Services.Generation.TxtGenerator.Parsers
             {
                 if (fieldNameLower.Contains(keyword))
                 {
-                    var keywordMatch = excelContext.Headers.FirstOrDefault(h => 
-                        h.ToLowerInvariant().Contains(keyword));
+                    var keywordMatch = excelContext.Headers.FirstOrDefault(h => h.ToLowerInvariant().Contains(keyword));
                     if (keywordMatch != null)
                         return keywordMatch;
                 }
@@ -135,10 +114,7 @@ namespace LayoutParserApi.Services.Generation.TxtGenerator.Parsers
             if (!excelContext.ColumnData.ContainsKey(columnName))
                 return false;
 
-            var values = excelContext.ColumnData[columnName]
-                .Where(v => !string.IsNullOrWhiteSpace(v))
-                .Distinct()
-                .ToList();
+            var values = excelContext.ColumnData[columnName].Where(v => !string.IsNullOrWhiteSpace(v)).Distinct().ToList();
 
             // Se todos os valores são iguais ou há muito poucos valores distintos, pode ser fixo
             if (values.Count == 1)
@@ -151,4 +127,3 @@ namespace LayoutParserApi.Services.Generation.TxtGenerator.Parsers
         }
     }
 }
-

@@ -1,5 +1,4 @@
-﻿using LayoutParserApi.Models;
-using LayoutParserApi.Services.Interfaces;
+﻿using LayoutParserApi.Services.Interfaces;
 
 using Microsoft.AspNetCore.Mvc;
 

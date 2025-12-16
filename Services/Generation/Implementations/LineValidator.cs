@@ -1,7 +1,7 @@
 using LayoutParserApi.Models.Entities;
-using LayoutParserApi.Models.Enums;
 using LayoutParserApi.Services.Generation.Interfaces;
-using System.Text;
+
+using Newtonsoft.Json;
 
 namespace LayoutParserApi.Services.Generation.Implementations
 {
@@ -44,9 +44,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
             if (!string.IsNullOrEmpty(lineConfig.InitialValue))
             {
                 var expectedInitial = lineConfig.InitialValue;
-                var actualInitial = generatedLine.Length >= expectedInitial.Length 
-                    ? generatedLine.Substring(0, expectedInitial.Length) 
-                    : generatedLine;
+                var actualInitial = generatedLine.Length >= expectedInitial.Length ? generatedLine.Substring(0, expectedInitial.Length) : generatedLine;
 
                 if (!actualInitial.StartsWith(expectedInitial))
                 {
@@ -59,20 +57,14 @@ namespace LayoutParserApi.Services.Generation.Implementations
             var fieldValidation = ValidateFields(generatedLine, lineConfig);
             if (fieldValidation.HasErrors)
             {
-                result.Errors.AddRange(fieldValidation.Details
-                    .Where(d => d.Status == "error")
-                    .Select(d => $"{d.FieldName}: {d.ErrorMessage}"));
+                result.Errors.AddRange(fieldValidation.Details.Where(d => d.Status == "error").Select(d => $"{d.FieldName}: {d.ErrorMessage}"));
                 result.IsValid = false;
             }
 
-            result.Warnings.AddRange(fieldValidation.Details
-                .Where(d => d.Status == "warning")
-                .Select(d => $"{d.FieldName}: {d.ErrorMessage}"));
+            result.Warnings.AddRange(fieldValidation.Details.Where(d => d.Status == "warning").Select(d => $"{d.FieldName}: {d.ErrorMessage}"));
 
             if (result.Errors.Count == 0)
-            {
                 result.IsValid = true;
-            }
 
             return result;
         }
@@ -83,9 +75,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
             var parsedFields = new List<FieldValidationDetail>();
 
             if (lineConfig?.Elements == null || string.IsNullOrEmpty(generatedLine))
-            {
                 return result;
-            }
 
             // Extrair campos do layout
             var fields = new List<FieldElement>();
@@ -96,19 +86,15 @@ namespace LayoutParserApi.Services.Generation.Implementations
 
             // Calcular posição inicial (considerando InitialValue e Sequencia)
             int currentPosition = 0;
-            
+
             // HEADER não tem Sequencia no início
             bool isHeader = lineConfig.Name?.Equals("HEADER", StringComparison.OrdinalIgnoreCase) == true;
             if (!isHeader)
-            {
                 currentPosition = 6; // Sequencia da linha anterior (6 caracteres)
-            }
 
             // Adicionar InitialValue se existir
             if (!string.IsNullOrEmpty(lineConfig.InitialValue))
-            {
                 currentPosition += lineConfig.InitialValue.Length;
-            }
 
             foreach (var field in fields)
             {
@@ -125,9 +111,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
 
                 // Extrair valor do campo
                 if (currentPosition + field.LengthField <= generatedLine.Length)
-                {
                     fieldDetail.Value = generatedLine.Substring(currentPosition, field.LengthField);
-                }
                 else
                 {
                     fieldDetail.Value = "";
@@ -176,18 +160,12 @@ namespace LayoutParserApi.Services.Generation.Implementations
             {
                 try
                 {
-                    var field = Newtonsoft.Json.JsonConvert.DeserializeObject<FieldElement>(elementJson);
+                    var field = JsonConvert.DeserializeObject<FieldElement>(elementJson);
                     if (field != null)
-                    {
                         fields.Add(field);
-                    }
                 }
-                catch
-                {
-                    // Ignorar elementos que não são FieldElement
-                }
+                catch { }
             }
         }
     }
 }
-

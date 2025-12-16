@@ -91,10 +91,8 @@ namespace LayoutParserApi.Services.Logging
                 var response = await _httpClient.PostAsync(url, content);
 
                 if (!response.IsSuccessStatusCode)
-                {
                     // Fallback: salvar em arquivo local se o ElasticSearch falhar
                     await SaveToFallbackFile(indexName, json);
-                }
             }
             catch (Exception ex)
             {

@@ -1,7 +1,6 @@
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Logging;
 using LayoutParserApi.Services.Learning;
-using System.Threading.Tasks;
+
+using Microsoft.AspNetCore.Mvc;
 
 namespace LayoutParserApi.Controllers
 {

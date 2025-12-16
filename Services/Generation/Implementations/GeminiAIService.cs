@@ -1,9 +1,11 @@
-using System.Linq;
-using System.Text;
-using System.Text.Json;
-using System.Xml.Linq;
-using Newtonsoft.Json;
+using LayoutParserApi.Models;
 using LayoutParserApi.Models.Enums;
+using LayoutParserApi.Models.Generation;
+
+using Newtonsoft.Json;
+
+using System.Text;
+using System.Xml.Linq;
 
 namespace LayoutParserApi.Services.Generation.Implementations
 {
@@ -39,9 +41,8 @@ namespace LayoutParserApi.Services.Generation.Implementations
             _modelName = configuration["Gemini:Model"] ?? "gemini-1.5-flash";
             _examplesPath = configuration["Examples:Path"] ?? @"C:\inetpub\wwwroot\layoutparser\Exemplo";
             _fieldGenerators = fieldGenerators?.ToList() ?? new List<Interfaces.IFieldGenerator>();
-            
-            _logger.LogInformation("GeminiAIService configurado - Model: {Model}, RAG: {RAGStatus}, ExamplesPath: {Path}, FieldGenerators: {Count}", 
-                _modelName, _ragService != null ? "Ativo" : "Inativo", _examplesPath, _fieldGenerators.Count);
+
+            _logger.LogInformation("GeminiAIService configurado - Model: {Model}, RAG: {RAGStatus}, ExamplesPath: {Path}, FieldGenerators: {Count}", _modelName, _ragService != null ? "Ativo" : "Inativo", _examplesPath, _fieldGenerators.Count);
         }
 
         /// <summary>
@@ -59,49 +60,39 @@ namespace LayoutParserApi.Services.Generation.Implementations
             try
             {
                 if (string.IsNullOrEmpty(_apiKey))
-                {
                     throw new Exception("Chave da API do Gemini não configurada");
-                }
 
                 // Buscar exemplos do diretório baseado no nome do layout
                 var directoryExamples = await LoadExamplesFromDirectory(layoutName);
-                
+
                 // Combinar exemplos do diretório com exemplos fornecidos
                 var allExamples = new List<string>();
                 if (directoryExamples.Any())
                 {
                     allExamples.AddRange(directoryExamples);
-                    _logger.LogInformation("Carregados {Count} exemplos do diretório para layout {LayoutName}", 
-                        directoryExamples.Count, layoutName);
+                    _logger.LogInformation("Carregados {Count} exemplos do diretório para layout {LayoutName}", directoryExamples.Count, layoutName);
                 }
                 if (examples != null && examples.Any())
-                {
                     allExamples.AddRange(examples);
-                }
 
                 // Detectar tipo de layout
                 var detectedLayoutType = _layoutTypeDetector.DetectLayoutType(layoutXml);
                 if (string.IsNullOrEmpty(detectedLayoutType) || detectedLayoutType == "Unknown")
-                {
                     detectedLayoutType = _layoutTypeDetector.DetectLayoutTypeByName(layoutName);
-                }
+
                 _logger.LogInformation("Tipo de layout detectado: {LayoutType} para layout {LayoutName}", detectedLayoutType, layoutName);
 
                 // Identificar campos que podem ser gerados por geradores específicos
                 var fieldMapping = IdentifyFieldGenerators(layoutXml, detectedLayoutType);
-                
+
                 // Para layouts TextPositional (mqseries, idoc), gerar incrementalmente linha por linha
                 if (detectedLayoutType == "TextPositional")
-                {
-                    return await GenerateIncremental(layoutXml, allExamples, excelRules, recordCount,
-                        layoutName, layoutDescription, excelContext, fieldMapping, detectedLayoutType);
-                }
-                
+                    return await GenerateIncremental(layoutXml, allExamples, excelRules, recordCount, layoutName, layoutDescription, excelContext, fieldMapping, detectedLayoutType);
+
+
                 // Para outros tipos (XML, etc.), usar geração tradicional
-                var prompt = BuildPromptWithContext(layoutXml, allExamples, excelRules, recordCount, 
-                    layoutName, layoutDescription, excelContext, fieldMapping, detectedLayoutType);
-                _logger.LogInformation("Enviando prompt para Gemini (tamanho: {Size} caracteres). Campos pré-gerados: {PreGeneratedCount}, Tipo: {LayoutType}", 
-                    prompt.Length, fieldMapping.Count, detectedLayoutType);
+                var prompt = BuildPromptWithContext(layoutXml, allExamples, excelRules, recordCount, layoutName, layoutDescription, excelContext, fieldMapping, detectedLayoutType);
+                _logger.LogInformation("Enviando prompt para Gemini (tamanho: {Size} caracteres). Campos pré-gerados: {PreGeneratedCount}, Tipo: {LayoutType}", prompt.Length, fieldMapping.Count, detectedLayoutType);
 
                 // Chamar Gemini API
                 var response = await CallGeminiAPI(prompt);
@@ -121,27 +112,27 @@ namespace LayoutParserApi.Services.Generation.Implementations
         private Dictionary<string, (string fieldName, int start, int length, string alignment, string generatedValue)> IdentifyFieldGenerators(string layoutXml, string layoutType)
         {
             var fieldMapping = new Dictionary<string, (string, int, int, string, string)>();
-            
+
             try
             {
                 var doc = XDocument.Parse(layoutXml);
                 var elements = doc.Root?.Element("Elements")?.Elements("Element") ?? Enumerable.Empty<XElement>();
-                
+
                 foreach (var lineElement in elements)
                 {
                     var lineName = lineElement.Element("Name")?.Value ?? "Unknown";
                     var fields = lineElement.Element("Elements")?.Elements("Element") ?? Enumerable.Empty<XElement>();
-                    
+
                     foreach (var fieldElement in fields)
                     {
                         var fieldName = fieldElement.Element("Name")?.Value;
                         if (string.IsNullOrWhiteSpace(fieldName) || fieldName.Equals("Sequencia", StringComparison.OrdinalIgnoreCase))
                             continue;
-                        
+
                         var startStr = fieldElement.Element("StartValue")?.Value;
                         var lengthStr = fieldElement.Element("LengthField")?.Value;
                         var alignment = fieldElement.Element("AlignmentType")?.Value ?? "Left";
-                        
+
                         if (int.TryParse(startStr, out var start) && int.TryParse(lengthStr, out var length))
                         {
                             // Verificar se algum gerador pode gerar este campo
@@ -155,7 +146,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
                                         ["RecordIndex"] = 0,
                                         ["InitialValue"] = lineElement.Element("InitialValue")?.Value ?? ""
                                     };
-                                    
+
                                     var generatedValue = generator.Generate(fieldName, length, alignment, 0, context);
                                     var key = $"{lineName}.{fieldName}";
                                     fieldMapping[key] = (fieldName, start, length, alignment, generatedValue);
@@ -171,7 +162,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
             {
                 _logger.LogWarning(ex, "Erro ao identificar geradores de campos");
             }
-            
+
             return fieldMapping;
         }
 
@@ -194,20 +185,19 @@ namespace LayoutParserApi.Services.Generation.Implementations
             // ===== SEÇÃO 1: CONTEXTO E IDENTIFICAÇÃO =====
             sb.AppendLine("=== TAREFA DE GERAÇÃO DE DADOS SINTÉTICOS ===");
             sb.AppendLine();
-            
+
             if (!string.IsNullOrEmpty(layoutName))
             {
                 sb.AppendLine($"LAYOUT: {layoutName}");
                 if (!string.IsNullOrEmpty(layoutDescription))
-                {
                     sb.AppendLine($"DESCRIÇÃO: {layoutDescription}");
-                }
+
                 sb.AppendLine();
             }
-            
+
             sb.AppendLine($"TIPO DE LAYOUT: {layoutType}");
             sb.AppendLine();
-            
+
             // Instruções específicas por tipo de layout
             if (layoutType == "Xml")
             {
@@ -225,7 +215,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
                 sb.AppendLine("IMPORTANTE: Mantenha a estrutura de segmentos IDOC com prefixos corretos.");
             }
             sb.AppendLine();
-            
+
             sb.AppendLine($"OBJETIVO: Gerar exatamente {recordCount} registro(s) de dados sintéticos que seguem fielmente a estrutura do layout XML fornecido.");
             sb.AppendLine();
 
@@ -237,7 +227,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
                 sb.AppendLine("IMPORTANTE: Os seguintes campos já foram gerados automaticamente por geradores específicos.");
                 sb.AppendLine("MANTENHA estes valores exatamente como estão, apenas ajuste a posição se necessário.");
                 sb.AppendLine();
-                
+
                 foreach (var field in fieldMapping.OrderBy(f => f.Value.start))
                 {
                     var (fieldName, start, length, alignment, generatedValue) = field.Value;
@@ -248,7 +238,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
                     sb.AppendLine($"  Valor gerado: '{generatedValue}'");
                     sb.AppendLine();
                 }
-                
+
                 sb.AppendLine("Estes campos devem ser mantidos EXATAMENTE como mostrado acima.");
                 sb.AppendLine("A IA deve gerar APENAS os campos que NÃO estão nesta lista.");
                 sb.AppendLine();
@@ -257,7 +247,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
             // ===== SEÇÃO 3: ESTRUTURA DETALHADA DO LAYOUT =====
             sb.AppendLine("=== ESTRUTURA DO LAYOUT (CAMPO A CAMPO) ===");
             sb.AppendLine();
-            
+
             var layoutDetails = ExtractDetailedLayoutInfo(layoutXml, fieldMapping);
             sb.AppendLine(layoutDetails);
             sb.AppendLine();
@@ -274,38 +264,34 @@ namespace LayoutParserApi.Services.Generation.Implementations
                 sb.AppendLine("4. O tamanho exato de cada linha (600 caracteres)");
                 sb.AppendLine("5. O preenchimento com espaços quando necessário");
                 sb.AppendLine();
-                
+
                 // Analisar todos os exemplos para extrair padrões
                 var allLines = examples.SelectMany(e => e.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
                                       .Where(l => !string.IsNullOrWhiteSpace(l))
                                       .ToList();
-                
+
                 // Mostrar exemplos completos (até 3 arquivos completos, ou 10 linhas por arquivo)
                 int exampleCount = 0;
                 foreach (var example in examples.Take(3))
                 {
-                    var exampleLines = example.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
-                                             .Where(l => !string.IsNullOrWhiteSpace(l))
-                                             .ToList();
-                    
+                    var exampleLines = example.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).Where(l => !string.IsNullOrWhiteSpace(l)).ToList();
+
                     if (exampleLines.Any())
                     {
                         exampleCount++;
                         sb.AppendLine($"--- EXEMPLO REAL {exampleCount} (COMPLETO) ---");
                         // Mostrar todas as linhas do exemplo (até 15 linhas para não exceder muito o prompt)
                         foreach (var line in exampleLines.Take(15))
-                        {
                             // Mostrar linha completa, não truncada
                             sb.AppendLine(line);
-                        }
+
                         if (exampleLines.Count > 15)
-                        {
                             sb.AppendLine($"... ({exampleLines.Count - 15} linhas adicionais neste exemplo)");
-                        }
+
                         sb.AppendLine();
                     }
                 }
-                
+
                 // Análise de padrões dos exemplos
                 if (allLines.Any())
                 {
@@ -313,7 +299,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
                     var avgLength = (int)allLines.Average(l => l.Length);
                     var minLength = allLines.Min(l => l.Length);
                     var maxLength = allLines.Max(l => l.Length);
-                    
+
                     sb.AppendLine($"Total de linhas analisadas: {allLines.Count}");
                     sb.AppendLine($"Tamanho médio: {avgLength} caracteres");
                     sb.AppendLine($"Tamanho mínimo: {minLength} caracteres");
@@ -321,7 +307,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
                     sb.AppendLine();
                     sb.AppendLine("CRÍTICO: TODAS as linhas geradas devem ter EXATAMENTE 600 caracteres.");
                     sb.AppendLine();
-                    
+
                     // Extrair padrões de valores comuns (primeiros caracteres, últimos caracteres, etc)
                     var firstChars = allLines.Select(l => l.Length > 0 ? l.Substring(0, Math.Min(10, l.Length)) : "").Distinct().Take(10);
                     sb.AppendLine($"Padrões iniciais comuns: {string.Join(", ", firstChars)}");
@@ -336,36 +322,32 @@ namespace LayoutParserApi.Services.Generation.Implementations
                 sb.AppendLine();
                 sb.AppendLine("IMPORTANTE: Estes são dados REAIS do Excel. Use-os diretamente ou como base para variações realistas.");
                 sb.AppendLine();
-                
+
                 // Mostrar mais colunas e mais exemplos por coluna
                 foreach (var header in excelContext.Headers.Take(20))
                 {
                     if (excelContext.ColumnData.ContainsKey(header) && excelContext.ColumnData[header].Any())
                     {
-                        var allValues = excelContext.ColumnData[header]
-                            .Where(v => !string.IsNullOrWhiteSpace(v))
-                            .Distinct()
-                            .ToList();
-                        
+                        var allValues = excelContext.ColumnData[header].Where(v => !string.IsNullOrWhiteSpace(v)).Distinct().ToList();
+
                         if (allValues.Any())
                         {
                             // Mostrar mais exemplos (até 10)
                             var samples = allValues.Take(10).ToList();
-                            var samplesStr = string.Join(", ", samples.Select(s => 
+                            var samplesStr = string.Join(", ", samples.Select(s =>
                             {
                                 // Mostrar valores completos se forem curtos, truncar se forem longos
                                 if (s.Length <= 50) return s;
                                 return s.Substring(0, 47) + "...";
                             }));
-                            
+
                             sb.AppendLine($"{header} ({allValues.Count} valores únicos):");
                             sb.AppendLine($"  Exemplos: {samplesStr}");
-                            
+
                             // Detectar tipo de dado
                             if (excelContext.ColumnTypes.ContainsKey(header))
-                            {
                                 sb.AppendLine($"  Tipo detectado: {excelContext.ColumnTypes[header]}");
-                            }
+
                             sb.AppendLine();
                         }
                     }
@@ -378,35 +360,34 @@ namespace LayoutParserApi.Services.Generation.Implementations
             {
                 sb.AppendLine("=== REGRAS ESPECÍFICAS DO EXCEL ===");
                 foreach (var rule in excelRules)
-                {
                     sb.AppendLine($"- {rule.Key}: {rule.Value}");
-                }
+
                 sb.AppendLine();
             }
 
             // ===== SEÇÃO 6: INSTRUÇÕES CRÍTICAS E METODOLOGIA =====
             sb.AppendLine("=== METODOLOGIA DE GERAÇÃO (SIGA RIGOROSAMENTE) ===");
             sb.AppendLine();
-            
+
             sb.AppendLine("1. TAMANHO DE LINHA (CRÍTICO):");
             sb.AppendLine("   - Cada linha DEVE ter EXATAMENTE 600 caracteres");
             sb.AppendLine("   - NUNCA mais, NUNCA menos");
             sb.AppendLine("   - Se exceder: remova espaços extras ou trunque campos não críticos");
             sb.AppendLine("   - Se faltar: preencha com espaços à direita (alinhamento Left) ou esquerda (Right)");
             sb.AppendLine();
-            
+
             sb.AppendLine("2. COPIE OS EXEMPLOS REAIS:");
             sb.AppendLine("   - Use os EXEMPLOS REAIS acima como modelo exato");
             sb.AppendLine("   - Mantenha o mesmo formato, estrutura e padrões");
             sb.AppendLine("   - Varie apenas os valores, mantendo o formato idêntico");
             sb.AppendLine();
-            
+
             sb.AppendLine("3. SEQUÊNCIA E ORDEM:");
             sb.AppendLine("   - Primeira linha: HEADER (se existir no layout)");
             sb.AppendLine("   - Linhas seguintes: Sequencia (6 chars) + campos conforme layout");
             sb.AppendLine("   - Siga a ordem exata dos campos conforme especificado");
             sb.AppendLine();
-            
+
             sb.AppendLine("4. FORMATAÇÃO DE CAMPOS:");
             sb.AppendLine("   - Campos numéricos: apenas dígitos, sem espaços ou caracteres especiais");
             sb.AppendLine("   - CNPJ: 14 dígitos consecutivos");
@@ -416,20 +397,20 @@ namespace LayoutParserApi.Services.Generation.Implementations
             sb.AppendLine("   - Texto: preencher completamente até o tamanho do campo");
             sb.AppendLine("   - Alinhamento: Left (esquerda), Right (direita), Center (centro) - respeitar exatamente");
             sb.AppendLine();
-            
+
             sb.AppendLine("5. DADOS REALISTAS:");
             sb.AppendLine("   - PREFIRA valores do Excel quando disponível");
             sb.AppendLine("   - Use variações dos exemplos reais (não invente valores completamente diferentes)");
             sb.AppendLine("   - Mantenha consistência: se um exemplo mostra CNPJ começando com 12, use CNPJs similares");
             sb.AppendLine("   - Campos obrigatórios: NUNCA deixar vazios");
             sb.AppendLine();
-            
+
             sb.AppendLine("6. VALIDAÇÃO:");
             sb.AppendLine("   - Cada linha será validada campo a campo");
             sb.AppendLine("   - Garanta que TODOS os campos estejam corretos antes de finalizar");
             sb.AppendLine("   - Verifique tamanhos, alinhamentos e formatos");
             sb.AppendLine();
-            
+
             sb.AppendLine("=== RESPOSTA ESPERADA ===");
             sb.AppendLine($"Gere exatamente {recordCount} linha(s) seguindo TODAS as regras acima.");
             sb.AppendLine("Retorne APENAS as linhas de dados, sem explicações, comentários ou cabeçalhos.");
@@ -445,39 +426,37 @@ namespace LayoutParserApi.Services.Generation.Implementations
         private async Task<List<string>> LoadExamplesFromDirectory(string layoutName)
         {
             var examples = new List<string>();
-            
+
             if (string.IsNullOrEmpty(layoutName) || !Directory.Exists(_examplesPath))
-            {
                 return examples;
-            }
 
             try
             {
                 var allFiles = new List<string>();
-                
+
                 // Buscar diretórios que contenham o nome do layout
                 var matchingDirs = Directory.GetDirectories(_examplesPath, $"*{layoutName}*", SearchOption.TopDirectoryOnly);
-                
+
                 foreach (var dir in matchingDirs)
                 {
                     // Buscar arquivos .txt e .mq_series no diretório e subdiretórios
                     var txtFiles = Directory.GetFiles(dir, "*.txt", SearchOption.AllDirectories);
                     var mqSeriesFiles = Directory.GetFiles(dir, "*.mq_series", SearchOption.AllDirectories);
-                    
+
                     allFiles.AddRange(txtFiles);
                     allFiles.AddRange(mqSeriesFiles);
                 }
-                
+
                 // Também buscar arquivos diretamente no diretório raiz que contenham o nome do layout
                 var rootTxtFiles = Directory.GetFiles(_examplesPath, $"*{layoutName}*.txt", SearchOption.TopDirectoryOnly);
                 var rootMqSeriesFiles = Directory.GetFiles(_examplesPath, $"*{layoutName}*.mq_series", SearchOption.TopDirectoryOnly);
-                
+
                 allFiles.AddRange(rootTxtFiles);
                 allFiles.AddRange(rootMqSeriesFiles);
-                
+
                 // Remover duplicatas e ordenar
                 allFiles = allFiles.Distinct().OrderBy(f => f).ToList();
-                
+
                 // Aumentar para 10 arquivos para ter mais exemplos completos
                 foreach (var file in allFiles.Take(10))
                 {
@@ -495,15 +474,14 @@ namespace LayoutParserApi.Services.Generation.Implementations
                         _logger.LogWarning(ex, "Erro ao ler arquivo de exemplo: {File}", file);
                     }
                 }
-                
-                _logger.LogInformation("Carregados {Count} exemplos do diretório para layout {LayoutName} (arquivos encontrados: {TotalFiles})", 
-                    examples.Count, layoutName, allFiles.Count);
+
+                _logger.LogInformation("Carregados {Count} exemplos do diretório para layout {LayoutName} (arquivos encontrados: {TotalFiles})", examples.Count, layoutName, allFiles.Count);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Erro ao carregar exemplos do diretório {Path}", _examplesPath);
             }
-            
+
             return examples;
         }
 
@@ -516,60 +494,55 @@ namespace LayoutParserApi.Services.Generation.Implementations
             {
                 var sb = new StringBuilder();
                 var doc = XDocument.Parse(layoutXml);
-                
+
                 // Extrair informações do layout raiz
                 var layout = doc.Root;
                 var layoutTypeTxt = layout.Element("LayoutType").Value ?? "Unknown";
                 var limitOfChars = layout?.Element("LimitOfCaracters")?.Value ?? "600";
-                
+
                 sb.AppendLine($"Tipo de Layout: {layoutTypeTxt}");
                 sb.AppendLine($"Limite de Caracteres por Linha: {limitOfChars}");
                 sb.AppendLine();
-                
+
                 // Processar cada elemento (linha)
                 var elements = layout?.Element("Elements")?.Elements("Element") ?? Enumerable.Empty<XElement>();
-                
+
                 foreach (var lineElement in elements)
                 {
                     var lineName = lineElement.Element("Name")?.Value ?? "Unknown";
                     var initialValue = lineElement.Element("InitialValue")?.Value ?? "";
                     var maxOccurrence = lineElement.Element("MaximumOccurrence")?.Value ?? "1";
-                    
+
                     sb.AppendLine($"--- LINHA: {lineName} ---");
                     if (!string.IsNullOrEmpty(initialValue))
-                    {
                         sb.AppendLine($"Valor Inicial: '{initialValue}' ({initialValue.Length} chars)");
-                    }
+
                     sb.AppendLine($"Ocorrências Máximas: {maxOccurrence}");
                     sb.AppendLine();
-                    
+
                     // Processar campos da linha
                     var fields = lineElement.Element("Elements")?.Elements("Element") ?? Enumerable.Empty<XElement>();
                     var fieldList = new List<(string name, int sequence, int start, int length, string alignment, bool required)>();
-                    
+
                     foreach (var fieldElement in fields)
                     {
                         var fieldName = fieldElement.Element("Name")?.Value;
                         if (fieldName == null || fieldName.Equals("Sequencia", StringComparison.OrdinalIgnoreCase))
                             continue;
-                            
+
                         var sequenceStr = fieldElement.Element("Sequence")?.Value;
                         var startStr = fieldElement.Element("StartValue")?.Value;
                         var lengthStr = fieldElement.Element("LengthField")?.Value;
                         var alignment = fieldElement.Element("AlignmentType")?.Value ?? "Left";
                         var requiredStr = fieldElement.Element("IsRequired")?.Value ?? "false";
-                        
-                        if (int.TryParse(sequenceStr, out var sequence) &&
-                            int.TryParse(startStr, out var start) &&
-                            int.TryParse(lengthStr, out var length))
-                        {
+
+                        if (int.TryParse(sequenceStr, out var sequence) && int.TryParse(startStr, out var start) && int.TryParse(lengthStr, out var length))
                             fieldList.Add((fieldName, sequence, start, length, alignment, requiredStr == "true"));
-                        }
                     }
-                    
+
                     // Ordenar campos por sequência
                     fieldList = fieldList.OrderBy(f => f.sequence).ToList();
-                    
+
                     // Mostrar campos ordenados de forma mais concisa
                     sb.AppendLine("CAMPOS:");
                     foreach (var field in fieldList.Take(30)) // Limitar a 30 campos por linha para reduzir tamanho
@@ -577,16 +550,16 @@ namespace LayoutParserApi.Services.Generation.Implementations
                         var fieldKey = $"{lineName}.{field.name}";
                         var isPreGenerated = fieldMapping != null && fieldMapping.ContainsKey(fieldKey);
                         var preGenMarker = isPreGenerated ? " [PRÉ-GERADO - NÃO ALTERAR]" : "";
-                        
+
                         sb.AppendLine($"  [{field.sequence}] {field.name}: pos {field.start + 1}-{field.start + field.length}, tam {field.length}, alinh {field.alignment}, obrigatório: {(field.required ? "SIM" : "NÃO")}{preGenMarker}");
                     }
+
                     if (fieldList.Count > 30)
-                    {
                         sb.AppendLine($"  ... e mais {fieldList.Count - 30} campos");
-                    }
+
                     sb.AppendLine();
                 }
-                
+
                 return sb.ToString();
             }
             catch (Exception ex)
@@ -628,9 +601,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
             var json = System.Text.Json.JsonSerializer.Serialize(request);
             var content = new StringContent(json, Encoding.UTF8, "application/json");
 
-            var response = await _httpClient.PostAsync(
-                $"https://generativelanguage.googleapis.com/v1beta/models/{_modelName}:generateContent?key={_apiKey}",
-                content);
+            var response = await _httpClient.PostAsync($"https://generativelanguage.googleapis.com/v1beta/models/{_modelName}:generateContent?key={_apiKey}", content);
 
             if (!response.IsSuccessStatusCode)
             {
@@ -639,11 +610,9 @@ namespace LayoutParserApi.Services.Generation.Implementations
             }
 
             var result = await response.Content.ReadFromJsonAsync<GeminiResponse>();
-            
+
             if (result?.candidates?.FirstOrDefault()?.content?.parts?.FirstOrDefault()?.text == null)
-            {
                 throw new Exception("Resposta inválida da API Gemini");
-            }
 
             return result.candidates.First().content.parts.First().text;
         }
@@ -658,7 +627,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
             int recordCount,
             string layoutName,
             string layoutDescription,
-            Models.Generation.ExcelDataContext excelContext,
+            ExcelDataContext excelContext,
             Dictionary<string, (string fieldName, int start, int length, string alignment, string generatedValue)> fieldMapping,
             string layoutType)
         {
@@ -666,15 +635,13 @@ namespace LayoutParserApi.Services.Generation.Implementations
             var doc = XDocument.Parse(layoutXml);
             var layout = doc.Root;
             var limitOfChars = int.TryParse(layout?.Element("LimitOfCaracters")?.Value, out var limit) ? limit : 600;
-            
+
             // Extrair linhas do layout em ordem
             var lineElements = layout?.Element("Elements")?.Elements("Element")
                 .Where(e => e.Attribute(XName.Get("type", "http://www.w3.org/2001/XMLSchema-instance"))?.Value == "LineElementVO")
-                .OrderBy(e => int.TryParse(e.Element("Sequence")?.Value, out var seq) ? seq : int.MaxValue)
-                .ToList() ?? new List<XElement>();
+                .OrderBy(e => int.TryParse(e.Element("Sequence")?.Value, out var seq) ? seq : int.MaxValue).ToList() ?? new List<XElement>();
 
-            _logger.LogInformation("Iniciando geração incremental: {LineCount} linhas para {RecordCount} registro(s)", 
-                lineElements.Count, recordCount);
+            _logger.LogInformation("Iniciando geração incremental: {LineCount} linhas para {RecordCount} registro(s)", lineElements.Count, recordCount);
 
             // Gerar cada registro
             for (int recordIndex = 0; recordIndex < recordCount; recordIndex++)
@@ -686,12 +653,12 @@ namespace LayoutParserApi.Services.Generation.Implementations
                 {
                     var lineName = lineElementXml.Element("Name")?.Value ?? "Unknown";
                     var maxOccurrence = int.TryParse(lineElementXml.Element("MaximumOccurrence")?.Value, out var max) ? max : 1;
-                    
+
                     // Gerar ocorrências da linha (se necessário)
                     for (int occurrence = 0; occurrence < maxOccurrence; occurrence++)
                     {
                         var lineGenerated = await GenerateSingleLineIncremental(
-                            lineElementXml, 
+                            lineElementXml,
                             lineName,
                             recordIndex,
                             occurrence,
@@ -710,7 +677,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
                         while (!validation.IsValid && retryCount < maxRetries)
                         {
                             retryCount++;
-                            _logger.LogWarning("Linha {LineName} inválida (tentativa {Retry}/{MaxRetries}): {Errors}", 
+                            _logger.LogWarning("Linha {LineName} inválida (tentativa {Retry}/{MaxRetries}): {Errors}",
                                 lineName, retryCount, maxRetries, string.Join("; ", validation.Errors));
 
                             // Gerar correção com feedback dos erros
@@ -732,13 +699,11 @@ namespace LayoutParserApi.Services.Generation.Implementations
                         if (validation.IsValid)
                         {
                             recordLines.Add(lineGenerated);
-                            _logger.LogDebug("Linha {LineName} gerada e validada com sucesso ({Length} chars)", 
-                                lineName, lineGenerated.Length);
+                            _logger.LogDebug("Linha {LineName} gerada e validada com sucesso ({Length} chars)", lineName, lineGenerated.Length);
                         }
                         else
                         {
-                            _logger.LogError("Linha {LineName} ainda inválida após {MaxRetries} tentativas. Erros: {Errors}", 
-                                lineName, maxRetries, string.Join("; ", validation.Errors));
+                            _logger.LogError("Linha {LineName} ainda inválida após {MaxRetries} tentativas. Erros: {Errors}", lineName, maxRetries, string.Join("; ", validation.Errors));
                             // Adicionar mesmo assim (com normalização) para não bloquear
                             recordLines.Add(NormalizeLineLength(lineGenerated, limitOfChars));
                         }
@@ -783,9 +748,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
             var response = await CallGeminiAPI(prompt);
 
             // Normalizar tamanho
-            var lines = response.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
-                               .Where(l => !string.IsNullOrWhiteSpace(l))
-                               .ToList();
+            var lines = response.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).Where(l => !string.IsNullOrWhiteSpace(l)).ToList();
 
             var generatedLine = lines.FirstOrDefault() ?? "";
             return NormalizeLineLength(generatedLine, limitOfChars);
@@ -807,7 +770,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
             List<string> validationErrors)
         {
             var sb = new StringBuilder();
-            
+
             sb.AppendLine("=== GERAÇÃO INCREMENTAL DE LINHA ===");
             sb.AppendLine();
             sb.AppendLine($"LINHA: {lineName}");
@@ -824,9 +787,8 @@ namespace LayoutParserApi.Services.Generation.Implementations
                 sb.AppendLine($"Tentativa anterior: '{previousAttempt}' ({previousAttempt.Length} chars)");
                 sb.AppendLine("ERROS ENCONTRADOS:");
                 foreach (var error in validationErrors)
-                {
                     sb.AppendLine($"  - {error}");
-                }
+
                 sb.AppendLine();
                 sb.AppendLine("CORRIJA os erros acima e gere uma nova linha válida.");
                 sb.AppendLine();
@@ -843,13 +805,12 @@ namespace LayoutParserApi.Services.Generation.Implementations
             // Campos da linha
             var fields = lineElementXml.Element("Elements")?.Elements("Element") ?? Enumerable.Empty<XElement>();
             var fieldList = new List<(string name, int sequence, int start, int length, string alignment, bool required)>();
-            
+
             int currentPos = string.IsNullOrEmpty(initialValue) ? 0 : initialValue.Length;
             bool isHeader = lineName.Equals("HEADER", StringComparison.OrdinalIgnoreCase);
             if (!isHeader)
-            {
                 currentPos = 6; // Sequencia da linha anterior
-            }
+
 
             foreach (var fieldElement in fields)
             {
@@ -864,9 +825,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
 
                 if (int.TryParse(lengthStr, out var length))
                 {
-                    fieldList.Add((fieldName, 
-                        int.TryParse(fieldElement.Element("Sequence")?.Value, out var seq) ? seq : 0,
-                        currentPos, length, alignment, requiredStr == "true"));
+                    fieldList.Add((fieldName, int.TryParse(fieldElement.Element("Sequence")?.Value, out var seq) ? seq : 0, currentPos, length, alignment, requiredStr == "true"));
                     currentPos += length;
                 }
             }
@@ -879,13 +838,13 @@ namespace LayoutParserApi.Services.Generation.Implementations
                 var fieldKey = $"{lineName}.{field.name}";
                 var isPreGenerated = fieldMapping.ContainsKey(fieldKey);
                 var preGenMarker = isPreGenerated ? " [PRÉ-GERADO]" : "";
-                
+
                 sb.AppendLine($"  [{field.sequence}] {field.name}:");
                 sb.AppendLine($"    Posição: {field.start + 1}-{field.start + field.length}");
                 sb.AppendLine($"    Tamanho: {field.length} caracteres");
                 sb.AppendLine($"    Alinhamento: {field.alignment}");
                 sb.AppendLine($"    Obrigatório: {(field.required ? "SIM" : "NÃO")}{preGenMarker}");
-                
+
                 if (isPreGenerated)
                 {
                     var (_, _, _, _, generatedValue) = fieldMapping[fieldKey];
@@ -902,15 +861,11 @@ namespace LayoutParserApi.Services.Generation.Implementations
                 {
                     var exampleLines = example.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
                     // Procurar linhas que começam com o InitialValue ou têm o mesmo padrão
-                    var relevantLines = exampleLines.Where(l => 
-                        (!string.IsNullOrEmpty(initialValue) && l.StartsWith(initialValue)) ||
-                        (string.IsNullOrEmpty(initialValue) && l.Length == limitOfChars))
-                        .Take(2);
-                    
+                    var relevantLines = exampleLines.Where(l => (!string.IsNullOrEmpty(initialValue) && l.StartsWith(initialValue)) || (string.IsNullOrEmpty(initialValue) && l.Length == limitOfChars)).Take(2);
+
                     foreach (var line in relevantLines)
-                    {
                         sb.AppendLine($"Exemplo: {line}");
-                    }
+
                 }
                 sb.AppendLine();
             }
@@ -918,10 +873,10 @@ namespace LayoutParserApi.Services.Generation.Implementations
             sb.AppendLine("=== INSTRUÇÕES CRÍTICAS ===");
             sb.AppendLine($"Gere APENAS UMA linha com EXATAMENTE {limitOfChars} caracteres.");
             sb.AppendLine("A linha deve conter:");
+
             if (!string.IsNullOrEmpty(initialValue))
-            {
                 sb.AppendLine($"  1. '{initialValue}' no início");
-            }
+
             sb.AppendLine("  2. Todos os campos na ordem e posição corretas");
             sb.AppendLine("  3. Preenchimento com espaços até completar 600 caracteres");
             sb.AppendLine();
@@ -977,7 +932,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
                     Sequence = int.TryParse(fieldXml.Element("Sequence")?.Value, out var seq) ? seq : 0,
                     StartValue = int.TryParse(fieldXml.Element("StartValue")?.Value, out var start) ? start : 0,
                     LengthField = int.TryParse(fieldXml.Element("LengthField")?.Value, out var length) ? length : 0,
-                    AlignmentType = Enum.TryParse<AlignmentType>(fieldXml.Element("AlignmentType")?.Value, out var align) ? align : AlignmentType.Left,
+                    AlignmentType = System.Enum.TryParse<AlignmentType>(fieldXml.Element("AlignmentType")?.Value, out var align) ? align : AlignmentType.Left,
                     IsRequired = bool.TryParse(fieldXml.Element("IsRequired")?.Value, out var req) && req
                 };
 
@@ -986,26 +941,5 @@ namespace LayoutParserApi.Services.Generation.Implementations
 
             return lineElement;
         }
-    }
-
-    // Classes para deserialização da resposta do Gemini
-    public class GeminiResponse
-    {
-        public GeminiCandidate[] candidates { get; set; } = Array.Empty<GeminiCandidate>();
-    }
-
-    public class GeminiCandidate
-    {
-        public GeminiContent content { get; set; } = new();
-    }
-
-    public class GeminiContent
-    {
-        public GeminiPart[] parts { get; set; } = Array.Empty<GeminiPart>();
-    }
-
-    public class GeminiPart
-    {
-        public string text { get; set; } = "";
     }
 }

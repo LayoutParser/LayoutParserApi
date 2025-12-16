@@ -1,24 +1,9 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
 using LayoutParserApi.Models.Database;
-using LayoutParserApi.Services.Database;
 using LayoutParserApi.Services.Cache;
-using Microsoft.Extensions.Logging;
+using LayoutParserApi.Services.Interfaces;
 
 namespace LayoutParserApi.Services.Database
 {
-    public interface ICachedLayoutService
-    {
-        Task<LayoutSearchResponse> SearchLayoutsAsync(LayoutSearchRequest request);
-        Task<LayoutRecord?> GetLayoutByIdAsync(int id);
-        Task<LayoutRecord?> GetLayoutByGuidAsync(string layoutGuid);
-        Task RefreshCacheFromDatabaseAsync();
-        Task ClearCacheAsync();
-        ILayoutDatabaseService GetLayoutDatabaseService();
-    }
-
     public class CachedLayoutService : ICachedLayoutService
     {
         private readonly ILayoutDatabaseService _layoutDatabaseService;
@@ -42,7 +27,7 @@ namespace LayoutParserApi.Services.Database
                 // Normalizar SearchTerm: se vazio ou null, usar "all" como chave de cache
                 var searchTerm = string.IsNullOrWhiteSpace(request.SearchTerm) ? "all" : request.SearchTerm;
                 var cacheKey = searchTerm;
-                
+
                 _logger.LogInformation("Buscando layouts com termo: {SearchTerm}", searchTerm);
 
                 // Tentar buscar no cache primeiro
@@ -61,7 +46,7 @@ namespace LayoutParserApi.Services.Database
                 // Se não estiver no cache, buscar no banco
                 _logger.LogInformation("Buscando layouts no banco de dados...");
                 var layouts = await _layoutDatabaseService.SearchLayoutsAsync(request);
-                
+
                 if (layouts.Success && layouts.Layouts.Any())
                     await _cacheService.SetCachedLayoutsAsync(cacheKey, layouts.Layouts);
 
@@ -128,12 +113,9 @@ namespace LayoutParserApi.Services.Database
                     // Buscar layout no cache por GUID
                     var layout = cachedLayouts.FirstOrDefault(l =>
                     {
-                        var layoutGuidStr = l.LayoutGuid != Guid.Empty 
-                            ? l.LayoutGuid.ToString() 
-                            : "";
+                        var layoutGuidStr = l.LayoutGuid != Guid.Empty ? l.LayoutGuid.ToString() : "";
                         var normalizedLayoutGuid = NormalizeLayoutGuid(layoutGuidStr);
-                        return GuidMatches(normalizedLayoutGuid, normalizedGuid) ||
-                               GuidMatches(normalizedLayoutGuid, layoutGuid);
+                        return GuidMatches(normalizedLayoutGuid, normalizedGuid) || GuidMatches(normalizedLayoutGuid, layoutGuid);
                     });
 
                     if (layout != null)
@@ -157,12 +139,9 @@ namespace LayoutParserApi.Services.Database
                     // Buscar layout que corresponde ao GUID
                     var layout = response.Layouts.FirstOrDefault(l =>
                     {
-                        var layoutGuidStr = l.LayoutGuid != Guid.Empty 
-                            ? l.LayoutGuid.ToString() 
-                            : "";
+                        var layoutGuidStr = l.LayoutGuid != Guid.Empty ? l.LayoutGuid.ToString() : "";
                         var normalizedLayoutGuid = NormalizeLayoutGuid(layoutGuidStr);
-                        return GuidMatches(normalizedLayoutGuid, normalizedGuid) ||
-                               GuidMatches(normalizedLayoutGuid, layoutGuid);
+                        return GuidMatches(normalizedLayoutGuid, normalizedGuid) || GuidMatches(normalizedLayoutGuid, layoutGuid);
                     });
 
                     if (layout != null)
@@ -223,8 +202,7 @@ namespace LayoutParserApi.Services.Database
                 return true;
 
             // Comparação parcial (caso um contenha o outro)
-            if (norm1.Contains(norm2, StringComparison.OrdinalIgnoreCase) ||
-                norm2.Contains(norm1, StringComparison.OrdinalIgnoreCase))
+            if (norm1.Contains(norm2, StringComparison.OrdinalIgnoreCase) || norm2.Contains(norm1, StringComparison.OrdinalIgnoreCase))
             {
                 // Verificar se não é apenas uma coincidência parcial muito pequena
                 if (norm1.Length >= 8 && norm2.Length >= 8)
@@ -248,23 +226,21 @@ namespace LayoutParserApi.Services.Database
                 };
 
                 var response = await _layoutDatabaseService.SearchLayoutsAsync(request);
-                
+
                 if (response.Success && response.Layouts.Any())
                 {
                     // Salvar no cache
                     await _cacheService.SetCachedLayoutsAsync("all", response.Layouts); // Usar "all" como chave de cache
-                    
+
                     // Salvar layouts individuais no cache
                     foreach (var layout in response.Layouts)
                         await _cacheService.SetCachedLayoutByIdAsync(layout.Id, layout);
-                    
 
                     _logger.LogInformation("Cache atualizado com {Count} layouts do banco de dados", response.Layouts.Count);
                 }
                 else
-                {
                     _logger.LogWarning("Nenhum layout encontrado no banco para atualizar o cache");
-                }
+
             }
             catch (Exception ex)
             {

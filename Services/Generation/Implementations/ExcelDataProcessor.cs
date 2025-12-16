@@ -77,18 +77,15 @@ namespace LayoutParserApi.Services.Generation.Implementations
             // Extrair todos os campos do layout
             var layoutFields = new List<FieldElement>();
             foreach (var lineElement in layout.Elements)
-            {
                 ExtractFieldsFromLineElement(lineElement, layoutFields);
-            }
+            
 
             // Mapear colunas do Excel para campos do layout
             foreach (var header in excelData.Headers)
             {
                 var bestMatch = FindBestFieldMatch(header, layoutFields, excelData);
                 if (bestMatch != null)
-                {
                     mappings.Add(bestMatch);
-                }
             }
 
             return mappings;
@@ -116,11 +113,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
             if (!excelData.ColumnData.ContainsKey(columnName))
                 return new List<string>();
 
-            return excelData.ColumnData[columnName]
-                .Where(v => !string.IsNullOrWhiteSpace(v))
-                .Distinct()
-                .Take(maxSamples)
-                .ToList();
+            return excelData.ColumnData[columnName].Where(v => !string.IsNullOrWhiteSpace(v)).Distinct().Take(maxSamples).ToList();
         }
 
         private async Task<string> ReadExcelAsCsv(Stream excelStream)
@@ -142,18 +135,14 @@ namespace LayoutParserApi.Services.Generation.Implementations
                 var c = line[i];
                 
                 if (c == '"')
-                {
                     inQuotes = !inQuotes;
-                }
                 else if (c == ',' && !inQuotes)
                 {
                     values.Add(current.Trim());
                     current = "";
                 }
                 else
-                {
                     current += c;
-                }
             }
             
             values.Add(current.Trim());
@@ -207,14 +196,9 @@ namespace LayoutParserApi.Services.Generation.Implementations
                 {
                     var field = Newtonsoft.Json.JsonConvert.DeserializeObject<FieldElement>(elementJson);
                     if (field != null && !string.IsNullOrEmpty(field.Name))
-                    {
                         fields.Add(field);
-                    }
                 }
-                catch
-                {
-                    // Ignorar elementos que não são FieldElement
-                }
+                catch{ }
             }
         }
 
@@ -225,10 +209,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
                 {
                     Field = field,
                     Score = CalculateMatchScore(excelColumn, field, excelData)
-                })
-                .Where(x => x.Score > 0.3) // Threshold mínimo
-                .OrderByDescending(x => x.Score)
-                .FirstOrDefault();
+                }).Where(x => x.Score > 0.3).OrderByDescending(x => x.Score).FirstOrDefault();
 
             if (bestMatch == null) return null;
 

@@ -1,23 +1,10 @@
 using StackExchange.Redis;
 using System.Text.Json;
-using System.Text.Encodings.Web;
 using LayoutParserApi.Models.Entities;
+using LayoutParserApi.Services.Interfaces;
 
 namespace LayoutParserApi.Services.Cache
 {
-    public interface IMapperCacheService
-    {
-        Task<List<Mapper>?> GetAllCachedMappersAsync();
-        Task SetAllCachedMappersAsync(List<Mapper> mappers, TimeSpan? expiry = null);
-        Task<Mapper?> GetCachedMapperByIdAsync(int id);
-        Task SetCachedMapperByIdAsync(int id, Mapper mapper, TimeSpan? expiry = null);
-        Task<List<Mapper>?> GetCachedMappersByInputLayoutGuidAsync(string inputLayoutGuid);
-        Task<List<Mapper>?> GetCachedMappersByTargetLayoutGuidAsync(string targetLayoutGuid);
-        Task SetCachedMappersByInputLayoutGuidAsync(string inputLayoutGuid, List<Mapper> mappers, TimeSpan? expiry = null);
-        Task SetCachedMappersByTargetLayoutGuidAsync(string targetLayoutGuid, List<Mapper> mappers, TimeSpan? expiry = null);
-        Task ClearCacheAsync();
-    }
-
     public class MapperCacheService : IMapperCacheService
     {
         private readonly IDatabase? _redis;
@@ -175,9 +162,7 @@ namespace LayoutParserApi.Services.Cache
         public async Task<Mapper?> GetCachedMapperByIdAsync(int id)
         {
             if (!_redisAvailable || _redis == null)
-            {
                 return null;
-            }
 
             try
             {
@@ -204,9 +189,7 @@ namespace LayoutParserApi.Services.Cache
         public async Task SetCachedMapperByIdAsync(int id, Mapper mapper, TimeSpan? expiry = null)
         {
             if (!_redisAvailable || _redis == null)
-            {
                 return;
-            }
 
             try
             {
@@ -225,9 +208,7 @@ namespace LayoutParserApi.Services.Cache
         public async Task<List<Mapper>?> GetCachedMappersByInputLayoutGuidAsync(string inputLayoutGuid)
         {
             if (!_redisAvailable || _redis == null)
-            {
                 return null;
-            }
 
             try
             {
@@ -254,9 +235,7 @@ namespace LayoutParserApi.Services.Cache
         public async Task<List<Mapper>?> GetCachedMappersByTargetLayoutGuidAsync(string targetLayoutGuid)
         {
             if (!_redisAvailable || _redis == null)
-            {
                 return null;
-            }
 
             try
             {
@@ -283,9 +262,7 @@ namespace LayoutParserApi.Services.Cache
         public async Task SetCachedMappersByInputLayoutGuidAsync(string inputLayoutGuid, List<Mapper> mappers, TimeSpan? expiry = null)
         {
             if (!_redisAvailable || _redis == null)
-            {
                 return;
-            }
 
             try
             {
@@ -304,9 +281,7 @@ namespace LayoutParserApi.Services.Cache
         public async Task SetCachedMappersByTargetLayoutGuidAsync(string targetLayoutGuid, List<Mapper> mappers, TimeSpan? expiry = null)
         {
             if (!_redisAvailable || _redis == null)
-            {
                 return;
-            }
 
             try
             {
@@ -325,9 +300,7 @@ namespace LayoutParserApi.Services.Cache
         public async Task ClearCacheAsync()
         {
             if (!_redisAvailable || _redis == null)
-            {
                 return;
-            }
 
             try
             {
@@ -342,4 +315,3 @@ namespace LayoutParserApi.Services.Cache
         }
     }
 }
-

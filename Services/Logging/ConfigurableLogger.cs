@@ -1,3 +1,5 @@
+using LayoutParserApi.Services.Interfaces;
+
 namespace LayoutParserApi.Services.Logging
 {
     public class ConfigurableLogger

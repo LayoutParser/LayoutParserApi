@@ -62,14 +62,10 @@ namespace LayoutParserApi.Services.Parsing.Implementations
             if (layout?.Elements == null)
                 return layout;
 
-            var elementosOrdenados = layout.Elements
-                .OrderBy(e => ObterNumeroDaLinha(e.Name))
-                .ToList();
+            var elementosOrdenados = layout.Elements.OrderBy(e => ObterNumeroDaLinha(e.Name)).ToList();
 
             for (int i = 0; i < elementosOrdenados.Count; i++)
-            {
                 elementosOrdenados[i].Sequence = i + 1;
-            }
 
             layout.Elements = elementosOrdenados;
             return layout;
@@ -82,9 +78,7 @@ namespace LayoutParserApi.Services.Parsing.Implementations
 
             var numeroStr = nomeLinha.Substring(5);
             if (int.TryParse(numeroStr, out int numero))
-            {
                 return numero;
-            }
 
             return 9999;
         }
@@ -123,5 +117,3 @@ namespace LayoutParserApi.Services.Parsing.Implementations
         }
     }
 }
-
-

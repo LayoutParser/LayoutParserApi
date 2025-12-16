@@ -1,7 +1,7 @@
 using LayoutParserApi.Models.Entities;
 using LayoutParserApi.Models.Generation;
 using LayoutParserApi.Services.Generation.Interfaces;
-using System.Linq;
+
 using System.Text;
 using System.Xml.Serialization;
 
@@ -13,9 +13,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
         private readonly ILogger<SyntheticDataGeneratorService> _logger;
         private readonly Random _random = new();
 
-        public SyntheticDataGeneratorService(
-            GeminiAIService geminiService,
-            ILogger<SyntheticDataGeneratorService> logger)
+        public SyntheticDataGeneratorService(GeminiAIService geminiService, ILogger<SyntheticDataGeneratorService> logger)
         {
             _geminiService = geminiService;
             _logger = logger;
@@ -51,9 +49,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
                     }
                 }
                 else
-                {
                     result = await GenerateWithRulesAsync(request);
-                }
 
                 result.GenerationTime = DateTime.Now - startTime;
                 result.Success = true;
@@ -76,7 +72,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
             try
             {
                 var fieldType = InferFieldType(field, dataType);
-                
+
                 switch (fieldType)
                 {
                     case "cnpj":
@@ -110,13 +106,13 @@ namespace LayoutParserApi.Services.Generation.Implementations
         public async Task<List<string>> GenerateMultipleFieldValuesAsync(FieldElement field, int count, ExcelDataContext excelContext = null)
         {
             var values = new List<string>();
-            
+
             for (int i = 0; i < count; i++)
             {
                 var value = await GenerateFieldValueAsync(field, $"Record {i + 1}", null, excelContext);
                 values.Add(value);
             }
-            
+
             return values;
         }
 
@@ -150,10 +146,10 @@ namespace LayoutParserApi.Services.Generation.Implementations
         {
             // Converter layout para XML string
             var layoutXml = SerializeLayoutToXml(request.Layout);
-            
+
             // Preparar exemplos (se disponíveis)
             var examples = request.SampleRealData?.Select(s => s.Value).ToList() ?? new List<string>();
-            
+
             // Preparar regras do Excel (se disponíveis)
             var excelRules = new Dictionary<string, string>();
             if (request.ExcelContext != null)
@@ -165,31 +161,29 @@ namespace LayoutParserApi.Services.Generation.Implementations
                     {
                         var samples = request.ExcelContext.ColumnData[header].Take(5).ToList();
                         if (samples.Any())
-                        {
                             excelRules[header] = $"Exemplos: {string.Join(", ", samples)}";
-                        }
                     }
                 }
             }
-            
+
             // Extrair nome e descrição do layout
             var layoutName = request.Layout?.Name ?? "";
             var layoutDescription = request.Layout?.Description ?? "";
-            
+
             var aiResponse = await _geminiService.GenerateSyntheticData(
-                layoutXml, 
-                examples, 
-                excelRules, 
+                layoutXml,
+                examples,
+                excelRules,
                 request.NumberOfRecords,
                 layoutName,
                 layoutDescription,
                 request.ExcelContext);
-            
+
             var lines = ParseAIResponse(aiResponse, request.NumberOfRecords);
-            
+
             // Pós-processamento: garantir que todas as linhas tenham exatamente 600 caracteres
             lines = NormalizeLineLengths(lines, request.Layout?.LimitOfCaracters ?? 600);
-            
+
             return new GeneratedDataResult
             {
                 Success = true,
@@ -219,7 +213,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
             for (int recordIndex = 0; recordIndex < request.NumberOfRecords; recordIndex++)
             {
                 var lineBuilder = new StringBuilder();
-                
+
                 foreach (var lineElement in request.Layout.Elements)
                 {
                     var lineContent = await GenerateLineContent(lineElement, recordIndex, request);
@@ -244,57 +238,10 @@ namespace LayoutParserApi.Services.Generation.Implementations
             };
         }
 
-        private string BuildAIPrompt(SyntheticDataRequest request)
-        {
-            var prompt = new StringBuilder();
-            
-            prompt.AppendLine($"Gere {request.NumberOfRecords} registros sintéticos baseados no layout abaixo.");
-            prompt.AppendLine($"Layout: {request.Layout.Name}");
-            prompt.AppendLine($"Tipo: {request.Layout.LayoutType}");
-            prompt.AppendLine();
-
-            // Adicionar estrutura do layout
-            prompt.AppendLine("Estrutura do Layout:");
-            foreach (var lineElement in request.Layout.Elements)
-            {
-                prompt.AppendLine($"- {lineElement.Name}: {lineElement.InitialValue}");
-                // Adicionar campos da linha se necessário
-            }
-
-            // Adicionar dados de exemplo se disponíveis
-            if (request.SampleRealData.Any())
-            {
-                prompt.AppendLine();
-                prompt.AppendLine("Dados reais de exemplo:");
-                foreach (var sample in request.SampleRealData.Take(3))
-                {
-                    prompt.AppendLine($"- {sample.FieldName}: {sample.Value}");
-                }
-            }
-
-            // Adicionar regras específicas
-            prompt.AppendLine();
-            prompt.AppendLine("Regras:");
-            prompt.AppendLine("- Manter formato posicional exato");
-            prompt.AppendLine("- CNPJ/CPF: gerar números válidos sinteticamente");
-            prompt.AppendLine("- Datas: usar formato apropriado");
-            prompt.AppendLine("- Valores monetários: usar formato sem separadores");
-            prompt.AppendLine("- Campos sequenciais: incrementar automaticamente");
-            prompt.AppendLine();
-            prompt.AppendLine("Resposta: Apenas os dados gerados, um registro por linha, sem marcações.");
-
-            return prompt.ToString();
-        }
-
         private List<string> ParseAIResponse(string aiResponse, int expectedCount)
         {
             // Não remover espaços no final pois podem ser parte do layout posicional
-            var lines = aiResponse
-                .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
-                .Where(line => !string.IsNullOrWhiteSpace(line.Trim())) // Verificar se não é linha vazia
-                .Select(line => line.TrimEnd('\r', '\n')) // Remover apenas quebras de linha no final
-                .Take(expectedCount)
-                .ToList();
+            var lines = aiResponse.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).Where(line => !string.IsNullOrWhiteSpace(line.Trim())).Select(line => line.TrimEnd('\r', '\n')).Take(expectedCount).ToList();
 
             return lines;
         }
@@ -305,13 +252,11 @@ namespace LayoutParserApi.Services.Generation.Implementations
         private List<string> NormalizeLineLengths(List<string> lines, int targetLength)
         {
             var normalized = new List<string>();
-            
+
             foreach (var line in lines)
             {
                 if (line.Length == targetLength)
-                {
                     normalized.Add(line);
-                }
                 else if (line.Length > targetLength)
                 {
                     // Truncar se exceder o tamanho
@@ -325,19 +270,17 @@ namespace LayoutParserApi.Services.Generation.Implementations
                     normalized.Add(line.PadRight(targetLength, ' '));
                 }
             }
-            
+
             return normalized;
         }
 
         private async Task<string> GenerateLineContent(LineElement lineElement, int recordIndex, SyntheticDataRequest request)
         {
             var lineBuilder = new StringBuilder();
-            
+
             // Adicionar InitialValue se existir
             if (!string.IsNullOrEmpty(lineElement.InitialValue))
-            {
                 lineBuilder.Append(lineElement.InitialValue);
-            }
 
             // Gerar campos da linha
             if (lineElement.Elements != null)
@@ -353,10 +296,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
                             lineBuilder.Append(fieldValue);
                         }
                     }
-                    catch
-                    {
-                        // Ignorar elementos inválidos
-                    }
+                    catch { }
                 }
             }
 
@@ -366,12 +306,10 @@ namespace LayoutParserApi.Services.Generation.Implementations
         private List<FieldElement> ExtractAllFields(Layout layout)
         {
             var fields = new List<FieldElement>();
-            
+
             foreach (var lineElement in layout.Elements)
-            {
                 ExtractFieldsFromLineElement(lineElement, fields);
-            }
-            
+
             return fields;
         }
 
@@ -385,14 +323,10 @@ namespace LayoutParserApi.Services.Generation.Implementations
                 {
                     var field = Newtonsoft.Json.JsonConvert.DeserializeObject<FieldElement>(elementJson);
                     if (field != null && !string.IsNullOrEmpty(field.Name))
-                    {
                         fields.Add(field);
-                    }
+
                 }
-                catch
-                {
-                    // Ignorar elementos que não são FieldElement
-                }
+                catch { }
             }
         }
 
@@ -409,7 +343,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
                 return dataType.ToLower();
 
             var name = field.Name.ToLower();
-            
+
             if (name.Contains("cnpj")) return "cnpj";
             if (name.Contains("cpf")) return "cpf";
             if (name.Contains("data") || name.Contains("date")) return "date";
@@ -418,7 +352,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
             if (name.Contains("quantidade") || name.Contains("qtd")) return "integer";
             if (name.Contains("email")) return "email";
             if (name.Contains("telefone") || name.Contains("phone")) return "phone";
-            
+
             return "text";
         }
 

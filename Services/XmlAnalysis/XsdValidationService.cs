@@ -1,13 +1,9 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
+using LayoutParserApi.Models.XmlAnalysis;
+using LayoutParserApi.Services.XmlAnalysis.Models;
+
 using System.Xml;
 using System.Xml.Linq;
 using System.Xml.Schema;
-using LayoutParserApi.Models.XmlAnalysis;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Logging;
 
 namespace LayoutParserApi.Services.XmlAnalysis
 {
@@ -22,10 +18,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
         private readonly XmlDocumentTypeDetector _documentTypeDetector;
         private readonly IConfiguration _configuration;
 
-        public XsdValidationService(
-            ILogger<XsdValidationService> logger,
-            IConfiguration configuration,
-            XmlDocumentTypeDetector documentTypeDetector)
+        public XsdValidationService(ILogger<XsdValidationService> logger,IConfiguration configuration,XmlDocumentTypeDetector documentTypeDetector)
         {
             _logger = logger;
             _configuration = configuration;
@@ -41,9 +34,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
         {
             // Se não forneceu docType, detectar
             if (docType == null)
-            {
                 docType = _documentTypeDetector.DetectDocumentType(xmlContent);
-            }
 
             // Chamar método específico baseado no tipo
             return docType?.Type switch
@@ -73,29 +64,22 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 if (root.Name.LocalName == "enviNFe")
                 {
                     // Encontrar elemento NFe dentro de enviNFe
-                    var nfeElement = root.Element(XName.Get("NFe", root.Name.NamespaceName)) ?? 
-                                     root.Elements().FirstOrDefault(e => e.Name.LocalName == "NFe");
+                    var nfeElement = root.Element(XName.Get("NFe", root.Name.NamespaceName)) ?? root.Elements().FirstOrDefault(e => e.Name.LocalName == "NFe");
 
                     if (nfeElement != null)
                     {
                         // Obter namespace do enviNFe original
                         var nfeNamespace = root.GetDefaultNamespace().NamespaceName;
                         if (string.IsNullOrEmpty(nfeNamespace))
-                        {
                             nfeNamespace = "http://www.portalfiscal.inf.br/nfe";
-                        }
 
                         // Criar novo elemento NFe com namespace
                         var newNfeElement = new XElement(XName.Get("NFe", nfeNamespace));
-                        
+
                         // Copiar atributos do NFe original (exceto namespaces que serão definidos)
                         foreach (var attr in nfeElement.Attributes())
-                        {
                             if (!attr.Name.LocalName.StartsWith("xmlns") && attr.Name != XNamespace.Xmlns + "xsi")
-                            {
                                 newNfeElement.SetAttributeValue(attr.Name, attr.Value);
-                            }
-                        }
 
                         // Adicionar namespace principal
                         newNfeElement.SetAttributeValue(XName.Get("xmlns"), nfeNamespace);
@@ -108,9 +92,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
                             newNfeElement.SetAttributeValue(xsiNs, "http://www.w3.org/2001/XMLSchema-instance");
                         }
                         else
-                        {
                             newNfeElement.SetAttributeValue(XNamespace.Xmlns + "xsi", xsiAttr.Value);
-                        }
 
                         // Copiar elementos filhos recursivamente preservando estrutura
                         CopyElementsRecursively(nfeElement, newNfeElement);
@@ -148,7 +130,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
             {
                 // 1. Detectar tipo de documento automaticamente
                 DocumentTypeInfo docType = null;
-                
+
                 if (!string.IsNullOrEmpty(layoutName))
                 {
                     // Tentar detectar pelo nome do layout primeiro
@@ -165,7 +147,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
 
                 // Usar XSD fornecido explicitamente ou o detectado
                 var finalXsdVersion = xsdVersion ?? docType?.XsdVersion;
-                
+
                 if (string.IsNullOrEmpty(finalXsdVersion))
                 {
                     result.IsValid = false;
@@ -242,12 +224,10 @@ namespace LayoutParserApi.Services.XmlAnalysis
                     {
                         _logger.LogError("Erro ao ler schema XSD: {Message}", e.Message);
                     });
-                    
+
                     if (schema != null)
-                    {
                         // Adicionar schema com namespace correto
                         schemas.Add(schema);
-                    }
                     else
                     {
                         // Fallback: adicionar diretamente pelo namespace
@@ -286,9 +266,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
                         });
                     }
                     else if (e.Severity == XmlSeverityType.Warning)
-                    {
                         result.Warnings.Add(e.Message);
-                    }
                 };
 
                 // 6. Validar XML
@@ -323,8 +301,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 result.Errors = validationErrors;
                 result.IsValid = validationErrors.Count == 0;
 
-                _logger.LogInformation("Validação XSD concluída: {IsValid}, {ErrorCount} erros, {WarningCount} avisos",
-                    result.IsValid, result.Errors.Count, result.Warnings.Count);
+                _logger.LogInformation("Validação XSD concluída: {IsValid}, {ErrorCount} erros, {WarningCount} avisos", result.IsValid, result.Errors.Count, result.Warnings.Count);
 
                 return result;
             }
@@ -349,7 +326,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
         private string FindXsdFile(string version)
         {
             var versionPath = Path.Combine(_xsdBasePath, version);
-            
+
             if (!Directory.Exists(versionPath))
             {
                 _logger.LogWarning("Pasta XSD não encontrada: {Path}", versionPath);
@@ -358,7 +335,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
 
             // Procurar arquivo .xsd (pode ter vários)
             var xsdFiles = Directory.GetFiles(versionPath, "*.xsd", SearchOption.AllDirectories);
-            
+
             // Priorizar arquivo principal (geralmente o maior ou com nome específico)
             var mainXsd = xsdFiles
                 .OrderByDescending(f => new FileInfo(f).Length)
@@ -387,7 +364,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
             try
             {
                 var pdfPath = Path.Combine(_pdfBasePath, xsdVersion);
-                
+
                 if (!Directory.Exists(pdfPath))
                 {
                     _logger.LogWarning("Pasta PDF não encontrada: {Path}", pdfPath);
@@ -402,11 +379,9 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 result.Orientations.Add("2. Confirme que os valores estão nos formatos corretos (CNPJ, CPF, datas, etc.)");
                 result.Orientations.Add("3. Valide que os códigos de produto, CFOP e outras referências estão corretos");
                 result.Orientations.Add("4. Consulte a documentação oficial da SEFAZ para a versão " + xsdVersion);
-                
+
                 if (errorCodes != null && errorCodes.Any())
-                {
                     result.Orientations.Add($"Erros específicos detectados: {string.Join(", ", errorCodes)}");
-                }
 
                 result.Success = true;
                 return result;
@@ -465,24 +440,16 @@ namespace LayoutParserApi.Services.XmlAnalysis
                     {
                         // Obter namespace do wrapper original
                         var docNamespace = root.GetDefaultNamespace().NamespaceName;
-                        if (string.IsNullOrEmpty(docNamespace))
-                        {
-                            docNamespace = targetNamespace;
-                        }
+                        if (string.IsNullOrEmpty(docNamespace))                        
+                            docNamespace = targetNamespace;                        
 
                         // Criar novo elemento com namespace
                         var newDocElement = new XElement(XName.Get(documentTag, docNamespace));
-                        
+
                         // Copiar atributos do documento original (exceto namespaces)
-                        foreach (var attr in documentElement.Attributes())
-                        {
-                            if (!attr.Name.LocalName.StartsWith("xmlns") && 
-                                attr.Name != (XNamespace.Xmlns + "xsi") &&
-                                !attr.Name.ToString().Contains("schemaLocation"))
-                            {
-                                newDocElement.SetAttributeValue(attr.Name.LocalName, attr.Value);
-                            }
-                        }
+                        foreach (var attr in documentElement.Attributes())                        
+                            if (!attr.Name.LocalName.StartsWith("xmlns") && attr.Name != (XNamespace.Xmlns + "xsi") && !attr.Name.ToString().Contains("schemaLocation"))
+                                newDocElement.SetAttributeValue(attr.Name.LocalName, attr.Value);                            
 
                         // Adicionar namespace principal
                         newDocElement.SetAttributeValue(XName.Get("xmlns"), docNamespace);
@@ -527,28 +494,21 @@ namespace LayoutParserApi.Services.XmlAnalysis
             foreach (var child in source.Elements())
             {
                 var newChild = new XElement(child.Name);
-                
+
                 // Copiar atributos
-                foreach (var attr in child.Attributes())
-                {
-                    newChild.SetAttributeValue(attr.Name, attr.Value);
-                }
+                foreach (var attr in child.Attributes())                
+                    newChild.SetAttributeValue(attr.Name, attr.Value);                
 
                 // Copiar valor de texto se não tiver filhos
-                if (!child.HasElements && !string.IsNullOrWhiteSpace(child.Value))
-                {
-                    newChild.Value = child.Value;
-                }
+                if (!child.HasElements && !string.IsNullOrWhiteSpace(child.Value))                
+                    newChild.Value = child.Value;                
 
                 // Copiar filhos recursivamente
-                if (child.HasElements)
-                {
-                    CopyElementsRecursively(child, newChild);
-                }
+                if (child.HasElements)                
+                    CopyElementsRecursively(child, newChild);               
 
                 target.Add(newChild);
             }
         }
     }
 }
-

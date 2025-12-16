@@ -1,14 +1,9 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
 using System.Text;
-using System.Threading.Tasks;
 using System.Xml;
 using System.Xml.Linq;
 using System.Xml.Xsl;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Logging;
+
+using LayoutParserApi.Services.XmlAnalysis.Models;
 
 namespace LayoutParserApi.Services.XmlAnalysis
 {
@@ -27,21 +22,15 @@ namespace LayoutParserApi.Services.XmlAnalysis
             IConfiguration configuration)
         {
             _logger = logger;
-            _tclBasePath = configuration["TransformationPipeline:TclPath"] 
-                ?? @"C:\inetpub\wwwroot\layoutparser\TCL";
-            _xslBasePath = configuration["TransformationPipeline:XslPath"] 
-                ?? @"C:\inetpub\wwwroot\layoutparser\XSL";
-            _mappingBasePath = configuration["TransformationPipeline:MappingPath"] 
-                ?? @"C:\inetpub\wwwroot\layoutparser\Mapeamentro";
+            _tclBasePath = configuration["TransformationPipeline:TclPath"] ?? @"C:\inetpub\wwwroot\layoutparser\TCL";
+            _xslBasePath = configuration["TransformationPipeline:XslPath"] ?? @"C:\inetpub\wwwroot\layoutparser\XSL";
+            _mappingBasePath = configuration["TransformationPipeline:MappingPath"] ?? @"C:\inetpub\wwwroot\layoutparser\Mapeamentro";
         }
 
         /// <summary>
         /// Transforma TXT MQSeries/IDOC → MAP → XML Intermediário → XSL → XML NFe
         /// </summary>
-        public async Task<TransformationPipelineResult> TransformTxtToXmlAsync(
-            string txtContent, 
-            string layoutName, 
-            string targetDocumentType = "NFe")
+        public async Task<TransformationPipelineResult> TransformTxtToXmlAsync(string txtContent, string layoutName, string targetDocumentType = "NFe")
         {
             var result = new TransformationPipelineResult
             {
@@ -53,7 +42,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
 
             try
             {
-                _logger.LogInformation("Iniciando pipeline de transformação TXT → XML. Layout: {LayoutName}, Target: {TargetType}", 
+                _logger.LogInformation("Iniciando pipeline de transformação TXT → XML. Layout: {LayoutName}, Target: {TargetType}",
                     layoutName, targetDocumentType);
 
                 // Etapa 1: TXT → XML Intermediário (usando MAP/TCL)
@@ -78,9 +67,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 // Preencher caminhos TCL e XSL no resultado
                 var tclFile = Path.Combine(_tclBasePath, $"{layoutName}.tcl");
                 if (File.Exists(tclFile))
-                {
                     result.TclPath = tclFile;
-                }
 
                 result.StepResults["FinalXml"] = finalXml;
                 result.TransformedXml = finalXml;
@@ -101,11 +88,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
         /// <summary>
         /// Transforma XML → XSL → XML Final (para transformações XML→XML)
         /// </summary>
-        public async Task<TransformationPipelineResult> TransformXmlToXmlAsync(
-            string xmlContent, 
-            string sourceDocumentType, 
-            string targetDocumentType,
-            string layoutName = null)
+        public async Task<TransformationPipelineResult> TransformXmlToXmlAsync(string xmlContent, string sourceDocumentType, string targetDocumentType, string layoutName = null)
         {
             var result = new TransformationPipelineResult
             {
@@ -117,7 +100,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
 
             try
             {
-                _logger.LogInformation("Iniciando transformação XML → XML. Source: {SourceType}, Target: {TargetType}", 
+                _logger.LogInformation("Iniciando transformação XML → XML. Source: {SourceType}, Target: {TargetType}",
                     sourceDocumentType, targetDocumentType);
 
                 // Carregar XSL apropriado
@@ -158,10 +141,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
         /// <summary>
         /// Etapa 1: Transforma TXT MQSeries/IDOC em XML Intermediário usando MAP
         /// </summary>
-        private async Task<string> TransformTxtToIntermediateXmlAsync(
-            string txtContent, 
-            string layoutName, 
-            TransformationPipelineResult result)
+        private async Task<string> TransformTxtToIntermediateXmlAsync(string txtContent, string layoutName, TransformationPipelineResult result)
         {
             try
             {
@@ -175,15 +155,13 @@ namespace LayoutParserApi.Services.XmlAnalysis
 
                 // Parsear MAP para entender estrutura
                 var mapDocument = XDocument.Parse(mapContent);
-                
+
                 // Parsear TXT em linhas
-                var txtLines = txtContent.Split(new[] { "\r\n", "\n", "\r" }, StringSplitOptions.None)
-                    .Where(l => !string.IsNullOrWhiteSpace(l))
-                    .ToList();
+                var txtLines = txtContent.Split(new[] { "\r\n", "\n", "\r" }, StringSplitOptions.None).Where(l => !string.IsNullOrWhiteSpace(l)).ToList();
 
                 // Gerar XML intermediário baseado no MAP
                 var intermediateXml = GenerateIntermediateXmlFromMap(txtLines, mapDocument, result);
-                
+
                 return intermediateXml;
             }
             catch (Exception ex)
@@ -197,10 +175,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
         /// <summary>
         /// Gera XML intermediário a partir do TXT e do MAP
         /// </summary>
-        private string GenerateIntermediateXmlFromMap(
-            List<string> txtLines, 
-            XDocument mapDocument, 
-            TransformationPipelineResult result)
+        private string GenerateIntermediateXmlFromMap(List<string> txtLines, XDocument mapDocument, TransformationPipelineResult result)
         {
             try
             {
@@ -215,25 +190,19 @@ namespace LayoutParserApi.Services.XmlAnalysis
 
                     // Detectar tipo de linha baseado no identificador (primeiros caracteres ou padrão)
                     var lineIdentifier = DetectLineIdentifier(txtLine);
-                    
+
                     // Encontrar definição correspondente no MAP
-                    var lineDefinition = mapDocument.Descendants("LINE")
-                        .FirstOrDefault(l => l.Attribute("identifier")?.Value == lineIdentifier ||
-                                            l.Attribute("name")?.Value == lineIdentifier);
+                    var lineDefinition = mapDocument.Descendants("LINE").FirstOrDefault(l => l.Attribute("identifier")?.Value == lineIdentifier || l.Attribute("name")?.Value == lineIdentifier);
 
                     if (lineDefinition != null)
                     {
                         // Extrair campos da linha baseado na definição do MAP
                         var lineElement = ExtractLineFromTxt(txtLine, lineDefinition);
                         if (lineElement != null)
-                        {
                             root.Add(lineElement);
-                        }
                     }
                     else
-                    {
                         result.Warnings.Add($"Linha {currentLineIndex + 1}: Identificador '{lineIdentifier}' não encontrado no MAP");
-                    }
 
                     currentLineIndex++;
                 }
@@ -241,7 +210,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 // Adicionar elemento chave se necessário (geralmente vem da primeira linha)
                 if (root.Elements().Any(e => e.Name.LocalName == "chave"))
                 {
-                    // Chave já foi processada
+
                 }
                 else if (txtLines.Count > 0)
                 {
@@ -275,13 +244,9 @@ namespace LayoutParserApi.Services.XmlAnalysis
             {
                 var firstChar = txtLine[0];
                 if (char.IsLetter(firstChar))
-                {
                     // Verificar se é um identificador simples (A, B, C, etc.)
                     if (txtLine.Length > 1 && (char.IsDigit(txtLine[1]) || char.IsWhiteSpace(txtLine[1])))
-                    {
                         return firstChar.ToString();
-                    }
-                }
             }
 
             // Verificar padrões conhecidos
@@ -304,7 +269,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
         {
             var lineName = lineDefinition.Attribute("name")?.Value ?? "Line";
             var lineElement = new XElement(lineName);
-            
+
             var fields = lineDefinition.Descendants("FIELD").ToList();
             var currentPosition = 0;
 
@@ -312,7 +277,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
             {
                 var fieldName = fieldDef.Attribute("name")?.Value;
                 var lengthAttr = fieldDef.Attribute("length")?.Value;
-                
+
                 if (string.IsNullOrEmpty(fieldName) || string.IsNullOrEmpty(lengthAttr))
                     continue;
 
@@ -334,11 +299,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
         /// <summary>
         /// Etapa 2: Transforma XML Intermediário em XML Final usando XSL
         /// </summary>
-        private async Task<string> TransformIntermediateToFinalXmlAsync(
-            string intermediateXml, 
-            string layoutName, 
-            string targetDocumentType,
-            TransformationPipelineResult result)
+        private async Task<string> TransformIntermediateToFinalXmlAsync(string intermediateXml, string layoutName, string targetDocumentType, TransformationPipelineResult result)
         {
             try
             {
@@ -368,10 +329,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
         /// <summary>
         /// Aplica transformação XSLT
         /// </summary>
-        private async Task<string> ApplyXsltTransformAsync(
-            string xmlContent, 
-            string xslPath, 
-            TransformationPipelineResult result)
+        private async Task<string> ApplyXsltTransformAsync(string xmlContent, string xslPath, TransformationPipelineResult result)
         {
             try
             {
@@ -415,15 +373,11 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 var mapPath = Path.Combine(_mappingBasePath, mapFileName);
 
                 if (!File.Exists(mapPath))
-                {
                     // Tentar padrão alternativo
                     mapPath = Path.Combine(_mappingBasePath, "MAP_MQSERIES_SEND_ENV_TXT_XML_NFE.xml");
-                }
 
                 if (File.Exists(mapPath))
-                {
                     return await File.ReadAllTextAsync(mapPath, Encoding.UTF8);
-                }
 
                 _logger.LogWarning("Arquivo MAP não encontrado: {Path}", mapPath);
                 return null;
@@ -482,20 +436,4 @@ namespace LayoutParserApi.Services.XmlAnalysis
             }
         }
     }
-
-    /// <summary>
-    /// Resultado do pipeline de transformação
-    /// </summary>
-    public class TransformationPipelineResult
-    {
-        public bool Success { get; set; }
-        public string TransformedXml { get; set; }
-        public string TclPath { get; set; }
-        public string XslPath { get; set; }
-        public List<string> Errors { get; set; } = new();
-        public List<string> Warnings { get; set; } = new();
-        public Dictionary<string, string> StepResults { get; set; } = new();
-        public Dictionary<int, string> SegmentMappings { get; set; } = new();
-    }
 }
-

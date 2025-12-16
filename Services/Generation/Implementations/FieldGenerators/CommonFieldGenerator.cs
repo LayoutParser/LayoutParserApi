@@ -1,7 +1,4 @@
 using LayoutParserApi.Services.Generation.Interfaces;
-using System;
-using System.Collections.Generic;
-using System.Text;
 
 namespace LayoutParserApi.Services.Generation.Implementations.FieldGenerators
 {
@@ -70,9 +67,8 @@ namespace LayoutParserApi.Services.Generation.Implementations.FieldGenerators
 
             // HEADER - geralmente é um valor fixo ou inicial
             if (normalizedName.Contains("HEADER"))
-            {
                 result = GenerateHeader(length, alignment, context);
-            }
+
             // FILLER - campo de preenchimento com espaços (NUNCA preencher com texto)
             else if (normalizedName == "FILLER" || normalizedName.Contains("FILLER"))
             {
@@ -81,102 +77,57 @@ namespace LayoutParserApi.Services.Generation.Implementations.FieldGenerators
                 _logger.LogDebug("Campo FILLER gerado: {Length} espaços", length);
             }
             // DATA / DATE / EMISSAO
-            else if (normalizedName.Contains("DATA") || normalizedName.Contains("DATE") || 
-                     normalizedName.Contains("EMISSAO") || normalizedName.Contains("EMISSION"))
-            {
+            else if (normalizedName.Contains("DATA") || normalizedName.Contains("DATE") || normalizedName.Contains("EMISSAO") || normalizedName.Contains("EMISSION"))
                 result = GenerateDate(length, alignment, context);
-            }
             // HORA / HOUR
             else if (normalizedName.Contains("HORA") || normalizedName.Contains("HOUR"))
-            {
                 result = GenerateTime(length, alignment, context);
-            }
             // CNPJ (qualquer variação: CNPJEmissorNF, CNPJEmitenteNF, etc.)
             else if (normalizedName.Contains("CNPJ"))
-            {
                 result = GenerateCNPJ(length, alignment);
-            }
             // CPF
             else if (normalizedName.Contains("CPF"))
-            {
                 result = GenerateCPF(length, alignment);
-            }
             // SEQUENCIA / SEQUENCE / SEQUENCIAL
-            else if (normalizedName.Contains("SEQUENCIA") || normalizedName.Contains("SEQUENCE") ||
-                     normalizedName.Contains("SEQUENCIAL"))
-            {
+            else if (normalizedName.Contains("SEQUENCIA") || normalizedName.Contains("SEQUENCE") || normalizedName.Contains("SEQUENCIAL"))
                 result = GenerateSequence(recordIndex, length, alignment);
-            }
             // NUMERO / NUMBER / CODIGO / CODE
-            else if (normalizedName.Contains("NUMERO") || normalizedName.Contains("NUMBER") ||
-                     normalizedName.Contains("CODIGO") || normalizedName.Contains("CODE"))
-            {
+            else if (normalizedName.Contains("NUMERO") || normalizedName.Contains("NUMBER") || normalizedName.Contains("CODIGO") || normalizedName.Contains("CODE"))
                 result = GenerateNumber(length, alignment, recordIndex);
-            }
             // Campos específicos de IDOC/SAP
             else if (normalizedName == "CUF")
-            {
                 result = GenerateCUF(length, alignment); // Código da UF (2 dígitos)
-            }
             else if (normalizedName == "CNF")
-            {
                 result = GenerateCNF(length, alignment); // Código numérico da NF (8 dígitos)
-            }
             else if (normalizedName == "MOD")
-            {
                 result = GenerateMOD(length, alignment); // Modelo da NF (2 dígitos, geralmente "55")
-            }
             else if (normalizedName == "SERIE" || normalizedName.Contains("SERIE"))
-            {
                 result = GenerateSerie(length, alignment); // Série da NF (3 dígitos)
-            }
             else if (normalizedName == "NNF" || normalizedName.Contains("NNF"))
-            {
                 result = GenerateNNF(length, alignment, recordIndex); // Número da NF (9 dígitos)
-            }
             else if (normalizedName == "INDPAG")
-            {
                 result = GenerateIndPag(length, alignment); // Indicador de pagamento (1 dígito: 0, 1, 2)
-            }
             else if (normalizedName == "NATOP")
-            {
                 result = GenerateNatOp(length, alignment); // Natureza da operação (texto)
-            }
             // Campos XML comuns
             else if (normalizedName == "VERSION")
-            {
                 result = FormatField("1.0", length, alignment);
-            }
             else if (normalizedName == "ENCODING")
-            {
                 result = FormatField("UTF-8", length, alignment);
-            }
             else if (normalizedName == "STANDALONE")
-            {
                 result = FormatField("no", length, alignment);
-            }
             else if (normalizedName.Contains("XMLNS"))
-            {
                 // Namespace XML - usar valor estático se disponível no contexto
                 if (context != null && context.ContainsKey("StaticValue"))
-                {
                     result = FormatField(context["StaticValue"]?.ToString() ?? "", length, alignment);
-                }
                 else
-                {
                     result = FormatField("http://www.portalfiscal.inf.br/nfe", length, alignment);
-                }
-            }
             else if (normalizedName == "CONTENT")
-            {
                 // Campo content geralmente é preenchido pela IA
                 result = new string(' ', length);
-            }
             else
-            {
                 // Campo não reconhecido, retornar espaços
                 result = new string(' ', length);
-            }
 
             // Aplicar alinhamento e ajustar tamanho
             return FormatField(result, length, alignment);
@@ -203,25 +154,17 @@ namespace LayoutParserApi.Services.Generation.Implementations.FieldGenerators
 
             // Formatos comuns de data
             if (length >= 8)
-            {
                 // DDMMYYYY
                 dateStr = now.ToString("ddMMyyyy");
-            }
             else if (length >= 6)
-            {
                 // DDMMYY
                 dateStr = now.ToString("ddMMyy");
-            }
             else if (length >= 4)
-            {
                 // MMYY
                 dateStr = now.ToString("MMyy");
-            }
             else
-            {
                 // Formato mínimo
                 dateStr = now.ToString("dd");
-            }
 
             // Adicionar variação aleatória (dias anteriores)
             if (context != null && context.ContainsKey("RecordIndex"))
@@ -229,7 +172,7 @@ namespace LayoutParserApi.Services.Generation.Implementations.FieldGenerators
                 var recordIndex = Convert.ToInt32(context["RecordIndex"] ?? 0);
                 var daysAgo = _random.Next(0, 30); // Últimos 30 dias
                 var date = now.AddDays(-daysAgo);
-                
+
                 if (length >= 8)
                     dateStr = date.ToString("ddMMyyyy");
                 else if (length >= 6)
@@ -246,30 +189,20 @@ namespace LayoutParserApi.Services.Generation.Implementations.FieldGenerators
 
             // Formatos comuns de hora
             if (length >= 9)
-            {
                 // HHMMSSMMM (com milissegundos) ou HH:MM:SS
                 timeStr = now.ToString("HHmmss") + _random.Next(100, 999).ToString();
-            }
             else if (length >= 8)
-            {
                 // HHMMSSMM (com centésimos de segundo)
                 timeStr = now.ToString("HHmmss") + _random.Next(10, 99).ToString();
-            }
             else if (length >= 6)
-            {
                 // HHMMSS
                 timeStr = now.ToString("HHmmss");
-            }
             else if (length >= 4)
-            {
                 // HHMM
                 timeStr = now.ToString("HHmm");
-            }
             else
-            {
                 // HH
                 timeStr = now.ToString("HH");
-            }
 
             // Adicionar variação aleatória
             if (context != null && context.ContainsKey("RecordIndex"))
@@ -277,7 +210,7 @@ namespace LayoutParserApi.Services.Generation.Implementations.FieldGenerators
                 var recordIndex = Convert.ToInt32(context["RecordIndex"] ?? 0);
                 var minutesOffset = _random.Next(0, 1440); // 0 a 24 horas em minutos
                 var time = now.AddMinutes(minutesOffset);
-                
+
                 if (length >= 9)
                     timeStr = time.ToString("HHmmss") + _random.Next(100, 999).ToString();
                 else if (length >= 8)
@@ -295,7 +228,7 @@ namespace LayoutParserApi.Services.Generation.Implementations.FieldGenerators
         {
             // Gerar CNPJ válido (14 dígitos)
             var cnpj = GenerateCNPJDigits();
-            
+
             // Se o campo for maior que 14, preencher com zeros à esquerda ou espaços
             if (length > 14)
             {
@@ -305,10 +238,9 @@ namespace LayoutParserApi.Services.Generation.Implementations.FieldGenerators
                     cnpj = cnpj.PadRight(length, ' ');
             }
             else if (length < 14)
-            {
                 // Truncar se necessário
                 cnpj = cnpj.Substring(0, length);
-            }
+
 
             return FormatField(cnpj, length, alignment);
         }
@@ -317,7 +249,7 @@ namespace LayoutParserApi.Services.Generation.Implementations.FieldGenerators
         {
             // Gerar CPF válido (11 dígitos)
             var cpf = GenerateCPFDigits();
-            
+
             if (length > 11)
             {
                 if (alignment == "Right")
@@ -326,9 +258,7 @@ namespace LayoutParserApi.Services.Generation.Implementations.FieldGenerators
                     cpf = cpf.PadRight(length, ' ');
             }
             else if (length < 11)
-            {
                 cpf = cpf.Substring(0, length);
-            }
 
             return FormatField(cpf, length, alignment);
         }
@@ -337,12 +267,10 @@ namespace LayoutParserApi.Services.Generation.Implementations.FieldGenerators
         {
             // Gerar sequência baseada no índice do registro
             var sequence = (recordIndex + 1).ToString();
-            
+
             // Preencher com zeros à esquerda se necessário
             if (length > sequence.Length)
-            {
                 sequence = sequence.PadLeft(length, '0');
-            }
             else if (length < sequence.Length)
             {
                 // Se o número for maior que o campo, usar módulo
@@ -358,7 +286,7 @@ namespace LayoutParserApi.Services.Generation.Implementations.FieldGenerators
             // Gerar número aleatório ou sequencial
             var number = _random.Next(1, (int)Math.Pow(10, Math.Min(length, 9)));
             var numberStr = number.ToString();
-            
+
             if (length > numberStr.Length)
             {
                 if (alignment == "Right")
@@ -377,15 +305,11 @@ namespace LayoutParserApi.Services.Generation.Implementations.FieldGenerators
 
             // Truncar se necessário
             if (value.Length > length)
-            {
                 value = value.Substring(0, length);
-            }
 
             // Aplicar alinhamento
             if (alignment == "Right")
-            {
                 value = value.PadLeft(length, ' ');
-            }
             else if (alignment == "Center")
             {
                 var padding = length - value.Length;
@@ -394,9 +318,7 @@ namespace LayoutParserApi.Services.Generation.Implementations.FieldGenerators
                 value = new string(' ', leftPad) + value + new string(' ', rightPad);
             }
             else // Left (padrão)
-            {
                 value = value.PadRight(length, ' ');
-            }
 
             return value;
         }
@@ -534,4 +456,3 @@ namespace LayoutParserApi.Services.Generation.Implementations.FieldGenerators
         }
     }
 }
-

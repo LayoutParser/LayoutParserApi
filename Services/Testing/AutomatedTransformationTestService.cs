@@ -1,16 +1,11 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Threading.Tasks;
-using System.Xml.Linq;
 using LayoutParserApi.Models.Database;
-using LayoutParserApi.Services.Cache;
 using LayoutParserApi.Services.Database;
+using LayoutParserApi.Services.Interfaces;
+using LayoutParserApi.Services.Testing.Models;
 using LayoutParserApi.Services.Transformation;
 using LayoutParserApi.Services.XmlAnalysis;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Logging;
+
+using System.Xml.Linq;
 
 namespace LayoutParserApi.Services.Testing
 {
@@ -40,10 +35,8 @@ namespace LayoutParserApi.Services.Testing
             _mapperDatabaseService = mapperDatabaseService;
             _pipelineService = pipelineService;
             _validatorService = validatorService;
-            _examplesBasePath = configuration["Examples:Path"] 
-                ?? @"C:\inetpub\wwwroot\layoutparser\Exemplo";
-            _expectedOutputsPath = configuration["TransformationPipeline:ExpectedOutputsPath"] 
-                ?? @"C:\inetpub\wwwroot\layoutparser\ExpectedOutputs";
+            _examplesBasePath = configuration["Examples:Path"] ?? @"C:\inetpub\wwwroot\layoutparser\Exemplo";
+            _expectedOutputsPath = configuration["TransformationPipeline:ExpectedOutputsPath"] ?? @"C:\inetpub\wwwroot\layoutparser\ExpectedOutputs";
 
             Directory.CreateDirectory(_expectedOutputsPath);
         }
@@ -77,9 +70,7 @@ namespace LayoutParserApi.Services.Testing
                     result.TestResults.Add(testResult);
 
                     if (!testResult.Success)
-                    {
                         result.Success = false;
-                    }
                 }
 
                 result.EndTime = DateTime.UtcNow;
@@ -88,8 +79,7 @@ namespace LayoutParserApi.Services.Testing
                 result.PassedTests = result.TestResults.Count(t => t.Success);
                 result.FailedTests = result.TestResults.Count(t => !t.Success);
 
-                _logger.LogInformation("Testes concluídos. Total: {Total}, Passou: {Passed}, Falhou: {Failed}", 
-                    result.TotalTests, result.PassedTests, result.FailedTests);
+                _logger.LogInformation("Testes concluídos. Total: {Total}, Passou: {Passed}, Falhou: {Failed}", result.TotalTests, result.PassedTests, result.FailedTests);
             }
             catch (Exception ex)
             {
@@ -117,9 +107,7 @@ namespace LayoutParserApi.Services.Testing
             try
             {
                 if (string.IsNullOrEmpty(examplesDirectory))
-                {
                     examplesDirectory = Path.Combine(_examplesBasePath, layoutName);
-                }
 
                 if (!Directory.Exists(examplesDirectory))
                 {
@@ -137,21 +125,15 @@ namespace LayoutParserApi.Services.Testing
                     return result;
                 }
 
-                result.LayoutGuid = layout.LayoutGuid != Guid.Empty 
-                    ? layout.LayoutGuid.ToString() 
-                    : layout.Id.ToString();
+                result.LayoutGuid = layout.LayoutGuid != Guid.Empty ? layout.LayoutGuid.ToString() : layout.Id.ToString();
 
                 // Buscar mapeador para este layout (InputLayoutGuid)
                 var mapper = await _mapperDatabaseService.GetMapperByInputLayoutGuidAsync(result.LayoutGuid);
                 if (mapper == null)
-                {
                     result.Warnings.Add($"Nenhum mapeador encontrado para o layout {layoutName}");
-                }
 
                 // Buscar arquivos de exemplo TXT
-                var exampleFiles = Directory.GetFiles(examplesDirectory, "*.txt", SearchOption.AllDirectories)
-                    .Concat(Directory.GetFiles(examplesDirectory, "*.mqseries", SearchOption.AllDirectories))
-                    .ToList();
+                var exampleFiles = Directory.GetFiles(examplesDirectory, "*.txt", SearchOption.AllDirectories).Concat(Directory.GetFiles(examplesDirectory, "*.mqseries", SearchOption.AllDirectories)).ToList();
 
                 if (!exampleFiles.Any())
                 {
@@ -161,9 +143,7 @@ namespace LayoutParserApi.Services.Testing
 
                 // Buscar arquivo XML esperado (se existir)
                 var expectedXmlPath = Path.Combine(examplesDirectory, "expected_output.xml");
-                var expectedXml = File.Exists(expectedXmlPath) 
-                    ? await File.ReadAllTextAsync(expectedXmlPath) 
-                    : null;
+                var expectedXml = File.Exists(expectedXmlPath) ? await File.ReadAllTextAsync(expectedXmlPath) : null;
 
                 // Executar teste para cada arquivo de exemplo
                 foreach (var exampleFile in exampleFiles)
@@ -172,9 +152,7 @@ namespace LayoutParserApi.Services.Testing
                     result.TestCases.Add(testCase);
 
                     if (!testCase.Success)
-                    {
                         result.Success = false;
-                    }
                 }
 
                 result.EndTime = DateTime.UtcNow;
@@ -208,10 +186,7 @@ namespace LayoutParserApi.Services.Testing
                 var inputTxt = await File.ReadAllTextAsync(exampleFilePath);
 
                 // Executar transformação
-                var transformationResult = await _pipelineService.TransformTxtToXmlAsync(
-                    inputTxt,
-                    layoutName,
-                    "NFe"); // TODO: Detectar tipo de documento automaticamente
+                var transformationResult = await _pipelineService.TransformTxtToXmlAsync(inputTxt,layoutName,"NFe"); // TODO: Detectar tipo de documento automaticamente
 
                 if (!transformationResult.Success)
                 {
@@ -227,12 +202,7 @@ namespace LayoutParserApi.Services.Testing
                 result.XslPath = transformationResult.XslPath;
 
                 // Validar transformação
-                var validationResult = await _validatorService.ValidateTransformationAsync(
-                    inputTxt,
-                    layoutName,
-                    transformationResult.TclPath,
-                    transformationResult.XslPath,
-                    expectedXml);
+                var validationResult = await _validatorService.ValidateTransformationAsync(inputTxt,layoutName,transformationResult.TclPath,transformationResult.XslPath,expectedXml);
 
                 result.ValidationResult = validationResult;
                 result.Success = validationResult.Success && validationResult.ValidationSteps.All(s => s.Success);
@@ -242,11 +212,9 @@ namespace LayoutParserApi.Services.Testing
                 {
                     var comparisonResult = await CompareWithExpectedAsync(transformationResult.TransformedXml, expectedXml);
                     result.ComparisonResult = comparisonResult;
-                    
+
                     if (!comparisonResult.Match)
-                    {
                         result.Warnings.AddRange(comparisonResult.Differences);
-                    }
                 }
 
                 result.EndTime = DateTime.UtcNow;
@@ -267,9 +235,9 @@ namespace LayoutParserApi.Services.Testing
         /// <summary>
         /// Compara XML gerado com XML esperado
         /// </summary>
-        private async Task<ComparisonResult> CompareWithExpectedAsync(string actualXml, string expectedXml)
+        private async Task<Models.ComparisonResult> CompareWithExpectedAsync(string actualXml, string expectedXml)
         {
-            var result = new ComparisonResult
+            var result = new Models.ComparisonResult
             {
                 Match = true,
                 Differences = new List<string>()
@@ -287,16 +255,14 @@ namespace LayoutParserApi.Services.Testing
                 if (actualElements.Count != expectedElements.Count)
                 {
                     result.Match = false;
-                    result.Differences.Add(
-                        $"Número de elementos diferente: esperado {expectedElements.Count}, encontrado {actualElements.Count}");
+                    result.Differences.Add($"Número de elementos diferente: esperado {expectedElements.Count}, encontrado {actualElements.Count}");
                 }
 
                 // Comparar estrutura básica
                 if (actualDoc.Root?.Name != expectedDoc.Root?.Name)
                 {
                     result.Match = false;
-                    result.Differences.Add(
-                        $"Elemento raiz diferente: esperado {expectedDoc.Root?.Name}, encontrado {actualDoc.Root?.Name}");
+                    result.Differences.Add($"Elemento raiz diferente: esperado {expectedDoc.Root?.Name}, encontrado {actualDoc.Root?.Name}");
                 }
 
                 // Comparar elementos críticos
@@ -313,9 +279,7 @@ namespace LayoutParserApi.Services.Testing
                     }
                 }
 
-                result.Message = result.Match 
-                    ? "XML gerado corresponde ao esperado" 
-                    : $"Encontradas {result.Differences.Count} diferenças";
+                result.Message = result.Match ? "XML gerado corresponde ao esperado": $"Encontradas {result.Differences.Count} diferenças";
             }
             catch (Exception ex)
             {
@@ -350,55 +314,4 @@ namespace LayoutParserApi.Services.Testing
             }
         }
     }
-
-    // Modelos de resultado de teste
-    public class TestSuiteResult
-    {
-        public bool Success { get; set; }
-        public DateTime StartTime { get; set; }
-        public DateTime EndTime { get; set; }
-        public TimeSpan Duration { get; set; }
-        public int TotalTests { get; set; }
-        public int PassedTests { get; set; }
-        public int FailedTests { get; set; }
-        public List<TestResult> TestResults { get; set; } = new();
-        public List<string> Errors { get; set; } = new();
-    }
-
-    public class TestResult
-    {
-        public string LayoutName { get; set; }
-        public string LayoutGuid { get; set; }
-        public bool Success { get; set; }
-        public DateTime StartTime { get; set; }
-        public DateTime EndTime { get; set; }
-        public TimeSpan Duration { get; set; }
-        public List<TestCaseResult> TestCases { get; set; } = new();
-        public List<string> Errors { get; set; } = new();
-        public List<string> Warnings { get; set; } = new();
-    }
-
-    public class TestCaseResult
-    {
-        public string TestCaseName { get; set; }
-        public bool Success { get; set; }
-        public DateTime StartTime { get; set; }
-        public DateTime EndTime { get; set; }
-        public TimeSpan Duration { get; set; }
-        public string TransformedXml { get; set; }
-        public string TclPath { get; set; }
-        public string XslPath { get; set; }
-        public TransformationValidationResult ValidationResult { get; set; }
-        public ComparisonResult ComparisonResult { get; set; }
-        public List<string> Errors { get; set; } = new();
-        public List<string> Warnings { get; set; } = new();
-    }
-
-    public class ComparisonResult
-    {
-        public bool Match { get; set; }
-        public string Message { get; set; }
-        public List<string> Differences { get; set; } = new();
-    }
 }
-

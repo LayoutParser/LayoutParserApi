@@ -48,14 +48,10 @@ namespace LayoutParserApi.Services.Generation.Implementations
                         var fileName = Path.GetFileNameWithoutExtension(file);
                         
                         if (!_exampleCache.ContainsKey(fileName))
-                        {
                             _exampleCache[fileName] = new List<string>();
-                        }
                         
                         // Dividir conteúdo em linhas e adicionar ao cache
-                        var lines = content.Split('\n', StringSplitOptions.RemoveEmptyEntries)
-                                          .Where(line => !string.IsNullOrWhiteSpace(line))
-                                          .ToList();
+                        var lines = content.Split('\n', StringSplitOptions.RemoveEmptyEntries).Where(line => !string.IsNullOrWhiteSpace(line)).ToList();
                         
                         _exampleCache[fileName].AddRange(lines);
                         
@@ -67,8 +63,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
                     }
                 }
 
-                _logger.LogInformation("RAG Service inicializado com {Files} arquivos e {TotalLines} linhas de exemplo", 
-                    _exampleCache.Count, _exampleCache.Values.Sum(list => list.Count));
+                _logger.LogInformation("RAG Service inicializado com {Files} arquivos e {TotalLines} linhas de exemplo", _exampleCache.Count, _exampleCache.Values.Sum(list => list.Count));
             }
             catch (Exception ex)
             {
@@ -141,19 +136,13 @@ namespace LayoutParserApi.Services.Generation.Implementations
 
                 // Extrair nomes de campos
                 var fieldMatches = System.Text.RegularExpressions.Regex.Matches(layoutXml, @"<Name>([^<]+)</Name>");
-                var fieldNames = fieldMatches.Cast<System.Text.RegularExpressions.Match>()
-                                           .Select(m => m.Groups[1].Value)
-                                           .Take(10)
-                                           .ToList();
+                var fieldNames = fieldMatches.Cast<System.Text.RegularExpressions.Match>().Select(m => m.Groups[1].Value).Take(10).ToList();
                 
                 info["fields"] = string.Join(",", fieldNames);
                 
                 // Extrair tamanhos de campos
                 var sizeMatches = System.Text.RegularExpressions.Regex.Matches(layoutXml, @"Size=""(\d+)""");
-                var sizes = sizeMatches.Cast<System.Text.RegularExpressions.Match>()
-                                     .Select(m => m.Groups[1].Value)
-                                     .Take(5)
-                                     .ToList();
+                var sizes = sizeMatches.Cast<System.Text.RegularExpressions.Match>().Select(m => m.Groups[1].Value).Take(5).ToList();
                 
                 info["sizes"] = string.Join(",", sizes);
             }
@@ -192,8 +181,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
                     // Score por campos similares
                     if (!string.IsNullOrEmpty(layoutFields))
                     {
-                        var fieldMatches = layoutFields.Split(',')
-                                                     .Count(field => exampleLower.Contains(field.Trim()));
+                        var fieldMatches = layoutFields.Split(',').Count(field => exampleLower.Contains(field.Trim()));
                         score += fieldMatches * 0.1;
                     }
                     
@@ -221,13 +209,9 @@ namespace LayoutParserApi.Services.Generation.Implementations
             try
             {
                 if (!_exampleCache.ContainsKey(fileName))
-                {
                     _exampleCache[fileName] = new List<string>();
-                }
                 
-                var lines = content.Split('\n', StringSplitOptions.RemoveEmptyEntries)
-                                  .Where(line => !string.IsNullOrWhiteSpace(line))
-                                  .ToList();
+                var lines = content.Split('\n', StringSplitOptions.RemoveEmptyEntries).Where(line => !string.IsNullOrWhiteSpace(line)).ToList();
                 
                 _exampleCache[fileName].AddRange(lines);
                 

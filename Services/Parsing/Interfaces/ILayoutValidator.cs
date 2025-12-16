@@ -7,5 +7,3 @@ namespace LayoutParserApi.Services.Parsing.Interfaces
         void ValidateCompleteLayout(Layout layout);
     }
 }
-
-

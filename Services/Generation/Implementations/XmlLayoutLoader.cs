@@ -1,7 +1,7 @@
 using LayoutParserApi.Models.Entities;
 using LayoutParserApi.Models.Enums;
+
 using System.Xml;
-using System.Xml.Serialization;
 
 namespace LayoutParserApi.Services.Generation.Implementations
 {
@@ -13,7 +13,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
             {
                 using var reader = new StreamReader(xmlStream);
                 var xmlContent = await reader.ReadToEndAsync();
-                
+
                 return LoadLayoutFromXmlString(xmlContent);
             }
             catch (Exception ex)
@@ -67,7 +67,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
             foreach (XmlNode elementNode in elementNodes)
             {
                 var xsiType = elementNode.Attributes?["xsi:type"]?.Value;
-                
+
                 if (xsiType == "LineElementVO")
                 {
                     var lineElement = ProcessLineElement(elementNode);
@@ -102,11 +102,11 @@ namespace LayoutParserApi.Services.Generation.Implementations
             if (childElements != null)
             {
                 lineElement.Elements = new List<string>();
-                
+
                 foreach (XmlNode childNode in childElements)
                 {
                     var childXsiType = childNode.Attributes?["xsi:type"]?.Value;
-                    
+
                     if (childXsiType == "FieldElementVO")
                     {
                         var fieldElement = ProcessFieldElement(childNode);

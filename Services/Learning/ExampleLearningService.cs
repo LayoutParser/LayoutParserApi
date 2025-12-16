@@ -1,11 +1,6 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Threading.Tasks;
+using LayoutParserApi.Services.Learning.Models;
 using LayoutParserApi.Services.Transformation;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Logging;
+using LayoutParserApi.Services.Transformation.Models;
 
 namespace LayoutParserApi.Services.Learning
 {
@@ -18,20 +13,14 @@ namespace LayoutParserApi.Services.Learning
         private readonly TransformationLearningService _learningService;
         private readonly string _examplesBasePath;
 
-        public ExampleLearningService(
-            ILogger<ExampleLearningService> logger,
-            TransformationLearningService learningService,
-            IConfiguration configuration)
+        public ExampleLearningService(ILogger<ExampleLearningService> logger,TransformationLearningService learningService,IConfiguration configuration)
         {
             _logger = logger;
             _learningService = learningService;
-            _examplesBasePath = configuration["TransformationPipeline:LearningExamplesPath"] 
-                ?? @"C:\Users\Elson\source\repos\ExemplosDeXSLeTCL";
+            _examplesBasePath = configuration["TransformationPipeline:LearningExamplesPath"] ?? @"C:\Users\Elson\source\repos\ExemplosDeXSLeTCL";
 
             if (!Directory.Exists(_examplesBasePath))
-            {
                 _logger.LogWarning("Diretório de exemplos de aprendizado não encontrado: {Path}", _examplesBasePath);
-            }
         }
 
         /// <summary>
@@ -62,8 +51,7 @@ namespace LayoutParserApi.Services.Learning
                 var tclFiles = Directory.GetFiles(_examplesBasePath, "*.tcl", SearchOption.AllDirectories).ToList();
                 var xslFiles = Directory.GetFiles(_examplesBasePath, "*.xsl", SearchOption.AllDirectories).ToList();
 
-                _logger.LogInformation("Encontrados {TclCount} arquivos TCL e {XslCount} arquivos XSL", 
-                    tclFiles.Count, xslFiles.Count);
+                _logger.LogInformation("Encontrados {TclCount} arquivos TCL e {XslCount} arquivos XSL",tclFiles.Count, xslFiles.Count);
 
                 // Agrupar TCL e XSL por layout (baseado no nome do arquivo ou diretório)
                 var tclGroups = GroupFilesByLayout(tclFiles);
@@ -80,7 +68,7 @@ namespace LayoutParserApi.Services.Learning
                         foreach (var filePath in group.Value)
                         {
                             var tclContent = await File.ReadAllTextAsync(filePath);
-                            
+
                             // Tentar encontrar arquivos relacionados (input TXT e output XML)
                             var inputTxt = await FindRelatedFileAsync(filePath, "*.txt");
                             var outputXml = await FindRelatedFileAsync(filePath, "*.xml");
@@ -100,13 +88,10 @@ namespace LayoutParserApi.Services.Learning
                             if (learningResult.Success)
                             {
                                 result.LearnedLayouts.Add($"TCL: {layoutName}");
-                                _logger.LogInformation("Aprendizado TCL concluído para: {LayoutName}. Padrões: {Count}", 
-                                    layoutName, learningResult.PatternsLearned.Count);
+                                _logger.LogInformation("Aprendizado TCL concluído para: {LayoutName}. Padrões: {Count}",layoutName, learningResult.PatternsLearned.Count);
                             }
                             else
-                            {
                                 result.Errors.AddRange(learningResult.Errors);
-                            }
                         }
                     }
                     catch (Exception ex)
@@ -127,7 +112,7 @@ namespace LayoutParserApi.Services.Learning
                         foreach (var filePath in group.Value)
                         {
                             var xslContent = await File.ReadAllTextAsync(filePath);
-                            
+
                             // Tentar encontrar arquivos relacionados (input XML e output XML)
                             var inputXml = await FindRelatedFileAsync(filePath, "input*.xml");
                             var outputXml = await FindRelatedFileAsync(filePath, "output*.xml");
@@ -147,13 +132,10 @@ namespace LayoutParserApi.Services.Learning
                             if (learningResult.Success)
                             {
                                 result.LearnedLayouts.Add($"XSL: {layoutName}");
-                                _logger.LogInformation("Aprendizado XSL concluído para: {LayoutName}. Padrões: {Count}", 
-                                    layoutName, learningResult.PatternsLearned.Count);
+                                _logger.LogInformation("Aprendizado XSL concluído para: {LayoutName}. Padrões: {Count}",layoutName, learningResult.PatternsLearned.Count);
                             }
                             else
-                            {
                                 result.Errors.AddRange(learningResult.Errors);
-                            }
                         }
                     }
                     catch (Exception ex)
@@ -193,9 +175,7 @@ namespace LayoutParserApi.Services.Learning
                 var layoutName = ExtractLayoutName(fileName, directoryName);
 
                 if (!groups.ContainsKey(layoutName))
-                {
                     groups[layoutName] = new List<string>();
-                }
 
                 groups[layoutName].Add(filePath);
             }
@@ -210,18 +190,14 @@ namespace LayoutParserApi.Services.Learning
         {
             // Tentar extrair do nome do arquivo (ex: "LAY_TXT_MQSERIES_ENVNFE_4.00_NFe.tcl")
             if (fileName.StartsWith("LAY_"))
-            {
                 return fileName;
-            }
 
             // Tentar extrair do diretório (ex: "C:\...\LAY_TXT_MQSERIES_ENVNFE_4.00_NFe\...")
             if (!string.IsNullOrEmpty(directoryName))
             {
                 var dirName = Path.GetFileName(directoryName);
                 if (dirName.StartsWith("LAY_"))
-                {
                     return dirName;
-                }
             }
 
             // Fallback: usar nome do arquivo
@@ -237,32 +213,13 @@ namespace LayoutParserApi.Services.Learning
             {
                 var directory = Path.GetDirectoryName(filePath);
                 var files = Directory.GetFiles(directory, pattern, SearchOption.TopDirectoryOnly);
-                
+
                 if (files.Any())
-                {
                     return await File.ReadAllTextAsync(files.First());
-                }
             }
-            catch
-            {
-                // Ignorar erros
-            }
+            catch { }
 
             return null;
         }
     }
-
-    /// <summary>
-    /// Resultado do aprendizado em lote
-    /// </summary>
-    public class LearningBatchResult
-    {
-        public bool Success { get; set; }
-        public DateTime StartTime { get; set; }
-        public DateTime EndTime { get; set; }
-        public TimeSpan Duration { get; set; }
-        public List<string> LearnedLayouts { get; set; } = new();
-        public List<string> Errors { get; set; } = new();
-    }
 }
-

@@ -1,14 +1,15 @@
 using LayoutParserApi.Models.Entities;
 using LayoutParserApi.Models.Generation;
-using LayoutParserApi.Models.Parsing;
-using LayoutParserApi.Services.Generation.Interfaces;
 using LayoutParserApi.Services.Generation.Implementations;
+using LayoutParserApi.Services.Generation.Interfaces;
 using LayoutParserApi.Services.Generation.TxtGenerator;
+using LayoutParserApi.Services.Generation.TxtGenerator.Enum;
 using LayoutParserApi.Services.Interfaces;
+
 using Microsoft.AspNetCore.Mvc;
+
 using System.IO.Compression;
 using System.Text;
-using System.Linq;
 
 namespace LayoutParserApi.Controllers
 {
@@ -386,16 +387,16 @@ namespace LayoutParserApi.Controllers
 
             // Criar diretório temporário para os arquivos
             var tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
-            
+
             try
             {
                 // Determinar modo de geração
                 GenerationMode mode = GenerationMode.Random;
-                if (Enum.TryParse<GenerationMode>(generationMode, true, out var parsedMode))
+                if (System.Enum.TryParse<GenerationMode>(generationMode, true, out var parsedMode))
                     mode = parsedMode;
                 else
                     _logger.LogWarning("Modo de geração inválido: {Mode}, usando Random", generationMode);
-                
+
                 _logger.LogInformation("Iniciando geração de {Files} arquivos com {Records} registros cada - Modo: {Mode}", numberOfFiles, numberOfRecords, mode);
 
                 // Ler conteúdo do layout XML
@@ -470,7 +471,7 @@ namespace LayoutParserApi.Controllers
                             };
                             validationResults.Add(validationResult);
 
-                            _logger.LogInformation("Arquivo {Index} gerado: {Lines} linhas, Válido: {IsValid}", 
+                            _logger.LogInformation("Arquivo {Index} gerado: {Lines} linhas, Válido: {IsValid}",
                                 fileIndex, result.LineCount, result.ValidationResult?.IsValid ?? false);
                         }
                         else
@@ -489,10 +490,9 @@ namespace LayoutParserApi.Controllers
                 zipStream.Position = 0;
                 var zipBytes = zipStream.ToArray();
 
-                var acceptedFiles = validationResults.Count(r => 
-                    !r.ContainsKey("rejected") || !(r["rejected"] is bool rejected && rejected));
+                var acceptedFiles = validationResults.Count(r => !r.ContainsKey("rejected") || !(r["rejected"] is bool rejected && rejected));
 
-                _logger.LogInformation("ZIP gerado com {Size} bytes contendo {Accepted}/{Total} arquivos aceitos", 
+                _logger.LogInformation("ZIP gerado com {Size} bytes contendo {Accepted}/{Total} arquivos aceitos",
                     zipBytes.Length, acceptedFiles, numberOfFiles);
 
                 // Retornar ZIP com metadata de validação nos headers

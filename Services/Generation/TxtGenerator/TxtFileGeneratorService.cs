@@ -1,15 +1,12 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using Microsoft.Extensions.DependencyInjection;
+using LayoutParserApi.Models.Generation;
+using LayoutParserApi.Services.Generation.TxtGenerator.Enum;
 using LayoutParserApi.Services.Generation.TxtGenerator.Generators;
+using LayoutParserApi.Services.Generation.TxtGenerator.Generators.Interfaces;
 using LayoutParserApi.Services.Generation.TxtGenerator.Models;
 using LayoutParserApi.Services.Generation.TxtGenerator.Parsers;
 using LayoutParserApi.Services.Generation.TxtGenerator.Validators;
-using LayoutParserApi.Models.Generation;
+
+using System.Text;
 
 namespace LayoutParserApi.Services.Generation.TxtGenerator
 {
@@ -37,7 +34,7 @@ namespace LayoutParserApi.Services.Generation.TxtGenerator
             _xmlParser = xmlParser;
             _excelParser = excelParser;
             _validator = validator;
-            
+
             // Escolher gerador baseado no modo
             switch (mode)
             {
@@ -63,12 +60,7 @@ namespace LayoutParserApi.Services.Generation.TxtGenerator
         /// <summary>
         /// Gera arquivo .txt completo
         /// </summary>
-        public async Task<GenerationResult> GenerateFileAsync(
-            string layoutXml,
-            ExcelDataContext excelContext,
-            int recordCount,
-            string outputPath,
-            GenerationMode mode)
+        public async Task<GenerationResult> GenerateFileAsync(string layoutXml,ExcelDataContext excelContext,int recordCount,string outputPath,GenerationMode mode)
         {
             try
             {
@@ -98,23 +90,19 @@ namespace LayoutParserApi.Services.Generation.TxtGenerator
                 var validation = _validator.ValidateFile(lines, fileLayout);
                 if (!validation.IsValid)
                 {
-                    _logger.LogWarning("Arquivo gerado com {ErrorCount} erros e {WarningCount} avisos", 
+                    _logger.LogWarning("Arquivo gerado com {ErrorCount} erros e {WarningCount} avisos",
                         validation.Errors.Count, validation.Warnings.Count);
-                    
+
                     foreach (var error in validation.Errors)
-                    {
                         _logger.LogWarning("Erro de validação: {Error}", error);
-                    }
                 }
                 else
-                {
                     _logger.LogInformation("Arquivo validado com sucesso: {ValidLines} linhas válidas", validation.ValidLines);
-                }
 
                 // 5. Salvar arquivo
                 var fileName = $"generated_{DateTime.Now:yyyyMMddHHmmss}.txt";
                 var fullPath = Path.Combine(outputPath, fileName);
-                
+
                 Directory.CreateDirectory(outputPath);
                 await File.WriteAllLinesAsync(fullPath, lines, Encoding.UTF8);
 
@@ -159,12 +147,10 @@ namespace LayoutParserApi.Services.Generation.TxtGenerator
         private async Task<string> GenerateLineAsync(RecordLayout recordLayout, int recordIndex, int occurrence, ExcelDataContext excelContext)
         {
             var lineBuilder = new StringBuilder();
-            
+
             // Adicionar InitialValue
             if (!string.IsNullOrEmpty(recordLayout.InitialValue))
-            {
                 lineBuilder.Append(recordLayout.InitialValue);
-            }
 
             // Gerar cada campo
             var context = new Dictionary<string, object>();
@@ -175,9 +161,7 @@ namespace LayoutParserApi.Services.Generation.TxtGenerator
                 {
                     var samples = GetExcelSamples(field.Name, excelContext);
                     if (samples.Any())
-                    {
                         context[$"ExcelSamples_{field.Name}"] = samples;
-                    }
                 }
             }
 
@@ -186,20 +170,14 @@ namespace LayoutParserApi.Services.Generation.TxtGenerator
                 // Preparar contexto específico do campo
                 var fieldContext = new Dictionary<string, object>(context);
                 if (context.ContainsKey($"ExcelSamples_{field.Name}"))
-                {
                     fieldContext["ExcelSamples"] = context[$"ExcelSamples_{field.Name}"];
-                }
 
                 string fieldValue;
                 if (_asyncGenerator != null && _generator is IAsyncFieldValueGenerator)
-                {
                     fieldValue = await ((IAsyncFieldValueGenerator)_generator).GenerateValueAsync(field, recordIndex, fieldContext);
-                }
                 else
-                {
                     fieldValue = _generator.GenerateValue(field, recordIndex, fieldContext);
-                }
-                
+
                 // Ajustar posição atual se necessário
                 var currentPosition = lineBuilder.Length;
                 if (currentPosition < field.StartPosition)
@@ -210,21 +188,17 @@ namespace LayoutParserApi.Services.Generation.TxtGenerator
                 }
 
                 lineBuilder.Append(fieldValue);
-                _logger.LogDebug("Campo {FieldName} gerado com valor: {Value} (posição {Start}-{End})", 
-                    field.Name, fieldValue.Trim(), field.StartPosition, field.EndPosition);
+                _logger.LogDebug("Campo {FieldName} gerado com valor: {Value} (posição {Start}-{End})",field.Name, fieldValue.Trim(), field.StartPosition, field.EndPosition);
             }
 
             // Completar até o tamanho total
             var line = lineBuilder.ToString();
             if (line.Length < recordLayout.TotalLength)
-            {
                 line = line.PadRight(recordLayout.TotalLength, ' ');
-            }
             else if (line.Length > recordLayout.TotalLength)
             {
                 line = line.Substring(0, recordLayout.TotalLength);
-                _logger.LogWarning("Linha truncada de {Original} para {Target} caracteres", 
-                    lineBuilder.Length, recordLayout.TotalLength);
+                _logger.LogWarning("Linha truncada de {Original} para {Target} caracteres",lineBuilder.Length, recordLayout.TotalLength);
             }
 
             return line;
@@ -236,35 +210,12 @@ namespace LayoutParserApi.Services.Generation.TxtGenerator
                 return new List<string>();
 
             // Buscar coluna correspondente
-            var matchingColumn = excelContext.Headers?.FirstOrDefault(h => 
-                h.Equals(fieldName, StringComparison.OrdinalIgnoreCase) ||
-                h.ToLowerInvariant().Contains(fieldName.ToLowerInvariant()));
+            var matchingColumn = excelContext.Headers?.FirstOrDefault(h => h.Equals(fieldName, StringComparison.OrdinalIgnoreCase) || h.ToLowerInvariant().Contains(fieldName.ToLowerInvariant()));
 
             if (matchingColumn == null || !excelContext.ColumnData.ContainsKey(matchingColumn))
                 return new List<string>();
 
-            return excelContext.ColumnData[matchingColumn]
-                .Where(v => !string.IsNullOrWhiteSpace(v))
-                .Distinct()
-                .Take(10)
-                .ToList();
+            return excelContext.ColumnData[matchingColumn].Where(v => !string.IsNullOrWhiteSpace(v)).Distinct().Take(10).ToList();
         }
     }
-
-    public enum GenerationMode
-    {
-        Deterministic,
-        Random,
-        SemanticAI
-    }
-
-    public class GenerationResult
-    {
-        public bool Success { get; set; }
-        public string FilePath { get; set; }
-        public int LineCount { get; set; }
-        public string ErrorMessage { get; set; }
-        public FileValidationResult ValidationResult { get; set; }
-    }
 }
-

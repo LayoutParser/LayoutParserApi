@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using LayoutParserApi.Services.Generation.Implementations;
+using LayoutParserApi.Models.RAG;
 
 namespace LayoutParserApi.Controllers
 {
@@ -105,17 +106,5 @@ namespace LayoutParserApi.Controllers
                 return StatusCode(500, new { error = ex.Message });
             }
         }
-    }
-
-    public class AddExampleRequest
-    {
-        public string FileName { get; set; } = "";
-        public string Content { get; set; } = "";
-    }
-
-    public class FindRelevantRequest
-    {
-        public string LayoutXml { get; set; } = "";
-        public int? MaxExamples { get; set; }
     }
 }

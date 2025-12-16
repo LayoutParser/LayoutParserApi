@@ -10,6 +10,7 @@ using System.Linq;
 using System.IO;
 using System.Xml.Linq;
 using System.Text;
+using LayoutParserApi.Services.Interfaces;
 
 namespace LayoutParserApi.Controllers
 {

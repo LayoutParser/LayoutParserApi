@@ -1,4 +1,4 @@
-namespace LayoutParserApi.Services.Logging
+namespace LayoutParserApi.Services.Interfaces
 {
     public interface ILoggingStrategy
     {

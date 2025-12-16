@@ -1,13 +1,8 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using System.Xml.Linq;
+using LayoutParserApi.Services.Transformation.Models;
 using LayoutParserApi.Services.XmlAnalysis;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Logging;
+
+using System.Xml.Linq;
+using System.Linq;
 
 namespace LayoutParserApi.Services.Transformation
 {
@@ -21,11 +16,7 @@ namespace LayoutParserApi.Services.Transformation
         private readonly TransformationLearningService _learningService;
         private readonly PatternComparisonService _comparisonService;
 
-        public ImprovedXslGeneratorService(
-            ILogger<ImprovedXslGeneratorService> logger,
-            XslGeneratorService baseGenerator,
-            TransformationLearningService learningService,
-            PatternComparisonService comparisonService)
+        public ImprovedXslGeneratorService(ILogger<ImprovedXslGeneratorService> logger, XslGeneratorService baseGenerator, TransformationLearningService learningService, PatternComparisonService comparisonService)
         {
             _logger = logger;
             _baseGenerator = baseGenerator;
@@ -36,12 +27,7 @@ namespace LayoutParserApi.Services.Transformation
         /// <summary>
         /// Gera XSL usando aprendizado de máquina para melhorar a precisão
         /// </summary>
-        public async Task<ImprovedXslGenerationResult> GenerateXslWithMLAsync(
-            string mapXmlPath,
-            string layoutName,
-            string outputPath = null,
-            string targetLayoutGuid = null,
-            string intermediateXml = null)
+        public async Task<ImprovedXslGenerationResult> GenerateXslWithMLAsync(string mapXmlPath, string layoutName, string outputPath = null, string targetLayoutGuid = null, string intermediateXml = null)
         {
             var result = new ImprovedXslGenerationResult
             {
@@ -67,7 +53,7 @@ namespace LayoutParserApi.Services.Transformation
                 if (tclExamples != null && tclExamples.Any())
                 {
                     _logger.LogInformation("Carregados {Count} exemplos TCL constantemente para layout: {LayoutName}", tclExamples.Count, layoutName);
-                    
+
                     // Aprender padrões TCL constantemente
                     var tclLearningResult = await _learningService.LearnTclPatternsAsync(layoutName, tclExamples);
                     if (tclLearningResult.Success && tclLearningResult.PatternsLearned.Any())
@@ -82,25 +68,25 @@ namespace LayoutParserApi.Services.Transformation
                 if (xslExamples != null && xslExamples.Any())
                 {
                     _logger.LogInformation("Carregados {Count} exemplos XSL constantemente para layout: {LayoutName}", xslExamples.Count, layoutName);
-                    
+
                     // Aprender padrões XSL constantemente
                     var xslLearningResult = await _learningService.LearnXslPatternsAsync(layoutName, xslExamples);
                     if (xslLearningResult.Success && xslLearningResult.PatternsLearned.Any())
                     {
                         _logger.LogInformation("Padroes XSL aprendidos: {Count} padroes", xslLearningResult.PatternsLearned.Count);
                         result.Suggestions.Add($"Aprendizado XSL: {xslLearningResult.PatternsLearned.Count} padrões aprendidos de {xslExamples.Count} exemplo(s)");
-                        
+
                         // Usar padrões XSL aprendidos para melhorar o XSL gerado
                         if (!string.IsNullOrEmpty(intermediateXml) && xslExamples.Any(e => !string.IsNullOrEmpty(e.OutputXml)))
                         {
                             _logger.LogInformation("Usando padrões XSL aprendidos para melhorar geração do XSL");
-                            
+
                             // Comparar estrutura do XML intermediário com exemplos esperados
                             var improvedXslFromExamples = await ImproveXslUsingExamplesAsync(
-                                baseXsl, 
-                                intermediateXml, 
+                                baseXsl,
+                                intermediateXml,
                                 xslExamples.Select(e => e.OutputXml).Where(x => !string.IsNullOrEmpty(x)).ToList());
-                            
+
                             if (!string.IsNullOrEmpty(improvedXslFromExamples))
                             {
                                 baseXsl = improvedXslFromExamples;
@@ -116,18 +102,18 @@ namespace LayoutParserApi.Services.Transformation
                 if (xmlExamples != null && xmlExamples.Any())
                 {
                     _logger.LogInformation("Carregados {Count} exemplos XML para layout: {LayoutName}", xmlExamples.Count, layoutName);
-                    
+
                     // Se temos XML intermediário e exemplos XML esperados, podemos melhorar o XSL
                     if (!string.IsNullOrEmpty(intermediateXml) && xmlExamples.Any(e => !string.IsNullOrEmpty(e.OutputXml)))
                     {
                         _logger.LogInformation("Usando exemplos XML para melhorar geração do XSL");
-                        
+
                         // Comparar estrutura do XML intermediário com exemplos esperados
                         var improvedXslFromExamples = await ImproveXslUsingExamplesAsync(
-                            baseXsl, 
-                            intermediateXml, 
+                            baseXsl,
+                            intermediateXml,
                             xmlExamples.Select(e => e.OutputXml).Where(x => !string.IsNullOrEmpty(x)).ToList());
-                        
+
                         if (!string.IsNullOrEmpty(improvedXslFromExamples))
                         {
                             baseXsl = improvedXslFromExamples;
@@ -137,9 +123,8 @@ namespace LayoutParserApi.Services.Transformation
                     }
                 }
                 else
-                {
                     _logger.LogInformation("Nenhum exemplo XML encontrado para layout: {LayoutName}", layoutName);
-                }
+
 
                 // 4. Carregar modelo aprendido se existir
                 var learnedModel = await _learningService.LoadXslModelAsync(layoutName);
@@ -147,7 +132,7 @@ namespace LayoutParserApi.Services.Transformation
                 {
                     // 5. Analisar XSL gerado e comparar com padrões aprendidos
                     var generatedPatterns = await ExtractPatternsFromXslAsync(baseXsl);
-                    
+
                     // 6. Comparar padrões gerados com padrões aprendidos
                     var improvements = new List<string>();
                     foreach (var generatedPattern in generatedPatterns)
@@ -174,9 +159,8 @@ namespace LayoutParserApi.Services.Transformation
                     // 7. Aplicar melhorias baseadas em regras aprendidas
                     var improvedXsl = await ApplyLearnedRulesAsync(baseXsl, learnedModel);
                     if (!string.IsNullOrEmpty(improvedXsl))
-                    {
                         baseXsl = improvedXsl;
-                    }
+
 
                     // 8. Validar XSL melhorado
                     var validationResult = await ValidateXslStructureAsync(baseXsl);
@@ -187,9 +171,8 @@ namespace LayoutParserApi.Services.Transformation
                     }
                 }
                 else
-                {
                     _logger.LogInformation("Nenhum modelo aprendido encontrado. Usando XSL base gerado.");
-                }
+
 
                 result.SuggestedXsl = baseXsl;
                 result.Success = true;
@@ -202,9 +185,7 @@ namespace LayoutParserApi.Services.Transformation
                 result.Warnings.Add($"Erro: {ex.Message}");
                 // Em caso de erro, retornar XSL base
                 if (!string.IsNullOrEmpty(result.GeneratedXsl))
-                {
                     result.SuggestedXsl = result.GeneratedXsl;
-                }
             }
 
             return result;
@@ -214,23 +195,18 @@ namespace LayoutParserApi.Services.Transformation
         /// Melhora XSL usando exemplos XML esperados
         /// Compara a estrutura do XML intermediário com os exemplos esperados e ajusta o XSL
         /// </summary>
-        private async Task<string> ImproveXslUsingExamplesAsync(
-            string baseXsl, 
-            string intermediateXml, 
-            List<string> expectedOutputXmls)
+        private async Task<string> ImproveXslUsingExamplesAsync(string baseXsl, string intermediateXml, List<string> expectedOutputXmls)
         {
             try
             {
                 if (string.IsNullOrEmpty(intermediateXml) || expectedOutputXmls == null || !expectedOutputXmls.Any())
-                {
                     return baseXsl;
-                }
 
                 _logger.LogInformation("Melhorando XSL usando {Count} exemplo(s) XML", expectedOutputXmls.Count);
 
                 // Parsear XML intermediário
                 var intermediateDoc = XDocument.Parse(intermediateXml);
-                
+
                 // Parsear exemplos XML esperados
                 var expectedDocs = expectedOutputXmls
                     .Where(xml => !string.IsNullOrEmpty(xml))
@@ -245,9 +221,7 @@ namespace LayoutParserApi.Services.Transformation
                             _logger.LogWarning(ex, "Erro ao fazer parse de exemplo XML esperado");
                             return null;
                         }
-                    })
-                    .Where(doc => doc != null)
-                    .ToList();
+                    }).Where(doc => doc != null).ToList();
 
                 if (!expectedDocs.Any())
                 {
@@ -257,20 +231,20 @@ namespace LayoutParserApi.Services.Transformation
 
                 // Analisar estrutura dos exemplos esperados
                 var expectedStructure = AnalyzeXmlStructure(expectedDocs.First());
-                
+
                 // Analisar estrutura do XML intermediário
                 var intermediateStructure = AnalyzeXmlStructure(intermediateDoc);
-                
+
                 // Comparar estruturas e identificar diferenças
                 var differences = CompareXmlStructures(intermediateStructure, expectedStructure);
-                
+
                 if (differences.Any())
                 {
                     _logger.LogInformation("Encontradas {Count} diferenças entre XML intermediário e exemplos esperados", differences.Count);
-                    
+
                     // Ajustar XSL baseado nas diferenças encontradas
                     var improvedXsl = AdjustXslBasedOnDifferences(baseXsl, differences, intermediateStructure, expectedStructure);
-                    
+
                     if (!string.IsNullOrEmpty(improvedXsl))
                     {
                         _logger.LogInformation("XSL ajustado com base nos exemplos XML");
@@ -278,9 +252,8 @@ namespace LayoutParserApi.Services.Transformation
                     }
                 }
                 else
-                {
                     _logger.LogInformation("Estruturas XML são compatíveis. XSL base deve funcionar corretamente.");
-                }
+
 
                 return baseXsl;
             }
@@ -297,7 +270,7 @@ namespace LayoutParserApi.Services.Transformation
         private Dictionary<string, object> AnalyzeXmlStructure(XDocument doc)
         {
             var structure = new Dictionary<string, object>();
-            
+
             try
             {
                 var root = doc.Root;
@@ -306,7 +279,7 @@ namespace LayoutParserApi.Services.Transformation
 
                 structure["RootElement"] = root.Name.LocalName;
                 structure["RootNamespace"] = root.Name.NamespaceName;
-                
+
                 var elements = root.Descendants()
                     .Select(e => new
                     {
@@ -317,12 +290,11 @@ namespace LayoutParserApi.Services.Transformation
                         Attributes = e.Attributes().Select(a => new { a.Name.LocalName, a.Value }).ToList(),
                         HasText = !string.IsNullOrWhiteSpace(e.Value),
                         Text = e.Value?.Trim()
-                    })
-                    .ToList();
+                    }).ToList();
 
                 structure["Elements"] = elements;
                 structure["ElementCount"] = elements.Count;
-                
+
                 return structure;
             }
             catch (Exception ex)
@@ -347,7 +319,7 @@ namespace LayoutParserApi.Services.Transformation
         /// Compara duas estruturas XML e retorna diferenças
         /// </summary>
         private List<string> CompareXmlStructures(
-            Dictionary<string, object> structure1, 
+            Dictionary<string, object> structure1,
             Dictionary<string, object> structure2)
         {
             var differences = new List<string>();
@@ -358,9 +330,7 @@ namespace LayoutParserApi.Services.Transformation
                 var root2 = structure2.ContainsKey("RootElement") ? structure2["RootElement"]?.ToString() : "";
 
                 if (root1 != root2)
-                {
                     differences.Add($"Elemento raiz diferente: '{root1}' vs '{root2}'");
-                }
 
                 var elements1 = structure1.ContainsKey("Elements") ? structure1["Elements"] : null;
                 var elements2 = structure2.ContainsKey("Elements") ? structure2["Elements"] : null;
@@ -372,9 +342,7 @@ namespace LayoutParserApi.Services.Transformation
                     var count2 = structure2.ContainsKey("ElementCount") ? (int)structure2["ElementCount"] : 0;
 
                     if (count1 != count2)
-                    {
                         differences.Add($"Número de elementos diferente: {count1} vs {count2}");
-                    }
                 }
             }
             catch (Exception ex)
@@ -388,25 +356,20 @@ namespace LayoutParserApi.Services.Transformation
         /// <summary>
         /// Ajusta XSL baseado nas diferenças encontradas
         /// </summary>
-        private string AdjustXslBasedOnDifferences(
-            string baseXsl,
-            List<string> differences,
-            Dictionary<string, object> intermediateStructure,
-            Dictionary<string, object> expectedStructure)
+        private string AdjustXslBasedOnDifferences(string baseXsl, List<string> differences, Dictionary<string, object> intermediateStructure, Dictionary<string, object> expectedStructure)
         {
             try
             {
                 // Por enquanto, retornar XSL base
                 // Esta função pode ser expandida para fazer ajustes específicos no XSL
                 // baseado nas diferenças encontradas entre o XML intermediário e os exemplos esperados
-                
+
                 _logger.LogInformation("Ajustando XSL com base em {Count} diferença(s) encontrada(s)", differences.Count);
-                
+
                 // Log das diferenças para debug
                 foreach (var difference in differences)
-                {
                     _logger.LogInformation("Diferença: {Difference}", difference);
-                }
+
 
                 // Por enquanto, apenas retornar o XSL base
                 // Futuramente, esta função pode fazer ajustes específicos no XSL
@@ -468,12 +431,146 @@ namespace LayoutParserApi.Services.Transformation
             try
             {
                 var doc = XDocument.Parse(baseXsl);
-                
+                var ns = XNamespace.Get("http://www.w3.org/1999/XSL/Transform");
+
+                var stylesheet = doc.Descendants(ns + "stylesheet").FirstOrDefault()
+                              ?? doc.Descendants(ns + "transform").FirstOrDefault();
+
+                if (stylesheet == null)
+                {
+                    _logger.LogWarning("Elemento stylesheet/transform não encontrado no XSL");
+                    return baseXsl;
+                }
+
                 // Aplicar melhorias baseadas em regras de transformação aprendidas
+                var appliedRules = new List<string>();
+                var skippedRules = new List<string>();
+                const double minConfidenceThreshold = 0.6; // Aplicar apenas regras com confiança >= 60%
+
                 foreach (var rule in learnedModel.TransformationRules.OrderByDescending(r => r.Confidence))
                 {
-                    // Implementar lógica para aplicar regras aprendidas
-                    // Por exemplo: ajustar XPath, adicionar templates, etc.
+                    // Ignorar regras com baixa confiança
+                    if (rule.Confidence < minConfidenceThreshold)
+                    {
+                        _logger.LogDebug("Regra ignorada por baixa confiança ({Confidence:P0}): {SourceXPath} -> {TargetXPath}", 
+                            rule.Confidence, rule.SourceXPath, rule.TargetXPath);
+                        continue;
+                    }
+
+                    // Validar regra
+                    if (string.IsNullOrEmpty(rule.SourceXPath) || string.IsNullOrEmpty(rule.TargetXPath))
+                    {
+                        skippedRules.Add($"Regra com XPath inválido: Source='{rule.SourceXPath}', Target='{rule.TargetXPath}'");
+                        continue;
+                    }
+
+                    bool ruleApplied = false;
+
+                    // 1. Ajustar XPath em templates existentes
+                    var templates = doc.Descendants(ns + "template").ToList();
+                    foreach (var template in templates)
+                    {
+                        // Procurar por xsl:value-of que usa o SourceXPath
+                        var valueOfElements = template.Descendants(ns + "value-of").ToList();
+                        foreach (var valueOf in valueOfElements)
+                        {
+                            var selectAttr = valueOf.Attribute("select")?.Value;
+                            if (!string.IsNullOrEmpty(selectAttr) && 
+                                (selectAttr.Contains(rule.SourceXPath) || 
+                                 NormalizeXPath(selectAttr) == NormalizeXPath(rule.SourceXPath)))
+                            {
+                                // Atualizar XPath para usar o TargetXPath aprendido
+                                var newSelect = UpdateXPath(selectAttr, rule.SourceXPath, rule.TargetXPath);
+                                if (newSelect != selectAttr)
+                                {
+                                    valueOf.SetAttributeValue("select", newSelect);
+                                    ruleApplied = true;
+                                    _logger.LogDebug(
+                                        "Ajustado XPath em xsl:value-of: '{OldXPath}' -> '{NewXPath}' (confiança: {Confidence:P0})",
+                                        selectAttr, newSelect, rule.Confidence);
+                                }
+                            }
+                        }
+
+                        // Procurar por xsl:apply-templates que usa o SourceXPath
+                        var applyTemplates = template.Descendants(ns + "apply-templates").ToList();
+                        foreach (var applyTemplate in applyTemplates)
+                        {
+                            var selectAttr = applyTemplate.Attribute("select")?.Value;
+                            if (!string.IsNullOrEmpty(selectAttr) && 
+                                (selectAttr.Contains(rule.SourceXPath) || 
+                                 NormalizeXPath(selectAttr) == NormalizeXPath(rule.SourceXPath)))
+                            {
+                                var newSelect = UpdateXPath(selectAttr, rule.SourceXPath, rule.TargetXPath);
+                                if (newSelect != selectAttr)
+                                {
+                                    applyTemplate.SetAttributeValue("select", newSelect);
+                                    ruleApplied = true;
+                                    _logger.LogDebug(
+                                        "Ajustado XPath em xsl:apply-templates: '{OldXPath}' -> '{NewXPath}' (confiança: {Confidence:P0})",
+                                        selectAttr, newSelect, rule.Confidence);
+                                }
+                            }
+                        }
+
+                        // Procurar por atributo match no template
+                        var matchAttr = template.Attribute("match")?.Value;
+                        if (!string.IsNullOrEmpty(matchAttr) && 
+                            (matchAttr.Contains(rule.SourceXPath) || 
+                             NormalizeXPath(matchAttr) == NormalizeXPath(rule.SourceXPath)))
+                        {
+                            var newMatch = UpdateXPath(matchAttr, rule.SourceXPath, rule.TargetXPath);
+                            if (newMatch != matchAttr)
+                            {
+                                template.SetAttributeValue("match", newMatch);
+                                ruleApplied = true;
+                                _logger.LogDebug(
+                                    "Ajustado match do template: '{OldMatch}' -> '{NewMatch}' (confiança: {Confidence:P0})",
+                                    matchAttr, newMatch, rule.Confidence);
+                            }
+                        }
+                    }
+
+                    // 2. Aplicar transformações baseadas no TransformType
+                    if (!string.IsNullOrEmpty(rule.TransformType) && rule.TransformType != "Direct")
+                    {
+                        ApplyTransformType(doc, ns, rule, ref ruleApplied);
+                    }
+
+                    // 3. Criar novo template se necessário (quando SourceElement != TargetElement)
+                    if (!string.IsNullOrEmpty(rule.SourceElement) && 
+                        !string.IsNullOrEmpty(rule.TargetElement) && 
+                        !rule.SourceElement.Equals(rule.TargetElement, StringComparison.OrdinalIgnoreCase))
+                    {
+                        var existingTemplate = templates.FirstOrDefault(t => 
+                            t.Attribute("match")?.Value?.Contains(rule.SourceXPath) == true);
+                        
+                        if (existingTemplate == null)
+                        {
+                            CreateNewTemplate(stylesheet, ns, rule, ref ruleApplied);
+                        }
+                    }
+
+                    if (ruleApplied)
+                    {
+                        appliedRules.Add($"Regra aplicada: {rule.SourceXPath} -> {rule.TargetXPath} (confiança: {rule.Confidence:P0})");
+                    }
+                    else
+                    {
+                        skippedRules.Add($"Regra não aplicada: {rule.SourceXPath} -> {rule.TargetXPath} (nenhum elemento correspondente encontrado)");
+                    }
+                }
+
+                if (appliedRules.Any())
+                {
+                    _logger.LogInformation("Aplicadas {Count} regras aprendidas ao XSL", appliedRules.Count);
+                    foreach (var applied in appliedRules)
+                        _logger.LogDebug("  - {Rule}", applied);
+                }
+
+                if (skippedRules.Any())
+                {
+                    _logger.LogDebug("Ignoradas {Count} regras aprendidas", skippedRules.Count);
                 }
 
                 return doc.ToString();
@@ -482,6 +579,168 @@ namespace LayoutParserApi.Services.Transformation
             {
                 _logger.LogWarning(ex, "Erro ao aplicar regras aprendidas");
                 return baseXsl;
+            }
+        }
+
+        /// <summary>
+        /// Normaliza XPath para comparação (remove espaços, normaliza barras)
+        /// </summary>
+        private string NormalizeXPath(string xpath)
+        {
+            if (string.IsNullOrEmpty(xpath))
+                return string.Empty;
+
+            return xpath.Trim()
+                .Replace("//", "/")
+                .Replace("  ", " ")
+                .Trim();
+        }
+
+        /// <summary>
+        /// Atualiza XPath substituindo SourceXPath por TargetXPath
+        /// </summary>
+        private string UpdateXPath(string currentXPath, string sourceXPath, string targetXPath)
+        {
+            if (string.IsNullOrEmpty(currentXPath) || string.IsNullOrEmpty(sourceXPath))
+                return currentXPath;
+
+            // Se o XPath atual contém o SourceXPath, substituir
+            if (currentXPath.Contains(sourceXPath))
+            {
+                return currentXPath.Replace(sourceXPath, targetXPath);
+            }
+
+            // Tentar normalizar e comparar
+            var normalizedCurrent = NormalizeXPath(currentXPath);
+            var normalizedSource = NormalizeXPath(sourceXPath);
+            
+            if (normalizedCurrent == normalizedSource)
+            {
+                return targetXPath;
+            }
+
+            return currentXPath;
+        }
+
+        /// <summary>
+        /// Aplica transformação baseada no TransformType
+        /// </summary>
+        private void ApplyTransformType(XDocument doc, XNamespace ns, TransformationRule rule, ref bool ruleApplied)
+        {
+            try
+            {
+                var templates = doc.Descendants(ns + "template").ToList();
+                
+                foreach (var template in templates)
+                {
+                    var valueOfElements = template.Descendants(ns + "value-of")
+                        .Where(v => 
+                        {
+                            var select = v.Attribute("select")?.Value ?? "";
+                            return select.Contains(rule.SourceXPath) || 
+                                   NormalizeXPath(select) == NormalizeXPath(rule.SourceXPath);
+                        })
+                        .ToList();
+
+                    foreach (var valueOf in valueOfElements)
+                    {
+                        var selectAttr = valueOf.Attribute("select")?.Value ?? "";
+                        
+                        switch (rule.TransformType.ToLowerInvariant())
+                        {
+                            case "uppercase":
+                                // Envolver com upper-case() ou translate()
+                                if (!selectAttr.Contains("upper-case") && !selectAttr.Contains("translate"))
+                                {
+                                    valueOf.SetAttributeValue("select", $"upper-case({selectAttr})");
+                                    ruleApplied = true;
+                                }
+                                break;
+
+                            case "lowercase":
+                                // Envolver com lower-case() ou translate()
+                                if (!selectAttr.Contains("lower-case") && !selectAttr.Contains("translate"))
+                                {
+                                    valueOf.SetAttributeValue("select", $"lower-case({selectAttr})");
+                                    ruleApplied = true;
+                                }
+                                break;
+
+                            case "trim":
+                            case "normalize":
+                                // Adicionar normalize-space() se não existir
+                                if (!selectAttr.Contains("normalize-space"))
+                                {
+                                    valueOf.SetAttributeValue("select", $"normalize-space({selectAttr})");
+                                    ruleApplied = true;
+                                }
+                                break;
+
+                            case "substring":
+                                // Aplicar substring se houver padrão de transformação
+                                if (!string.IsNullOrEmpty(rule.TransformPattern))
+                                {
+                                    // Tentar extrair parâmetros do padrão (ex: "substring(0,10)")
+                                    var patternMatch = System.Text.RegularExpressions.Regex.Match(
+                                        rule.TransformPattern, 
+                                        @"substring\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)",
+                                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                                    
+                                    if (patternMatch.Success)
+                                    {
+                                        var start = patternMatch.Groups[1].Value;
+                                        var length = patternMatch.Groups[2].Value;
+                                        valueOf.SetAttributeValue("select", $"substring({selectAttr}, {start}, {length})");
+                                        ruleApplied = true;
+                                    }
+                                }
+                                break;
+
+                            case "padleft":
+                            case "padright":
+                                // Padding geralmente requer funções customizadas ou XSL 2.0
+                                // Por enquanto, apenas logar
+                                _logger.LogDebug("Transformação de padding ({TransformType}) requer implementação adicional", rule.TransformType);
+                                break;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Erro ao aplicar TransformType '{TransformType}'", rule.TransformType);
+            }
+        }
+
+        /// <summary>
+        /// Cria novo template baseado na regra aprendida
+        /// </summary>
+        private void CreateNewTemplate(XElement stylesheet, XNamespace ns, TransformationRule rule, ref bool ruleApplied)
+        {
+            try
+            {
+                // Criar novo template para mapear SourceElement para TargetElement
+                var newTemplate = new XElement(ns + "template",
+                    new XAttribute("match", rule.SourceXPath),
+                    new XElement(ns + "element",
+                        new XAttribute("name", rule.TargetElement),
+                        new XElement(ns + "value-of",
+                            new XAttribute("select", rule.SourceXPath))
+                    )
+                );
+
+                // Adicionar ao stylesheet
+                stylesheet.Add(newTemplate);
+                ruleApplied = true;
+
+                _logger.LogDebug(
+                    "Criado novo template para mapear '{SourceElement}' -> '{TargetElement}' (match: {SourceXPath})",
+                    rule.SourceElement, rule.TargetElement, rule.SourceXPath);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Erro ao criar novo template para regra: {SourceXPath} -> {TargetXPath}", 
+                    rule.SourceXPath, rule.TargetXPath);
             }
         }
 
@@ -497,9 +756,9 @@ namespace LayoutParserApi.Services.Transformation
                 var doc = XDocument.Parse(xslContent);
                 var ns = XNamespace.Get("http://www.w3.org/1999/XSL/Transform");
 
-                var stylesheet = doc.Descendants(ns + "stylesheet").FirstOrDefault() 
+                var stylesheet = doc.Descendants(ns + "stylesheet").FirstOrDefault()
                               ?? doc.Descendants(ns + "transform").FirstOrDefault();
-                
+
                 if (stylesheet == null)
                 {
                     result.Success = false;
@@ -509,9 +768,7 @@ namespace LayoutParserApi.Services.Transformation
 
                 var templates = doc.Descendants(ns + "template").ToList();
                 if (!templates.Any())
-                {
                     result.Errors.Add("Nenhum template encontrado no XSL");
-                }
             }
             catch (Exception ex)
             {
@@ -533,50 +790,28 @@ namespace LayoutParserApi.Services.Transformation
             try
             {
                 // Remover namespace 'ng' do xsl:stylesheet
-                xslContent = System.Text.RegularExpressions.Regex.Replace(
-                    xslContent,
-                    @"\s*xmlns:ng=""[^""]*""",
-                    "",
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                xslContent = System.Text.RegularExpressions.Regex.Replace(xslContent, @"\s*xmlns:ng=""[^""]*""", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
                 // Remover exclude-result-prefixes="ng"
-                xslContent = System.Text.RegularExpressions.Regex.Replace(
-                    xslContent,
-                    @"\s*exclude-result-prefixes=""ng""",
-                    "",
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                xslContent = System.Text.RegularExpressions.Regex.Replace(xslContent, @"\s*exclude-result-prefixes=""ng""", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
                 // Remover extension-element-prefixes="ng"
-                xslContent = System.Text.RegularExpressions.Regex.Replace(
-                    xslContent,
-                    @"\s*extension-element-prefixes=""ng""",
-                    "",
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                xslContent = System.Text.RegularExpressions.Regex.Replace(xslContent, @"\s*extension-element-prefixes=""ng""", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
                 // Verificar se XSL usa xsi: (xsi:type, xsi:nil, etc.)
-                bool usesXsi = System.Text.RegularExpressions.Regex.IsMatch(
-                    xslContent,
-                    @"xsi:",
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                bool usesXsi = System.Text.RegularExpressions.Regex.IsMatch(xslContent, @"xsi:", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
                 // Se usa xsi:, garantir que o namespace esteja declarado no xsl:stylesheet
                 if (usesXsi)
                 {
                     // Verificar se o namespace xsi já está declarado no xsl:stylesheet
-                    bool hasXsiInStylesheet = System.Text.RegularExpressions.Regex.IsMatch(
-                        xslContent,
-                        @"<xsl:stylesheet[^>]*xmlns:xsi=""http://www\.w3\.org/2001/XMLSchema-instance""",
-                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                    bool hasXsiInStylesheet = System.Text.RegularExpressions.Regex.IsMatch(xslContent, @"<xsl:stylesheet[^>]*xmlns:xsi=""http://www\.w3\.org/2001/XMLSchema-instance""", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
                     if (!hasXsiInStylesheet)
                     {
                         // Adicionar xmlns:xsi no xsl:stylesheet (antes do > de fechamento)
-                        xslContent = System.Text.RegularExpressions.Regex.Replace(
-                            xslContent,
-                            @"(<xsl:stylesheet[^>]*xmlns:xsl=""http://www\.w3\.org/1999/XSL/Transform"")([^>]*>)",
-                            @"$1" + Environment.NewLine + "\txmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"$2",
-                            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                        
+                        xslContent = System.Text.RegularExpressions.Regex.Replace(xslContent, @"(<xsl:stylesheet[^>]*xmlns:xsl=""http://www\.w3\.org/1999/XSL/Transform"")([^>]*>)", @"$1" + Environment.NewLine + "\txmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"$2", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
                         _logger.LogInformation("Namespace 'xsi' adicionado ao xsl:stylesheet");
                     }
                 }
@@ -590,18 +825,10 @@ namespace LayoutParserApi.Services.Transformation
                     if (rootMatch.Success)
                     {
                         var rootElementName = rootMatch.Groups[1].Value;
-                        if (!System.Text.RegularExpressions.Regex.IsMatch(
-                            xslContent,
-                            $@"<{rootElementName}[^>]*xmlns:xsi=""http://www\.w3\.org/2001/XMLSchema-instance""",
-                            System.Text.RegularExpressions.RegexOptions.IgnoreCase))
-                        {
+                        if (!System.Text.RegularExpressions.Regex.IsMatch(xslContent, $@"<{rootElementName}[^>]*xmlns:xsi=""http://www\.w3\.org/2001/XMLSchema-instance""", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
                             // Adicionar xmlns:xsi no elemento raiz
-                            xslContent = System.Text.RegularExpressions.Regex.Replace(
-                                xslContent,
-                                $@"(<{rootElementName}[^>]*xmlns=""[^""]*"")([^>]*>)",
-                                @"$1" + Environment.NewLine + $"\t\t\t xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"$2",
-                                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                        }
+                            xslContent = System.Text.RegularExpressions.Regex.Replace(xslContent, $@"(<{rootElementName}[^>]*xmlns=""[^""]*"")([^>]*>)", @"$1" + Environment.NewLine + $"\t\t\t xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"$2", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
                     }
                 }
 
@@ -615,17 +842,4 @@ namespace LayoutParserApi.Services.Transformation
             }
         }
     }
-
-    /// <summary>
-    /// Resultado da geração melhorada de XSL
-    /// </summary>
-    public class ImprovedXslGenerationResult
-    {
-        public bool Success { get; set; }
-        public string GeneratedXsl { get; set; }
-        public string SuggestedXsl { get; set; }
-        public List<string> Suggestions { get; set; } = new();
-        public List<string> Warnings { get; set; } = new();
-    }
 }
-

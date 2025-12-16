@@ -21,13 +21,7 @@ namespace LayoutParserApi.Controllers
         private readonly LayoutLearningService _learningService;
         private readonly IConfiguration _configuration;
 
-        public ParseController(
-            ILayoutParserService parserService, 
-            ILogger<ParseController> logger, 
-            ILayoutDetector layoutDetector,
-            FileStorageService fileStorage,
-            LayoutLearningService learningService,
-            IConfiguration configuration)
+        public ParseController(ILayoutParserService parserService, ILogger<ParseController> logger, ILayoutDetector layoutDetector,FileStorageService fileStorage,LayoutLearningService learningService,IConfiguration configuration)
         {
             _parserService = parserService;
             _logger = logger;
@@ -74,10 +68,9 @@ namespace LayoutParserApi.Controllers
                 }
 
                 // Salvar arquivo para aprendizado de máquina ANTES de processar
-                if (!string.IsNullOrEmpty(layoutName))
-                {
+                if (!string.IsNullOrEmpty(layoutName))                
                     await SaveFileForLearningAsync(layoutName, txtFile, detectedType);
-                }
+                
 
                 // Processar arquivo
                 using var layoutStream = layoutFile.OpenReadStream();
@@ -108,9 +101,7 @@ namespace LayoutParserApi.Controllers
                 var expectedLineLength = LayoutLineSizeConfiguration.GetLineSizeForLayout(flattenedLayout.LayoutGuid);
                 
                 if (expectedLineLength.HasValue)
-                {
                     lineValidations = _parserService.CalculateLineValidations(flattenedLayout, expectedLineLength.Value);
-                }
 
                 return Ok(new
                 {
@@ -186,14 +177,10 @@ namespace LayoutParserApi.Controllers
                             learningResult.LearnedModel.FilePath = filePath;
                             await _fileStorage.SaveLearnedModelAsync(layoutDirectory, learningResult.LearnedModel);
                             
-                            _logger.LogInformation("Aprendizado concluído para {LayoutName}: {Fields} campos detectados", 
-                                layoutName, learningResult.LearnedModel.TotalFields);
+                            _logger.LogInformation("Aprendizado concluído para {LayoutName}: {Fields} campos detectados", layoutName, learningResult.LearnedModel.TotalFields);
                         }
                         else
-                        {
-                            _logger.LogWarning("Aprendizado falhou para {LayoutName}: {Message}", 
-                                layoutName, learningResult.Message);
-                        }
+                            _logger.LogWarning("Aprendizado falhou para {LayoutName}: {Message}", layoutName, learningResult.Message);                        
                     }
                     catch (Exception ex)
                     {

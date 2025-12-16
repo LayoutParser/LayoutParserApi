@@ -5,5 +5,3 @@ namespace LayoutParserApi.Services.Parsing.Interfaces
         string DetectType(string content);
     }
 }
-
-

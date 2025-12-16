@@ -1,6 +1,4 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
+using LayoutParserApi.Models;
 
 namespace LayoutParserApi.Services.Generation.Implementations
 {
@@ -30,16 +28,11 @@ namespace LayoutParserApi.Services.Generation.Implementations
                 ActualValue = totalValue,
                 ExpectedValue = sum,
                 Difference = difference,
-                Message = difference <= tolerance 
-                    ? $"Total válido: {totalValue} = soma dos itens {sum}"
-                    : $"Inconsistência: Total {totalValue} != Soma dos itens {sum} (diferença: {difference})"
+                Message = difference <= tolerance ? $"Total válido: {totalValue} = soma dos itens {sum}" : $"Inconsistência: Total {totalValue} != Soma dos itens {sum} (diferença: {difference})"
             };
 
             if (!result.IsValid)
-            {
-                _logger.LogWarning("Inconsistência detectada: Total {Total} != Soma {Sum} (diferença: {Diff})", 
-                    totalValue, sum, difference);
-            }
+                _logger.LogWarning("Inconsistência detectada: Total {Total} != Soma {Sum} (diferença: {Diff})", totalValue, sum, difference);
 
             return result;
         }
@@ -113,9 +106,8 @@ namespace LayoutParserApi.Services.Generation.Implementations
             var nonSpaceChars = value.Where(c => !char.IsWhiteSpace(c)).ToList();
             if (nonSpaceChars.Any())
             {
-                _logger.LogWarning("Campo FILLER {FieldName} contém texto quando deveria estar vazio: '{Value}'", 
-                    fieldName, value.Trim());
-                
+                _logger.LogWarning("Campo FILLER {FieldName} contém texto quando deveria estar vazio: '{Value}'", fieldName, value.Trim());
+
                 return new ValidationResult
                 {
                     IsValid = false,
@@ -140,16 +132,11 @@ namespace LayoutParserApi.Services.Generation.Implementations
                 };
             }
 
-            var duplicates = sequences
-                .GroupBy(s => s)
-                .Where(g => g.Count() > 1)
-                .Select(g => g.Key)
-                .ToList();
+            var duplicates = sequences.GroupBy(s => s).Where(g => g.Count() > 1).Select(g => g.Key).ToList();
 
             if (duplicates.Any())
             {
-                _logger.LogWarning("Sequências duplicadas encontradas no campo {FieldName}: {Duplicates}", 
-                    fieldName, string.Join(", ", duplicates));
+                _logger.LogWarning("Sequências duplicadas encontradas no campo {FieldName}: {Duplicates}", fieldName, string.Join(", ", duplicates));
 
                 return new ValidationResult
                 {
@@ -165,14 +152,4 @@ namespace LayoutParserApi.Services.Generation.Implementations
             };
         }
     }
-
-    public class ValidationResult
-    {
-        public bool IsValid { get; set; }
-        public decimal? ActualValue { get; set; }
-        public decimal? ExpectedValue { get; set; }
-        public decimal? Difference { get; set; }
-        public string Message { get; set; }
-    }
 }
-

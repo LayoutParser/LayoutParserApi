@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using LayoutParserApi.Services.Generation.TxtGenerator.Models;
+using LayoutParserApi.Services.Generation.TxtGenerator.Validators.Models;
 
 namespace LayoutParserApi.Services.Generation.TxtGenerator.Validators
 {
@@ -112,14 +113,10 @@ namespace LayoutParserApi.Services.Generation.TxtGenerator.Validators
             // Validar domínio (se especificado)
             if (!string.IsNullOrEmpty(field.Domain))
             {
-                var domainValues = field.Domain.Split(',', StringSplitOptions.RemoveEmptyEntries)
-                    .Select(v => v.Trim())
-                    .ToList();
+                var domainValues = field.Domain.Split(',', StringSplitOptions.RemoveEmptyEntries).Select(v => v.Trim()).ToList();
 
                 if (!domainValues.Contains(value.Trim()))
-                {
                     result.Warnings.Add($"Campo {field.Name}: valor '{value.Trim()}' não está no domínio permitido");
-                }
             }
 
             // Validar FILLER (deve estar vazio)
@@ -240,24 +237,4 @@ namespace LayoutParserApi.Services.Generation.TxtGenerator.Validators
             return result;
         }
     }
-
-    public class ValidationResult
-    {
-        public bool IsValid { get; set; }
-        public List<string> Errors { get; set; } = new();
-        public List<string> Warnings { get; set; } = new();
-    }
-
-    public class FieldValidationResult : ValidationResult
-    {
-        public string FieldName { get; set; }
-    }
-
-    public class FileValidationResult : ValidationResult
-    {
-        public int TotalLines { get; set; }
-        public int ValidLines { get; set; }
-        public int InvalidLines { get; set; }
-    }
 }
-

@@ -1,11 +1,9 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using LayoutParserApi.Services.Generation.TxtGenerator.Models;
-using LayoutParserApi.Services.Generation.Interfaces;
 using LayoutParserApi.Services.Generation.Implementations;
+using LayoutParserApi.Services.Generation.Interfaces;
+using LayoutParserApi.Services.Generation.TxtGenerator.Generators.Interfaces;
+using LayoutParserApi.Services.Generation.TxtGenerator.Models;
+
+using System.Text;
 
 namespace LayoutParserApi.Services.Generation.TxtGenerator.Generators
 {
@@ -18,10 +16,7 @@ namespace LayoutParserApi.Services.Generation.TxtGenerator.Generators
         private readonly GeminiAIService _aiService;
         private readonly IValueGenerator _valueGenerator;
 
-        public SemanticAIGenerator(
-            ILogger<SemanticAIGenerator> logger,
-            GeminiAIService aiService,
-            IValueGenerator valueGenerator)
+        public SemanticAIGenerator(ILogger<SemanticAIGenerator> logger, GeminiAIService aiService, IValueGenerator valueGenerator)
         {
             _logger = logger;
             _aiService = aiService;
@@ -31,13 +26,9 @@ namespace LayoutParserApi.Services.Generation.TxtGenerator.Generators
         public async Task<string> GenerateValueAsync(FieldDefinition field, int recordIndex, Dictionary<string, object> context = null)
         {
             // Campos com regras matemáticas: usar gerador programático
-            if (field.DataType == "decimal" || field.DataType == "int" || 
-                field.DataType == "cnpj" || field.DataType == "cpf" ||
-                field.DataType == "date" || field.DataType == "time" ||
-                field.DataType == "filler")
-            {
+            if (field.DataType == "decimal" || field.DataType == "int" || field.DataType == "cnpj" || field.DataType == "cpf" || field.DataType == "date" || field.DataType == "time" || field.DataType == "filler")
                 return GenerateProgrammaticValue(field, recordIndex, context);
-            }
+
 
             // Se é fixo, retornar valor fixo
             if (field.IsFixed && !string.IsNullOrEmpty(field.FixedValue))
@@ -64,17 +55,15 @@ namespace LayoutParserApi.Services.Generation.TxtGenerator.Generators
             {
                 var prompt = BuildPromptForField(field, recordIndex, context);
                 var aiResponse = await _aiService.CallGeminiAPI(prompt);
-                
+
                 // Extrair apenas o valor gerado (primeira linha, sem explicações)
-                var lines = aiResponse.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
-                    .Where(l => !string.IsNullOrWhiteSpace(l))
-                    .ToList();
+                var lines = aiResponse.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).Where(l => !string.IsNullOrWhiteSpace(l)).ToList();
 
                 var generatedValue = lines.FirstOrDefault() ?? "";
-                
+
                 // Limpar o valor (remover marcações, explicações, etc.)
                 generatedValue = CleanAIResponse(generatedValue);
-                
+
                 _logger.LogDebug("Campo {FieldName} gerado pela IA: {Value}", field.Name, generatedValue);
                 return FormatValue(generatedValue, field.Length, field.Alignment);
             }
@@ -94,9 +83,7 @@ namespace LayoutParserApi.Services.Generation.TxtGenerator.Generators
         private string GenerateProgrammaticValue(FieldDefinition field, int recordIndex, Dictionary<string, object> context)
         {
             // Usar ValueGenerator para valores programáticos
-            var excelSamples = context?.ContainsKey("ExcelSamples") == true 
-                ? context["ExcelSamples"] as List<string> 
-                : null;
+            var excelSamples = context?.ContainsKey("ExcelSamples") == true ? context["ExcelSamples"] as List<string> : null;
 
             return field.DataType.ToLower() switch
             {
@@ -116,7 +103,7 @@ namespace LayoutParserApi.Services.Generation.TxtGenerator.Generators
         private string BuildPromptForField(FieldDefinition field, int recordIndex, Dictionary<string, object> context)
         {
             var sb = new StringBuilder();
-            
+
             sb.AppendLine("=== GERAÇÃO DE CAMPO ===");
             sb.AppendLine($"Campo: {field.Name}");
             sb.AppendLine($"Descrição: {field.Description ?? "N/A"}");
@@ -146,9 +133,8 @@ namespace LayoutParserApi.Services.Generation.TxtGenerator.Generators
                 {
                     sb.AppendLine("Exemplos reais do Excel:");
                     foreach (var sample in samples.Take(3))
-                    {
                         sb.AppendLine($"  - {sample}");
-                    }
+
                     sb.AppendLine();
                 }
             }
@@ -169,22 +155,18 @@ namespace LayoutParserApi.Services.Generation.TxtGenerator.Generators
 
             // Remover marcações comuns da IA
             response = response.Trim();
-            
+
             // Remover prefixos comuns
             var prefixes = new[] { "Valor:", "Campo:", "Gerado:", "Resultado:" };
             foreach (var prefix in prefixes)
             {
                 if (response.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-                {
                     response = response.Substring(prefix.Length).Trim();
-                }
             }
 
             // Remover aspas se houver
             if (response.StartsWith("\"") && response.EndsWith("\""))
-            {
                 response = response.Substring(1, response.Length - 2);
-            }
 
             return response.Trim();
         }
@@ -283,4 +265,3 @@ namespace LayoutParserApi.Services.Generation.TxtGenerator.Generators
         }
     }
 }
-

@@ -50,9 +50,7 @@ namespace LayoutParserApi.Services.Cache
         public async Task<List<LayoutRecord>?> GetCachedLayoutsAsync(string searchTerm)
         {
             if (!_redisAvailable || _redis == null)
-            {
                 return null; // Cache não disponível
-            }
 
             try
             {
@@ -79,9 +77,7 @@ namespace LayoutParserApi.Services.Cache
         public async Task SetCachedLayoutsAsync(string searchTerm, List<LayoutRecord> layouts, TimeSpan? expiry = null)
         {
             if (!_redisAvailable || _redis == null)
-            {
                 return; // Cache não disponível
-            }
 
             try
             {
@@ -109,9 +105,7 @@ namespace LayoutParserApi.Services.Cache
         public async Task<LayoutRecord?> GetCachedLayoutByIdAsync(int id)
         {
             if (!_redisAvailable || _redis == null)
-            {
                 return null; // Cache não disponível
-            }
 
             try
             {
@@ -138,9 +132,7 @@ namespace LayoutParserApi.Services.Cache
         public async Task SetCachedLayoutByIdAsync(int id, LayoutRecord layout, TimeSpan? expiry = null)
         {
             if (!_redisAvailable || _redis == null)
-            {
                 return; // Cache não disponível
-            }
 
             try
             {
@@ -159,9 +151,7 @@ namespace LayoutParserApi.Services.Cache
         public async Task ClearCacheAsync()
         {
             if (!_redisAvailable || _redis == null)
-            {
                 return; // Cache não disponível
-            }
 
             try
             {
@@ -174,6 +164,5 @@ namespace LayoutParserApi.Services.Cache
                 _logger.LogError(ex, "Erro ao limpar cache Redis");
             }
         }
-
     }
 }
