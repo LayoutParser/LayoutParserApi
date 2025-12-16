@@ -107,7 +107,7 @@ try
             .WriteTo.Console(
                 outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff}] [{Level:u3}] {Message:lj}{NewLine}{Exception}")
             .WriteTo.File(
-                Path.Combine(logDirectory, logFileName.Replace(".log", "-{Date}.log")),
+                Path.Combine(logDirectory, logFileName),
                 rollingInterval: RollingInterval.Day,
                 retainedFileCountLimit: 30,
                 outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff}] [{Level:u3}] {Message:lj}{NewLine}{Exception}",
