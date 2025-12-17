@@ -92,7 +92,20 @@ namespace LayoutParserApi.Controllers
                 };
 
                 if (!result.Success)
+                {
+                    // Se houver erros de validação, retornar detalhes
+                    if (result.ValidationErrors != null && result.ValidationErrors.Any())
+                    {
+                        return BadRequest(new
+                        {
+                            success = false,
+                            error = result.ErrorMessage,
+                            validationErrors = result.ValidationErrors,
+                            message = "Documento possui linhas com tamanho incorreto. Verifique os erros de validação."
+                        });
+                    }
                     return BadRequest(result.ErrorMessage);
+                }
 
                 var documentStructure = _parserService.BuildDocumentStructure(result);
 

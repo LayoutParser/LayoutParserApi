@@ -9,6 +9,7 @@ using LayoutParserApi.Models.Validation;
 using LayoutParserApi.Models.Configuration;
 using LayoutParserApi.Services.Interfaces;
 using LayoutParserApi.Services.Parsing.Interfaces;
+using LayoutParserApi.Services.Validation;
 
 using Newtonsoft.Json;
 
@@ -24,14 +25,28 @@ namespace LayoutParserApi.Services.Implementations
         private readonly ILineSplitter _lineSplitter;
         private readonly ILayoutValidator _layoutValidator;
         private readonly ILayoutNormalizer _layoutNormalizer;
+        private readonly DocumentValidationService _documentValidationService;
+        private readonly DocumentMLValidationService _mlValidationService;
+        private readonly ILogger<LayoutParserService> _logger;
 
-        public LayoutParserService(ITechLogger techLogger, IAuditLogger auditLogger, ILineSplitter lineSplitter, ILayoutValidator layoutValidator, ILayoutNormalizer layoutNormalizer)
+        public LayoutParserService(
+            ITechLogger techLogger, 
+            IAuditLogger auditLogger, 
+            ILineSplitter lineSplitter, 
+            ILayoutValidator layoutValidator, 
+            ILayoutNormalizer layoutNormalizer,
+            DocumentValidationService documentValidationService,
+            DocumentMLValidationService mlValidationService,
+            ILogger<LayoutParserService> logger)
         {
             _techLogger = techLogger;
             _auditLogger = auditLogger;
             _lineSplitter = lineSplitter;
             _layoutValidator = layoutValidator;
             _layoutNormalizer = layoutNormalizer;
+            _documentValidationService = documentValidationService;
+            _mlValidationService = mlValidationService;
+            _logger = logger;
         }
 
         public async Task<ParsingResult> ParseAsync(Stream layoutStream, Stream txtStream)
@@ -45,9 +60,69 @@ namespace LayoutParserApi.Services.Implementations
 
                 _layoutValidator.ValidateCompleteLayout(result.Layout);
 
+                // ✅ VALIDAÇÃO AUTOMÁTICA DO DOCUMENTO - Valida se todas as linhas têm 600 posições
+                var documentValidation = _documentValidationService.ValidateDocument(result.RawText);
+                
+                if (!documentValidation.IsValid)
+                {
+                    _logger.LogWarning("Documento TXT inválido: {ErrorMessage}. {ErrorCount} erro(s) encontrado(s).", 
+                        documentValidation.ErrorMessage, documentValidation.LineErrors.Count);
+
+                    // Registrar para aprendizado ML (em background, não bloqueia)
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await _mlValidationService.LearnFromDocumentAsync(
+                                result.RawText,
+                                result.Layout?.LayoutGuid ?? "",
+                                documentValidation.LineErrors);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "Erro ao registrar documento para aprendizado ML");
+                        }
+                    });
+
+                    // Retornar erro detalhado
+                    result.Success = false;
+                    result.ErrorMessage = $"Documento inválido: {documentValidation.ErrorMessage}";
+                    
+                    // Adicionar informações de validação ao resultado para o front-end
+                    result.ValidationErrors = documentValidation.LineErrors.Select(e => new DocumentValidationErrorInfo
+                    {
+                        LineIndex = e.LineIndex,
+                        Sequence = e.Sequence,
+                        ExpectedLength = e.ExpectedLength,
+                        ActualLength = e.ActualLength,
+                        ErrorMessage = e.ErrorMessage,
+                        StartPosition = e.StartPosition,
+                        EndPosition = e.EndPosition
+                    }).ToList();
+
+                    return result;
+                }
+
+                // Se documento é válido, processar normalmente
                 result.ParsedFields = ParseTextWithSequenceValidation(result.RawText, result.Layout);
                 result.Summary = CalculateSummary(result);
                 result.Success = true;
+
+                // Registrar documento válido para aprendizado ML (em background)
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await _mlValidationService.LearnFromDocumentAsync(
+                            result.RawText,
+                            result.Layout?.LayoutGuid ?? "",
+                            null); // Sem erros
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Erro ao registrar documento válido para aprendizado ML");
+                    }
+                });
             }
             catch (Exception ex)
             {

@@ -234,6 +234,12 @@ try
     builder.Services.AddScoped<XmlFormatterService>();
     builder.Services.AddScoped<FileStorageService>();
 
+    // Validation Services
+    builder.Services.AddScoped<LayoutValidationService>();
+    builder.Services.AddScoped<DocumentValidationService>();
+    builder.Services.AddScoped<DocumentMLValidationService>();
+    builder.Services.AddHostedService<LayoutValidationBackgroundService>();
+
     // Testing Services
     builder.Services.AddScoped<AutomatedTransformationTestService>();
 
