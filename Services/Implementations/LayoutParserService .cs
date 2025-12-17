@@ -239,9 +239,21 @@ namespace LayoutParserApi.Services.Implementations
                         Message = $"Linha corresponde a: {matchingLineConfig.Name}"
                     });
 
-                    int currentOccurrence = parsedFields.Count(f => f.LineName == matchingLineConfig.Name);
-                    if (currentOccurrence < matchingLineConfig.MaximumOccurrence)
+                    // ✅ CONTAR OCORRÊNCIAS BASEADO NO MÁXIMO DE Occurrence JÁ USADO
+                    // Isso garante que múltiplas ocorrências da mesma linha sejam contadas corretamente
+                    var existingFieldsForLine = parsedFields.Where(f => f.LineName == matchingLineConfig.Name).ToList();
+                    int currentOccurrence = existingFieldsForLine.Any() 
+                        ? existingFieldsForLine.Max(f => f.Occurrence) 
+                        : 0;
+                    
+                    // Validar MaximumOccurrence (0 = sem limite)
+                    int maxOccurrences = matchingLineConfig.MaximumOccurrence > 0 
+                        ? matchingLineConfig.MaximumOccurrence 
+                        : int.MaxValue;
+                    
+                    if (currentOccurrence < maxOccurrences)
                     {
+                        // Chamar ParseLineFields com a próxima ocorrência (currentOccurrence já é o máximo atual, então usamos ele)
                         ParseLineFields(currentLine, matchingLineConfig, parsedFields, currentOccurrence);
                     }
                     else
@@ -284,23 +296,101 @@ namespace LayoutParserApi.Services.Implementations
                 });
             }
 
-            // Verificar ocorrências mínimas
-            foreach (var lineConfig in layout.Elements)
+            // ✅ VALIDAÇÃO COMPLETA DE OCORRÊNCIAS (MinimalOccurrence e MaximumOccurrence)
+            ValidateLineOccurrences(layout, parsedFields);
+
+            return parsedFields;
+        }
+
+        /// <summary>
+        /// Valida ocorrências mínimas e máximas de todas as linhas (incluindo linhas filhas recursivamente)
+        /// </summary>
+        private void ValidateLineOccurrences(Layout layout, List<ParsedField> parsedFields)
+        {
+            if (layout?.Elements == null) return;
+
+            // Coletar todas as linhas (incluindo filhas) recursivamente
+            var allLineConfigs = new List<LineElement>();
+            foreach (var lineElement in layout.Elements)
             {
-                int actualOccurrences = parsedFields.Count(f => f.LineName == lineConfig.Name);
-                if (actualOccurrences < lineConfig.MinimalOccurrence)
+                CollectAllLineElements(lineElement, allLineConfigs);
+            }
+
+            // Validar cada linha
+            foreach (var lineConfig in allLineConfigs)
+            {
+                // Contar ocorrências baseado em grupos únicos (LineSequence + Occurrence)
+                var lineFields = parsedFields.Where(f => f.LineName == lineConfig.Name).ToList();
+                var uniqueOccurrences = lineFields.GroupBy(f => f.Occurrence).Count();
+                int actualOccurrences = uniqueOccurrences > 0 ? uniqueOccurrences : 0;
+
+                // Validar MinimalOccurrence
+                if (lineConfig.MinimalOccurrence > 0 && actualOccurrences < lineConfig.MinimalOccurrence)
                 {
                     _techLogger.LogTechnical(new TechLogEntry
                     {
                         RequestId = Guid.NewGuid().ToString(),
-                        Endpoint = "ParseTextWithSequenceValidation",
+                        Endpoint = "ValidateLineOccurrences",
                         Level = "Warn",
-                        Message = $"AVISO: {lineConfig.Name} tem apenas {actualOccurrences} ocorrências (mínimo: {lineConfig.MinimalOccurrence})"
+                        Message = $"⚠️ {lineConfig.Name}: Apenas {actualOccurrences} ocorrência(s) encontrada(s) (mínimo requerido: {lineConfig.MinimalOccurrence})"
+                    });
+                }
+
+                // Validar MaximumOccurrence
+                if (lineConfig.MaximumOccurrence > 0 && actualOccurrences > lineConfig.MaximumOccurrence)
+                {
+                    _techLogger.LogTechnical(new TechLogEntry
+                    {
+                        RequestId = Guid.NewGuid().ToString(),
+                        Endpoint = "ValidateLineOccurrences",
+                        Level = "Error",
+                        Message = $"❌ {lineConfig.Name}: {actualOccurrences} ocorrência(s) encontrada(s) (máximo permitido: {lineConfig.MaximumOccurrence}). Excedeu o limite!"
+                    });
+                }
+
+                // Log informativo se estiver dentro do range esperado
+                if (lineConfig.MinimalOccurrence > 0 || lineConfig.MaximumOccurrence > 0)
+                {
+                    _techLogger.LogTechnical(new TechLogEntry
+                    {
+                        RequestId = Guid.NewGuid().ToString(),
+                        Endpoint = "ValidateLineOccurrences",
+                        Level = "Info",
+                        Message = $"✅ {lineConfig.Name}: {actualOccurrences} ocorrência(s) (esperado: {lineConfig.MinimalOccurrence}-{lineConfig.MaximumOccurrence})"
                     });
                 }
             }
+        }
 
-            return parsedFields;
+        /// <summary>
+        /// Coleta todas as linhas recursivamente (incluindo linhas filhas)
+        /// </summary>
+        private void CollectAllLineElements(LineElement lineElement, List<LineElement> result)
+        {
+            if (lineElement == null) return;
+
+            result.Add(lineElement);
+
+            // Processar elementos filhos (linhas aninhadas)
+            if (lineElement.Elements != null)
+            {
+                foreach (var elementJson in lineElement.Elements)
+                {
+                    try
+                    {
+                        // Tentar desserializar como LineElement
+                        var childLine = JsonConvert.DeserializeObject<LineElement>(elementJson);
+                        if (childLine != null && !string.IsNullOrEmpty(childLine.Name))
+                        {
+                            CollectAllLineElements(childLine, result);
+                        }
+                    }
+                    catch
+                    {
+                        // Não é LineElement, ignorar
+                    }
+                }
+            }
         }
 
         // split moved to ILineSplitter
