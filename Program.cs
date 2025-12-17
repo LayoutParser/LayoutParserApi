@@ -9,6 +9,7 @@ using LayoutParserApi.Services.Parsing.Interfaces;
 using LayoutParserApi.Services.Testing;
 using LayoutParserApi.Services.Transformation;
 using LayoutParserApi.Services.Transformation.Interface;
+using LayoutParserApi.Services.Validation;
 using LayoutParserApi.Services.XmlAnalysis;
 
 using Microsoft.AspNetCore.Diagnostics;
