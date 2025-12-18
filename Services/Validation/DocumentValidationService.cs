@@ -96,26 +96,78 @@ namespace LayoutParserApi.Services.Validation
                         break;
                     }
 
-                    // Extrair linha completa (600 caracteres)
-                    string currentLine = cleanText.Substring(currentPosition, 600);
+                    // Extrair linha completa (600 caracteres esperados)
+                    // Se linha exceder, pegar até onde conseguir (para detectar excedente)
+                    int maxExtractLength = Math.Min(610, cleanText.Length - currentPosition); // Pega um pouco mais para detectar excesso
+                    string currentLine = cleanText.Substring(currentPosition, maxExtractLength);
                     int actualLineLength = currentLine.Length;
-
-                    // Validar comprimento da linha
-                    if (actualLineLength != 600)
+                    
+                    // ✅ VALIDAR: Verificar se próxima sequência está na posição correta (600 chars depois)
+                    // A regra: (000001) sequencial(6) + (051) linha(3) = 9 posições iniciais
+                    // Depois disso começam os campos. Total deve ser 600.
+                    bool isLineLengthCorrect = true;
+                    bool lineExceedsLimit = false;
+                    int excessChars = 0;
+                    
+                    // Verificar se linha excede 600 caracteres
+                    if (actualLineLength > 600)
                     {
+                        lineExceedsLimit = true;
+                        excessChars = actualLineLength - 600;
+                        isLineLengthCorrect = false;
+                    }
+                    else if (expectedLineEnd < cleanText.Length)
+                    {
+                        // Verificar se próxima sequência está na posição esperada (600 chars depois)
+                        string nextSequenceAtExpected = cleanText.Substring(expectedLineEnd, Math.Min(6, cleanText.Length - expectedLineEnd));
+                        
+                        // Se próxima sequência não for válida onde esperado, linha atual pode ter excedido
+                        if (nextSequenceAtExpected.Length == 6)
+                        {
+                            if (!IsValidSequence(nextSequenceAtExpected))
+                            {
+                                // Próxima sequência não é válida onde esperado → linha atual provavelmente excedeu
+                                // Tentar encontrar sequência válida logo após
+                                bool foundValidSequenceNearby = false;
+                                for (int offset = 1; offset <= 10 && expectedLineEnd + offset + 6 <= cleanText.Length; offset++)
+                                {
+                                    string checkSequence = cleanText.Substring(expectedLineEnd + offset, 6);
+                                    if (IsValidSequence(checkSequence))
+                                    {
+                                        foundValidSequenceNearby = true;
+                                        excessChars = offset; // Linha excedeu em 'offset' caracteres
+                                        break;
+                                    }
+                                }
+                                
+                                if (!foundValidSequenceNearby)
+                                {
+                                    // Não encontrou sequência válida próxima → linha atual está incorreta
+                                    isLineLengthCorrect = false;
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Validar comprimento da linha
+                    if (actualLineLength != 600 || !isLineLengthCorrect || lineExceedsLimit)
+                    {
+                        // Ajustar actualLineLength se estiver excedendo
+                        int reportedLength = lineExceedsLimit ? actualLineLength : 600;
+                        
                         result.LineErrors.Add(new DocumentLineError
                         {
                             LineIndex = lineIndex,
                             Sequence = currentSequence,
                             StartPosition = lineStart,
-                            EndPosition = expectedLineEnd - 1,
-                            ActualLength = actualLineLength,
+                            EndPosition = lineStart + reportedLength - 1,
+                            ActualLength = reportedLength,
                             ExpectedLength = 600,
-                            ErrorMessage = $"Linha tem {actualLineLength} caracteres (esperado: 600)"
+                            ErrorMessage = lineExceedsLimit 
+                                ? $"Linha excede 600 caracteres: {reportedLength} caracteres encontrados (excedendo em {excessChars} caracteres). A partir desta linha, o documento está desalinhado."
+                                : $"Linha tem tamanho incorreto: {reportedLength} caracteres (esperado: 600). Próxima sequência não encontrada na posição esperada."
                         });
                         result.InvalidLinesCount++;
-                        result.ProcessingStopped = true;
-                        break;
                     }
 
                     // Validar sequência (deve ser numérica de 6 dígitos ou "HEADER")
@@ -176,41 +228,48 @@ namespace LayoutParserApi.Services.Validation
                         previousSequence = currentSequence;
                     }
 
-                    // Verificar próxima sequência (se houver mais conteúdo)
-                    if (expectedLineEnd < cleanText.Length)
+                    // ✅ Contar linhas válidas apenas se não houver erro nesta linha
+                    bool hasErrorInThisLine = result.LineErrors.Any(e => e.LineIndex == lineIndex);
+                    
+                    if (!hasErrorInThisLine)
                     {
-                        string nextSequence = cleanText.Substring(expectedLineEnd, Math.Min(6, cleanText.Length - expectedLineEnd));
+                        // Verificar próxima sequência (se houver mais conteúdo)
+                        if (expectedLineEnd < cleanText.Length)
+                        {
+                            string nextSequence = cleanText.Substring(expectedLineEnd, Math.Min(6, cleanText.Length - expectedLineEnd));
 
-                        // Se próxima sequência não começa na posição esperada, linha está incorreta
-                        if (nextSequence.Length == 6 && IsValidSequence(nextSequence))
-                        {
-                            // Próxima sequência encontrada corretamente
-                            result.ValidLinesCount++;
-                        }
-                        else if (nextSequence.Length < 6)
-                        {
-                            // Fim do documento
-                            result.ValidLinesCount++;
-                            break;
+                            // Se próxima sequência não começa na posição esperada, linha está incorreta
+                            if (nextSequence.Length == 6 && IsValidSequence(nextSequence))
+                            {
+                                // Próxima sequência encontrada corretamente
+                                result.ValidLinesCount++;
+                            }
+                            else if (nextSequence.Length < 6)
+                            {
+                                // Fim do documento
+                                result.ValidLinesCount++;
+                            }
                         }
                         else
                         {
-                            // Próxima sequência não encontrada onde esperado - linha atual pode estar com tamanho incorreto
-                            // Mas já validamos acima, então isso não deveria acontecer
-                            _logger.LogWarning("Sequência seguinte não encontrada na posição esperada na linha {LineIndex}", lineIndex);
+                            // Última linha
+                            result.ValidLinesCount++;
                         }
                     }
-                    else
-                    {
-                        // Última linha
-                        result.ValidLinesCount++;
-                        break;
-                    }
-
-                    // Avançar para próxima linha
+                    
+                    // ✅ Se linha atual tem erro, todas as linhas seguintes também terão (desalinhamento)
+                    // Mas continuamos processando para marcar todas
+                    
+                    // Avançar para próxima linha (sempre avançar 600, mesmo se houver erro)
                     currentPosition = expectedLineEnd;
                     lineIndex++;
                     result.TotalLinesProcessed++;
+                    
+                    // Se chegou ao fim do documento
+                    if (currentPosition >= cleanText.Length)
+                    {
+                        break;
+                    }
                 }
 
                 result.IsValid = result.LineErrors.Count == 0;

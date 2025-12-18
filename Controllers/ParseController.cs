@@ -91,22 +91,9 @@ namespace LayoutParserApi.Controllers
                     Elements = layoutReordenado.Elements
                 };
 
-                if (!result.Success)
-                {
-                    // Se houver erros de validação, retornar detalhes
-                    if (result.ValidationErrors != null && result.ValidationErrors.Any())
-                    {
-                        return BadRequest(new
-                        {
-                            success = false,
-                            error = result.ErrorMessage,
-                            validationErrors = result.ValidationErrors,
-                            message = "Documento possui linhas com tamanho incorreto. Verifique os erros de validação."
-                        });
-                    }
-                    return BadRequest(result.ErrorMessage);
-                }
-
+                // ✅ SEMPRE processar documento mesmo com erros de validação
+                // (result.Success sempre será true agora, mas pode ter ValidationErrors)
+                
                 var documentStructure = _parserService.BuildDocumentStructure(result);
 
                 // Calcular validações e posições das linhas para o front-end (apenas para layouts configurados)
@@ -125,7 +112,9 @@ namespace LayoutParserApi.Controllers
                     text = result.RawText,
                     summary = result.Summary,
                     documentStructure = documentStructure,
-                    lineValidations = lineValidations // Validações e posições calculadas (apenas para layouts configurados)
+                    lineValidations = lineValidations, // Validações e posições calculadas (apenas para layouts configurados)
+                    validationErrors = result.ValidationErrors, // ✅ Erros de validação de tamanho de linha
+                    validationWarning = !string.IsNullOrEmpty(result.ErrorMessage) ? result.ErrorMessage : null // ✅ Aviso se houver erros
                 });
             }
             catch (Exception ex)
