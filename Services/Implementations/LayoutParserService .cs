@@ -117,7 +117,7 @@ namespace LayoutParserApi.Services.Implementations
                     }).ToList();
 
                     // Adicionar warning message (não error, pois ainda processamos)
-                    result.ErrorMessage = $"⚠️ Documento possui {documentValidation.LineErrors.Count} linha(s) com tamanho incorreto: {documentValidation.ErrorMessage}";
+                    result.ErrorMessage = $"⚠️ Erro no Documento: {documentValidation.LineErrors.Count} linha(s) com tamanho incorreto. {documentValidation.ErrorMessage}";
                 }
                 else
                 {

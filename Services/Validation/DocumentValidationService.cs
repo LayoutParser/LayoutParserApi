@@ -266,11 +266,11 @@ namespace LayoutParserApi.Services.Validation
                 result.IsValid = result.LineErrors.Count == 0;
                 if (result.IsValid)
                 {
-                    result.ErrorMessage = "Documento válido";
+                    result.ErrorMessage = "Documento válido - todas as linhas têm 600 caracteres";
                 }
                 else
                 {
-                    result.ErrorMessage = $"Encontrados {result.LineErrors.Count} erro(s) em {result.InvalidLinesCount} linha(s)";
+                    result.ErrorMessage = $"Encontrados {result.LineErrors.Count} erro(s) de tamanho em {result.InvalidLinesCount} linha(s) do documento";
                 }
 
                 _logger.LogInformation("Validação de documento concluída: {TotalLines} linhas processadas, {ValidLines} válidas, {InvalidLines} inválidas",
