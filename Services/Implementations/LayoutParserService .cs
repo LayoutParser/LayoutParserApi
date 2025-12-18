@@ -6,7 +6,6 @@ using LayoutParserApi.Models.Responses;
 using LayoutParserApi.Models.Structure;
 using LayoutParserApi.Models.Summaries;
 using LayoutParserApi.Models.Validation;
-using LayoutParserApi.Models.Configuration;
 using LayoutParserApi.Services.Interfaces;
 using LayoutParserApi.Services.Parsing.Interfaces;
 using LayoutParserApi.Services.Validation;
@@ -30,10 +29,10 @@ namespace LayoutParserApi.Services.Implementations
         private readonly ILogger<LayoutParserService> _logger;
 
         public LayoutParserService(
-            ITechLogger techLogger, 
-            IAuditLogger auditLogger, 
-            ILineSplitter lineSplitter, 
-            ILayoutValidator layoutValidator, 
+            ITechLogger techLogger,
+            IAuditLogger auditLogger,
+            ILineSplitter lineSplitter,
+            ILayoutValidator layoutValidator,
             ILayoutNormalizer layoutNormalizer,
             DocumentValidationService documentValidationService,
             DocumentMLValidationService mlValidationService,
@@ -60,11 +59,10 @@ namespace LayoutParserApi.Services.Implementations
 
                 _layoutValidator.ValidateCompleteLayout(result.Layout);
 
-                // ✅ VALIDAÇÃO AUTOMÁTICA DO DOCUMENTO - APENAS PARA MQSERIES
                 // Valida se todas as linhas têm 600 posições (regra específica para MQSeries)
                 DocumentValidationResult documentValidation = null;
                 bool isMqSeriesLayout = IsMqSeriesLayout(result.Layout);
-                
+
                 if (isMqSeriesLayout)
                 {
                     documentValidation = _documentValidationService.ValidateDocument(result.RawText);
@@ -93,17 +91,17 @@ namespace LayoutParserApi.Services.Implementations
                         Message = $"Layout não-MQSeries ({result.Layout?.LayoutType ?? "Unknown"}) - validação de 600 caracteres não aplicada"
                     });
                 }
-                
+
                 // ✅ PROCESSAR DOCUMENTO MESMO COM ERROS (não bloquear)
                 // Processar normalmente para permitir visualização no front-end
                 result.ParsedFields = ParseTextWithSequenceValidation(result.RawText, result.Layout);
                 result.Summary = CalculateSummary(result);
                 result.Success = true; // Sempre retorna sucesso para permitir visualização
-                
+
                 // Adicionar informações de validação ao resultado (apenas para MQSeries e se houver erros)
                 if (isMqSeriesLayout && !documentValidation.IsValid && documentValidation.LineErrors.Any())
                 {
-                    _logger.LogWarning("Documento MQSeries possui linhas com tamanho incorreto: {ErrorMessage}. {ErrorCount} erro(s) encontrado(s).", 
+                    _logger.LogWarning("Documento MQSeries possui linhas com tamanho incorreto: {ErrorMessage}. {ErrorCount} erro(s) encontrado(s).",
                         documentValidation.ErrorMessage, documentValidation.LineErrors.Count);
 
                     // Adicionar informações de validação ao resultado para o front-end
@@ -198,7 +196,7 @@ namespace LayoutParserApi.Services.Implementations
                     detectedType = "idoc";
                 }
             }
-            
+
             // Usar detectedType para IDOC, senão usar layoutType do banco
             var splitType = detectedType == "idoc" ? "idoc" : layout.LayoutType;
             var lines = _lineSplitter.SplitTextIntoLines(text, splitType);
@@ -277,15 +275,15 @@ namespace LayoutParserApi.Services.Implementations
                     // ✅ CONTAR OCORRÊNCIAS BASEADO NO MÁXIMO DE Occurrence JÁ USADO
                     // Isso garante que múltiplas ocorrências da mesma linha sejam contadas corretamente
                     var existingFieldsForLine = parsedFields.Where(f => f.LineName == matchingLineConfig.Name).ToList();
-                    int currentOccurrence = existingFieldsForLine.Any() 
-                        ? existingFieldsForLine.Max(f => f.Occurrence) 
+                    int currentOccurrence = existingFieldsForLine.Any()
+                        ? existingFieldsForLine.Max(f => f.Occurrence)
                         : 0;
-                    
+
                     // Validar MaximumOccurrence (0 = sem limite)
-                    int maxOccurrences = matchingLineConfig.MaximumOccurrence > 0 
-                        ? matchingLineConfig.MaximumOccurrence 
+                    int maxOccurrences = matchingLineConfig.MaximumOccurrence > 0
+                        ? matchingLineConfig.MaximumOccurrence
                         : int.MaxValue;
-                    
+
                     if (currentOccurrence < maxOccurrences)
                     {
                         // Chamar ParseLineFields com a próxima ocorrência (currentOccurrence já é o máximo atual, então usamos ele)
@@ -541,7 +539,7 @@ namespace LayoutParserApi.Services.Implementations
                 {
                     // Para IDOC, verificar se a linha começa exatamente com o InitialValue
                     bool matches = line.StartsWith(lineConfig.InitialValue, StringComparison.OrdinalIgnoreCase);
-                    
+
                     if (matches)
                     {
                         _techLogger.LogTechnical(new TechLogEntry
@@ -564,7 +562,7 @@ namespace LayoutParserApi.Services.Implementations
                             var expectedSegmentBase = expectedSegment.TrimEnd('0');
                             if (string.IsNullOrEmpty(expectedSegmentBase))
                                 expectedSegmentBase = expectedSegment;
-                            
+
                             // Verificar se a linha começa com ZRSDM_NFE_400_ seguido do segmento esperado
                             if (line.StartsWith("ZRSDM_NFE_400_", StringComparison.OrdinalIgnoreCase))
                             {
@@ -572,14 +570,14 @@ namespace LayoutParserApi.Services.Implementations
                                 var actualSegment = afterPrefix.IndexOfAny(new[] { ' ', '\t' }) > 0
                                     ? afterPrefix.Substring(0, afterPrefix.IndexOfAny(new[] { ' ', '\t' }))
                                     : afterPrefix;
-                                
+
                                 var actualSegmentBase = actualSegment.TrimEnd('0');
                                 if (string.IsNullOrEmpty(actualSegmentBase))
                                     actualSegmentBase = actualSegment;
-                                
+
                                 matches = actualSegmentBase.Equals(expectedSegmentBase, StringComparison.OrdinalIgnoreCase) ||
                                          actualSegment.StartsWith(expectedSegmentBase, StringComparison.OrdinalIgnoreCase);
-                                
+
                                 if (matches)
                                 {
                                     _techLogger.LogTechnical(new TechLogEntry
@@ -593,7 +591,7 @@ namespace LayoutParserApi.Services.Implementations
                             }
                         }
                     }
-                    
+
                     return matches;
                 }
                 else
@@ -649,7 +647,7 @@ namespace LayoutParserApi.Services.Implementations
             if (line.Length >= 6 && IsNumericSequence(line.Substring(0, 6)))
             {
                 string sequence = line.Substring(0, 6);
-                
+
                 _techLogger.LogTechnical(new TechLogEntry
                 {
                     RequestId = Guid.NewGuid().ToString(),
@@ -753,7 +751,7 @@ namespace LayoutParserApi.Services.Implementations
             });
 
             string paddedLine = line.PadRight(600);
-            
+
             // ✅ EXTRAIR SEQUENCIAL DAS PRIMEIRAS 6 POSIÇÕES DA LINHA ORIGINAL (ANTES DE QUALQUER PROCESSAMENTO)
             // IMPORTANTE: Extrair diretamente da linha original, não do paddedLine, para garantir que seja o valor correto
             string lineSequence = line.Length >= 6 ? line.Substring(0, 6) : line.PadRight(6).Substring(0, 6);
@@ -922,12 +920,12 @@ namespace LayoutParserApi.Services.Implementations
                 // LINHAS: campos começam APÓS Sequencia da linha anterior (6) + InitialValue
                 // Estrutura: Sequencia da linha anterior (6) + InitialValue (ex: "000" = 3) + campos (sem Sequencia própria)
                 int offset = 6; // Sequência da linha anterior (sempre 6 chars)
-                
+
                 if (!string.IsNullOrEmpty(lineConfig.InitialValue))
                 {
                     offset += lineConfig.InitialValue.Length;
                 }
-                
+
                 _techLogger.LogTechnical(new TechLogEntry
                 {
                     RequestId = Guid.NewGuid().ToString(),
@@ -935,10 +933,10 @@ namespace LayoutParserApi.Services.Implementations
                     Level = "Info",
                     Message = $"Linha {lineConfig.Name}: Offset = 6 (Seq. anterior) + {lineConfig.InitialValue?.Length ?? 0} (InitialValue '{lineConfig.InitialValue}') = {offset}"
                 });
-                
+
                 return offset;
             }
-            
+
             return 0;
         }
 
@@ -1272,7 +1270,7 @@ namespace LayoutParserApi.Services.Implementations
             // Exemplo: "LAY_CNHI_TXT_MQSERIES_ENVNFE_4.00_NFe"
             // Procurar por padrões conhecidos
             var upperName = layoutName.ToUpper();
-            
+
             if (upperName.Contains("MQSERIES"))
                 return "MQSeries";
             if (upperName.Contains("IDOC"))
@@ -1283,7 +1281,7 @@ namespace LayoutParserApi.Services.Implementations
                 return "XML";
             if (upperName.Contains("JSON"))
                 return "JSON";
-            
+
             // Tentar extrair da estrutura LAY_*_TXT_TIPO_*
             var parts = layoutName.Split('_');
             if (parts.Length >= 4)
@@ -1301,6 +1299,40 @@ namespace LayoutParserApi.Services.Implementations
             return "Desconhecido";
         }
 
+        /// <summary>
+        /// Verifica se o layout é do tipo MQSeries
+        /// </summary>
+        private bool IsMqSeriesLayout(Layout layout)
+        {
+            if (layout == null) return false;
+
+            // Verificar pelo LayoutType
+            if (!string.IsNullOrEmpty(layout.LayoutType))
+            {
+                string upperType = layout.LayoutType.ToUpper();
+                if (upperType.Contains("MQSERIES") || upperType == "MQSERIES")
+                    return true;
+            }
+
+            // Verificar pelo Name
+            if (!string.IsNullOrEmpty(layout.Name))
+            {
+                string upperName = layout.Name.ToUpper();
+                if (upperName.Contains("MQSERIES") || upperName.Contains("MQ_SERIES"))
+                    return true;
+            }
+
+            // Verificar pelo Description (caso tenha)
+            if (!string.IsNullOrEmpty(layout.Description))
+            {
+                string upperDesc = layout.Description.ToUpper();
+                if (upperDesc.Contains("MQSERIES") || upperDesc.Contains("MQ_SERIES"))
+                    return true;
+            }
+
+            return false;
+        }
+
         private string ExtractLayoutVersion(string layoutName)
         {
             if (string.IsNullOrEmpty(layoutName))
@@ -1310,7 +1342,7 @@ namespace LayoutParserApi.Services.Implementations
             // Exemplo: "LAY_CNHI_TXT_MQSERIES_ENVNFE_4.00_NFe" -> "4.00"
             var versionPattern = new System.Text.RegularExpressions.Regex(@"_(\d+\.\d+)(?:_|$)");
             var match = versionPattern.Match(layoutName);
-            
+
             if (match.Success)
             {
                 return match.Groups[1].Value;
@@ -1319,7 +1351,7 @@ namespace LayoutParserApi.Services.Implementations
             // Tentar outros padrões (ex: V1, V2, etc.)
             var versionPattern2 = new System.Text.RegularExpressions.Regex(@"[Vv](\d+(?:\.\d+)?)");
             var match2 = versionPattern2.Match(layoutName);
-            
+
             if (match2.Success)
             {
                 return match2.Groups[1].Value;
@@ -2080,7 +2112,7 @@ namespace LayoutParserApi.Services.Implementations
                         var nestedLine = Newtonsoft.Json.JsonConvert.DeserializeObject<LineElement>(elementJson);
                         if (nestedLine != null && !string.IsNullOrEmpty(nestedLine.Name))
                             CollectAllElements(nestedLine, allLines, allFields);
-                        
+
                     }
                     catch { }
                 }
@@ -2132,10 +2164,10 @@ namespace LayoutParserApi.Services.Implementations
             // ✅ APLICAR A MESMA LÓGICA DO ValidateLineLayoutWithResult:
             // 1. InitialValue (HEADER, "000", "001", etc.)
             int initialValueLength = !string.IsNullOrEmpty(lineElement.InitialValue) ? lineElement.InitialValue.Length : 0;
-            
+
             // 2. Sequencia da linha ANTERIOR (6 chars), exceto para HEADER
             int sequenceFromPreviousLine = (lineElement.Name?.Equals("HEADER", StringComparison.OrdinalIgnoreCase) == true) ? 0 : 6;
-            
+
             // 3. Total = InitialValue + campos (sem Sequencia) + Sequencia da linha anterior
             int totalLength = initialValueLength + fieldsLength + sequenceFromPreviousLine;
 
@@ -2214,7 +2246,7 @@ namespace LayoutParserApi.Services.Implementations
                         var childLine = JsonConvert.DeserializeObject<LineElement>(json);
                         if (childLine != null && !string.IsNullOrEmpty(childLine.Name))
                             nestedLines.Add(childLine);
-                        
+
                     }
                     catch { }
                 }
@@ -3113,7 +3145,7 @@ namespace LayoutParserApi.Services.Implementations
             {
                 using var stream = new MemoryStream(Encoding.UTF8.GetBytes(xmlContent));
                 var layout = await LoadLayoutAsync(stream);
-                
+
                 if (layout != null)
                 {
                     // Reestruturar e reordenar o layout
@@ -3121,7 +3153,7 @@ namespace LayoutParserApi.Services.Implementations
                     var reordenado = ReordenarSequences(reestruturado);
                     return reordenado;
                 }
-                
+
                 return null;
             }
             catch (Exception ex)
