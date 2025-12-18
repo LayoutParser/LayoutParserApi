@@ -50,7 +50,6 @@ namespace LayoutParserApi.Services.Validation
                 // Validar linha por linha baseado na sequência
                 int currentPosition = 0;
                 int lineIndex = 0;
-                string? previousSequence = null;
 
                 while (currentPosition < cleanText.Length)
                 {
@@ -161,11 +160,12 @@ namespace LayoutParserApi.Services.Validation
                         result.InvalidLinesCount++;
                     }
 
-                    // Validar sequência (deve ser numérica de 6 dígitos ou "HEADER")
+                    // ✅ Validar apenas se a sequência é válida (6 dígitos numéricos ou "HEADER")
+                    // NÃO validar ordem sequencial - apenas validar tamanho da linha
                     if (currentSequence == "HEADER")
                     {
-                        // HEADER é válido
-                        if (previousSequence != null && previousSequence != "HEADER")
+                        // HEADER é válido - apenas validar se está na primeira linha
+                        if (lineIndex > 0)
                         {
                             result.LineErrors.Add(new DocumentLineError
                             {
@@ -179,10 +179,10 @@ namespace LayoutParserApi.Services.Validation
                             });
                             result.InvalidLinesCount++;
                         }
-                        previousSequence = "HEADER";
                     }
                     else if (!IsValidSequence(currentSequence))
                     {
+                        // Sequência inválida (não é 6 dígitos numéricos)
                         result.LineErrors.Add(new DocumentLineError
                         {
                             LineIndex = lineIndex,
@@ -195,29 +195,7 @@ namespace LayoutParserApi.Services.Validation
                         });
                         result.InvalidLinesCount++;
                     }
-                    else
-                    {
-                        // Validar sequência sequencial
-                        if (previousSequence != null && previousSequence != "HEADER")
-                        {
-                            if (!IsSequentialSequence(previousSequence, currentSequence))
-                            {
-                                result.LineErrors.Add(new DocumentLineError
-                                {
-                                    LineIndex = lineIndex,
-                                    Sequence = currentSequence,
-                                    StartPosition = lineStart,
-                                    EndPosition = expectedLineEnd - 1,
-                                    ActualLength = 600,
-                                    ExpectedLength = 600,
-                                    ExpectedNextSequence = CalculateNextSequence(previousSequence),
-                                    ErrorMessage = $"Sequência fora de ordem: esperado '{CalculateNextSequence(previousSequence)}', encontrado '{currentSequence}'"
-                                });
-                                result.InvalidLinesCount++;
-                            }
-                        }
-                        previousSequence = currentSequence;
-                    }
+                    // ✅ NÃO validar ordem sequencial - apenas tamanho da linha importa
 
                     // ✅ Contar linhas válidas apenas se não houver erro nesta linha
                     bool hasErrorInThisLine = result.LineErrors.Any(e => e.LineIndex == lineIndex);
@@ -301,35 +279,6 @@ namespace LayoutParserApi.Services.Validation
             return sequence.All(char.IsDigit);
         }
 
-        /// <summary>
-        /// Verifica se a sequência atual segue sequencialmente a anterior
-        /// </summary>
-        private bool IsSequentialSequence(string previousSequence, string currentSequence)
-        {
-            if (previousSequence == "HEADER")
-                return currentSequence == "000001"; // HEADER deve ser seguido de 000001
-
-            if (!int.TryParse(previousSequence, out int prevNum) || !int.TryParse(currentSequence, out int currNum))
-                return false;
-
-            return currNum == prevNum + 1;
-        }
-
-        /// <summary>
-        /// Calcula a próxima sequência esperada
-        /// </summary>
-        private string CalculateNextSequence(string currentSequence)
-        {
-            if (currentSequence == "HEADER")
-                return "000001";
-
-            if (int.TryParse(currentSequence, out int num))
-            {
-                return (num + 1).ToString("D6");
-            }
-
-            return "??????";
-        }
     }
 }
 
