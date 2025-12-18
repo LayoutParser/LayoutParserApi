@@ -63,31 +63,18 @@ namespace LayoutParserApi.Services.Implementations
                 // ✅ VALIDAÇÃO AUTOMÁTICA DO DOCUMENTO - Valida se todas as linhas têm 600 posições
                 var documentValidation = _documentValidationService.ValidateDocument(result.RawText);
                 
-                if (!documentValidation.IsValid)
+                // ✅ PROCESSAR DOCUMENTO MESMO COM ERROS (não bloquear)
+                // Processar normalmente para permitir visualização no front-end
+                result.ParsedFields = ParseTextWithSequenceValidation(result.RawText, result.Layout);
+                result.Summary = CalculateSummary(result);
+                result.Success = true; // Sempre retorna sucesso para permitir visualização
+                
+                // Adicionar informações de validação ao resultado (mesmo se houver erros)
+                if (!documentValidation.IsValid && documentValidation.LineErrors.Any())
                 {
-                    _logger.LogWarning("Documento TXT inválido: {ErrorMessage}. {ErrorCount} erro(s) encontrado(s).", 
+                    _logger.LogWarning("Documento TXT possui linhas com tamanho incorreto: {ErrorMessage}. {ErrorCount} erro(s) encontrado(s).", 
                         documentValidation.ErrorMessage, documentValidation.LineErrors.Count);
 
-                    // Registrar para aprendizado ML (em background, não bloqueia)
-                    _ = Task.Run(async () =>
-                    {
-                        try
-                        {
-                            await _mlValidationService.LearnFromDocumentAsync(
-                                result.RawText,
-                                result.Layout?.LayoutGuid ?? "",
-                                documentValidation.LineErrors);
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogError(ex, "Erro ao registrar documento para aprendizado ML");
-                        }
-                    });
-
-                    // Retornar erro detalhado
-                    result.Success = false;
-                    result.ErrorMessage = $"Documento inválido: {documentValidation.ErrorMessage}";
-                    
                     // Adicionar informações de validação ao resultado para o front-end
                     result.ValidationErrors = documentValidation.LineErrors.Select(e => new DocumentValidationErrorInfo
                     {
@@ -100,13 +87,25 @@ namespace LayoutParserApi.Services.Implementations
                         EndPosition = e.EndPosition
                     }).ToList();
 
-                    return result;
+                    // Adicionar warning message (não error, pois ainda processamos)
+                    result.ErrorMessage = $"⚠️ Documento possui {documentValidation.LineErrors.Count} linha(s) com tamanho incorreto: {documentValidation.ErrorMessage}";
                 }
 
-                // Se documento é válido, processar normalmente
-                result.ParsedFields = ParseTextWithSequenceValidation(result.RawText, result.Layout);
-                result.Summary = CalculateSummary(result);
-                result.Success = true;
+                // Registrar para aprendizado ML (em background)
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await _mlValidationService.LearnFromDocumentAsync(
+                            result.RawText,
+                            result.Layout?.LayoutGuid ?? "",
+                            documentValidation.IsValid ? null : documentValidation.LineErrors);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Erro ao registrar documento para aprendizado ML");
+                    }
+                });
 
                 // Registrar documento válido para aprendizado ML (em background)
                 _ = Task.Run(async () =>
