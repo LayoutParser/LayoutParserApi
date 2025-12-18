@@ -1,8 +1,10 @@
 using LayoutParserApi.Models.Configuration;
 using LayoutParserApi.Models.Database;
 using LayoutParserApi.Models.Responses;
+using LayoutParserApi.Models.Validation;
 using LayoutParserApi.Services.Database;
 using LayoutParserApi.Services.Interfaces;
+using LayoutParserApi.Services.Validation;
 
 using Microsoft.AspNetCore.Mvc;
 
@@ -14,15 +16,18 @@ namespace LayoutParserApi.Controllers
     {
         private readonly ICachedLayoutService _cachedLayoutService;
         private readonly ILayoutParserService _parserService;
+        private readonly LayoutValidationService _layoutValidationService;
         private readonly ILogger<MonitoringController> _logger;
 
         public MonitoringController(
             ICachedLayoutService cachedLayoutService,
             ILayoutParserService parserService,
+            LayoutValidationService layoutValidationService,
             ILogger<MonitoringController> logger)
         {
             _cachedLayoutService = cachedLayoutService;
             _parserService = parserService;
+            _layoutValidationService = layoutValidationService;
             _logger = logger;
         }
 
@@ -196,6 +201,71 @@ namespace LayoutParserApi.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Erro ao gerar análise de layouts");
+                return StatusCode(500, new
+                {
+                    success = false,
+                    error = ex.Message
+                });
+            }
+        }
+
+        /// <summary>
+        /// Retorna resultados de validação de layouts (apenas layouts configurados para validação)
+        /// </summary>
+        [HttpGet("layout-validations")]
+        public async Task<IActionResult> GetLayoutValidations([FromQuery] bool forceRevalidation = false)
+        {
+            try
+            {
+                _logger.LogInformation("Buscando resultados de validação de layouts. ForceRevalidation: {Force}", forceRevalidation);
+
+                // Buscar validações de todos os layouts configurados
+                var validationResults = await _layoutValidationService.ValidateAllLayoutsAsync(forceRevalidation);
+
+                // Calcular estatísticas
+                int totalLayouts = validationResults.Count;
+                int validLayouts = validationResults.Count(r => r.IsValid);
+                int invalidLayouts = validationResults.Count(r => !r.IsValid);
+                int totalErrors = validationResults.Sum(r => r.Errors.Count);
+
+                return Ok(new
+                {
+                    success = true,
+                    timestamp = DateTime.UtcNow,
+                    summary = new
+                    {
+                        totalLayouts = totalLayouts,
+                        validLayouts = validLayouts,
+                        invalidLayouts = invalidLayouts,
+                        totalErrors = totalErrors,
+                        validationRate = totalLayouts > 0 ? (double)validLayouts / totalLayouts * 100 : 0
+                    },
+                    validations = validationResults.Select(r => new
+                    {
+                        layoutGuid = r.LayoutGuid,
+                        layoutName = r.LayoutName,
+                        isValid = r.IsValid,
+                        validatedAt = r.ValidatedAt,
+                        totalLines = r.TotalLines,
+                        validLines = r.ValidLines,
+                        invalidLines = r.InvalidLines,
+                        errors = r.Errors.Select(e => new
+                        {
+                            lineName = e.LineName,
+                            expectedLength = e.ExpectedLength,
+                            actualLength = e.ActualLength,
+                            difference = e.Difference,
+                            initialValue = e.InitialValue,
+                            fieldCount = e.FieldCount,
+                            hasChildren = e.HasChildren,
+                            errorMessage = e.ErrorMessage
+                        }).ToList()
+                    }).ToList()
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Erro ao buscar validações de layouts");
                 return StatusCode(500, new
                 {
                     success = false,
