@@ -60,8 +60,39 @@ namespace LayoutParserApi.Services.Implementations
 
                 _layoutValidator.ValidateCompleteLayout(result.Layout);
 
-                // ✅ VALIDAÇÃO AUTOMÁTICA DO DOCUMENTO - Valida se todas as linhas têm 600 posições
-                var documentValidation = _documentValidationService.ValidateDocument(result.RawText);
+                // ✅ VALIDAÇÃO AUTOMÁTICA DO DOCUMENTO - APENAS PARA MQSERIES
+                // Valida se todas as linhas têm 600 posições (regra específica para MQSeries)
+                DocumentValidationResult documentValidation = null;
+                bool isMqSeriesLayout = IsMqSeriesLayout(result.Layout);
+                
+                if (isMqSeriesLayout)
+                {
+                    documentValidation = _documentValidationService.ValidateDocument(result.RawText);
+                    _techLogger.LogTechnical(new TechLogEntry
+                    {
+                        RequestId = Guid.NewGuid().ToString(),
+                        Endpoint = "ParseAsync",
+                        Level = "Info",
+                        Message = $"Layout MQSeries detectado - aplicando validação de 600 caracteres por linha"
+                    });
+                }
+                else
+                {
+                    // Para layouts não-MQSeries, criar validação vazia (sem erros)
+                    documentValidation = new DocumentValidationResult
+                    {
+                        IsValid = true,
+                        LineErrors = new List<DocumentLineError>(),
+                        ErrorMessage = null
+                    };
+                    _techLogger.LogTechnical(new TechLogEntry
+                    {
+                        RequestId = Guid.NewGuid().ToString(),
+                        Endpoint = "ParseAsync",
+                        Level = "Info",
+                        Message = $"Layout não-MQSeries ({result.Layout?.LayoutType ?? "Unknown"}) - validação de 600 caracteres não aplicada"
+                    });
+                }
                 
                 // ✅ PROCESSAR DOCUMENTO MESMO COM ERROS (não bloquear)
                 // Processar normalmente para permitir visualização no front-end
@@ -69,10 +100,10 @@ namespace LayoutParserApi.Services.Implementations
                 result.Summary = CalculateSummary(result);
                 result.Success = true; // Sempre retorna sucesso para permitir visualização
                 
-                // Adicionar informações de validação ao resultado (mesmo se houver erros)
-                if (!documentValidation.IsValid && documentValidation.LineErrors.Any())
+                // Adicionar informações de validação ao resultado (apenas para MQSeries e se houver erros)
+                if (isMqSeriesLayout && !documentValidation.IsValid && documentValidation.LineErrors.Any())
                 {
-                    _logger.LogWarning("Documento TXT possui linhas com tamanho incorreto: {ErrorMessage}. {ErrorCount} erro(s) encontrado(s).", 
+                    _logger.LogWarning("Documento MQSeries possui linhas com tamanho incorreto: {ErrorMessage}. {ErrorCount} erro(s) encontrado(s).", 
                         documentValidation.ErrorMessage, documentValidation.LineErrors.Count);
 
                     // Adicionar informações de validação ao resultado para o front-end
@@ -89,6 +120,11 @@ namespace LayoutParserApi.Services.Implementations
 
                     // Adicionar warning message (não error, pois ainda processamos)
                     result.ErrorMessage = $"⚠️ Documento possui {documentValidation.LineErrors.Count} linha(s) com tamanho incorreto: {documentValidation.ErrorMessage}";
+                }
+                else
+                {
+                    // Para layouts não-MQSeries ou sem erros, não adicionar ValidationErrors
+                    result.ValidationErrors = new List<DocumentValidationErrorInfo>();
                 }
 
                 // Registrar para aprendizado ML (em background)
