@@ -1,11 +1,14 @@
+using LayoutParserApi.Models.Configuration;
 using LayoutParserApi.Models.Database;
 using LayoutParserApi.Models.Entities;
-using LayoutParserApi.Models.Validation;
 using LayoutParserApi.Models.Logging;
+using LayoutParserApi.Models.Validation;
 using LayoutParserApi.Services.Database;
 using LayoutParserApi.Services.Interfaces;
 using LayoutParserApi.Services.Parsing.Interfaces;
+
 using Newtonsoft.Json;
+
 using System.Xml.Linq;
 
 namespace LayoutParserApi.Services.Validation
@@ -82,8 +85,26 @@ namespace LayoutParserApi.Services.Validation
                     };
                 }
 
-                // Validar cada linha do layout
-                var validationResult = ValidateLayoutLines(layout);
+                // ✅ Verificar se o layout deve ser validado (apenas layouts com regra de 600 caracteres)
+                var normalizedGuid = NormalizeLayoutGuid(layoutGuid);
+                var expectedLineLength = LayoutLineSizeConfiguration.GetLineSizeForLayout(normalizedGuid);
+
+                if (!expectedLineLength.HasValue)
+                {
+                    // Layout não está na lista de layouts que devem ser validados
+                    _logger.LogDebug("Layout {LayoutGuid} ({Name}) não está na lista de layouts para validação. Pulando validação.", layoutGuid, layoutRecord.Name);
+                    return new LayoutValidationResult
+                    {
+                        LayoutGuid = layoutGuid,
+                        LayoutName = layoutRecord.Name,
+                        IsValid = true, // Não é erro, apenas não precisa validar
+                        Errors = new List<LineValidationError>(),
+                        ValidatedAt = DateTime.UtcNow
+                    };
+                }
+
+                // Validar cada linha do layout (apenas para layouts com regra específica)
+                var validationResult = ValidateLayoutLines(layout, expectedLineLength.Value);
                 validationResult.LayoutGuid = layoutGuid;
                 validationResult.LayoutName = layoutRecord.Name;
                 validationResult.ValidatedAt = DateTime.UtcNow;
@@ -129,33 +150,29 @@ namespace LayoutParserApi.Services.Validation
         }
 
         /// <summary>
-        /// Valida todos os layouts do banco (para execução na inicialização e diariamente)
+        /// Valida todos os layouts configurados (apenas layouts com regra de tamanho de linha)
         /// </summary>
         public async Task<List<LayoutValidationResult>> ValidateAllLayoutsAsync(bool forceRevalidation = false)
         {
             try
             {
-                _logger.LogInformation("Iniciando validação de todos os layouts. ForceRevalidation: {Force}", forceRevalidation);
+                _logger.LogInformation("Iniciando validação de layouts configurados. ForceRevalidation: {Force}", forceRevalidation);
 
-                // Buscar todos os layouts
-                var request = new LayoutSearchRequest
-                {
-                    SearchTerm = "",
-                    MaxResults = 1000
-                };
+                // ✅ Validar apenas layouts que estão na lista de configuração
+                var configuredLayoutGuids = LayoutLineSizeConfiguration.GetAllConfiguredLayouts().ToList();
 
-                var searchResponse = await _layoutService.SearchLayoutsAsync(request);
-                if (!searchResponse.Success || !searchResponse.Layouts.Any())
+                if (!configuredLayoutGuids.Any())
                 {
-                    _logger.LogWarning("Nenhum layout encontrado para validação");
+                    _logger.LogWarning("Nenhum layout configurado para validação");
                     return new List<LayoutValidationResult>();
                 }
 
+                _logger.LogInformation("Validando {Count} layouts configurados", configuredLayoutGuids.Count);
+
                 var results = new List<LayoutValidationResult>();
 
-                foreach (var layoutRecord in searchResponse.Layouts)
+                foreach (var layoutGuid in configuredLayoutGuids)
                 {
-                    var layoutGuid = layoutRecord.LayoutGuid.ToString();
 
                     // Verificar cache se não for forçado
                     if (!forceRevalidation && _validationCache.ContainsKey(layoutGuid))
@@ -189,7 +206,7 @@ namespace LayoutParserApi.Services.Validation
         /// <summary>
         /// Valida as linhas de um layout parseado
         /// </summary>
-        private LayoutValidationResult ValidateLayoutLines(Layout layout)
+        private LayoutValidationResult ValidateLayoutLines(Layout layout, int expectedLineLength)
         {
             var result = new LayoutValidationResult
             {
@@ -199,7 +216,7 @@ namespace LayoutParserApi.Services.Validation
 
             foreach (var lineElement in layout.Elements)
             {
-                var lineError = ValidateLineElement(lineElement);
+                var lineError = ValidateLineElement(lineElement, expectedLineLength);
                 if (lineError != null)
                 {
                     result.Errors.Add(lineError);
@@ -216,9 +233,43 @@ namespace LayoutParserApi.Services.Validation
         }
 
         /// <summary>
+        /// Obtém resultado de validação do cache
+        /// </summary>
+        public LayoutValidationResult? GetCachedValidation(string layoutGuid)
+        {
+            return _validationCache.TryGetValue(layoutGuid, out var result) ? result : null;
+        }
+
+        /// <summary>
+        /// Verifica se precisa revalidar (última validação foi há mais de 24h)
+        /// </summary>
+        public bool NeedsRevalidation()
+        {
+            return _lastFullValidation < DateTime.UtcNow.AddHours(-24);
+        }
+
+        /// <summary>
+        /// Normaliza GUID do layout (garante formato LAY_xxx)
+        /// </summary>
+        private string NormalizeLayoutGuid(string layoutGuid)
+        {
+            if (string.IsNullOrWhiteSpace(layoutGuid))
+                return layoutGuid;
+
+            var normalized = layoutGuid.Trim();
+
+            // Se já começa com LAY_, retornar como está
+            if (normalized.StartsWith("LAY_", StringComparison.OrdinalIgnoreCase))
+                return normalized;
+
+            // Adicionar prefixo LAY_ se não tiver
+            return $"LAY_{normalized}";
+        }
+
+        /// <summary>
         /// Valida um LineElement individual
         /// </summary>
-        private LineValidationError? ValidateLineElement(LineElement lineConfig)
+        private LineValidationError? ValidateLineElement(LineElement lineConfig, int expectedLineLength)
         {
             try
             {
@@ -226,8 +277,8 @@ namespace LayoutParserApi.Services.Validation
                 var (fieldElements, childLineElements) = SeparateElements(lineConfig);
 
                 // Calcular tamanho total da linha
-                int initialValueLength = !string.IsNullOrEmpty(lineConfig.InitialValue) 
-                    ? lineConfig.InitialValue.Length 
+                int initialValueLength = !string.IsNullOrEmpty(lineConfig.InitialValue)
+                    ? lineConfig.InitialValue.Length
                     : 0;
 
                 var fieldsToCalculate = fieldElements
@@ -238,32 +289,32 @@ namespace LayoutParserApi.Services.Validation
                 int fieldsLength = fieldsToCalculate.Sum(f => f.LengthField);
 
                 // HEADER não tem sequência da linha anterior, outras linhas têm 6 caracteres
-                int sequenceFromPreviousLine = lineConfig.Name?.Equals("HEADER", StringComparison.OrdinalIgnoreCase) == true 
-                    ? 0 
+                int sequenceFromPreviousLine = lineConfig.Name?.Equals("HEADER", StringComparison.OrdinalIgnoreCase) == true
+                    ? 0
                     : 6;
 
                 int totalLength = initialValueLength + fieldsLength + sequenceFromPreviousLine;
 
-                // Linhas com filhos podem ter tamanho variável, mas devem ser <= 600
-                // Linhas sem filhos devem ter exatamente 600
+                // Linhas com filhos podem ter tamanho variável, mas devem ser <= expectedLineLength
+                // Linhas sem filhos devem ter exatamente expectedLineLength
                 bool hasChildren = childLineElements.Any();
-                bool isValid = hasChildren ? totalLength <= 600 : totalLength == 600;
+                bool isValid = hasChildren ? totalLength <= expectedLineLength : totalLength == expectedLineLength;
 
                 if (!isValid)
                 {
-                    int difference = 600 - totalLength;
+                    int difference = expectedLineLength - totalLength;
                     return new LineValidationError
                     {
                         LineName = lineConfig.Name ?? "UNKNOWN",
-                        ExpectedLength = 600,
+                        ExpectedLength = expectedLineLength,
                         ActualLength = totalLength,
                         Difference = difference,
                         InitialValue = lineConfig.InitialValue ?? "",
                         FieldCount = fieldsToCalculate.Count,
                         HasChildren = hasChildren,
                         ErrorMessage = hasChildren
-                            ? $"Linha com filhos tem {totalLength} caracteres (máximo permitido: 600)"
-                            : $"Linha tem {totalLength} caracteres (esperado: 600). {(difference > 0 ? "Faltam" : "Sobram")} {Math.Abs(difference)} caracteres."
+                            ? $"Linha com filhos tem {totalLength} caracteres (máximo permitido: {expectedLineLength})"
+                            : $"Linha tem {totalLength} caracteres (esperado: {expectedLineLength}). {(difference > 0 ? "Faltam" : "Sobram")} {Math.Abs(difference)} caracteres."
                     };
                 }
 
@@ -301,7 +352,7 @@ namespace LayoutParserApi.Services.Validation
             foreach (var elementJson in lineElement.Elements)
             {
                 // Tentar detectar tipo pelo JSON
-                bool isLineElement = elementJson.Contains("\"Type\":\"LineElementVO\"") || 
+                bool isLineElement = elementJson.Contains("\"Type\":\"LineElementVO\"") ||
                                      elementJson.Contains("\"Name\":\"LINHA");
                 bool isFieldElement = elementJson.Contains("\"Type\":\"FieldElementVO\"") ||
                                       elementJson.Contains("\"LengthField\"");
@@ -436,21 +487,5 @@ namespace LayoutParserApi.Services.Validation
             }
         }
 
-        /// <summary>
-        /// Obtém resultado de validação do cache
-        /// </summary>
-        public LayoutValidationResult? GetCachedValidation(string layoutGuid)
-        {
-            return _validationCache.TryGetValue(layoutGuid, out var result) ? result : null;
-        }
-
-        /// <summary>
-        /// Verifica se precisa revalidar (última validação foi há mais de 24h)
-        /// </summary>
-        public bool NeedsRevalidation()
-        {
-            return _lastFullValidation < DateTime.UtcNow.AddHours(-24);
-        }
     }
 }
-
