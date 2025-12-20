@@ -68,8 +68,10 @@ namespace LayoutParserApi.Services.Parsing.Implementations
             if (!cleanContent.StartsWith("HEADER"))
                 return false;
 
-            // Verificar se o tamanho é múltiplo de 600 (linhas de 600 caracteres)
-            if (cleanContent.Length < 600 || cleanContent.Length % 600 != 0)
+            // ✅ Não exigir múltiplo de 600 aqui.
+            // Arquivos MQSeries com erro (linha com 601+) deixam de ser múltiplos de 600,
+            // mas ainda são MQSeries e precisam ser detectados como tal.
+            if (cleanContent.Length < 600)
                 return false;
 
             // Verificar se tem padrões sequenciais típicos do mqseries
@@ -85,6 +87,7 @@ namespace LayoutParserApi.Services.Parsing.Implementations
             var endsWithLinha999 = cleanContent.Contains("999999") || Regex.IsMatch(cleanContent, @"\d{6}999");
 
             // Verificar se tem múltiplas "linhas" lógicas de 600 caracteres (mínimo 2)
+            // (mesmo com erro, o tamanho tende a ser >= 1200 para documentos reais)
             int logicalLineCount = cleanContent.Length / 600;
 
             return logicalLineCount >= 2 && (sequentialMatches.Count >= 3 || endsWithLinha999);

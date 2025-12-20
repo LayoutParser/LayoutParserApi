@@ -53,6 +53,19 @@ namespace LayoutParserApi.Controllers
                 var sample = await reader.ReadToEndAsync();
                 var detectedType = _layoutDetector.DetectType(sample);
 
+                // ✅ Overrides por contexto (extensão / layout selecionado)
+                // Quando o documento MQSeries tem linha com 601 chars, o detector por conteúdo pode falhar.
+                // Nesses casos, a extensão e/ou o layout selecionado são a fonte de verdade.
+                if (fileExtension == ".mq_series" ||
+                    (!string.IsNullOrWhiteSpace(layoutName) && layoutName.Contains("MQ", StringComparison.OrdinalIgnoreCase)))
+                {
+                    detectedType = "mqseries";
+                }
+                else if (fileExtension == ".idoc")
+                {
+                    detectedType = "idoc";
+                }
+
                 // Se for arquivo XML, retornar indicando que deve ser processado no front-end
                 if (isXmlFile || detectedType == "xml")
                 {
