@@ -71,7 +71,7 @@ namespace LayoutParserApi.Services.Implementations
                         RequestId = Guid.NewGuid().ToString(),
                         Endpoint = "ParseAsync",
                         Level = "Info",
-                        Message = $"Layout MQSeries detectado - aplicando validação de 600 caracteres por linha"
+                        Message = $"Layout MQSeries detectado - aplicando validacao de 600 caracteres por linha"
                     });
                 }
                 else
@@ -88,11 +88,10 @@ namespace LayoutParserApi.Services.Implementations
                         RequestId = Guid.NewGuid().ToString(),
                         Endpoint = "ParseAsync",
                         Level = "Info",
-                        Message = $"Layout não-MQSeries ({result.Layout?.LayoutType ?? "Unknown"}) - validação de 600 caracteres não aplicada"
+                        Message = $"Layout nao-MQSeries ({result.Layout?.LayoutType ?? "Unknown"}) - validação de 600 caracteres nao aplicada"
                     });
                 }
 
-                // ✅ PROCESSAR DOCUMENTO MESMO COM ERROS (não bloquear)
                 // Processar normalmente para permitir visualização no front-end
                 result.ParsedFields = ParseTextWithSequenceValidation(result.RawText, result.Layout);
                 result.Summary = CalculateSummary(result);
@@ -117,7 +116,7 @@ namespace LayoutParserApi.Services.Implementations
                     }).ToList();
 
                     // Adicionar warning message (não error, pois ainda processamos)
-                    result.ErrorMessage = $"⚠️ Erro no Documento: {documentValidation.LineErrors.Count} linha(s) com tamanho incorreto. {documentValidation.ErrorMessage}";
+                    result.ErrorMessage = $"Erro no Documento: {documentValidation.LineErrors.Count} linha(s) com tamanho incorreto. {documentValidation.ErrorMessage}";
                 }
                 else
                 {
@@ -296,7 +295,7 @@ namespace LayoutParserApi.Services.Implementations
                             RequestId = Guid.NewGuid().ToString(),
                             Endpoint = "ParseTextWithSequenceValidation",
                             Level = "Warn",
-                            Message = $"Limite de {matchingLineConfig.MaximumOccurrence} ocorrências atingido para {matchingLineConfig.Name}"
+                            Message = $"Limite de {matchingLineConfig.MaximumOccurrence} ocorrencias atingido para {matchingLineConfig.Name}"
                         });
                     }
                 }
@@ -311,7 +310,7 @@ namespace LayoutParserApi.Services.Implementations
                         RequestId = Guid.NewGuid().ToString(),
                         Endpoint = "ParseTextWithSequenceValidation",
                         Level = "Warn",
-                        Message = $"Linha {lineIndex + 1} não identificada: {linePreview}..."
+                        Message = $"Linha {lineIndex + 1} nao identificada: {linePreview}..."
                     });
                 }
 
@@ -325,7 +324,7 @@ namespace LayoutParserApi.Services.Implementations
                     RequestId = Guid.NewGuid().ToString(),
                     Endpoint = "ParseTextWithSequenceValidation",
                     Level = "Warn",
-                    Message = $"LINHAS NÃO IDENTIFICADAS ({unidentifiedLines.Count}): {string.Join("; ", unidentifiedLines)}"
+                    Message = $"LINHAS NAO IDENTIFICADAS ({unidentifiedLines.Count}): {string.Join("; ", unidentifiedLines)}"
                 });
             }
 
@@ -365,7 +364,7 @@ namespace LayoutParserApi.Services.Implementations
                         RequestId = Guid.NewGuid().ToString(),
                         Endpoint = "ValidateLineOccurrences",
                         Level = "Warn",
-                        Message = $"⚠️ {lineConfig.Name}: Apenas {actualOccurrences} ocorrência(s) encontrada(s) (mínimo requerido: {lineConfig.MinimalOccurrence})"
+                        Message = $"{lineConfig.Name}: Apenas {actualOccurrences} ocorrencia(s) encontrada(s) (minimo requerido: {lineConfig.MinimalOccurrence})"
                     });
                 }
 
@@ -377,7 +376,7 @@ namespace LayoutParserApi.Services.Implementations
                         RequestId = Guid.NewGuid().ToString(),
                         Endpoint = "ValidateLineOccurrences",
                         Level = "Error",
-                        Message = $"❌ {lineConfig.Name}: {actualOccurrences} ocorrência(s) encontrada(s) (máximo permitido: {lineConfig.MaximumOccurrence}). Excedeu o limite!"
+                        Message = $"{lineConfig.Name}: {actualOccurrences} ocorrencia(s) encontrada(s) (maximo permitido: {lineConfig.MaximumOccurrence}). Excedeu o limite!"
                     });
                 }
 
@@ -389,7 +388,7 @@ namespace LayoutParserApi.Services.Implementations
                         RequestId = Guid.NewGuid().ToString(),
                         Endpoint = "ValidateLineOccurrences",
                         Level = "Info",
-                        Message = $"✅ {lineConfig.Name}: {actualOccurrences} ocorrência(s) (esperado: {lineConfig.MinimalOccurrence}-{lineConfig.MaximumOccurrence})"
+                        Message = $"{lineConfig.Name}: {actualOccurrences} ocorrencia(s) (esperado: {lineConfig.MinimalOccurrence}-{lineConfig.MaximumOccurrence})"
                     });
                 }
             }
@@ -508,7 +507,7 @@ namespace LayoutParserApi.Services.Implementations
                         RequestId = Guid.NewGuid().ToString(),
                         Endpoint = "IsLineValidForConfig",
                         Level = "Info",
-                        Message = $"✅ Match por sequência especial: LINHA999999 (sequência '999999')"
+                        Message = $"Match por sequencia especial: LINHA999999 (sequencia '999999')"
                     });
                     return true;
                 }
@@ -585,7 +584,7 @@ namespace LayoutParserApi.Services.Implementations
                                         RequestId = Guid.NewGuid().ToString(),
                                         Endpoint = "IsLineValidForConfig",
                                         Level = "Info",
-                                        Message = $"Match por InitialValue IDOC (segmento flexível): esperado '{expectedSegmentBase}', encontrado '{actualSegmentBase}' para {lineConfig.Name}"
+                                        Message = $"Match por InitialValue IDOC (segmento flexivel): esperado '{expectedSegmentBase}', encontrado '{actualSegmentBase}' para {lineConfig.Name}"
                                     });
                                 }
                             }
@@ -614,7 +613,7 @@ namespace LayoutParserApi.Services.Implementations
                                     RequestId = Guid.NewGuid().ToString(),
                                     Endpoint = "IsLineValidForConfig",
                                     Level = "Info",
-                                    Message = $"✅ Match por InitialValue: '{lineConfig.InitialValue}' na posição {checkPosition + 1} para {lineConfig.Name}"
+                                    Message = $"Match por InitialValue: '{lineConfig.InitialValue}' na posicao {checkPosition + 1} para {lineConfig.Name}"
                                 });
                             }
                             else
@@ -624,7 +623,7 @@ namespace LayoutParserApi.Services.Implementations
                                     RequestId = Guid.NewGuid().ToString(),
                                     Endpoint = "IsLineValidForConfig",
                                     Level = "Debug",
-                                    Message = $"❌ InitialValue não corresponde: esperado '{lineConfig.InitialValue}', encontrado '{actualValue}' na posição 7-{checkPosition + lineConfig.InitialValue.Length} para {lineConfig.Name}"
+                                    Message = $"InitialValue nao corresponde: esperado '{lineConfig.InitialValue}', encontrado '{actualValue}' na posicao 7-{checkPosition + lineConfig.InitialValue.Length} para {lineConfig.Name}"
                                 });
                             }
                             return matches;
@@ -637,7 +636,7 @@ namespace LayoutParserApi.Services.Implementations
                             RequestId = Guid.NewGuid().ToString(),
                             Endpoint = "IsLineValidForConfig",
                             Level = "Debug",
-                            Message = $"Linha não começa com sequência numérica. Primeiros 6 chars: '{line.Substring(0, Math.Min(6, line.Length))}' para {lineConfig.Name}"
+                            Message = $"Linha nao começa com sequência numerica. Primeiros 6 chars: '{line.Substring(0, Math.Min(6, line.Length))}' para {lineConfig.Name}"
                         });
                     }
                 }
@@ -653,7 +652,7 @@ namespace LayoutParserApi.Services.Implementations
                     RequestId = Guid.NewGuid().ToString(),
                     Endpoint = "IsLineValidForConfig",
                     Level = "Debug",
-                    Message = $"Nenhum match para {lineConfig.Name}. Sequência: '{sequence}', InitialValue esperado: '{lineConfig.InitialValue}'"
+                    Message = $"Nenhum match para {lineConfig.Name}. Sequencia: '{sequence}', InitialValue esperado: '{lineConfig.InitialValue}'"
                 });
 
                 // ❌ REMOVER: Lógica antiga que tentava fazer match por substring da sequência
@@ -666,7 +665,7 @@ namespace LayoutParserApi.Services.Implementations
                         RequestId = Guid.NewGuid().ToString(),
                         Endpoint = "IsLineValidForConfig",
                         Level = "Info",
-                        Message = $"Match por nome: {lineConfig.Name} contém sequência '{sequence}'"
+                        Message = $"Match por nome: {lineConfig.Name} contem sequencia '{sequence}'"
                     });
                     return true;
                 }
@@ -680,7 +679,7 @@ namespace LayoutParserApi.Services.Implementations
                         RequestId = Guid.NewGuid().ToString(),
                         Endpoint = "IsLineValidForConfig",
                         Level = "Info",
-                        Message = $"Match por estrutura para sequência '{sequence}' em {lineConfig.Name}"
+                        Message = $"Match por estrutura para sequencia '{sequence}' em {lineConfig.Name}"
                     });
                 }
                 return matchesByStructure;
@@ -691,7 +690,7 @@ namespace LayoutParserApi.Services.Implementations
                 RequestId = Guid.NewGuid().ToString(),
                 Endpoint = "IsLineValidForConfig",
                 Level = "Debug",
-                Message = $"Nenhum critério atendido para {lineConfig.Name}"
+                Message = $"Nenhum criterio atendido para {lineConfig.Name}"
             });
 
             return false;
@@ -715,7 +714,7 @@ namespace LayoutParserApi.Services.Implementations
                         RequestId = Guid.NewGuid().ToString(),
                         Endpoint = "DoesLineConfigMatchSequence",
                         Level = "Info",
-                        Message = $"Sequência '{sequence}' corresponde ao sufixo '{expectedSuffix}' de {lineConfig.Name}"
+                        Message = $"Sequencia '{sequence}' corresponde ao sufixo '{expectedSuffix}' de {lineConfig.Name}"
                     });
                 }
 
@@ -739,7 +738,7 @@ namespace LayoutParserApi.Services.Implementations
                 RequestId = Guid.NewGuid().ToString(),
                 Endpoint = "ParseTextWithSequenceValidation",
                 Level = "Info",
-                Message = $"=== Processando: {lineConfig.Name} (Ocorrência {occurrenceIndex + 1}) ==="
+                Message = $"=== Processando: {lineConfig.Name} (Ocorrencia {occurrenceIndex + 1}) ==="
             });
 
             _techLogger.LogTechnical(new TechLogEntry
@@ -791,7 +790,7 @@ namespace LayoutParserApi.Services.Implementations
                 RequestId = Guid.NewGuid().ToString(),
                 Endpoint = "ParseTextWithSequenceValidation",
                 Level = "Info",
-                Message = $"Posição inicial dos campos: {currentPosition + 1} (após InitialValue/Sequencia)"
+                Message = $"Posicao inicial dos campos: {currentPosition + 1} (após InitialValue/Sequencia)"
             });
 
             if (currentPosition > 0)
@@ -848,7 +847,7 @@ namespace LayoutParserApi.Services.Implementations
                         RequestId = Guid.NewGuid().ToString(),
                         Endpoint = "ParseTextWithSequenceValidation",
                         Level = "Warn",
-                        Message = $"  ERRO: Posição {fieldStart + 1}-{endPosition + 1} fora da linha"
+                        Message = $"  ERRO: Posicao {fieldStart + 1}-{endPosition + 1} fora da linha"
                     });
                     status = "error";
                 }
@@ -875,7 +874,7 @@ namespace LayoutParserApi.Services.Implementations
                     RequestId = Guid.NewGuid().ToString(),
                     Endpoint = "ParseTextWithSequenceValidation",
                     Level = "Info",
-                    Message = $"  Próxima posição: {currentPosition + 1}"
+                    Message = $"  Proxima posicao: {currentPosition + 1}"
                 });
             }
 
@@ -1136,7 +1135,7 @@ namespace LayoutParserApi.Services.Implementations
                                 RequestId = Guid.NewGuid().ToString(),
                                 Endpoint = "ParseLayoutFromXDocument",
                                 Level = "Info",
-                                Message = $"✅ LineElement FILHO preservado: {childLine.Name} dentro de {line.Name}"
+                                Message = $"LineElement FILHO preservado: {childLine.Name} dentro de {line.Name}"
                             });
                         }
                     }
@@ -1157,7 +1156,7 @@ namespace LayoutParserApi.Services.Implementations
             int totalLength = CalculateLineLengthForValidation(line);
             if (totalLength > 0) // Se tiver campos
             {
-                string validationStatus = totalLength == 600 ? "✓ OK" : $" AVISO: {totalLength} posições (esperado: 600)";
+                string validationStatus = totalLength == 600 ? "OK" : $" AVISO: {totalLength} posições (esperado: 600)";
                 _techLogger.LogTechnical(new TechLogEntry
                 {
                     RequestId = Guid.NewGuid().ToString(),
@@ -1395,7 +1394,7 @@ namespace LayoutParserApi.Services.Implementations
                         RequestId = Guid.NewGuid().ToString(),
                         Endpoint = "ExtractExpectedLinesFromLayout",
                         Level = "Info",
-                        Message = "Layout é nulo, usando linhas padrão"
+                        Message = "Layout e nulo, usando linhas padrao"
                     });
 
                     return GetDefaultExpectedLines();
@@ -1417,7 +1416,7 @@ namespace LayoutParserApi.Services.Implementations
                         RequestId = Guid.NewGuid().ToString(),
                         Endpoint = "ExtractExpectedLinesFromLayout",
                         Level = "Info",
-                        Message = $"Extraídas {expectedLines.Count} linhas do layout: {string.Join(", ", expectedLines)}"
+                        Message = $"Extraidas {expectedLines.Count} linhas do layout: {string.Join(", ", expectedLines)}"
                     });
                     return expectedLines;
                 }
@@ -1427,7 +1426,7 @@ namespace LayoutParserApi.Services.Implementations
                     RequestId = Guid.NewGuid().ToString(),
                     Endpoint = "ExtractExpectedLinesFromLayout",
                     Level = "Warn",
-                    Message = "Não foi possível extrair linhas do layout, usando padrão"
+                    Message = "Nao foi possivel extrair linhas do layout, usando padrao"
                 });
 
                 return GetDefaultExpectedLines();
@@ -1524,7 +1523,22 @@ namespace LayoutParserApi.Services.Implementations
         private Dictionary<string, LineDetail> BuildLineDetails(List<ParsedField> parsedFields, List<string> linesExpected, string rawText)
         {
             var lineDetails = new Dictionary<string, LineDetail>();
-            var lines = rawText?.Split('\n') ?? Array.Empty<string>();
+            var physicalLines = ExtractPhysicalLines(rawText);
+
+            // Mapear sequencial (primeiros 6 chars) -> conteúdo da linha física
+            var seqToLine = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var l in physicalLines)
+            {
+                if (string.IsNullOrEmpty(l)) continue;
+
+                string seq =
+                    l.StartsWith("HEADER", StringComparison.OrdinalIgnoreCase) ? "HEADER"
+                    : l.Length >= 6 ? l.Substring(0, 6)
+                    : "";
+
+                if (!string.IsNullOrEmpty(seq) && !seqToLine.ContainsKey(seq))
+                    seqToLine[seq] = l;
+            }
 
             foreach (var lineName in linesExpected)
             {
@@ -1532,17 +1546,30 @@ namespace LayoutParserApi.Services.Implementations
 
                 var occurrences = lineFields.Select(f => f.Occurrence).DefaultIfEmpty(0).Max();
 
-                var lineContent = FindLineContent(lines, lineName);
+                // ✅ Para MQSeries, não buscar "LINHA000" literal no texto.
+                // Usar o LineSequence (6 dígitos) que o back-end já extraiu da linha física.
+                string? sampleContent = null;
+
+                if (lineName.Equals("HEADER", StringComparison.OrdinalIgnoreCase))
+                {
+                    sampleContent = physicalLines.FirstOrDefault(l => l.StartsWith("HEADER", StringComparison.OrdinalIgnoreCase));
+                }
+                else
+                {
+                    var seq = lineFields.FirstOrDefault()?.LineSequence;
+                    if (!string.IsNullOrWhiteSpace(seq) && seqToLine.TryGetValue(seq.Trim(), out var found))
+                        sampleContent = found;
+                }
 
                 lineDetails[lineName] = new LineDetail
                 {
                     LineNumber = CalculateLineNumber(lineName),
-                    Occurrences = Math.Max(occurrences, lineContent.Any() ? 1 : 0),
+                    Occurrences = Math.Max(occurrences, !string.IsNullOrEmpty(sampleContent) ? 1 : 0),
                     IsRequired = IsLineRequired(lineName),
-                    IsPresent = lineFields.Any() || lineContent.Any(),
+                    IsPresent = lineFields.Any() || !string.IsNullOrEmpty(sampleContent),
                     FieldsCount = lineFields.Count,
-                    SampleContent = lineContent.FirstOrDefault() ?? string.Empty,
-                    TotalLength = lineContent.FirstOrDefault()?.Length ?? 0
+                    SampleContent = sampleContent ?? string.Empty,
+                    TotalLength = sampleContent?.Length ?? 0
                 };
             }
 
@@ -1588,17 +1615,23 @@ namespace LayoutParserApi.Services.Implementations
 
         private int CalculateLineNumber(string lineName)
         {
-            return lineName switch
+            if (string.IsNullOrWhiteSpace(lineName))
+                return -1;
+
+            var normalized = lineName.Trim().ToUpperInvariant();
+            if (normalized == "HEADER")
+                return 0;
+            if (normalized == "TRAILER")
+                return 99;
+
+            if (normalized.StartsWith("LINHA") && int.TryParse(new string(normalized.Skip(5).TakeWhile(char.IsDigit).ToArray()), out var n))
             {
-                "HEADER" => 0,
-                "LINHA000" => 1,
-                "LINHA001" => 2,
-                "LINHA002" => 3,
-                "LINHA003" => 4,
-                "LINHA004" => 5,
-                "TRAILER" => 99,
-                _ => -1
-            };
+                // Compatibilidade com padrão antigo:
+                // LINHA000 => 1, LINHA001 => 2, etc.
+                return n + 1;
+            }
+
+            return -1;
         }
 
         private bool IsLineRequired(string lineName)
@@ -1613,9 +1646,31 @@ namespace LayoutParserApi.Services.Implementations
             return requiredLines.Contains(lineName);
         }
 
-        private List<string> FindLineContent(string[] lines, string lineName)
+        private static List<string> ExtractPhysicalLines(string rawText)
         {
-            return lines.Where(line => line.StartsWith(lineName) || lineName == "HEADER" && line.StartsWith("HEADER") || lineName.StartsWith("LINHA") && line.Length >= 6 && int.TryParse(line.Substring(5, 1), out _)).ToList();
+            if (string.IsNullOrEmpty(rawText))
+                return new List<string>();
+
+            // Remover quebras para análise posicional contínua
+            var clean = rawText.Replace("\r", "").Replace("\n", "");
+
+            // MQSeries: blocos de 600 caracteres (mesmo com erro pode não ser múltiplo de 600)
+            if (clean.StartsWith("HEADER", StringComparison.OrdinalIgnoreCase) && clean.Length >= 600)
+            {
+                var lines = new List<string>();
+                for (int i = 0; i < clean.Length; i += 600)
+                {
+                    var len = Math.Min(600, clean.Length - i);
+                    lines.Add(clean.Substring(i, len));
+                }
+                return lines;
+            }
+
+            // Fallback (IDoc/linhas com quebra)
+            return rawText
+                .Split('\n')
+                .Select(l => l.Replace("\r", ""))
+                .ToList();
         }
 
         private int CalculateComplianceScore(DocumentSummary summary)
@@ -1756,7 +1811,7 @@ namespace LayoutParserApi.Services.Implementations
                 criticalErrors.Add($"CAMPO CRÍTICO COM ERRO: {field.FieldName} - {field.ValidationMessage}");
             }
 
-            var severeFormatErrors = parsedFields.Where(f => f.Status == "Error" && IsSevereFormatError(f.ValidationMessage)).Select(f => $"ERRO DE FORMATAÇÃO GRAVE: {f.FieldName} - {f.ValidationMessage}").ToList();
+            var severeFormatErrors = parsedFields.Where(f => f.Status == "Error" && IsSevereFormatError(f.ValidationMessage)).Select(f => $"ERRO DE FORMATACAO GRAVE: {f.FieldName} - {f.ValidationMessage}").ToList();
 
             criticalErrors.AddRange(severeFormatErrors);
 
@@ -1800,7 +1855,7 @@ namespace LayoutParserApi.Services.Implementations
                 {
                     Type = "Correction",
                     Target = "Line",
-                    Message = $"Adicionar linha obrigatória: {missingLine}",
+                    Message = $"Adicionar linha obrigatoria: {missingLine}",
                     Confidence = "High",
                     LineNumber = CalculateLineNumber(missingLine)
                 });
@@ -1838,7 +1893,7 @@ namespace LayoutParserApi.Services.Implementations
                     Target = "Field",
                     FieldName = field.FieldName,
                     LineNumber = CalculateLineNumber(field.LineName),
-                    Message = $"Campo {field.FieldName} deve conter apenas números. Valor atual: '{field.Value}'",
+                    Message = $"Campo {field.FieldName} deve conter apenas numeros. Valor atual: '{field.Value}'",
                     Confidence = "High"
                 };
             }
@@ -1851,12 +1906,12 @@ namespace LayoutParserApi.Services.Implementations
                     Target = "Field",
                     FieldName = field.FieldName,
                     LineNumber = CalculateLineNumber(field.LineName),
-                    Message = $"Formato de data inválido em {field.FieldName}. Use DDMMAAAA ou AAAAMMDD",
+                    Message = $"Formato de data invalido em {field.FieldName}. Use DDMMAAAA ou AAAAMMDD",
                     Confidence = "Medium"
                 };
             }
 
-            if (message.Contains("obrigatório") || message.Contains("required"))
+            if (message.Contains("obrigatorio") || message.Contains("required"))
             {
                 return new ValidationSuggestion
                 {
@@ -1864,7 +1919,7 @@ namespace LayoutParserApi.Services.Implementations
                     Target = "Field",
                     FieldName = field.FieldName,
                     LineNumber = CalculateLineNumber(field.LineName),
-                    Message = $"Campo obrigatório {field.FieldName} está vazio",
+                    Message = $"Campo obrigatorio {field.FieldName} esta vazio",
                     Confidence = "High"
                 };
             }
@@ -1890,7 +1945,7 @@ namespace LayoutParserApi.Services.Implementations
                 {
                     Type = "Warning",
                     Target = "Structure",
-                    Message = "Sequência de linhas irregular: LINHA002 presente mas LINHA001 ausente",
+                    Message = "Sequencia de linhas irregular: LINHA002 presente mas LINHA001 ausente",
                     Confidence = "Medium"
                 });
             }
@@ -1970,7 +2025,7 @@ namespace LayoutParserApi.Services.Implementations
                         {
                             var unitPrice = amount / quantity;
                             if (unitPrice < 0.01m || unitPrice > 1000000m)
-                                warnings.Add($"{lineName}: Preço unitário incomum ({unitPrice:C}) entre {amountField.FieldName} e {relatedQuantity.FieldName}");
+                                warnings.Add($"{lineName}: Preço unitario incomum ({unitPrice:C}) entre {amountField.FieldName} e {relatedQuantity.FieldName}");
 
                         }
                     }
@@ -2002,7 +2057,7 @@ namespace LayoutParserApi.Services.Implementations
 
             if (string.IsNullOrEmpty(rawText))
             {
-                errors.Add("Documento vazio ou inválido");
+                errors.Add("Documento vazio ou invalido");
                 return errors;
             }
 
@@ -2012,7 +2067,7 @@ namespace LayoutParserApi.Services.Implementations
             // Validar se começa com HEADER
             if (!cleanText.StartsWith("HEADER"))
             {
-                errors.Add("Documento não começa com HEADER");
+                errors.Add("Documento nao comeca com HEADER");
             }
 
             // Validar se o tamanho total é múltiplo de 600
@@ -2024,7 +2079,7 @@ namespace LayoutParserApi.Services.Implementations
 
             if (cleanText.Length % 600 != 0)
             {
-                errors.Add($"Tamanho do documento ({cleanText.Length} caracteres) não é múltiplo de 600. Possível linha incompleta.");
+                errors.Add($"Tamanho do documento ({cleanText.Length} caracteres) nao e multiplo de 600. Possivel linha incompleta.");
             }
 
             // Validar blocos lógicos de 600 caracteres
@@ -2039,7 +2094,7 @@ namespace LayoutParserApi.Services.Implementations
 
                     if (ContainsInvalidCharacters(logicalLine))
                     {
-                        errors.Add($"Bloco lógico {lineNumber} (posição {startPos}-{startPos + 599}): Contém caracteres inválidos ou não-ASCII");
+                        errors.Add($"Bloco logico {lineNumber} (posicao {startPos}-{startPos + 599}): Contem caracteres invalidos ou nao-ASCII");
                     }
                 }
             }
@@ -2048,7 +2103,7 @@ namespace LayoutParserApi.Services.Implementations
             var sequentialMatches = System.Text.RegularExpressions.Regex.Matches(cleanText, @"\d{6}");
             if (sequentialMatches.Count < 2)
             {
-                errors.Add("Documento não contém padrões de sequência esperados (formato: NNNNNN)");
+                errors.Add("Documento nao contem padroes de sequencia esperados (formato: NNNNNN)");
             }
 
             return errors;
@@ -2072,7 +2127,7 @@ namespace LayoutParserApi.Services.Implementations
                     if (line.Length >= 6 && int.TryParse(line.Substring(5, 1), out int lineNum))
                     {
                         if (lineNum != expectedLineNumber)
-                            errors.Add($"Sequência quebrada: Esperado LINHA{expectedLineNumber:D3}, encontrado LINHA{lineNum:D3} na linha {i + 1}");
+                            errors.Add($"Sequencia quebrada: Esperado LINHA{expectedLineNumber:D3}, encontrado LINHA{lineNum:D3} na linha {i + 1}");
 
                         expectedLineNumber++;
                     }
@@ -2307,7 +2362,7 @@ namespace LayoutParserApi.Services.Implementations
                     RequestId = Guid.NewGuid().ToString(),
                     Endpoint = "ValidateLineLayout",
                     Level = "Info",
-                    Message = $"=== VALIDAÇÃO DO LAYOUT: {lineConfig.Name} ==="
+                    Message = $"=== VALIDACAO DO LAYOUT: {lineConfig.Name} ==="
                 });
 
                 // ✅ DEBUG: Mostrar todos os elementos brutos primeiro
@@ -2345,7 +2400,7 @@ namespace LayoutParserApi.Services.Implementations
                                     RequestId = Guid.NewGuid().ToString(),
                                     Endpoint = "ValidateLineLayout",
                                     Level = "Debug",
-                                    Message = $"  → FieldElement: {field.Name}"
+                                    Message = $"FieldElement: {field.Name}"
                                 });
                                 continue;
                             }
@@ -2362,7 +2417,7 @@ namespace LayoutParserApi.Services.Implementations
                                     RequestId = Guid.NewGuid().ToString(),
                                     Endpoint = "ValidateLineLayout",
                                     Level = "Debug",
-                                    Message = $"  → LineElement: {line.Name}"
+                                    Message = $"LineElement: {line.Name}"
                                 });
                                 continue;
                             }
@@ -2374,7 +2429,7 @@ namespace LayoutParserApi.Services.Implementations
                             RequestId = Guid.NewGuid().ToString(),
                             Endpoint = "ValidateLineLayout",
                             Level = "Debug",
-                            Message = $"  → Tipo desconhecido"
+                            Message = $"Tipo desconhecido"
                         });
                     }
                 }
@@ -2387,7 +2442,7 @@ namespace LayoutParserApi.Services.Implementations
                     RequestId = Guid.NewGuid().ToString(),
                     Endpoint = "ValidateLineLayout",
                     Level = "Info",
-                    Message = $"RESULTADO SEPARAÇÃO: {fieldElements.Count} FieldElements, {childLineElements.Count} LineElements filhos"
+                    Message = $"RESULTADO SEPARACAO: {fieldElements.Count} FieldElements, {childLineElements.Count} LineElements filhos"
                 });
 
                 if (childLineElements.Any())
@@ -2430,7 +2485,7 @@ namespace LayoutParserApi.Services.Implementations
                     RequestId = Guid.NewGuid().ToString(),
                     Endpoint = "ValidateLineLayout",
                     Level = "Info",
-                    Message = $"Campos PRÓPRIOS (EXCETO Sequencia, que pertence à próxima linha): {fieldsToCalculate.Count} campos = {fieldsLength} chars"
+                    Message = $"Campos PRÓPRIOS (EXCETO Sequencia, que pertence a proxima linha): {fieldsToCalculate.Count} campos = {fieldsLength} chars"
                 });
 
                 if (childLineElements.Any())
@@ -2440,7 +2495,7 @@ namespace LayoutParserApi.Services.Implementations
                         RequestId = Guid.NewGuid().ToString(),
                         Endpoint = "ValidateLineLayout",
                         Level = "Info",
-                        Message = $"Elementos FILHOS (não contabilizados): {childLineElements.Count} linhas filhas"
+                        Message = $"Elementos FILHOS (nao contabilizados): {childLineElements.Count} linhas filhas"
                     });
                 }
 
@@ -2449,7 +2504,7 @@ namespace LayoutParserApi.Services.Implementations
                     RequestId = Guid.NewGuid().ToString(),
                     Endpoint = "ValidateLineLayout",
                     Level = "Info",
-                    Message = $"CÁLCULO: {initialValueLength} (InitialValue) + {fieldsLength} (Campos sem Sequencia) + {sequenceFromPreviousLine} (Sequencia da linha anterior) = {totalLength} chars"
+                    Message = $"CALCULO: {initialValueLength} (InitialValue) + {fieldsLength} (Campos sem Sequencia) + {sequenceFromPreviousLine} (Sequencia da linha anterior) = {totalLength} chars"
                 });
 
                 // ✅ CORREÇÃO: Validação diferente para linhas com filhos
@@ -2460,11 +2515,11 @@ namespace LayoutParserApi.Services.Implementations
                     // Os filhos são linhas SEPARADAS de 600 caracteres cada
                     isValid = totalLength <= 600;
 
-                    string validationMsg = isValid ? "✅ VÁLIDO (linha com filhos)" : " AVISO: Linha com filhos";
+                    string validationMsg = isValid ? "VALIDO (linha com filhos)" : " AVISO: Linha com filhos";
 
                     if (lineConfig.Name == "LINHA020" && totalLength != 600)
                     {
-                        validationMsg += $". LINHA020 tem {totalLength} chars (campos próprios apenas)";
+                        validationMsg += $". LINHA020 tem {totalLength} chars (campos proprios apenas)";
                     }
 
                     _techLogger.LogTechnical(new TechLogEntry
@@ -2483,7 +2538,7 @@ namespace LayoutParserApi.Services.Implementations
                     {
                         RequestId = Guid.NewGuid().ToString(),
                         Level = isValid ? "Info" : "Error",
-                        Message = $"TOTAL: {totalLength} caracteres → {(isValid ? "✅ VÁLIDO (600)" : "❌ INVÁLIDO (deveria ser 600)")}"
+                        Message = $"TOTAL: {totalLength} caracteres → {(isValid ? "VALIDO (600)" : "INVÁLIDO (deveria ser 600)")}"
                     });
                 }
 
@@ -2520,7 +2575,7 @@ namespace LayoutParserApi.Services.Implementations
                         RequestId = Guid.NewGuid().ToString(),
                         Endpoint = "ValidateLineLayout",
                         Level = "Info",
-                        Message = $"Campo {fieldNumber}: {field.Name} → Length: {field.LengthField} | StartValue: {field.StartValue} | Soma acumulada: {accumulated}"
+                        Message = $"Campo {fieldNumber}: {field.Name} Length: {field.LengthField} | StartValue: {field.StartValue} | Soma acumulada: {accumulated}"
                     });
 
                     fieldNumber++;
@@ -2531,7 +2586,7 @@ namespace LayoutParserApi.Services.Implementations
                     RequestId = Guid.NewGuid().ToString(),
                     Endpoint = "ValidateLineLayout",
                     Level = "Info",
-                    Message = $"Total calculado (SEM Sequencia, que pertence à próxima linha): {accumulated} chars"
+                    Message = $"Total calculado (SEM Sequencia, que pertence a proxima linha): {accumulated} chars"
                 });
 
                 // ✅ CORREÇÃO: Validar também os elementos filhos
@@ -2542,7 +2597,7 @@ namespace LayoutParserApi.Services.Implementations
                         RequestId = Guid.NewGuid().ToString(),
                         Endpoint = "ValidateLineLayout",
                         Level = "Info",
-                        Message = $"🎯 INICIANDO VALIDAÇÃO RECURSIVA DE {childLineElements.Count} FILHOS: {string.Join(", ", childLineElements.Select(f => f.Name))}"
+                        Message = $"INICIANDO VALIDACAO RECURSIVA DE {childLineElements.Count} FILHOS: {string.Join(", ", childLineElements.Select(f => f.Name))}"
                     });
 
                     foreach (var childLine in childLineElements)
@@ -2552,7 +2607,7 @@ namespace LayoutParserApi.Services.Implementations
                             RequestId = Guid.NewGuid().ToString(),
                             Endpoint = "ValidateLineLayout",
                             Level = "Info",
-                            Message = $"🔍 CHAMANDO ValidateLineLayout PARA: {childLine.Name}"
+                            Message = $"CHAMANDO ValidateLineLayout PARA: {childLine.Name}"
                         });
 
                         ValidateLineLayout(childLine); // Validar recursivamente
@@ -2563,7 +2618,7 @@ namespace LayoutParserApi.Services.Implementations
                         RequestId = Guid.NewGuid().ToString(),
                         Endpoint = "ValidateLineLayout",
                         Level = "Info",
-                        Message = $"✅ VALIDAÇÃO DOS FILHOS DE {lineConfig.Name} CONCLUÍDA"
+                        Message = $"VALIDAÇÃO DOS FILHOS DE {lineConfig.Name} CONCLUIDA"
                     });
                 }
                 else
@@ -2655,7 +2710,6 @@ namespace LayoutParserApi.Services.Implementations
                 {
                     try
                     {
-                        // ✅ CORREÇÃO: Desserializar como LineElement
                         var childLine = JsonConvert.DeserializeObject<LineElement>(elementJson);
 
                         if (childLine != null)
@@ -2722,7 +2776,7 @@ namespace LayoutParserApi.Services.Implementations
                         RequestId = Guid.NewGuid().ToString(),
                         Endpoint = "SeparateElementsRobust",
                         Level = "Warn",
-                        Message = $" Elemento não identificado: {elementJson.Substring(0, Math.Min(200, elementJson.Length))}"
+                        Message = $" Elemento nao identificado: {elementJson.Substring(0, Math.Min(200, elementJson.Length))}"
                     });
                 }
             }
@@ -2732,10 +2786,9 @@ namespace LayoutParserApi.Services.Implementations
                 RequestId = Guid.NewGuid().ToString(),
                 Endpoint = "SeparateElementsRobust",
                 Level = "Info",
-                Message = $" SEPARAÇÃO FINAL EM {lineConfig.Name}: {fieldElements.Count} FieldElements, {childLineElements.Count} LineElements filhos"
+                Message = $" SEPARACAO FINAL EM {lineConfig.Name}: {fieldElements.Count} FieldElements, {childLineElements.Count} LineElements filhos"
             });
 
-            // ✅ DEBUG: Listar todos os filhos encontrados
             if (childLineElements.Any())
             {
                 _techLogger.LogTechnical(new TechLogEntry
@@ -2750,7 +2803,6 @@ namespace LayoutParserApi.Services.Implementations
             return (fieldElements, childLineElements);
         }
 
-        // ✅ NOVO MÉTODO: Debug da estrutura do LineElement
         private void DebugLineElementStructure(LineElement line, string context)
         {
             try
@@ -2799,7 +2851,7 @@ namespace LayoutParserApi.Services.Implementations
                     RequestId = Guid.NewGuid().ToString(),
                     Endpoint = "ValidateCompleteLayout",
                     Level = "Info",
-                    Message = "=== VALIDAÇÃO COMPLETA DO LAYOUT ==="
+                    Message = "=== VALIDACAO COMPLETA DO LAYOUT ==="
                 });
 
                 if (layout?.Elements == null)
@@ -2809,7 +2861,7 @@ namespace LayoutParserApi.Services.Implementations
                         RequestId = Guid.NewGuid().ToString(),
                         Endpoint = "ValidateCompleteLayout",
                         Level = "Error",
-                        Message = "Layout ou Elements é nulo"
+                        Message = "Layout ou Elements e nulo"
                     });
                     return;
                 }
@@ -2822,15 +2874,11 @@ namespace LayoutParserApi.Services.Implementations
                     Message = $"Total de linhas no layout: {layout.Elements.Count}"
                 });
 
-                // ✅ NOVO: Lista para coletar resultados
                 var validationResults = new List<LineValidationResult>();
 
                 foreach (var line in layout.Elements)
-                {
-                    ValidateLineLayoutWithResult(line, validationResults);
-                }
+                    ValidateLineLayoutWithResult(line, validationResults);                
 
-                // ✅ NOVO: Mostrar resumo final
                 ShowValidationSummary(validationResults);
 
                 _techLogger.LogTechnical(new TechLogEntry
@@ -2838,7 +2886,7 @@ namespace LayoutParserApi.Services.Implementations
                     RequestId = Guid.NewGuid().ToString(),
                     Endpoint = "ValidateCompleteLayout",
                     Level = "Info",
-                    Message = "=== FIM DA VALIDAÇÃO ==="
+                    Message = "=== FIM DA VALIDACAO ==="
                 });
 
             }
@@ -2849,7 +2897,7 @@ namespace LayoutParserApi.Services.Implementations
                     RequestId = Guid.NewGuid().ToString(),
                     Endpoint = "ValidateCompleteLayout",
                     Level = "Error",
-                    Message = $"Erro na validação completa: {ex.Message}"
+                    Message = $"Erro na validacao completa: {ex.Message}"
                 });
             }
         }
@@ -2863,10 +2911,7 @@ namespace LayoutParserApi.Services.Implementations
                 int initialValueLength = !string.IsNullOrEmpty(lineConfig.InitialValue) ? lineConfig.InitialValue.Length : 0;
 
                 // Calcular todos os FieldElements EXCETO "Sequencia" (que pertence à próxima linha)
-                var fieldsToCalculate = fieldElements
-                    .Where(f => !f.Name.Equals("Sequencia", StringComparison.OrdinalIgnoreCase))
-                    .OrderBy(f => f.Sequence)
-                    .ToList();
+                var fieldsToCalculate = fieldElements.Where(f => !f.Name.Equals("Sequencia", StringComparison.OrdinalIgnoreCase)).OrderBy(f => f.Sequence).ToList();
 
                 int fieldsLength = fieldsToCalculate.Sum(f => f.LengthField);
 
@@ -2878,7 +2923,6 @@ namespace LayoutParserApi.Services.Implementations
                 bool hasChildren = childLineElements.Any();
                 bool isValid = hasChildren ? totalLength <= 600 : totalLength == 600;
 
-                // ✅ Coletar resultado
                 var result = new LineValidationResult
                 {
                     LineName = lineConfig.Name,
@@ -2898,18 +2942,13 @@ namespace LayoutParserApi.Services.Implementations
                     RequestId = Guid.NewGuid().ToString(),
                     Endpoint = "ValidateLineLayout",
                     Level = "Info",
-                    Message = $"=== VALIDAÇÃO DO LAYOUT: {lineConfig.Name} ==="
+                    Message = $"=== VALIDACAO DO LAYOUT: {lineConfig.Name} ==="
                 });
 
                 // Validar elementos filhos recursivamente
                 if (childLineElements.Any())
-                {
                     foreach (var childLine in childLineElements)
-                    {
                         ValidateLineLayoutWithResult(childLine, results);
-                    }
-                }
-
             }
             catch (Exception ex)
             {
@@ -2918,7 +2957,7 @@ namespace LayoutParserApi.Services.Implementations
                     RequestId = Guid.NewGuid().ToString(),
                     Endpoint = "ValidateLineLayout",
                     Level = "Error",
-                    Message = $"Erro na validação do layout {lineConfig.Name}: {ex.Message}"
+                    Message = $"Erro na validacao do layout {lineConfig.Name}: {ex.Message}"
                 });
             }
         }
@@ -2930,7 +2969,7 @@ namespace LayoutParserApi.Services.Implementations
                 RequestId = Guid.NewGuid().ToString(),
                 Endpoint = "ValidateCompleteLayout",
                 Level = "Info",
-                Message = "=== RESUMO DA VALIDAÇÃO ==="
+                Message = "=== RESUMO DA VALIDACAO ==="
             });
 
             // Linhas válidas (exatamente 600 caracteres)
@@ -2942,7 +2981,7 @@ namespace LayoutParserApi.Services.Implementations
                     RequestId = Guid.NewGuid().ToString(),
                     Endpoint = "ValidateCompleteLayout",
                     Level = "Info",
-                    Message = $"LINHAS VÁLIDAS (600 caracteres): {validLines.Count}"
+                    Message = $"LINHAS VALIDAS (600 caracteres): {validLines.Count}"
                 });
 
                 foreach (var line in validLines.OrderBy(r => r.LineName))
@@ -2976,7 +3015,7 @@ namespace LayoutParserApi.Services.Implementations
                         RequestId = Guid.NewGuid().ToString(),
                         Endpoint = "ValidateCompleteLayout",
                         Level = "Info",
-                        Message = $"{line.LineName}: {line.TotalLength} chars (Filhos: {line.ChildCount}, Campos próprios: {line.FieldCount})"
+                        Message = $"{line.LineName}: {line.TotalLength} chars (Filhos: {line.ChildCount}, Campos proprios: {line.FieldCount})"
                     });
                 }
             }
@@ -2990,7 +3029,7 @@ namespace LayoutParserApi.Services.Implementations
                     RequestId = Guid.NewGuid().ToString(),
                     Endpoint = "ValidateCompleteLayout",
                     Level = "Error",
-                    Message = $"LINHAS INVÁLIDAS: {invalidLines.Count}"
+                    Message = $"LINHAS INVALIDAS: {invalidLines.Count}"
                 });
 
                 foreach (var line in invalidLines.OrderBy(r => r.LineName))
@@ -3015,7 +3054,7 @@ namespace LayoutParserApi.Services.Implementations
                     RequestId = Guid.NewGuid().ToString(),
                     Endpoint = "ValidateCompleteLayout",
                     Level = "Warn",
-                    Message = $"LINHAS COM FILHOS (tamanho variável): {validNonStandardLines.Count}"
+                    Message = $"LINHAS COM FILHOS (tamanho variavel): {validNonStandardLines.Count}"
                 });
 
                 foreach (var line in validNonStandardLines.OrderBy(r => r.LineName))
@@ -3025,7 +3064,7 @@ namespace LayoutParserApi.Services.Implementations
                         RequestId = Guid.NewGuid().ToString(),
                         Endpoint = "ValidateCompleteLayout",
                         Level = "Warn",
-                        Message = $"{line.LineName}: {line.TotalLength} chars (Filhos: {line.ChildCount}, Campos próprios: {line.FieldCount})"
+                        Message = $"{line.LineName}: {line.TotalLength} chars (Filhos: {line.ChildCount}, Campos proprios: {line.FieldCount})"
                     });
                 }
             }
@@ -3036,7 +3075,7 @@ namespace LayoutParserApi.Services.Implementations
                 RequestId = Guid.NewGuid().ToString(),
                 Endpoint = "ValidateCompleteLayout",
                 Level = "Info",
-                Message = $"ESTATÍSTICAS: Total de {results.Count} linhas validadas - {validLines.Count} válidas, {invalidLines.Count} inválidas, {linesWithChildren.Count} com filhos"
+                Message = $"ESTATISTICAS: Total de {results.Count} linhas validadas - {validLines.Count} validas, {invalidLines.Count} invalidas, {linesWithChildren.Count} com filhos"
             });
         }
 
@@ -3051,9 +3090,8 @@ namespace LayoutParserApi.Services.Implementations
                 return lineValidations;
 
             foreach (var lineElement in layout.Elements)
-            {
                 CalculateLineValidationRecursive(lineElement, lineValidations, expectedLineLength);
-            }
+            
 
             return lineValidations;
         }
@@ -3067,14 +3105,10 @@ namespace LayoutParserApi.Services.Implementations
                 int initialValueLength = !string.IsNullOrEmpty(lineConfig.InitialValue) ? lineConfig.InitialValue.Length : 0;
 
                 // Separar campos normais da tag Sequencia
-                var fieldsToCalculate = fieldElements
-                    .Where(f => !f.Name.Equals("Sequencia", StringComparison.OrdinalIgnoreCase))
-                    .OrderBy(f => f.Sequence)
-                    .ToList();
+                var fieldsToCalculate = fieldElements.Where(f => !f.Name.Equals("Sequencia", StringComparison.OrdinalIgnoreCase)).OrderBy(f => f.Sequence).ToList();
 
                 // Buscar tag Sequencia (pertence à próxima linha, mas completa esta até 600)
-                var sequenciaField = fieldElements
-                    .FirstOrDefault(f => f.Name.Equals("Sequencia", StringComparison.OrdinalIgnoreCase));
+                var sequenciaField = fieldElements.FirstOrDefault(f => f.Name.Equals("Sequencia", StringComparison.OrdinalIgnoreCase));
                 int sequenciaLength = sequenciaField?.LengthField ?? 6;
 
                 int fieldsLength = fieldsToCalculate.Sum(f => f.LengthField);
@@ -3117,12 +3151,8 @@ namespace LayoutParserApi.Services.Implementations
 
                 // Processar elementos filhos recursivamente
                 if (childLineElements.Any())
-                {
                     foreach (var childLine in childLineElements)
-                    {
                         CalculateLineValidationRecursive(childLine, validations, expectedLineLength);
-                    }
-                }
             }
             catch (Exception ex)
             {
@@ -3131,7 +3161,7 @@ namespace LayoutParserApi.Services.Implementations
                     RequestId = Guid.NewGuid().ToString(),
                     Endpoint = "CalculateLineValidationRecursive",
                     Level = "Error",
-                    Message = $"Erro ao calcular validação para {lineConfig.Name}: {ex.Message}"
+                    Message = $"Erro ao calcular validacao para {lineConfig.Name}: {ex.Message}"
                 });
             }
         }

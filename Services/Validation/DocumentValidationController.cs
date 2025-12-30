@@ -179,7 +179,15 @@ namespace LayoutParserApi.Controllers
                 await _mlValidationService.LearnFromDocumentAsync(
                     request.DocumentContent,
                     request.LayoutGuid,
-                    request.Errors);
+                    request.Errors,
+                    new LayoutParserApi.Models.ML.DocumentTrainingSample
+                    {
+                        LayoutGuid = request.LayoutGuid,
+                        LayoutName = request.LayoutName,
+                        DetectedType = request.DetectedType,
+                        OriginalFileName = request.OriginalFileName,
+                        Source = "api"
+                    });
 
                 return Ok(new { success = true, message = "Documento registrado para aprendizado" });
             }
@@ -217,6 +225,11 @@ namespace LayoutParserApi.Controllers
         public string DocumentContent { get; set; } = "";
         public string LayoutGuid { get; set; } = "";
         public List<DocumentLineError>? Errors { get; set; }
+
+        // ✅ Metadados opcionais para dataset de ML
+        public string? DetectedType { get; set; }
+        public string? OriginalFileName { get; set; }
+        public string? LayoutName { get; set; }
     }
 }
 
