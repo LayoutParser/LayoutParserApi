@@ -14,18 +14,4 @@ namespace LayoutParserApi.Models.Database
         public DateTime LastUpdateDate { get; set; }
         public string DecryptedContent { get; set; } = ""; // Conteúdo descriptografado
     }
-
-    public class LayoutSearchRequest
-    {
-        public string SearchTerm { get; set; } = "all_layouts";
-        public int MaxResults { get; set; } = 1000;
-    }
-
-    public class LayoutSearchResponse
-    {
-        public bool Success { get; set; }
-        public List<LayoutRecord> Layouts { get; set; } = new();
-        public string ErrorMessage { get; set; } = "";
-        public int TotalFound { get; set; }
-    }
 }

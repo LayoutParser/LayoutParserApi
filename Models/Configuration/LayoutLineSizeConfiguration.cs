@@ -38,9 +38,7 @@ namespace LayoutParserApi.Models.Configuration
                 return null;
 
             // Remover prefixo "LAY_" se existir para comparação
-            var guidToCheck = layoutGuid.StartsWith("LAY_", StringComparison.OrdinalIgnoreCase) 
-                ? layoutGuid 
-                : $"LAY_{layoutGuid}";
+            var guidToCheck = layoutGuid.StartsWith("LAY_", StringComparison.OrdinalIgnoreCase) ? layoutGuid : $"LAY_{layoutGuid}";
 
             if (Layouts600Chars.Contains(guidToCheck))
                 return 600;
@@ -68,4 +66,3 @@ namespace LayoutParserApi.Models.Configuration
         }
     }
 }
-
