@@ -95,7 +95,6 @@ namespace LayoutParserApi.Services.Validation
                         break;
                     }
 
-                    // ✅ Extrair linha completa (exatamente 600 caracteres)
                     string currentLine;
                     int actualLineLength;
                     
@@ -112,7 +111,6 @@ namespace LayoutParserApi.Services.Validation
                         actualLineLength = currentLine.Length;
                     }
                     
-                    // ✅ VALIDAR: Verificar se próxima sequência está na posição correta (600 chars depois)
                     // Se próxima sequência não estiver onde esperado, linha atual pode ter excedido 600
                     bool lineExceedsLimit = false;
                     int excessChars = 0;
@@ -144,7 +142,6 @@ namespace LayoutParserApi.Services.Validation
                         }
                     }
                     
-                    // ✅ Marcar erro apenas se linha realmente exceder 600 caracteres
                     if (lineExceedsLimit && excessChars > 0)
                     {
                         result.LineErrors.Add(new DocumentLineError
@@ -160,7 +157,6 @@ namespace LayoutParserApi.Services.Validation
                         result.InvalidLinesCount++;
                     }
 
-                    // ✅ Validar apenas se a sequência é válida (6 dígitos numéricos ou "HEADER")
                     // NÃO validar ordem sequencial - apenas validar tamanho da linha
                     if (currentSequence == "HEADER")
                     {
@@ -195,9 +191,7 @@ namespace LayoutParserApi.Services.Validation
                         });
                         result.InvalidLinesCount++;
                     }
-                    // ✅ NÃO validar ordem sequencial - apenas tamanho da linha importa
 
-                    // ✅ Contar linhas válidas apenas se não houver erro nesta linha
                     bool hasErrorInThisLine = result.LineErrors.Any(e => e.LineIndex == lineIndex);
                     
                     if (!hasErrorInThisLine)
@@ -209,15 +203,11 @@ namespace LayoutParserApi.Services.Validation
 
                             // Se próxima sequência não começa na posição esperada, linha está incorreta
                             if (nextSequence.Length == 6 && IsValidSequence(nextSequence))
-                            {
                                 // Próxima sequência encontrada corretamente
                                 result.ValidLinesCount++;
-                            }
                             else if (nextSequence.Length < 6)
-                            {
                                 // Fim do documento
                                 result.ValidLinesCount++;
-                            }
                         }
                         else
                         {
@@ -226,9 +216,6 @@ namespace LayoutParserApi.Services.Validation
                         }
                     }
                     
-                    // ✅ Se linha atual tem erro, todas as linhas seguintes também terão (desalinhamento)
-                    // Mas continuamos processando para marcar todas
-                    
                     // Avançar para próxima linha (sempre avançar 600, mesmo se houver erro)
                     currentPosition = expectedLineEnd;
                     lineIndex++;
@@ -236,23 +223,16 @@ namespace LayoutParserApi.Services.Validation
                     
                     // Se chegou ao fim do documento
                     if (currentPosition >= cleanText.Length)
-                    {
                         break;
-                    }
                 }
 
                 result.IsValid = result.LineErrors.Count == 0;
                 if (result.IsValid)
-                {
                     result.ErrorMessage = "Documento válido - todas as linhas têm 600 caracteres";
-                }
                 else
-                {
                     result.ErrorMessage = $"Encontrados {result.LineErrors.Count} erro(s) de tamanho em {result.InvalidLinesCount} linha(s) do documento";
-                }
 
-                _logger.LogInformation("Validação de documento concluída: {TotalLines} linhas processadas, {ValidLines} válidas, {InvalidLines} inválidas",
-                    result.TotalLinesProcessed, result.ValidLinesCount, result.InvalidLinesCount);
+                _logger.LogInformation("Validação de documento concluída: {TotalLines} linhas processadas, {ValidLines} válidas, {InvalidLines} inválidas",result.TotalLinesProcessed, result.ValidLinesCount, result.InvalidLinesCount);
 
                 return result;
             }
@@ -278,7 +258,5 @@ namespace LayoutParserApi.Services.Validation
 
             return sequence.All(char.IsDigit);
         }
-
     }
 }
-

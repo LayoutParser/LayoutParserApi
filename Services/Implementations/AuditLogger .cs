@@ -31,10 +31,8 @@ namespace LayoutParserApi.Services.Implementations
         {
             if (entry.Level == "Error" && entry.Exception != null)
                 _logger.LogError(entry.Exception,"TECH | RequestId:{RequestId} | Endpoint:{Endpoint} | Message:{Message}",entry.RequestId, entry.Endpoint, entry.Message);
-            
             else
                 _logger.LogInformation("TECH | Level:{Level} | RequestId:{RequestId} | Endpoint:{Endpoint} | Message:{Message}",entry.Level, entry.RequestId, entry.Endpoint, entry.Message);
-            
         }
     }
 

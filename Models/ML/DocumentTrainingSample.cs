@@ -44,5 +44,3 @@ namespace LayoutParserApi.Models.ML
         public string? SavedMetadataPath { get; set; }
     }
 }
-
-

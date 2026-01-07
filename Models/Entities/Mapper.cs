@@ -1,5 +1,3 @@
-using System;
-
 namespace LayoutParserApi.Models.Entities
 {
     /// <summary>
@@ -19,11 +17,11 @@ namespace LayoutParserApi.Models.Entities
         public string DecryptedContent { get; set; } = ""; // Conteúdo descriptografado
         public string ProjectId { get; set; }
         public DateTime LastUpdateDate { get; set; }
-        
+
         // GUIDs extraídos do XML descriptografado (mais confiáveis)
         public string InputLayoutGuidFromXml { get; set; }
         public string TargetLayoutGuidFromXml { get; set; }
-        
+
         // XSL extraído do XML descriptografado (prioridade sobre geração)
         public string XslContent { get; set; }
     }

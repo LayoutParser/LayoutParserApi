@@ -1,9 +1,7 @@
 using LayoutParserApi.Models.Configuration;
-using LayoutParserApi.Models.Database;
 using LayoutParserApi.Models.Entities;
 using LayoutParserApi.Models.Logging;
 using LayoutParserApi.Models.Validation;
-using LayoutParserApi.Services.Database;
 using LayoutParserApi.Services.Interfaces;
 using LayoutParserApi.Services.Parsing.Interfaces;
 
@@ -25,11 +23,7 @@ namespace LayoutParserApi.Services.Validation
         private static Dictionary<string, LayoutValidationResult> _validationCache = new();
         private static DateTime _lastFullValidation = DateTime.MinValue;
 
-        public LayoutValidationService(
-            ICachedLayoutService layoutService,
-            ILayoutValidator layoutValidator,
-            ITechLogger techLogger,
-            ILogger<LayoutValidationService> logger)
+        public LayoutValidationService(ICachedLayoutService layoutService, ILayoutValidator layoutValidator, ITechLogger techLogger, ILogger<LayoutValidationService> logger)
         {
             _layoutService = layoutService;
             _layoutValidator = layoutValidator;
@@ -85,7 +79,6 @@ namespace LayoutParserApi.Services.Validation
                     };
                 }
 
-                // ✅ Verificar se o layout deve ser validado (apenas layouts com regra de 600 caracteres)
                 var normalizedGuid = NormalizeLayoutGuid(layoutGuid);
                 var expectedLineLength = LayoutLineSizeConfiguration.GetLineSizeForLayout(normalizedGuid);
 
@@ -158,7 +151,6 @@ namespace LayoutParserApi.Services.Validation
             {
                 _logger.LogInformation("Iniciando validação de layouts configurados. ForceRevalidation: {Force}", forceRevalidation);
 
-                // ✅ Validar apenas layouts que estão na lista de configuração
                 var configuredLayoutGuids = LayoutLineSizeConfiguration.GetAllConfiguredLayouts().ToList();
 
                 if (!configuredLayoutGuids.Any())
@@ -223,9 +215,8 @@ namespace LayoutParserApi.Services.Validation
                     result.InvalidLines++;
                 }
                 else
-                {
                     result.ValidLines++;
-                }
+
             }
 
             result.IsValid = result.Errors.Count == 0;
@@ -277,21 +268,14 @@ namespace LayoutParserApi.Services.Validation
                 var (fieldElements, childLineElements) = SeparateElements(lineConfig);
 
                 // Calcular tamanho total da linha
-                int initialValueLength = !string.IsNullOrEmpty(lineConfig.InitialValue)
-                    ? lineConfig.InitialValue.Length
-                    : 0;
+                int initialValueLength = !string.IsNullOrEmpty(lineConfig.InitialValue) ? lineConfig.InitialValue.Length : 0;
 
-                var fieldsToCalculate = fieldElements
-                    .Where(f => !f.Name.Equals("Sequencia", StringComparison.OrdinalIgnoreCase))
-                    .OrderBy(f => f.Sequence)
-                    .ToList();
+                var fieldsToCalculate = fieldElements.Where(f => !f.Name.Equals("Sequencia", StringComparison.OrdinalIgnoreCase)).OrderBy(f => f.Sequence).ToList();
 
                 int fieldsLength = fieldsToCalculate.Sum(f => f.LengthField);
 
                 // HEADER não tem sequência da linha anterior, outras linhas têm 6 caracteres
-                int sequenceFromPreviousLine = lineConfig.Name?.Equals("HEADER", StringComparison.OrdinalIgnoreCase) == true
-                    ? 0
-                    : 6;
+                int sequenceFromPreviousLine = lineConfig.Name?.Equals("HEADER", StringComparison.OrdinalIgnoreCase) == true ? 0 : 6;
 
                 int totalLength = initialValueLength + fieldsLength + sequenceFromPreviousLine;
 
@@ -365,10 +349,7 @@ namespace LayoutParserApi.Services.Validation
                         if (field != null && !string.IsNullOrEmpty(field.Name))
                             fieldElements.Add(field);
                     }
-                    catch
-                    {
-                        // Ignorar erro de deserialização
-                    }
+                    catch { }
                 }
                 else if (isLineElement)
                 {
@@ -378,10 +359,7 @@ namespace LayoutParserApi.Services.Validation
                         if (childLine != null && !string.IsNullOrEmpty(childLine.Name) && childLine.Name != lineElement.Name)
                             childLineElements.Add(childLine);
                     }
-                    catch
-                    {
-                        // Ignorar erro de deserialização
-                    }
+                    catch { }
                 }
             }
 
