@@ -1,6 +1,7 @@
 using LayoutParserApi.Services.Transformation;
 using LayoutParserApi.Services.XmlAnalysis;
 using LayoutParserApi.Models;
+using LayoutParserApi.Services.Transformation.LowCode;
 
 using Microsoft.AspNetCore.Mvc;
 using LayoutParserApi.Services.XmlAnalysis.Models;
@@ -16,19 +17,22 @@ namespace LayoutParserApi.Controllers
         private readonly TransformationValidatorService _validatorService;
         private readonly TransformationLearningService _learningService;
         private readonly AutoTransformationGeneratorService _autoGenerator;
+        private readonly LowCodeTransformationService _lowCode;
 
         public TransformationExecutionController(
             ILogger<TransformationExecutionController> logger,
             TransformationPipelineService pipelineService,
             TransformationValidatorService validatorService,
             TransformationLearningService learningService,
-            AutoTransformationGeneratorService autoGenerator)
+            AutoTransformationGeneratorService autoGenerator,
+            LowCodeTransformationService lowCode)
         {
             _logger = logger;
             _pipelineService = pipelineService;
             _validatorService = validatorService;
             _learningService = learningService;
             _autoGenerator = autoGenerator;
+            _lowCode = lowCode;
         }
 
         /// <summary>
@@ -236,5 +240,50 @@ namespace LayoutParserApi.Controllers
                 return StatusCode(500, new { error = ex.Message });
             }
         }
+
+        /// <summary>
+        /// Executa transformação usando o motor low-code (SysMiddle) via runner x86.
+        /// </summary>
+        [HttpPost("execute-lowcode")]
+        public async Task<IActionResult> ExecuteLowCode([FromBody] LowCodeTransformationRequest request)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(request.InputContent))
+                    return BadRequest(new { error = "InputContent é obrigatório" });
+
+                if (string.IsNullOrWhiteSpace(request.MapperId) && string.IsNullOrWhiteSpace(request.MapperName))
+                    return BadRequest(new { error = "MapperId ou MapperName é obrigatório" });
+
+                var transformed = await _lowCode.TransformAsync(
+                    request.InputContent,
+                    mapperId: request.MapperId,
+                    mapperName: request.MapperName,
+                    fileName: request.FileName,
+                    package: request.Package,
+                    globalFolder: request.GlobalFolder,
+                    sysmiddleDir: request.SysmiddleDir);
+
+                return Ok(new { success = true, transformedXml = transformed });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Erro ao executar transformação low-code");
+                return StatusCode(500, new { error = ex.Message });
+            }
+        }
+    }
+
+    public class LowCodeTransformationRequest
+    {
+        public string InputContent { get; set; } = "";
+        public string? MapperId { get; set; }
+        public string? MapperName { get; set; }
+        public string? FileName { get; set; }
+
+        // Overrides opcionais (caso não queira depender do appsettings)
+        public string? Package { get; set; }
+        public string? GlobalFolder { get; set; }
+        public string? SysmiddleDir { get; set; }
     }
 }

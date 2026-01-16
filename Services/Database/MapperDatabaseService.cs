@@ -179,6 +179,120 @@ namespace LayoutParserApi.Services.Database
         }
 
         /// <summary>
+        /// Busca o "melhor" mapeador para um layoutGuid, restrito a ProjectId e uma lista de PackageGuids permitidos.
+        /// Prioriza mappers onde o layoutGuid é InputLayoutGuid; se não encontrar, tenta TargetLayoutGuid.
+        /// </summary>
+        public async Task<Mapper?> GetBestMapperForLayoutGuidAsync(string layoutGuid, int projectId, IReadOnlyCollection<string> allowedPackageGuids)
+        {
+            var candidates = await GetMappersByLayoutGuidForPackagesAsync(layoutGuid, projectId, allowedPackageGuids);
+            if (candidates.Count == 0)
+                return null;
+
+            string Normalize(string guid)
+            {
+                if (string.IsNullOrWhiteSpace(guid)) return "";
+                var g = guid.Trim();
+                if (g.StartsWith("LAY_", StringComparison.OrdinalIgnoreCase)) g = g.Substring(4);
+                return g.Trim().ToLowerInvariant();
+            }
+
+            var wanted = Normalize(layoutGuid);
+
+            // Preferência: input match
+            var inputMatch = candidates
+                .Where(m => Normalize(m.InputLayoutGuidFromXml ?? m.InputLayoutGuid ?? "") == wanted)
+                .OrderByDescending(m => m.LastUpdateDate)
+                .FirstOrDefault();
+            if (inputMatch != null)
+                return inputMatch;
+
+            var targetMatch = candidates
+                .Where(m => Normalize(m.TargetLayoutGuidFromXml ?? m.TargetLayoutGuid ?? "") == wanted)
+                .OrderByDescending(m => m.LastUpdateDate)
+                .FirstOrDefault();
+            if (targetMatch != null)
+                return targetMatch;
+
+            // Fallback: mais recente
+            return candidates.OrderByDescending(m => m.LastUpdateDate).FirstOrDefault();
+        }
+
+        private static string NormalizePackageGuid(string packageGuid)
+        {
+            if (string.IsNullOrWhiteSpace(packageGuid)) return "";
+            var p = packageGuid.Trim();
+            if (p.StartsWith("PAC_", StringComparison.OrdinalIgnoreCase)) p = p.Substring(4);
+            return p.Trim().ToLowerInvariant();
+        }
+
+        /// <summary>
+        /// Busca mapeadores por layoutGuid restringindo por ProjectId e PackageGuid (lista permitida).
+        /// </summary>
+        public async Task<List<Mapper>> GetMappersByLayoutGuidForPackagesAsync(string layoutGuid, int projectId, IReadOnlyCollection<string> allowedPackageGuids)
+        {
+            var mappers = new List<Mapper>();
+
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                // Normalizar layout guid para cobrir casos com/sem prefixo LAY_
+                var layoutNoPrefix = layoutGuid?.Trim() ?? "";
+                if (layoutNoPrefix.StartsWith("LAY_", StringComparison.OrdinalIgnoreCase))
+                    layoutNoPrefix = layoutNoPrefix.Substring(4);
+                var layoutWithPrefix = layoutNoPrefix.StartsWith("LAY_", StringComparison.OrdinalIgnoreCase) ? layoutNoPrefix : $"LAY_{layoutNoPrefix}";
+
+                // Lista de pacotes permitidos (normalizados sem PAC_)
+                var allowedNorm = new HashSet<string>(allowedPackageGuids.Select(NormalizePackageGuid), StringComparer.OrdinalIgnoreCase);
+
+                // Montar IN com parâmetros para evitar SQL injection
+                var pkgParams = allowedNorm.Select((_, i) => $"@p{i}").ToList();
+                var inClause = pkgParams.Count > 0 ? string.Join(", ", pkgParams) : "NULL";
+
+                var query = $@"
+                    SELECT 
+                        [Id], [MapperGuid], [PackageGuid], [Name], [Description],
+                        [IsXPathMapper], [InputLayoutGuid], [TargetLayoutGuid],
+                        [ValueContent], [ProjectId], [LastUpdateDate]
+                    FROM [ConnectUS_Macgyver].[dbo].[tbMapper]
+                    WHERE [ProjectId] = @ProjectId
+                      AND (REPLACE(LOWER([PackageGuid]), 'pac_', '') IN ({inClause}))
+                      AND (
+                            [InputLayoutGuid] = @LayoutNoPrefix OR [InputLayoutGuid] = @LayoutWithPrefix
+                         OR [TargetLayoutGuid] = @LayoutNoPrefix OR [TargetLayoutGuid] = @LayoutWithPrefix
+                      )
+                    ORDER BY [LastUpdateDate] DESC";
+
+                using var command = new SqlCommand(query, connection);
+                command.Parameters.AddWithValue("@ProjectId", projectId);
+                command.Parameters.AddWithValue("@LayoutNoPrefix", layoutNoPrefix);
+                command.Parameters.AddWithValue("@LayoutWithPrefix", layoutWithPrefix);
+                for (int i = 0; i < allowedNorm.Count; i++)
+                    command.Parameters.AddWithValue(pkgParams[i], allowedNorm.ElementAt(i));
+
+                using var reader = await command.ExecuteReaderAsync();
+                while (await reader.ReadAsync())
+                {
+                    var mapper = MapReaderToMapper(reader);
+                    mappers.Add(mapper);
+                }
+
+                // Extra segurança: filtrar também em memória pelo pacote permitido (considerando PAC_ e case)
+                mappers = mappers
+                    .Where(m => allowedNorm.Contains(NormalizePackageGuid(m.PackageGuid)))
+                    .ToList();
+
+                return mappers;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Erro ao buscar mapeadores por LayoutGuid (filtrado): {LayoutGuid}", layoutGuid);
+                return mappers;
+            }
+        }
+
+        /// <summary>
         /// Mapeia SqlDataReader para Mapper, descriptografando ValueContent se necessário
         /// </summary>
         private Mapper MapReaderToMapper(SqlDataReader reader)

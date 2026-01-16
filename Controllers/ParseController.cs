@@ -5,6 +5,8 @@ using LayoutParserApi.Services.Filters;
 using LayoutParserApi.Services.Parsing.Interfaces;
 using LayoutParserApi.Services.Interfaces;
 using LayoutParserApi.Services.Learning;
+using LayoutParserApi.Services.Transformation.LowCode;
+using LayoutParserApi.Services.Database;
 
 using Microsoft.AspNetCore.Mvc;
 
@@ -20,8 +22,16 @@ namespace LayoutParserApi.Controllers
         private readonly FileStorageService _fileStorage;
         private readonly LayoutLearningService _learningService;
         private readonly IConfiguration _configuration;
+        private readonly LowCodeAutoTransformationService _lowCodeAuto;
 
-        public ParseController(ILayoutParserService parserService, ILogger<ParseController> logger, ILayoutDetector layoutDetector,FileStorageService fileStorage,LayoutLearningService learningService,IConfiguration configuration)
+        public ParseController(
+            ILayoutParserService parserService,
+            ILogger<ParseController> logger,
+            ILayoutDetector layoutDetector,
+            FileStorageService fileStorage,
+            LayoutLearningService learningService,
+            IConfiguration configuration,
+            LowCodeAutoTransformationService lowCodeAuto)
         {
             _parserService = parserService;
             _logger = logger;
@@ -29,6 +39,7 @@ namespace LayoutParserApi.Controllers
             _fileStorage = fileStorage;
             _learningService = learningService;
             _configuration = configuration;
+            _lowCodeAuto = lowCodeAuto;
         }
 
         [ServiceFilter(typeof(AuditActionFilter))]
@@ -115,6 +126,27 @@ namespace LayoutParserApi.Controllers
                 
                 if (expectedLineLength.HasValue)
                     lineValidations = _parserService.CalculateLineValidations(flattenedLayout, expectedLineLength.Value);
+
+                // ✅ Transformação low-code em background (aprendizado contínuo)
+                // Não bloquear a resposta do usuário.
+                try
+                {
+                    if (!string.IsNullOrWhiteSpace(flattenedLayout.LayoutGuid) &&
+                        !string.IsNullOrWhiteSpace(result.RawText) &&
+                        detectedType == "mqseries")
+                    {
+                        _ = _lowCodeAuto.RunInBackgroundAsync(
+                            flattenedLayout.LayoutGuid,
+                            flattenedLayout.Name,
+                            result.RawText,
+                            detectedType,
+                            txtFile.FileName);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Falha ao iniciar transformação low-code em background");
+                }
 
                 return Ok(new
                 {

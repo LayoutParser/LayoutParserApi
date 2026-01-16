@@ -10,6 +10,7 @@ using LayoutParserApi.Services.Testing;
 using LayoutParserApi.Services.Transformation;
 using LayoutParserApi.Services.Transformation.Interface;
 using LayoutParserApi.Services.Validation;
+using LayoutParserApi.Services.Transformation.LowCode;
 using LayoutParserApi.Services.XmlAnalysis;
 
 using Microsoft.AspNetCore.Diagnostics;
@@ -239,6 +240,9 @@ try
     builder.Services.AddScoped<LayoutValidationService>();
     builder.Services.AddScoped<DocumentValidationService>();
     builder.Services.AddScoped<DocumentMLValidationService>();
+    builder.Services.Configure<LowCodeRunnerOptions>(builder.Configuration.GetSection("LowCode"));
+    builder.Services.AddSingleton<LowCodeTransformationService>();
+    builder.Services.AddSingleton<LowCodeAutoTransformationService>();
     builder.Services.AddHostedService<LayoutValidationBackgroundService>();
 
     // Testing Services
