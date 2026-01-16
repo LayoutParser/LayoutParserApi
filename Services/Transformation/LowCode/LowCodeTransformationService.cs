@@ -30,7 +30,8 @@ namespace LayoutParserApi.Services.Transformation.LowCode
             string? globalFolder = null,
             string? sysmiddleDir = null)
         {
-            var correlationId = Guid.NewGuid().ToString("N");
+            // ✅ Usar CorrelationId da request (se existir) para rastreabilidade end-to-end
+            var correlationId = LayoutParserApi.Services.Logging.CorrelationContext.CurrentId ?? Guid.NewGuid().ToString("N");
             package ??= _opt.Package;
             globalFolder ??= _opt.GlobalFolder;
             sysmiddleDir ??= _opt.SysmiddleDir;
@@ -52,11 +53,12 @@ namespace LayoutParserApi.Services.Transformation.LowCode
             var outputPath = Path.Combine(tempDir, $"out_{Guid.NewGuid():N}.xml");
             await File.WriteAllTextAsync(inputPath, inputContent ?? "", Encoding.UTF8);
 
+            // ✅ Todos os logs na mesma pasta do API, por padrão
             var logsBase = _opt.RunnerLogsPath;
             if (string.IsNullOrWhiteSpace(logsBase))
                 logsBase = Path.Combine(tempDir, "runner-logs");
             Directory.CreateDirectory(logsBase);
-            var runnerLogFile = Path.Combine(logsBase, $"lowcode_{DateTime.UtcNow:yyyyMMdd_HHmmss}_{correlationId}.log");
+            var runnerLogFile = Path.Combine(logsBase, "layoutparserlowcoderunner.log");
 
             var args = new List<string>
             {
