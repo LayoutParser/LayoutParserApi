@@ -2,6 +2,7 @@ using LayoutParserApi.Services.Interfaces;
 
 using System.Diagnostics;
 using System.Text;
+using LayoutParserApi.Services.Logging;
 
 namespace LayoutParserApi.Services.Database
 {
@@ -125,13 +126,32 @@ namespace LayoutParserApi.Services.Database
             var processStartInfo = new ProcessStartInfo
             {
                 FileName = _layoutParserDecryptPath,
-                Arguments = $"\"{inputFile}\" \"{outputFile}\"",
+                Arguments = BuildArgs(inputFile, outputFile),
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 CreateNoWindow = true,
                 WindowStyle = ProcessWindowStyle.Hidden
             };
+
+            // ✅ Propagar correlation e log dir para o Decrypt/Lib
+            var logDir = Environment.GetEnvironmentVariable("LAYOUTPARSER_LOG_DIR")
+                         ?? ""; // definido no Program.cs? fallback vazio
+            if (string.IsNullOrWhiteSpace(logDir))
+                logDir = ""; // o decrypt fará fallback
+
+            var corr = CorrelationContext.CurrentId ?? Guid.NewGuid().ToString();
+            processStartInfo.Environment["LAYOUTPARSER_CORRELATION_ID"] = corr;
+
+            // Preferir o mesmo diretório de logs do API, se configurado
+            var configuredLogDir = AppDomain.CurrentDomain.BaseDirectory;
+            // tentamos ler do mesmo local do appsettings via variável? manter simples:
+            // se existir variável padrão, usar.
+            var apiLogDir = Environment.GetEnvironmentVariable("LAYOUTPARSERAPI_LOG_DIR");
+            if (!string.IsNullOrWhiteSpace(apiLogDir))
+                configuredLogDir = apiLogDir;
+
+            processStartInfo.Environment["LAYOUTPARSER_LOG_DIR"] = string.IsNullOrWhiteSpace(logDir) ? configuredLogDir : logDir;
 
             using var process = new Process();
             process.StartInfo = processStartInfo;
@@ -154,6 +174,14 @@ namespace LayoutParserApi.Services.Database
             
 
             _logger.LogDebug("Processo legado finalizado: {Output}", output);
+        }
+
+        private string BuildArgs(string inputFile, string outputFile)
+        {
+            // args: input output correlationId logDir
+            var corr = CorrelationContext.CurrentId ?? Guid.NewGuid().ToString();
+            var logDir = Environment.GetEnvironmentVariable("LAYOUTPARSERAPI_LOG_DIR") ?? "";
+            return $"\"{inputFile}\" \"{outputFile}\" \"{corr}\" \"{logDir}\"";
         }
     }
 }

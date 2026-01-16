@@ -17,6 +17,8 @@ using Microsoft.AspNetCore.Diagnostics;
 
 using Serilog;
 using Serilog.Events;
+using Serilog.Context;
+using LayoutParserApi.Services.Logging;
 
 using StackExchange.Redis;
 
@@ -32,7 +34,11 @@ try
 
     // Configure Serilog for file and console logging
     var logDirectory = builder.Configuration["Logging:File:Directory"] ?? "Logs";
+    // Nome base do arquivo (conforme requisito)
     var logFileName = builder.Configuration["Logging:File:FileName"] ?? "layoutparserapi.log";
+    var retainedFileCountLimit = int.TryParse(builder.Configuration["Logging:File:RetainedFileCountLimit"], out var r) ? r : 10;
+    var fileSizeLimitKb = int.TryParse(builder.Configuration["Logging:File:FileSizeLimitKB"], out var kb) ? kb : 2049;
+    var fileSizeLimitBytes = (long)fileSizeLimitKb * 1024L;
 
     // Ensure log directory exists and is writable
     try
@@ -102,12 +108,16 @@ try
             .MinimumLevel.Information()
             .MinimumLevel.Override("Microsoft.AspNetCore", LogEventLevel.Warning)
             .Enrich.FromLogContext()
-            .WriteTo.Console(outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff}] [{Level:u3}] {Message:lj}{NewLine}{Exception}")
+            .WriteTo.Console(outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff}] [{Level:u3}] [Corr:{CorrelationId}] {Message:lj}{NewLine}{Exception}")
             .WriteTo.File(
                 Path.Combine(logDirectory, logFileName),
-                rollingInterval: RollingInterval.Day,
-                retainedFileCountLimit: 30,
-                outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff}] [{Level:u3}] {Message:lj}{NewLine}{Exception}",shared: true).CreateLogger();
+                rollingInterval: RollingInterval.Infinite,
+                retainedFileCountLimit: retainedFileCountLimit,
+                fileSizeLimitBytes: fileSizeLimitBytes,
+                rollOnFileSizeLimit: true,
+                outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff}] [{Level:u3}] [Corr:{CorrelationId}] {Message:lj}{NewLine}{Exception}",
+                shared: true)
+            .CreateLogger();
 
         builder.Host.UseSerilog();
         Log.Information("Serilog configured successfully. Log directory: {LogDirectory}", logDirectory);
@@ -261,6 +271,36 @@ try
     // CORS must be early in the pipeline - before routing and other middleware
     // This ensures CORS headers are sent even when errors occur
     app.UseCors();
+
+    // ✅ CorrelationId (GUID) por request/arquivo processado
+    // - Aceita header X-Correlation-ID vindo do front (se existir)
+    // - Caso não exista, gera um novo GUID
+    // - Devolve no response header X-Correlation-ID
+    // - Injeta no Serilog LogContext, aparecendo em todos os logs como Corr:{CorrelationId}
+    app.Use(async (context, next) =>
+    {
+        var correlationId = context.Request.Headers["X-Correlation-ID"].FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(correlationId))
+            correlationId = Guid.NewGuid().ToString();
+
+        context.Response.Headers["X-Correlation-ID"] = correlationId;
+        CorrelationContext.CurrentId = correlationId;
+
+        // ✅ Também expor diretório de log para processos externos (Decrypt/Lib)
+        // (evita ter que reabrir appsettings dentro do .NET Framework)
+        try
+        {
+            var configuredLogDir = app.Configuration["Logging:File:Directory"];
+            if (!string.IsNullOrWhiteSpace(configuredLogDir))
+                Environment.SetEnvironmentVariable("LAYOUTPARSERAPI_LOG_DIR", configuredLogDir);
+        }
+        catch { }
+
+        using (LogContext.PushProperty("CorrelationId", correlationId))
+        {
+            await next();
+        }
+    });
 
     // Enable detailed error pages in development
     if (app.Environment.IsDevelopment())
