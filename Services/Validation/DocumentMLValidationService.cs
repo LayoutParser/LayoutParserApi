@@ -136,9 +136,16 @@ namespace LayoutParserApi.Services.Validation
                 Directory.CreateDirectory(folder);
 
                 var dedupeMarker = Path.Combine(folder, $"sha256_{sha256}.marker");
-                if (File.Exists(dedupeMarker))
+
+                // IMPORTANT: concorrência (multi-thread/process). Criar marker de forma atômica.
+                // Se já existir (ou estiver sendo criado), consideramos duplicata.
+                try
                 {
-                    _logger.LogInformation("Amostra já registrada (sha256={Sha256}) - ignorando duplicata", sha256);
+                    using var _ = new FileStream(dedupeMarker, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+                }
+                catch (IOException)
+                {
+                    _logger.LogInformation("Amostra já registrada ou em registro (sha256={Sha256}) - ignorando duplicata", sha256);
                     return;
                 }
 
@@ -161,8 +168,8 @@ namespace LayoutParserApi.Services.Validation
                 await File.WriteAllTextAsync(metaPath, json, Encoding.UTF8);
                 sample.SavedMetadataPath = metaPath;
 
-                // Criar marker de dedupe por hash
-                await File.WriteAllTextAsync(dedupeMarker, sample.SampleId, Encoding.UTF8);
+                // Escrever o SampleId dentro do marker (best-effort; mantendo o arquivo já criado acima)
+                try { await File.WriteAllTextAsync(dedupeMarker, sample.SampleId, Encoding.UTF8); } catch { }
 
                 _logger.LogInformation(
                     "Amostra de treino salva: valid={IsValid}, layout={LayoutGuid}, sha256={Sha256}, meta={MetaPath}",
