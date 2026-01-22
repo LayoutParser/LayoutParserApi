@@ -747,9 +747,9 @@ namespace LayoutParserApi.Services.Transformation
         /// <summary>
         /// Valida estrutura do XSL
         /// </summary>
-        private async Task<ValidationResult> ValidateXslStructureAsync(string xslContent)
+        private async Task<TransformationCheckResult> ValidateXslStructureAsync(string xslContent)
         {
-            var result = new ValidationResult { Success = true, Errors = new List<string>() };
+            var result = new TransformationCheckResult { Success = true, Errors = new List<string>() };
 
             try
             {

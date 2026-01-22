@@ -1,4 +1,4 @@
-﻿using LayoutParserApi.Services.Transformation;
+﻿using LayoutParserApi.Services.Transformation.Models;
 
 namespace LayoutParserApi.Services.Testing.Models
 {
