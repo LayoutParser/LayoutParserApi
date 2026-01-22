@@ -12,13 +12,16 @@ namespace LayoutParserApi.Services.Transformation.LowCode
     {
         private readonly ILogger<LowCodeTransformationService> _logger;
         private readonly LowCodeRunnerOptions _opt;
+        private readonly IConfiguration _configuration;
 
         public LowCodeTransformationService(
             ILogger<LowCodeTransformationService> logger,
-            IOptions<LowCodeRunnerOptions> options)
+            IOptions<LowCodeRunnerOptions> options,
+            IConfiguration configuration)
         {
             _logger = logger;
             _opt = options.Value;
+            _configuration = configuration;
         }
 
         public async Task<string> TransformAsync(
@@ -53,10 +56,8 @@ namespace LayoutParserApi.Services.Transformation.LowCode
             var outputPath = Path.Combine(tempDir, $"out_{Guid.NewGuid():N}.xml");
             await File.WriteAllTextAsync(inputPath, inputContent ?? "", Encoding.UTF8);
 
-            // ✅ Todos os logs na mesma pasta do API, por padrão
-            var logsBase = _opt.RunnerLogsPath;
-            if (string.IsNullOrWhiteSpace(logsBase))
-                logsBase = Path.Combine(tempDir, "runner-logs");
+            // ✅ Todos os logs na mesma pasta do API (Logging:File:Directory)
+            var logsBase = _configuration["Logging:File:Directory"] ?? Path.Combine(tempDir, "runner-logs");
             Directory.CreateDirectory(logsBase);
             var runnerLogFile = Path.Combine(logsBase, "layoutparserlowcoderunner.log");
 

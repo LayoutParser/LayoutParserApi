@@ -286,16 +286,6 @@ try
         context.Response.Headers["X-Correlation-ID"] = correlationId;
         CorrelationContext.CurrentId = correlationId;
 
-        // ✅ Também expor diretório de log para processos externos (Decrypt/Lib)
-        // (evita ter que reabrir appsettings dentro do .NET Framework)
-        try
-        {
-            var configuredLogDir = app.Configuration["Logging:File:Directory"];
-            if (!string.IsNullOrWhiteSpace(configuredLogDir))
-                Environment.SetEnvironmentVariable("LAYOUTPARSERAPI_LOG_DIR", configuredLogDir);
-        }
-        catch { }
-
         using (LogContext.PushProperty("CorrelationId", correlationId))
         {
             await next();

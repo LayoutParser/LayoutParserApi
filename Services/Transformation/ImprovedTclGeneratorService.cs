@@ -362,9 +362,9 @@ namespace LayoutParserApi.Services.Transformation
         /// <summary>
         /// Valida estrutura do TCL
         /// </summary>
-        private async Task<ValidationResult> ValidateTclStructureAsync(string tclContent)
+        private async Task<TransformationCheckResult> ValidateTclStructureAsync(string tclContent)
         {
-            var result = new ValidationResult { Success = true, Errors = new List<string>() };
+            var result = new TransformationCheckResult { Success = true, Errors = new List<string>() };
 
             try
             {
