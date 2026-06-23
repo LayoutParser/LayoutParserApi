@@ -11,7 +11,8 @@ namespace LayoutParserApi.Services.Logging
         {
             var elasticSearchUrl = configuration["ElasticSearch:Url"] ?? "https://localhost:9200";
             var elasticSearchUsername = configuration["ElasticSearch:Username"] ?? "elastic";
-            var elasticSearchPassword = configuration["ElasticSearch:Password"] ?? "123";
+            // Senha vem de config/env (ElasticSearch__Password) ou user-secrets; sem fallback hardcoded
+            var elasticSearchPassword = configuration["ElasticSearch:Password"] ?? string.Empty;
             var applicationName = Assembly.GetExecutingAssembly().GetName().Name;
 
             return new LoggerConfiguration()

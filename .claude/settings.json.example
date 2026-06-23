@@ -1,0 +1,40 @@
+{
+  "//": "Template recomendado do harness. Para ativar: copie para .claude/settings.json",
+  "//language": "Responde ao usuário em português.",
+  "language": "portuguese",
+
+  "//permissions": "Allowlist de comandos seguros para reduzir prompts. Ajuste à vontade.",
+  "permissions": {
+    "allow": [
+      "Bash(dotnet build:*)",
+      "Bash(dotnet test:*)",
+      "Bash(dotnet restore:*)",
+      "Bash(dotnet run:*)",
+      "Bash(dotnet user-secrets:*)",
+      "Bash(git status:*)",
+      "Bash(git log:*)",
+      "Bash(git diff:*)",
+      "Bash(git branch:*)",
+      "Bash(git add:*)",
+      "Read",
+      "Grep",
+      "Glob"
+    ]
+  },
+
+  "//hooks": "Hook NÃO-BLOQUEANTE que lembra a autoridade de git push. Remova este bloco para desativar.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/git-push-advisory.cjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
