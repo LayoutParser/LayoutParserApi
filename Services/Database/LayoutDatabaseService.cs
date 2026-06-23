@@ -26,7 +26,8 @@ namespace LayoutParserApi.Services.Database
             var server = configuration["Database:Server"] ?? "172.31.249.51";
             var database = configuration["Database:Database"] ?? "ConnectUS_Macgyver";
             var userId = configuration["Database:UserId"] ?? "macgyver";
-            var password = configuration["Database:Password"] ?? "eb8XNsww3D@U&HyZe4";
+            // Senha vem de config/env (Database__Password) ou user-secrets; sem fallback hardcoded
+            var password = configuration["Database:Password"] ?? string.Empty;
 
             // Configurar connection string com timeout e SSL adequado
             // Encrypt=false desabilita SSL/TLS (pode resolver timeout)

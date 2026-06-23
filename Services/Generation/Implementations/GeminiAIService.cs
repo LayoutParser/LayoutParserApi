@@ -37,7 +37,8 @@ namespace LayoutParserApi.Services.Generation.Implementations
             _configuration = configuration;
             _layoutTypeDetector = layoutTypeDetector;
             _lineValidator = lineValidator;
-            _apiKey = configuration["Gemini:ApiKey"] ?? "AIzaSyDwNhK9Hc1nie9lmHJrfLmKBIJzHWNkzD8";
+            // Segredo vem de config/env (Gemini__ApiKey) ou user-secrets; sem fallback hardcoded
+            _apiKey = configuration["Gemini:ApiKey"] ?? string.Empty;
             _modelName = configuration["Gemini:Model"] ?? "gemini-1.5-flash";
             _examplesPath = configuration["Examples:Path"] ?? @"C:\inetpub\wwwroot\layoutparser\Exemplo";
             _fieldGenerators = fieldGenerators?.ToList() ?? new List<Interfaces.IFieldGenerator>();

@@ -1,0 +1,16 @@
+{
+  "//": "Template de registro do MCP Server. Copie para .mcp.json e ajuste os caminhos.",
+  "//build": "Antes de usar: cd mcp/LayoutParserMcp && dotnet build -c Release",
+  "//stdio": "Aponte para a DLL compilada (NÃO use 'dotnet run' — build em stdout corrompe o protocolo).",
+  "mcpServers": {
+    "layoutparser": {
+      "command": "dotnet",
+      "args": [
+        "mcp/LayoutParserMcp/bin/Release/net10.0/LayoutParserMcp.dll"
+      ],
+      "env": {
+        "LAYOUTPARSER_API_URL": "http://localhost:5000"
+      }
+    }
+  }
+}

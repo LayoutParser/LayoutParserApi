@@ -364,3 +364,10 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# Segredos / config local (NUNCA versionar) — ver .claude/rules/security.md
+# Segredos vão via `dotnet user-secrets` (dev) ou variáveis de ambiente (Section__Key).
+appsettings.*.local.json
+appsettings.Local.json
+secrets.json
+*.secrets.json
