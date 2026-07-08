@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Mapeador SINTÉTICO de demonstração (espelha a forma do MapperVO do Sysmiddle).
+
+  Nota de modelagem (MVP standalone):
+  No sistema real, InputLayoutGuid/TargetLayoutGuid/TargetElementGuid são GUIDs que
+  o catálogo de layout resolve para caminhos (XPath). Aqui, para o demo rodar 100%
+  offline sem o catálogo, gravamos o XPath JÁ RESOLVIDO diretamente nesses campos.
+  Ponto de extensão: MapperExtractor.ResolvePath() (ver README).
+-->
+<MapperVO>
+  <MapperGuid>demo-mapper-0001</MapperGuid>
+  <Name>Demo Nota Mapper</Name>
+  <Description>Mapeador sintetico de demonstracao (Root -> Nota)</Description>
+  <InputLayoutGuid>LAYOUT-INPUT</InputLayoutGuid>
+  <TargetLayoutGuid>LAYOUT-NOTA</TargetLayoutGuid>
+
+  <!-- Mapeamentos DIRETOS: resolvidos pelo transpilador determinístico (sem IA). -->
+  <LinkMappings>
+    <LinkMappingItem>
+      <Name>CNPJ</Name>
+      <Sequence>1</Sequence>
+      <InputLayoutGuid>/Root/Emitente/CNPJ</InputLayoutGuid>
+      <TargetLayoutGuid>/Nota/Emit/CNPJ</TargetLayoutGuid>
+    </LinkMappingItem>
+    <LinkMappingItem>
+      <Name>Nome</Name>
+      <Sequence>2</Sequence>
+      <InputLayoutGuid>/Root/Emitente/Nome</InputLayoutGuid>
+      <TargetLayoutGuid>/Nota/Emit/xNome</TargetLayoutGuid>
+      <!-- Exercita o transpilador: apara espaços (normalize-space). -->
+      <RemoveWhiteSpaceType>Trim</RemoveWhiteSpaceType>
+    </LinkMappingItem>
+    <LinkMappingItem>
+      <Name>UF</Name>
+      <Sequence>3</Sequence>
+      <InputLayoutGuid>/Root/Emitente/UF</InputLayoutGuid>
+      <TargetLayoutGuid>/Nota/Emit/UF</TargetLayoutGuid>
+    </LinkMappingItem>
+    <LinkMappingItem>
+      <Name>Valor</Name>
+      <Sequence>4</Sequence>
+      <InputLayoutGuid>/Root/Valor</InputLayoutGuid>
+      <TargetLayoutGuid>/Nota/vNF</TargetLayoutGuid>
+    </LinkMappingItem>
+  </LinkMappings>
+
+  <!-- Regra com CÓDIGO C#: é o pedaço que o LLM (ou o Mock) traduz para XSLT. -->
+  <Rules>
+    <Rule>
+      <Name>ClassificaFaixa</Name>
+      <Sequence>10</Sequence>
+      <Description>Classifica a faixa do valor da nota</Description>
+      <TargetElementGuid>/Nota/faixa</TargetElementGuid>
+      <ContentValue><![CDATA[
+        // Regra de negocio: ALTO quando o valor da nota > 500, senao BAIXO
+        return Number("/Root/Valor") > 500 ? "ALTO" : "BAIXO";
+      ]]></ContentValue>
+    </Rule>
+  </Rules>
+</MapperVO>

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- XSD pequeno do gabarito. Faz o papel do XSD da NF-e no demo:
+     o baseline (sem a regra 'faixa') é INVÁLIDO; o XSLT final é VÁLIDO. -->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="Nota">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="Emit">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="CNPJ" type="xs:string" />
+              <xs:element name="xNome" type="xs:string" />
+              <xs:element name="UF" type="xs:string" />
+            </xs:sequence>
+          </xs:complexType>
+        </xs:element>
+        <xs:element name="vNF" type="xs:string" />
+        <xs:element name="faixa" type="xs:string" />
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
