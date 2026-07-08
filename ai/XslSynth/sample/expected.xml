@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Gabarito: o XML final que o Sysmiddle produziria (oráculo determinístico). -->
+<Nota>
+  <Emit>
+    <CNPJ>12345678000199</CNPJ>
+    <xNome>ACME LTDA</xNome>
+    <UF>SP</UF>
+  </Emit>
+  <vNF>1000.50</vNF>
+  <faixa>ALTO</faixa>
+</Nota>
