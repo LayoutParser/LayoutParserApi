@@ -12,20 +12,22 @@ namespace LayoutParserApi.Services.Transformation.LowCode
     public class LowCodeAutoTransformationService
     {
         private readonly ILogger<LowCodeAutoTransformationService> _logger;
-        private readonly MapperDatabaseService _mapperDb;
+        // ✅ Singleton não pode injetar serviço Scoped direto (quebra a validação de DI em Development).
+        // Usamos IServiceScopeFactory e resolvemos o MapperDatabaseService dentro do escopo do background.
+        private readonly IServiceScopeFactory _scopeFactory;
         private readonly LowCodeTransformationService _lowCode;
         private readonly LowCodeRunnerOptions _opt;
         private readonly string _storePath;
 
         public LowCodeAutoTransformationService(
             ILogger<LowCodeAutoTransformationService> logger,
-            MapperDatabaseService mapperDb,
+            IServiceScopeFactory scopeFactory,
             LowCodeTransformationService lowCode,
             IConfiguration configuration,
             IOptions<LowCodeRunnerOptions> options)
         {
             _logger = logger;
-            _mapperDb = mapperDb;
+            _scopeFactory = scopeFactory;
             _lowCode = lowCode;
             _opt = options.Value;
             _storePath = configuration["ML:LowCodeTransformationsPath"]
@@ -55,7 +57,11 @@ namespace LayoutParserApi.Services.Transformation.LowCode
                 return;
 
             // Selecionar MapperGuid (filtrado por ProjectId e AllowedPackageGuids)
-            var mapper = await _mapperDb.GetBestMapperForLayoutGuidAsync(
+            // ✅ Escopo próprio para o serviço Scoped dentro do fire-and-forget
+            using var scope = _scopeFactory.CreateScope();
+            var mapperDb = scope.ServiceProvider.GetRequiredService<MapperDatabaseService>();
+
+            var mapper = await mapperDb.GetBestMapperForLayoutGuidAsync(
                 layoutGuid,
                 _opt.ProjectId,
                 _opt.AllowedPackageGuids);
