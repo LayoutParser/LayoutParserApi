@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net481</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>LayoutParserLowCodeRunner</AssemblyName>
+    <RootNamespace>LayoutParserLowCodeRunner</RootNamespace>
+    <AutoGenerateBindingRedirects>false</AutoGenerateBindingRedirects>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+  </PropertyGroup>
+
+  <!-- Compila só contra o SysMiddle.Base da instância INSTALADA (v4.4.1, consistente + licenciada).
+       Private=false: NÃO copia; o exe roda DE DENTRO da Bin instalada, onde estão todas as deps. -->
+  <ItemGroup>
+    <Reference Include="SysMiddle.Base">
+      <HintPath>C:\NDDigital\AppConnector\Business\FiatMQ\Instance_fiatmq\AppConnector.DIR\Bin\SysMiddle.Base.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- O MappersHelper (init completa: ConnectorApplicationManager + licença) mora aqui -->
+    <Reference Include="appConnector.Client.Core">
+      <HintPath>C:\NDDigital\AppConnector\Business\FiatMQ\Instance_fiatmq\AppConnector.DIR\Bin\appConnector.Client.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

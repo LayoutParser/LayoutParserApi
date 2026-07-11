@@ -38,8 +38,12 @@ A transformação vive em `MapperVo` (extraída do XML descriptografado do `Mapp
 | Fonte | Natureza | Dificuldade → XSLT | Estratégia |
 |-------|----------|--------------------|------------|
 | **`LinkMappingItem`** | Mapeamento **declarativo** campo→campo (`InputLayoutGuid`→`TargetLayoutGuid`), com `IsToTruncateValue`, `RemoveWhiteSpaceType`, `DefaultValue`, `AllowEmpty` | **Baixa** | **Transpilador determinístico** (código, sem IA) |
-| **`MapperRule.ContentValue`** | **Código C#** por regra (`TargetElementGuid`, `Sequence`, `CreateOnlyChildren`, `IsPrePosRule`) — lógica arbitrária (condicionais, formatação, cálculo) | **Alta** | **LLM** traduz C#→XSLT/XPath, validado pelo loop |
+| **`MapperRule.ContentValue`** | **DSL do Sysmiddle** por regra (NÃO é C#, apesar do comentário no código). Sintaxe própria: `#.tmp = I.LINHA000/Campo` (path de input), `$.build` (variável de saída), `GetLength()`, `if(...) begin ... end`. Lógica: condicionais, cálculo, formatação | **Alta** | **LLM** traduz **DSL→XSLT/XPath**, validado pelo loop |
 | **`Mapper.XslContent`** | XSL **já existente** em alguns mapeadores | — | **Semente few-shot / referência** para o LLM |
+
+> **Números reais** (mapeador de referência `MAP_MQSERIES_SEND_ENV_TXT_XML_NFE`, NF-e envio 4.00): **237 LinkMappings + 98 Rules DSL**. A maior parte (os 237) é resolvida pelo transpilador determinístico; o LLM foca nas 98 regras DSL.
+
+> **Descriptografia (Windows-only):** o `Mapper.ValueContent`/`DecryptedContent` vem **cifrado** do SQL. A descriptografia é feita pelo `LayoutParserDecrypt.exe` (.NET Framework, **Windows**) — ver `DecryptionService`. No dev, aponte `LayoutParserDecrypt:Path` para o build local (`..\LayoutParserDecrypt\bin\Release\LayoutParserDecrypt.exe`) **ou** rode o exe direto no ciphertext exportado (`decrypt in <cipher> <out>`). O WSL/Linux **não** descriptografa — por isso o export do MapperVo descriptografado é feito no host Windows e só o resultado (XML limpo) vai pro loop.
 
 **Implicação de design:** a maior parte dos campos (`LinkMappings`) é resolvida **por código**, barato e 100% confiável. O LLM concentra-se só nas **regras C#** e nos **diffs residuais**. Isso reduz drasticamente a superfície onde o LLM pode errar.
 
@@ -118,6 +122,22 @@ O **esqueleto já existe** — o trabalho é fechar o loop, não recomeçar.
 - **Fase 2 — Loop de reparo com LLM:** traduzir Rules C# e fechar os diffs. **Provar ponta-a-ponta em UM mapeador.**
 - **Fase 3 — Generalizar (ML leve = embeddings/RAG):** indexar XSLTs aprovados; semear o LLM para layouts novos.
 - **Fase 4 — Rede de segurança:** testes-ouro de regressão (todo XSLT aprovado mantém `diff==0`).
+
+### 7.1 Exportação de dados (Fase 0 na prática)
+
+O loop (no WSL/Linux) precisa, **por mapeador**: (a) o **MapperVo descriptografado** (LinkMappings + Rules + XslContent) e (b) N pares **(input → XML final NF-e = gabarito)**.
+
+**Restrição-chave:** o `Mapper.ValueContent` no SQL é **criptografado** (cripto Sysmiddle via `LayoutParserLib`, .NET Framework, **Windows-only**). O **WSL/Linux não descriptografa.** Logo, exporte o conteúdo **já descriptografado** (a API descriptografa no host Windows e guarda no cache/Redis).
+
+| Caminho | Como | Quando |
+|---------|------|--------|
+| **Via API (preferido)** | Endpoint tipo `GET /api/MapperDatabase/{guid}/export` → devolve MapperVo descriptografado + pares de exemplo (reusa `CachedMapperService`/`MapperDatabaseService` + `DecryptionService`, que rodam no Windows) | Fonte da verdade, formato pronto pro loop |
+| **Direto do Redis** | Dump da chave `mapper:{guid}` (já descriptografada no cache) | *One-off* rápido; é cache, não fonte da verdade |
+| **SQL via VPN** | Enumerar quais mapeadores têm `InputLayoutGuid` (os ~5) | Descobrir o alvo; conteúdo descriptografado vem da API/Redis |
+
+**Pares gabarito (input→XML final):** vêm de execuções passadas do Sysmiddle — em `TransformationPipeline:ExamplesPath`/`ExpectedOutputsPath`, ou gerados rodando o pipeline atual no host Windows para alguns inputs. O loop consome esses arquivos direto.
+
+> **Sobre o cache (Redis vs alternativas):** para o **catálogo** (layouts/mappers) — poucos, pequenos, raramente alterados, read-heavy — um **cache em memória na API** (`IMemoryCache`) já basta e é mais simples/rápido (sem hop de rede, uma dependência a menos), com o "atualizar layouts" chamando um *reload*. **Redis se justifica** se houver múltiplas instâncias da API **ou** — o motivo forte — se o **Redis Stack (RediSearch)** virar o **vector store do RAG** (Fase 3): aí ele serve cache **e** embeddings, valendo a pena manter.
 
 ---
 

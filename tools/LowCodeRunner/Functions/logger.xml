@@ -1,0 +1,44 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<log4net>
+  <appender name="LogDefaultRollingFile" type="log4net.Appender.RollingFileAppender">
+    <!-- Appender para tratar as logs dos processos dentro do IIS -->
+    <lockingModel type="log4net.Appender.FileAppender+MinimalLock" />
+    <file value="D:\Projetos\TeamSystem\EcoBeneficios\Source\Client\CurrentVersion\NDDigital.EDocs.Client.Test\bin\Log\logdefault.txt" />
+    <appendToFile value="true" />
+    <maximumFileSize value="2MB" />
+    <maxSizeRollBackups value="100" />
+    <preserveLogFileNameExtension value="true"/>
+    <!-- Os n�veis dispon�veis, em ordem crescente s�o: DEBUG, INFO, WARN, ERROR e FATAL  -->
+    <filter type="log4net.Filter.LevelRangeFilter">
+      <levelMin value="DEBUG" />
+      <levelMax value="FATAL" />
+    </filter>
+    <layout type="log4net.Layout.PatternLayout">
+      <conversionPattern value="[%thread]; %-5level; %date; %message; %newline" />
+    </layout>
+  </appender>
+  <appender name="LogErrorRollingFile" type="log4net.Appender.RollingFileAppender">
+    <!-- Appender para tratar as logs dos processos dentro do IIS -->
+    <lockingModel type="log4net.Appender.FileAppender+MinimalLock" />
+    <file value="D:\Projetos\TeamSystem\EcoBeneficios\Source\Client\CurrentVersion\NDDigital.EDocs.Client.Test\bin\Log\logexception.txt" />
+    <appendToFile value="true" />
+    <maximumFileSize value="2MB" />
+    <maxSizeRollBackups value="100" />
+    <!-- Os níveis disponíveis, em ordem crescente são: DEBUG, INFO, WARN, ERROR e FATAL  -->
+    <filter type="log4net.Filter.LevelRangeFilter">
+      <levelMin value="INFO" />
+      <levelMax value="FATAL" />
+    </filter>
+    <layout type="log4net.Layout.PatternLayout">
+      <conversionPattern value="[%thread]; %-5level; %date; %message; %newline" />
+    </layout>
+  </appender>
+  <logger name="LogDefault">
+    <level value="ALL" />
+    <appender-ref ref="LogDefaultRollingFile" />
+  </logger>
+  <logger name="LogError">
+    <level value="ALL" />
+    <appender-ref ref="LogErrorRollingFile" />
+  </logger>
+</log4net>

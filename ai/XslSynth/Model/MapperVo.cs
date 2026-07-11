@@ -38,18 +38,45 @@ public sealed class LinkMappingItem
     public string? RemoveWhiteSpaceType { get; set; }
     public string? DefaultValue { get; set; }
     public bool AllowEmpty { get; set; }
+
+    // ── Campos do MapeadorVO REAL (Sysmiddle) ──────────────────────────────
+    // Preenchidos pelo RealMapperParser. Os GUIDs abaixo referenciam o catálogo
+    // de layout (input/target) que ainda NÃO temos → o path é resolvido só até a
+    // FOLHA (via convenção de nome), não o caminho completo. Ver report do loop.
+    public string? ElementGuid { get; set; }
+    public string? InputGuid { get; set; }        // FLD_/LIN_ (origem no layout de input)
+    public string? TargetGuid { get; set; }       // TAG_/GRT_/ATT_ (destino no layout NF-e)
+    public string? TargetType { get; set; }        // prefixo do TargetGuid: TAG|GRT|ATT|SEQ
+    public string? TargetLeafName { get; set; }    // nome da folha derivado do sufixo de Name
+    public bool IsRequired { get; set; }
 }
 
-/// <summary>Regra com código C# arbitrário (condicional, cálculo, formatação).</summary>
+/// <summary>
+/// Regra em DSL do Sysmiddle (condicional, cálculo, formatação). Apesar do nome
+/// histórico "C#", o <see cref="ContentValue"/> real é a DSL Sysmiddle:
+/// <c>T.&lt;path&gt;</c> = saída, <c>I.LINHA/&lt;campo&gt;</c> = input,
+/// <c>#.tmp</c>/<c>$.var</c> = variáveis, <c>if(...) begin ... end</c>.
+/// </summary>
 public sealed class MapperRule
 {
     public string? Name { get; set; }
     public int Sequence { get; set; }
     public string? Description { get; set; }
 
-    /// <summary>Destino da regra (<TargetElementGuid>), como XPath no MVP.</summary>
+    /// <summary>
+    /// Destino da regra como XPath. No mapeador real é DERIVADO da primeira
+    /// atribuição <c>T.&lt;path&gt;</c> da DSL (que já é o caminho completo na
+    /// árvore NF-e) — não do <see cref="TargetElementGuid"/> (que exigiria catálogo).
+    /// </summary>
     public string? TargetPath { get; set; }
 
-    /// <summary>Código C# da regra — o pedaço que o LLM traduz para XSLT.</summary>
+    /// <summary>Corpo da regra em DSL Sysmiddle — o pedaço que o LLM traduz para XSLT.</summary>
     public string? ContentValue { get; set; }
+
+    // ── Campos do MapeadorVO REAL (Sysmiddle) ──────────────────────────────
+    public string? ElementGuid { get; set; }
+    public string? TargetElementGuid { get; set; }  // ATT_/TAG_/GRT_/SEQ_
+    public string? TargetType { get; set; }          // prefixo do TargetElementGuid
+    public string? ParentElement { get; set; }       // ex.: "cEAN    (-, Str_MAX)"
+    public bool IsRequired { get; set; }
 }
