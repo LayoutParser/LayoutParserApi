@@ -182,7 +182,17 @@ Reusar o que o XslSynth já tem:
 | Fase | Entregável | Gate (Quinn) |
 |------|-----------|--------------|
 | PoC-0 ✅ | `ExcelSpecParser` → `SpecModel` (aba Emissão) + dump de conferência | ✅ 73 blocos / 1042 campos batem com a planilha |
-| PoC-1 ✅ | `TclGenerator` → `TCL <MAP>` para NFe 4.00 | ✅ TCL bem-formado; 1042 FIELD; lengths cobrem ~600/linha |
+| PoC-1 ✅ | `TclGenerator` → `TCL <MAP>` para NFe 4.00 | ✅ TCL bem-formado; 1042 FIELD; validado 10/10 contra o par gabarito |
+| PoC-2 ✅ | `NfeLeiauteCatalog` (#XML→XPath, triangulação XsdOrder+Semantic+ValueAnchor) | ✅ 9/9 âncoras; **482/712 campos (67,7%)**; CSV com XPath+tipo XSD+occurs |
+
+**Resultado PoC-2 (Lia + arquiteto, 2026-07-11):** modo `--catalog` no `Program.cs`; arquivos
+`ai/XslSynth/Excel/{XsdLeiauteIndex,SemanticMatcher,NfeGabaritoMiner,NfeLeiauteCatalog}.cs`. Índice do XSD: 874 nós em
+ordem de documento. Dos **628 refs distintos**: 55 Alta (2+ sinais), 383 Média (1 sinal), 190 não resolvidos —
+concentrados em: **SubRef/MultiRef do choice ICMS** (111: precisam de seleção de variante por CST em runtime — PoC-3),
+**LetraSufixo de grupos especializados** (49: veículos/ANVISA/ANP — ausentes do gabarito, sem ValueAnchor),
+MocId RTC (7), extensão proprietária FIAT/ANFAVEA (2). Catálogo: `.claude/tmp/export/nfe-leiaute-catalog.csv`
+(xpath;tipo;occurs;sinais;confiança). **Nota estratégica:** os campos presentes no gabarito real (venda simples, ICMS00)
+caem nas regiões bem resolvidas → a PoC-3 pode mirar `diff==0` no par real antes de generalizar para os grupos raros.
 | PoC-2 | `NfeLeiauteCatalog` (v1: só campos com `#XML` numérico direto) | ≥X% dos `#XML` resolvidos a XPath válido no XSD |
 | PoC-3 | `XslGenerator` → XSL; **valida vs `leiauteNFe_v4.00.xsd`** | XSL compila; saída de exemplo valida no XSD (campos cobertos) |
 | PoC-4 | Relatório de cobertura + honesto sobre gaps (fallback semântico) | métricas reproduzíveis; gaps listados |
@@ -283,7 +293,59 @@ campos com `#XML != NA`.
 
 ---
 
-## 7. Divisão de trabalho
+## 7. Spec da PoC-3 — `XslGenerator` (gate: diff==0 no par real)
+
+> **Status:** em implementação (Dex, com Lia no domínio ICMS/CST) · handoff 2026-07-11.
+
+### 7.1 Objetivo e gate
+
+Gerar o **XSL** a partir de `SpecModel` + `NfeLeiauteCatalog`, aplicá-lo sobre a árvore `ROOT` construída do TXT real,
+e comparar com o gabarito `…-env.xml`. **Gate primário: `diff==0` no subtree `<infNFe>`** (core SEFAZ) + **XSD como
+oráculo** (`XsdValidator` existente). Gate secundário (Etapa B): estender ao `<dadosAdic>` (extensão proprietária).
+
+### 7.2 Componentes novos (em `ai/XslSynth/Excel/`)
+
+| Componente | Papel | Observação |
+|---|---|---|
+| `RootTreeBuilder` | TXT (59×600) → `XDocument` ROOT | Fatia pelo **Inicio/Fim absolutos do SpecModel** (autoritativo — cobre as 10 descontinuidades), não pelo comprimento cumulativo do TCL. O TCL permanece como artefato de export p/ a plataforma. Linhas repetidas → elementos repetidos em ordem (`<LINHA081/>…×4`). HEADER/TRAILER identificados por prefixo `HEADER`/seq `999999`, não por pos 7-9. |
+| `XslGenerator` | `SpecModel`+catálogo → XSL | Só campos com resolução Alta/Média. Monta a árvore `enviNFe` pelos XPaths do catálogo (reusar `GetOrCreateChildPath`). Campo não resolvido → `<xsl:comment>` honesto (padrão do projeto). |
+| modo `--generate` | pipeline completo + relatório | TXT→ROOT→XSL→saída→`CanonicalDiffer` vs gabarito + `XsdValidator`. Imprime nº de diffs por região e salva `generated.xsl`/`generated-output.xml` em `.claude/tmp/export/`. |
+
+### 7.3 Regras de valor (descobertas no gabarito — normalização obrigatória)
+
+1. **Zeros à esquerda**: `serie '006'→'6'`, `nNF '000150839'→'150839'` — strip em campos numéricos de identificação
+   (tipos XSD `TSerie`, `TNF`…; usar o `tipo` do catálogo CSV).
+2. **Decimais**: col `Decimais` da spec → `format-number` (`vProd 189.78` = 2 casas; `qCom 6.0000` = 4; `vUnCom
+   31.6300000000` = 10). A col J (`Formato`) complementa.
+3. **Datas**: `AAAA-MM-DD` já vem ISO no input; `dhEmi` composto com timezone (`2025-07-16T14:13:18-03:00`) — verificar
+   se vem pronto do input ou se compõe data+hora+offset.
+4. **Opcionais vazios são OMITIDOS** (o gabarito não tem elementos vazios) → envolver emissão em `xsl:if` de não-vazio
+   (mesmo idioma do `DslBlockInterpreter`).
+5. **`infCpl` = concat das LINHA081 repetidas**: trim de cada segmento e concatenação SEM separador
+   (`…Guedes` + `PIS ST…` + `COFINS ST…`), via `xsl:for-each`.
+
+### 7.4 Seleção de variante ICMS por CST (domínio — Lia)
+
+O choice `ICMS00|ICMS10|…|ICMSSN…` é decidido **em runtime** pelo valor do CST/CSOSN do item:
+`xsl:choose` sobre o campo CST → `00→ICMS00, 10→ICMS10, 20→ICMS20, 30→ICMS30, 40|41|50→ICMS40, 51→ICMS51, 60→ICMS60,
+70→ICMS70, 90→ICMS90; CSOSN 101/102/201/202/500/900→ICMSSN*`. Os refs SubRef/MultiRef do catálogo (`#245.x`,
+`#179|196|226|240`) resolvem **dentro** da variante escolhida. Gabarito exercita `ICMS00` (CST=00) — é o caminho da
+Etapa A; as demais variantes ficam estruturadas mas só são exercitadas quando houver gabarito que as cubra.
+
+### 7.5 Etapas e gates (SDD)
+
+| Etapa | Escopo | Gate |
+|---|---|---|
+| A1 | `RootTreeBuilder` (TXT→ROOT) | ROOT com 59 ocorrências de linha; spot-check 10/10 do arquiteto reproduzido programaticamente |
+| A2 | `XslGenerator` core (`ide/emit/dest/det/total/transp/cobr/pag/infAdic`) | XSL compila; saída **valida no XSD** (elemento `NFe`) |
+| A3 | diff vs gabarito no `<infNFe>` | **diff==0** (usar `CanonicalDiffer`; relatório de diffs residuais por região se >0) |
+| B | `<dadosAdic>` (extensão FIAT/ANFAVEA: B2BDirectory, PrinterKey, bloco290…, de campos de controle `NA`) | diff==0 no documento completo |
+
+**Fora de escopo da PoC-3:** grupos especializados sem gabarito (veículos/ANVISA/ANP), Ollama/LLM (tudo determinístico),
+runner Sysmiddle (retomar DEPOIS — a instância FiatMQ em `.claude/tmp/servidor/fiatmq/Instance_FiatMQ` vira fonte de
+gabaritos em lote; o `FiatMQ_Instance_FiatMQ.exe.config` deve revelar o bootstrap de licença).
+
+## 8. Divisão de trabalho
 
 - **@lp-parser-llm (Lia):** `ExcelSpecParser`, `NfeLeiauteCatalog` (domínio do leiaute/NT), resolução semântica, RAG.
 - **@lp-backend-dev (Dex):** `TclGenerator`, `XslGenerator`, wiring no `Program.cs` (`--excel`), integração com `XsdValidator`.

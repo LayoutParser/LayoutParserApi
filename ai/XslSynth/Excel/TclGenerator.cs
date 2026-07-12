@@ -42,10 +42,8 @@ public sealed class TclGenerator
                 new XAttribute("name", block.Name));
 
             // Nomes únicos por LINE (o ROOT precisa de campos endereçáveis pelo XSL).
-            var used = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var f in block.Fields)
+            foreach (var (f, name) in NamedFields(block))
             {
-                var name = Unique(FieldName(f), used);
                 line.Add(new XElement("FIELD",
                     new XAttribute("name", name),
                     new XAttribute("length", f.Tamanho.ToString(CultureInfo.InvariantCulture))));
@@ -55,6 +53,20 @@ public sealed class TclGenerator
         }
 
         return new XDocument(new XDeclaration("1.0", "utf-8", "yes"), map);
+    }
+
+    /// <summary>
+    /// Campos do bloco com o nome NCName ÚNICO que eles recebem no TCL/ROOT.
+    /// Compartilhado com o RootTreeBuilder e o XslGenerator (PoC-3): os três
+    /// precisam endereçar exatamente os mesmos nomes de elemento.
+    /// </summary>
+    internal static IReadOnlyList<(SpecField Field, string Name)> NamedFields(SpecBlock block)
+    {
+        var used = new HashSet<string>(StringComparer.Ordinal);
+        var result = new List<(SpecField, string)>(block.Fields.Count);
+        foreach (var f in block.Fields)
+            result.Add((f, Unique(FieldName(f), used)));
+        return result;
     }
 
     // O identifier é o discriminador da linha física: código do bloco (7-9) para
