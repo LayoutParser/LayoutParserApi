@@ -13,6 +13,7 @@ using XslSynth.Synthesis;
 //   dotnet run -- --sample     → exemplo sintético + loop de reparo diff==0 (MVP Fase 0-2)
 //   dotnet run -- --excel <x>  → gera o TCL <MAP> a partir da spec .xlsx (PoC-0/1)
 //   dotnet run -- --catalog <x> → catálogo #XML → XPath NF-e + relatório (PoC-2)
+//   dotnet run -- --generate <x> → TXT→ROOT→XSL→saída + diff vs gabarito (PoC-3)
 //
 // Arquitetura: docs/architecture/ia-xslt-synthesis.md · poc-excel-generator.md
 // ─────────────────────────────────────────────────────────────────────────────
@@ -23,6 +24,9 @@ Log("╔════════════════════════
 Log("║  XslSynth — síntese de XSLT guiada por verificador                 ║");
 Log("╚══════════════════════════════════════════════════════════════════╝");
 Log("");
+
+if (args.Contains("--generate"))
+    return RunGenerate();
 
 if (args.Contains("--catalog"))
     return RunCatalog();
@@ -269,6 +273,199 @@ int RunCatalog()
     Log("   • confiança Média = 1 sinal — vale revisar amostra antes de gerar.");
 
     return ancorasOk == esperadas.Length ? 0 : 1;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// Fluxo GENERATE (PoC-3): TXT real → ROOT (A1) → XSL gerado (A2) → saída →
+// diff canônico do <infNFe> vs gabarito (A3, gate diff==0) + XSD como oráculo.
+// 100% determinístico — SEM LLM. Desenho: poc-excel-generator.md §7.
+// ══════════════════════════════════════════════════════════════════════════
+int RunGenerate()
+{
+    var xlsx = FindArgAfter("--generate") ?? FindExcelArg();
+    if (xlsx is null || !File.Exists(xlsx))
+    {
+        Log("❌ Planilha .xlsx não encontrada.");
+        Log("   Uso: dotnet run -- --generate <caminho.xlsx> [--xsd <leiaute.xsd>] [--txt <input.txt>] [--xml <gabarito.xml>]");
+        return 2;
+    }
+
+    var claudeTmp = Path.GetDirectoryName(ResolveExportDir())!;   // …/.claude/tmp
+    var xsdDir = Path.Combine(claudeTmp, "servidor", "layoutparser", "xsd", "PL_010b_NT2025_002_v1.30");
+    var xsdPath = FindArgAfter("--xsd") ?? Path.Combine(xsdDir, "leiauteNFe_v4.00.xsd");
+    var txtPath = FindArgAfter("--txt") ?? Path.Combine(claudeTmp, "exemplos", "txt input",
+        "QMWNFe1_QMWNFE1.SAPiens_MRB.INBOX_07-11-2025.mq_series.txt");
+    var xmlPath = FindArgAfter("--xml") ?? Path.Combine(claudeTmp, "exemplos", "xml output",
+        "QMWNFe1_QMWNFE1.SAPiens_MRB.INBOX_07-11-2025.mq_series-11072026094950273-env.xml");
+
+    Log("Modo      : GERADOR XSL (PoC-3, determinístico, sem LLM)");
+    Log($"Planilha  : {xlsx}");
+    Log($"XSD       : {xsdPath}");
+    Log($"TXT       : {txtPath}");
+    Log($"Gabarito  : {xmlPath}");
+    Log("");
+
+    SpecModel spec;
+    XsdLeiauteIndex xsd;
+    NfeGabarito? gabarito = null;
+    try
+    {
+        spec = new ExcelSpecParser(Log).Parse(xlsx);
+        xsd = XsdLeiauteIndex.Load(xsdPath);
+        if (File.Exists(txtPath) && File.Exists(xmlPath))
+            gabarito = NfeGabarito.Load(txtPath, xmlPath);
+        else
+            Log("   [aviso] par gabarito incompleto — sem ancoragem por valor nem diff (A3).");
+    }
+    catch (Exception ex)
+    {
+        Log($"❌ Falha ao carregar insumos: {ex.Message}");
+        return 1;
+    }
+
+    var outDir = ResolveExportDir();
+    Directory.CreateDirectory(outDir);
+
+    // ── A1: RootTreeBuilder (TXT → ROOT) + gate ──────────────────────────
+    var rootReport = new RootTreeBuilder().Build(txtPath, spec, Log);
+    var rootPath = Path.Combine(outDir, "generated-root.xml");
+    rootReport.Root.Save(rootPath);
+
+    var ocorrencias = rootReport.Root.Root!.Elements().Count();
+    Log($"[A1] ROOT montado: {rootReport.Registros} registros de 600 chars → {ocorrencias} linhas "
+        + $"({rootReport.RegistrosSemBloco} sem bloco na spec).");
+    Log($"     Arquivo: {rootPath}");
+
+    // Spot-checks do arquiteto, reproduzidos programaticamente.
+    (string Bloco, int Ini, int Fim, string Esperado)[] spots =
+    [
+        ("LINHA001", 10, 11, "31"),
+        ("LINHA001", 78, 86, "000150839"),
+        ("LINHA004", 10, 23, "36519422000115"),
+        ("LINHA005", 10, 23, "01844555002045")
+    ];
+    var spotsOk = 0;
+    foreach (var (bloco, ini, fim, esperado) in spots)
+    {
+        var ok = SpotCheck(spec, rootReport.Root, bloco, ini, fim, esperado, out var obtido);
+        if (ok) spotsOk++;
+        Log($"     {bloco}[{ini}-{fim}] esperado='{esperado}' obtido='{obtido}' {(ok ? "✅" : "❌")}");
+    }
+    var a1Ok = ocorrencias == 59 && spotsOk == spots.Length;
+    Log($"     Gate A1: {ocorrencias} ocorrências (esperado 59) + spot-check {spotsOk}/{spots.Length} "
+        + $"→ {(a1Ok ? "PASSOU ✅" : "FALHOU ❌")}");
+    Log("");
+
+    // ── A2: catálogo + XslGenerator + compilação + XSD ───────────────────
+    var catalog = NfeLeiauteCatalog.Build(spec, xsd, gabarito, Log);
+    var gen = new XslGenerator().Generate(spec, catalog, xsd, gabarito, rootReport.Root, Log);
+    var xslPath = Path.Combine(outDir, "generated.xsl");
+    gen.Xsl.Save(xslPath);
+    Log($"[A2] XSL gerado: {gen.FolhasEmitidas} folhas emitidas de {gen.CamposComRef} campos com #XML "
+        + $"({gen.CamposDescartados} descartados; {gen.Notas.Count} notas).");
+    Log($"     Arquivo: {xslPath}");
+
+    string saida;
+    try
+    {
+        saida = new XsltApplier().Apply(gen.Xsl, rootReport.Root);
+    }
+    catch (Exception ex)
+    {
+        Log($"     ❌ XSL NÃO COMPILOU/aplicou: {ex.Message}");
+        return 1;
+    }
+    var outPath = Path.Combine(outDir, "generated-output.xml");
+    File.WriteAllText(outPath, saida);
+    Log($"     XSL compila e aplica ✅ — saída: {outPath}");
+
+    // Oráculo XSD: valida o elemento <NFe> com o namespace SEFAZ injetado
+    // (o pipeline trabalha sem namespace, como o gabarito de produção).
+    var nfeXsd = Path.Combine(Path.GetDirectoryName(xsdPath)!, "nfe_v4.00.xsd");
+    var saidaDoc = XDocument.Parse(saida);
+    var nfeEl = saidaDoc.Descendants("NFe").FirstOrDefault();
+    if (nfeEl is not null && File.Exists(nfeXsd))
+    {
+        XNamespace ns = "http://www.portalfiscal.inf.br/nfe";
+        var comNs = ComNamespace(nfeEl, ns);
+        var res = new XsdValidator().Validate(comNs.ToString(), nfeXsd);
+        var deAssinatura = res.Errors.Count(e => e.Contains("Signature", StringComparison.Ordinal));
+        var reais = res.Errors.Count - deAssinatura;
+        Log($"     XSD (elemento NFe): {(reais == 0 ? "válido ✅" : $"{reais} erro(s) ❌")}"
+            + (deAssinatura > 0 ? $" + {deAssinatura} de assinatura (esperado: PoC não assina)" : ""));
+        foreach (var e in res.Errors.Where(e => !e.Contains("Signature", StringComparison.Ordinal)).Take(12))
+            Log($"        {e}");
+    }
+    else
+    {
+        Log("     [aviso] validação XSD pulada (NFe ausente na saída ou nfe_v4.00.xsd não achado).");
+    }
+    Log("");
+
+    // ── A3: diff canônico do <infNFe> vs gabarito ────────────────────────
+    if (gabarito is null || !File.Exists(xmlPath))
+    {
+        Log("[A3] sem gabarito — diff não executado.");
+        return a1Ok ? 0 : 1;
+    }
+
+    var esperadoInf = XDocument.Load(xmlPath).Descendants("infNFe").FirstOrDefault();
+    var obtidoInf = saidaDoc.Descendants("infNFe").FirstOrDefault();
+    if (esperadoInf is null || obtidoInf is null)
+    {
+        Log($"[A3] ❌ <infNFe> ausente ({(esperadoInf is null ? "gabarito" : "saída gerada")}).");
+        return 1;
+    }
+
+    var diffs = new CanonicalDiffer().Diff(esperadoInf.ToString(), obtidoInf.ToString());
+    Log($"[A3] diff canônico <infNFe>: {diffs.Count} divergência(s).");
+    foreach (var g in diffs.GroupBy(d => Regiao(d.XPath)).OrderByDescending(g => g.Count()))
+    {
+        Log($"     ── {g.Key} ({g.Count()}):");
+        foreach (var d in g.Take(15)) Log($"        {d}");
+        if (g.Count() > 15) Log($"        … e mais {g.Count() - 15}.");
+    }
+    Log("");
+    Log(diffs.Count == 0
+        ? "✅ GATE A3 ATINGIDO: diff==0 no <infNFe>."
+        : $"❌ Gate A3 pendente: {diffs.Count} diffs residuais (ver agrupamento acima).");
+
+    return a1Ok && diffs.Count == 0 ? 0 : 1;
+}
+
+// Região do diff = 1º segmento abaixo de /infNFe (ide, emit, det, total…).
+string Regiao(string xpath)
+{
+    var parts = xpath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+    var seg = parts.Length > 1 ? parts[1] : parts.Length > 0 ? parts[0] : "?";
+    var idx = seg.IndexOf('[');
+    return idx > 0 ? seg[..idx] : seg;
+}
+
+// Confere no ROOT o valor absoluto [ini..fim] de um bloco (fatia relativa ao campo).
+bool SpotCheck(SpecModel spec, XDocument root, string bloco, int ini, int fim, string esperado, out string obtido)
+{
+    obtido = "";
+    var b = spec.Blocks.FirstOrDefault(x => x.Name == bloco);
+    if (b is null) return false;
+    var hit = TclGenerator.NamedFields(b).FirstOrDefault(t => t.Field.Inicio <= ini && t.Field.Fim >= fim);
+    if (hit.Field is null) return false;
+    var val = root.Root!.Elements(bloco).FirstOrDefault()?.Element(hit.Name)?.Value ?? "";
+    var rel = ini - hit.Field.Inicio;
+    if (rel < 0 || rel + (fim - ini + 1) > val.Length) return false;
+    obtido = val.Substring(rel, fim - ini + 1);
+    return obtido == esperado;
+}
+
+// Clona a árvore aplicando o namespace (só para o oráculo XSD; o diff é sem ns).
+XElement ComNamespace(XElement el, XNamespace ns)
+{
+    var novo = new XElement(ns + el.Name.LocalName);
+    foreach (var a in el.Attributes().Where(a => !a.IsNamespaceDeclaration))
+        novo.Add(new XAttribute(a.Name.LocalName, a.Value));
+    foreach (var n in el.Nodes())
+        novo.Add(n is XElement c ? ComNamespace(c, ns) : n);
+    return novo;
 }
 
 string Short(string s, int max) => s.Length <= max ? s : s[..(max - 1)] + "…";
