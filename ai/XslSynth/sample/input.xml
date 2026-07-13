@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Documento de entrada (representação XML do posicional já parseado). -->
+<Root>
+  <Emitente>
+    <CNPJ>12345678000199</CNPJ>
+    <Nome>   ACME LTDA   </Nome>
+    <UF>SP</UF>
+  </Emitente>
+  <Valor>1000.50</Valor>
+</Root>

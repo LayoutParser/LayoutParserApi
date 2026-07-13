@@ -104,6 +104,9 @@ dotnet test             # quando houver testes (Services/Testing + projeto de te
 
 - Chamadas independentes em **paralelo** num só turno.
 - Comandos: `dotnet` roda em PowerShell (shell primário) ou Bash.
+- **rtk (Rust Token Killer, no PATH):** em comandos **Bash** de saída longa (git log/diff, dotnet build/test,
+  listagens grandes), prefixe com `rtk` (ex.: `rtk git status`, `rtk dotnet build …`) para comprimir a saída e
+  economizar tokens. NÃO substitui as tools nativas (Grep/Read/Glob continuam preferidas). Fonte: `..\rtk`.
 - **better-context (btca):** ao mexer com libs externas, prefira consultar o código-fonte real via btca a confiar em docs desatualizadas.
 
 ---
