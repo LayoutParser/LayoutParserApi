@@ -39,6 +39,9 @@ public static class SemanticMatcher
 
     // Sinônimos/abreviações do vocabulário NF-e (spec Excel × xs:documentation):
     // a spec escreve "Base Calculo", o XSD escreve "BC"; expandir aproxima os dois lados.
+    // Pares BIDIRECIONAIS (rodada R4): a spec e o XSD usam vocabulário divergente para
+    // o MESMO conceito — "NF-e"→{nf} × "Nfe"→{nfe}; "ICMS Interestadual p/ UF de
+    // destino" (spec) × "ICMS de partilha p/ UF do destinatário" (doc do vICMSUFDest).
     private static readonly Dictionary<string, string[]> Sinonimos = new(StringComparer.Ordinal)
     {
         ["bc"] = ["base", "calculo"],
@@ -47,7 +50,15 @@ public static class SemanticMatcher
         ["cod"] = ["codigo"],
         ["num"] = ["numero"],
         ["perc"] = ["percentual"],
-        ["aliq"] = ["aliquota"]
+        ["aliq"] = ["aliquota"],
+        ["nf"] = ["nfe"],
+        ["nfe"] = ["nf"],
+        ["destino"] = ["destinatario"],
+        ["destinatario"] = ["destino"],
+        ["interestadual"] = ["partilha"],
+        ["partilha"] = ["interestadual"],
+        ["kilos"] = ["kg"],
+        ["kg"] = ["kilos"]
     };
 
     /// <summary>Limiar mínimo de score para aceitar um casamento.</summary>
@@ -56,10 +67,22 @@ public static class SemanticMatcher
     /// <summary>Margem mínima sobre o segundo NOME (evita chute entre irmãos parecidos).</summary>
     public const double MinMargin = 0.08;
 
+    /// <summary>Score de identidade textual (doc do XSD == descrição da spec).</summary>
+    public const double PerfectScore = 0.999;
+
     // Boilerplate recorrente nas xs:documentation que só dilui o casamento
     // ("alterado para aceitar de 0 a 4 casas decimais…", exemplos "ex.: 2012-…").
+    // Rodada R4 — também corta:
+    //   • ENUMERAÇÕES (" 0- Contratação do Frete…", ":0-Pagamento à Vista") — o
+    //     modFrete/CRT/tpIntegra viravam docs de 20+ tokens e a precisão morria
+    //     (score 0.3 < 0.45). Nota: o XsdLeiauteIndex normaliza \n em espaço, então
+    //     o padrão casa " <n>- " ou ":<n>-" no texto plano;
+    //   • guidance de preenchimento ("Esta tag poderá ser omitida…", "Deve ser
+    //     informado quando…") — cauda do vPag/vIPIDevol que diluía o casamento.
     private static readonly Regex Boilerplate = new(
-        @"(alterado para aceitar.*$)|(alter[aá]vel se necess[aá]rio.*$)|(\bex\.?\s*:\s.*$)",
+        @"(alterado para aceitar.*$)|(alter[aá]vel se necess[aá]rio.*$)|(\bex\.?\s*:\s.*$)"
+        + @"|(\s\d+\s*[-–—]\s.*$)|(:\s*\d+\s*[-–—].*$)"
+        + @"|(\besta tag poder[aá]\b.*$)|(\bdeve(r[aá])? ser informad\w*\b.*$)",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.Singleline);
 
     /// <summary>
@@ -80,6 +103,12 @@ public static class SemanticMatcher
                 foreach (var s in syns)
                     if (!result.Contains(s)) result.Add(s);
         }
+        // Sinônimo COMPOSTO (R4): a spec escreve "Base Calculo", o XSD abrevia
+        // "BC" — a expansão bc→{base,calculo} só cobre o sentido doc→spec; aqui
+        // cobre-se o inverso ("modBC" empatava com "modBCST" por causa do 'bc'
+        // órfão na doc e o margin matava os dois).
+        if (result.Contains("base") && result.Contains("calculo") && !result.Contains("bc"))
+            result.Add("bc");
         return result;
     }
 
@@ -144,7 +173,13 @@ public static class SemanticMatcher
 
         if (best.Node is null || best.Score < minScore) return null;
         var margin = best.Score - second;
-        if (margin < minMargin) return null;
+        // Resgate por IDENTIDADE (R4): score ≈ 1.0 significa que a doc do nó é
+        // TEXTUALMENTE a própria descrição da spec — não é chute, e a margem só
+        // se exige quando o vice também é (quase) idêntico (ambiguidade real).
+        // Caso concreto: vFCPST (doc == descrição, 1.0) × vFCPSTRet (0.97) tinha
+        // margem 0.03 < 0.08 e o ref #331.01 ficava NÃO-resolvido.
+        var identidade = best.Score >= PerfectScore && second < PerfectScore;
+        if (margin < minMargin && !identidade) return null;
         return new SemanticMatch(best.Node, best.Score, margin, best.Ties);
     }
 

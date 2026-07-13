@@ -19,9 +19,12 @@ public sealed class XsdValidator
 
         try
         {
-            var schemas = new XmlSchemaSet();
-            // targetNamespace nulo: XSD do demo não tem namespace (como o gabarito).
+            // Resolver explícito: sem ele os xs:include/xs:import do leiaute SEFAZ
+            // (leiauteNFe/tiposBasico/xmldsig) não carregam → "TNFe is not declared".
+            var schemas = new XmlSchemaSet { XmlResolver = new XmlUrlResolver() };
+            // targetNamespace nulo: lido do próprio schema (demo sem ns; SEFAZ com ns).
             schemas.Add(targetNamespace: null, schemaUri: xsdPath);
+            schemas.Compile();
 
             var settings = new XmlReaderSettings
             {

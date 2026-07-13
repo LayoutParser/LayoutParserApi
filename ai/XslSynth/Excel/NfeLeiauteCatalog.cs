@@ -108,6 +108,17 @@ public sealed class NfeLeiauteCatalog : INfeLeiauteCatalog
         ("Z", "infNFe/infAdic")
     ];
 
+    // Aliases VERIFICADOS (#ref → sufixo de XPath sob infNFe) — calibração manual,
+    // papel legítimo do catálogo (R4). Só para refs cuja xs:documentation NÃO
+    // carrega semântica casável: a definição do indTot vive DENTRO da enumeração
+    // da doc ("1 – o valor do item compõe o valor total da NF-e"), que o strip de
+    // enum do SemanticMatcher remove. Validado no gabarito real (indTot=1) e
+    // contra o XSD em runtime — path inexistente é ignorado (nunca inventa).
+    private static readonly (string Ref, string Sufixo)[] AliasesVerificados =
+    [
+        ("116b", "det/prod/indTot")
+    ];
+
     /// <summary>Janela máxima (em números) para interpolação por ordem.</summary>
     private const int MaxJanelaInterp = 25;
 
@@ -210,9 +221,17 @@ public sealed class NfeLeiauteCatalog : INfeLeiauteCatalog
         {
             if (!int.TryParse(w.Key, out var n)) continue;
             var (prev, next) = Bracket(pins, n);
-            var candidates = prev is not null && next is not null
-                ? Window(leafNodes, prev.Value.Order, next.Value.Order)
-                : leafNodes;
+            // R4: bracket UNILATERAL usa meia-janela — a numeração é monotônica,
+            // então #n > último pin só pode viver DEPOIS dele no documento (e
+            // vice-versa). O fallback global elegia homônimos de outra região
+            // (ex.: #365 'Sigla da UF' caía no enderEmit/UF em vez do transporta/UF).
+            var candidates = (prev, next) switch
+            {
+                (not null, not null) => Window(leafNodes, prev.Value.Order, next.Value.Order),
+                (not null, null) => Window(leafNodes, prev.Value.Order, int.MaxValue),
+                (null, not null) => Window(leafNodes, -1, next.Value.Order),
+                _ => leafNodes
+            };
             w.Semantic = BestSemantic(w, candidates, idf);
 
             if (w.Key == debugRef)
@@ -247,6 +266,25 @@ public sealed class NfeLeiauteCatalog : INfeLeiauteCatalog
             w.Semantic = BestSemantic(w, candidates, idf)
                       ?? BestSemantic(w, leafNodes, idf, minScore: 0.55);   // fallback global, limiar maior
             results[w.Key] = Combine(w, xsd);
+        }
+
+        // ── 7b. Aliases verificados (sobrepõem a resolução do ref) ───────────
+        foreach (var (aliasRef, sufixo) in AliasesVerificados)
+        {
+            if (!works.TryGetValue(aliasRef, out var wa)) continue;
+            var node = xsd.Nodes.FirstOrDefault(x =>
+                !x.IsGroup && !x.IsAttribute
+                && x.XPath.EndsWith("/infNFe/" + sufixo, StringComparison.Ordinal));
+            if (node is null)
+            {
+                log?.Invoke($"   [aviso] alias #{aliasRef} → {sufixo} não existe no XSD — ignorado.");
+                continue;
+            }
+            results[aliasRef] = new CatalogResolution(
+                aliasRef, wa.Categoria, node.XPath, node.TypeName, node.Occurs,
+                SinalResolucao.XsdOrder, NivelConfianca.Alta, ForaDoXsd: false,
+                wa.Fields.Count, wa.Descricao(),
+                "alias verificado do catálogo (doc do XSD sem semântica casável)");
         }
 
         // ── 8. Esquema MOC (B25c, YA04, R07…): semântica na subárvore do grupo ─
@@ -711,7 +749,13 @@ public sealed class NfeLeiauteCatalog : INfeLeiauteCatalog
         var best = ranked[0];
         var second = ranked.Count > 1 ? ranked[1].Value.Max : 0;
         if (best.Value.Max < SemanticMatcher.MinScore) return null;
-        if (best.Value.Max - second < SemanticMatcher.MinMargin) return null;
+        // Resgate por IDENTIDADE (R4, mesmo racional do SemanticMatcher.Best):
+        // score ≈ 1.0 = doc textualmente igual à descrição — a margem só se
+        // exige quando o vice também é quase idêntico (modBC 1.0 × modBCST 0.95
+        // tinha margem 0.05 e o multi-ref do choice ICMS ficava sem modBC).
+        var identidade = best.Value.Max >= SemanticMatcher.PerfectScore
+            && second < SemanticMatcher.PerfectScore;
+        if (best.Value.Max - second < SemanticMatcher.MinMargin && !identidade) return null;
 
         // Curinga só faz sentido se as variantes compartilham o avô (prefixo comum + 2 níveis).
         var nodes = best.Value.Nodes;
