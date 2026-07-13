@@ -345,6 +345,108 @@ Etapa A; as demais variantes ficam estruturadas mas só são exercitadas quando 
 runner Sysmiddle (retomar DEPOIS — a instância FiatMQ em `.claude/tmp/servidor/fiatmq/Instance_FiatMQ` vira fonte de
 gabaritos em lote; o `FiatMQ_Instance_FiatMQ.exe.config` deve revelar o bootstrap de licença).
 
+### 7.6 Rodada 1 do `--generate` (2026-07-11) — diagnóstico dos 59 diffs
+
+Pipeline roda ponta-a-ponta: **A1 ✅** (ROOT 59 registros, spot-check 4/4), **A2 parcial** (XSL compila e aplica; 404
+folhas de 712; XSD-validator com bug de wiring), **A3 = 59 diffs**. Comparação estrutural gerado×gabarito
+(`ide/dest/total/ICMSTot/det`) prova que o cascata `[NOME]` = **conjunto de elementos difere**, não ordem. Causas-raiz,
+priorizadas por alavancagem:
+
+| # | Causa-raiz | Evidência | Dono | Fix |
+|---|-----------|-----------|------|-----|
+| R1 | **Opcionais vazios NÃO omitidos** (SOBRA) | `dest/idEstrangeiro`, `det/impostoDevol`, `det/DFeReferenciado`, `cobr/fat/vLiq` gerados mas ausentes no gabarito | Dex | aplicar §7.3.4 (`xsl:if` não-vazio) em TODO campo opcional; tratar o choice CNPJ/CPF/idEstrangeiro |
+| R2 | **Catálogo DESCARTOU campos legítimos** (FALTA) | `ICMSTot/{vPIS,vCOFINS,vOutro,vNF,vFCPST,vICMSUFDest}` — a heurística de região do `NfeLeiauteCatalog` marcou "det≠total" e descartou (`#338 vPIS…descartado`) | Lia | relaxar o descarte por região para destinos `total/ICMSTot/*` (mesma folha, região total é válida) |
+| R3 | **`det/@nItem` emitido como ELEMENTO** em vez de atributo | gerado `<det><nItem>` ; gabarito `<det nItem="1">` | Dex | XslGenerator: refs cujo XSD-node é `xs:attribute` viram `xsl:attribute`, não elemento |
+| R4 | **Campos derivados/não resolvidos** (FALTA) | `ide/{cNF,tpEmis,procEmi}`, `emit/CRT`, `pag/detPag/vPag`, `compra`, `transp/vol` | Lia+Dex | resolver os diretos que faltaram (ex.: `#26 tpEmis`) + regra p/ derivados da chave (`cNF/cDV` = substring da Chave-Acesso) |
+| R5 | **Formato decimal** | `vICMSDeson` gerado `0.0` vs `0.00` | Dex | `format-number` com casas da coluna Decimais/tipo XSD (não `0.0#`) |
+| R6 | **XSD-validator wiring** | `Type TNFe is not declared` | Dex | carregar o SCHEMA SET (leiaute + `tiposBasico`+includes do dir), não o `.xsd` isolado |
+
+**Leitura de arquiteto:** R1+R2 sozinhos devem colapsar a maioria dos 59 (SOBRA e FALTA em `ide/total/dest/det`). R3
+é estrutural pontual. R4 são ~8 campos nominais. R5/R6 triviais. **Nenhum diff indica falha de abordagem** — o gerador
+está correto; faltam refinamentos determinísticos. Próxima rodada mira colapsar `ide`, `dest`, `total`, `det` primeiro.
+
+**Estado dos gates:** A1 ✅ · A2 🟡 (compila/aplica; XSD-wiring R6) · A3 ❌ 59 (alvo: iterar R1→R6).
+
+### 7.7 Rodadas 2–7 (2026-07-11, arquiteto no loop `--generate`) — 59 → **20 divergências REAIS**
+
+Iteração determinística com o diff colapsando a cada fix (o gate posicional acusa 46 por CASCATA; o **set-diff honesto
+por path dá 20**). Fixes aplicados (todos documentados em comentário no código):
+
+| Fix | O quê | Efeito |
+|---|---|---|
+| R1a | Choice escalar (CNPJ\|CPF\|idEstrangeiro) → `xsl:choose`, zeros-only = vazio | mata SOBRA `idEstrangeiro` |
+| R1b | `EmbrulharGruposOpcionais` agora DESCE por `for-each`/`if`/`choose` + `RemoverCascasVazias` | mata cascas `impostoDevol`/`DFeReferenciado` |
+| R2 | Reancoragem por afinidade de bloco — **só blocos não-det** (na região det inunda `prod/*`) | `ICMSTot` ganha `vPIS/vCOFINS/vOutro` |
+| R3 | Folha que é ATRIBUTO no XSD → descartada (atributos têm regra própria) | mata `<nItem>` elemento |
+| R5 | Corte decimal pela largura REAL (`translate`+`string-length`) | mata `0.0 ` com padding |
+| R6 | `XsdValidator` com `XmlUrlResolver`+`Compile` (schema-set completo) | oráculo XSD funcional (23→13 erros) |
+| F10 | Decimais da spec é RANGE (`0-4`,`11v0-4`) → último número; **tipo XSD manda** (`TDec_0302a04`→2, `TDec_1104v`→4) | `qCom 6.0000` ✅, `pICMS 0.00` ✅ |
+| F8 | No det, decimal OPCIONAL zerado é omitido; zero-omit por PREFIXO de tipo | mata SOBRAs `prod/vFrete…`, `qUnid` |
+| F9 | Grupos especializados de produto (veicProd/med/comb/DI…) sem driver de variante → descarte honesto | mata SOBRAs `DI`/`comb` (posições sobrepostas) |
+| F11 | `infCpl` = concat LINHA081 ("Informações **para EDI**", pulando campos de controle) | `infCpl` idêntico ao gabarito ✅ |
+
+**Fechados 100%:** `det/prod`, `det/imposto` (ICMS00+IPITrib+PIS/COFINS), `dest`, `infAdic/infCpl`, decimais.
+
+**Restam 20 (inventário honesto):**
+- **11 FALTA → R4 (Lia, domínio/catálogo):** `ide/{cNF,tpEmis,procEmi}` + `cDV` TEXTO (deriváveis da CHAVE DE ACESSO:
+  cUF|AAMM|CNPJ|mod|serie|nNF|tpEmis|cNF|cDV; procEmi=constante), `emit/CRT` (#49a), `det/prod/indTot` (#116b),
+  `pag/detPag/vPag`, `ICMSTot/{vFCPST,vICMSUFDest,vNF}` (refs não resolvidos p/ LINHA050), `transp/modFrete` (#357),
+  `transporta/UF`.
+- **8 SOBRA → Etapa B (emissão guiada pelo MAPEADOR):** `retTrib/*` (7) e `cobr/fat/vLiq` — zeros que o mapeador FiatMQ
+  omite mas `fat/vOrig,vDesc` (também zeros) ele emite. Não derivável de spec/XSD → o filtro definitivo é o conjunto de
+  targets do MapperVO real (que já parseamos no XslSynth). **Insight-chave da Etapa B: usar os 237 links + 98 regras do
+  mapeador como máscara de emissão.**
+
+**Nota p/ visão autônoma (Ollama):** `generated-notes.txt` (decisões/descartes) + o set-diff por path são exatamente os
+sinais de feedback que o loop autônomo dará ao LLM local — o trilho determinístico está pronto; o LLM entra como
+operador das exceções.
+
+### 7.8 Rodada 8 — R4 (2026-07-12, Lia) — **FALTA=0 e TEXTO=0** ✅
+
+As 12 FALTA/TEXTO zeraram. Gate agora é o **set-diff por path** (novo no relatório A3 do `Program.cs`:
+multiconjuntos de folhas/atributos por caminho completo — FALTA/SOBRA por contagem, TEXTO por par ordinal;
+o diff posicional vira detalhe, pois infla por cascata).
+
+| Fix | O quê | Matou |
+|---|---|---|
+| T1 | **Derivação da CHAVE DE ACESSO** (`XslGenerator.EmitirDerivadosDaChave`): leiaute fixo cUF(2)AAMM(4)CNPJ(14)mod(2)serie(3)nNF(9)tpEmis(1)cNF(8)cDV(1) → `tpEmis/cNF/cDV` por substring + `procEmi`='0'; especial VENCE usos normais (dedup padrão infCpl) | `ide/{cNF,tpEmis,procEmi}` FALTA + `cDV` TEXTO |
+| T2a | **Strip de enumerações/guidance** nas `xs:documentation` (`SemanticMatcher.Boilerplate`): " 0- Contratação…", ":0-Pagamento…", "Esta tag poderá ser omitida…", "Deve ser informado…" diluíam a precisão (vPag score 0.35 < 0.45) | `emit/CRT` (#49a), `transp/modFrete` (#357), `pag/detPag/vPag` (#398c) |
+| T2b | **Sinônimos bidirecionais de domínio**: `nf↔nfe` ("NF-e"→{nf} × "Nfe"→{nfe}), `destino↔destinatario` + `interestadual↔partilha` (doc do vICMSUFDest = "ICMS de partilha p/ UF do destinatário"), `kilos↔kg`, composto `base+calculo→bc` | `ICMSTot/vNF` (#341), `ICMSTot/vICMSUFDest` (#329.05), `vol/pesoL` (#386), `modBC` |
+| T2c | **Resgate por identidade** (score ≥ 0.999 = doc textualmente igual à descrição → margem só se o vice também for idêntico) em `Best` e `BestSemanticByName` | `ICMSTot/vFCPST` (#331.01: 1.0 × vFCPSTRet 0.97, margem 0.03), `modBC` multi-ref (1.0 × modBCST 0.95) |
+| T2d | **Meia-janela no bracket unilateral** (numeração monotônica: #n > último pin vive DEPOIS dele; fallback global elegia homônimo de outra região) | `transporta/UF` (#365: caía no enderEmit/UF e perdia o dedup p/ #41) |
+| T2e | **Alias verificado** `#116b → det/prod/indTot` (único caso: a semântica vive DENTRO da enumeração da doc, que o strip remove) — validado contra XSD em runtime, nunca inventa path | `det/prod/indTot` |
+| T2f | Curinga `IPI/*/CST` reconhecido como região IPI (docs de IPITrib/CST e IPINT/CST ficam idênticas após o strip → multi-ref vira curinga) | regressão: IPITrib inteiro sumia (driver CST perdido) |
+| T2g | `EmbrulharGruposOpcionais` com coleta RECURSIVA de testes (grupos 1-1 intermediários são atravessados) | regressão: casca `<impostoDevol><IPI/></impostoDevol>` |
+
+**Estado (par real):** set-diff `FALTA=0, TEXTO=0, SOBRA=8` (retTrib×7 + `cobr/fat/vLiq` — **Etapa B**, máscara do
+mapeador). Diff posicional: 2 (os próprios grupos SOBRA). **XSD (elemento NFe): 7 erros**, TODOS das SOBRAs
+(`TDec_1302Opc` proíbe `0.00` em opcional — colapsam quando a Etapa B suprimir o retTrib); era 13.
+Catálogo: **62 Alta / 400 Média / 166 não-resolvidos** (era 55/383/190); cobertura **509/712 campos (71,5%)**;
+âncoras 9/9 ✅. Gates: A1 ✅ · A2 ✅ (compila, aplica; XSD 7 erros = Etapa B) · **R4 ✅** · A3 pleno = Etapa B.
+
+### 7.9 🎯 MARCO — Etapa B1 (2026-07-11): **diff==0 no `<infNFe>` + XSD VÁLIDO**
+
+```
+[A3] set-diff por path <infNFe>: FALTA=0, SOBRA=0, TEXTO=0
+     XSD (elemento NFe): VÁLIDO ✅ (resta só a assinatura — esperado, a PoC não assina)
+```
+
+**O pipeline determinístico Excel→TCL→ROOT→XSL reproduz o `<infNFe>` do mapeador de produção IDENTICAMENTE
+e a saída valida no XSD da SEFAZ.** Zero LLM em runtime.
+
+Como as 8 SOBRAs caíram — **`MapperEmissionGuide`** (`ai/XslSynth/Excel/MapperEmissionGuide.cs`): as regras DSL do
+mapeador real têm guarda ANINHADA que spec/XSD não expressam — `if(IsNullOrEmpty(#.x)!=True()) begin if(#.x != 0)
+begin T.path = … end end` (retTrib/*, cobr/fat/vLiq). O guia varre as 98 regras, extrai os destinos com guarda `!= 0`
+(11 no total) e o XslGenerator troca o teste desses destinos para `number(...) > 0`. **Seguro por construção: só
+aperta testes.** Degrade gracioso sem o MapperVO. Descobertas: typo real do mapeador `vBCIRRFL` (tolerância de 1 char
+por pai igual) e variáveis DSL com ACENTOS (`#.valorRetençãoPrevidencia` → regex `\w` Unicode, não `[A-Za-z0-9_]`).
+
+**Documento COMPLETO (enviNFe): SOBRA=0, TEXTO=0, FALTA=18** — todas na camada proprietária:
+16 filhos de `dadosAdic` (B2BDirectory, PrinterKey, bloco290, vlr*ST '0,00' pt-BR…) + `idLote` + `indSinc`.
+**Etapa B2 (próximo incremento):** todos os 18 são dirigidos por REGRAS do mapeador (ex.: `Rule_vlrCOFINSST`) —
+traduzir com o `DslBlockInterpreter` já existente + fontes de controle (`#XML=NA`). Depois: **runner (passo 3)** —
+descompilar o stub `FiatMQ_Instance_FiatMQ.exe` (6 KB) e fazer da Instance_FiatMQ a fábrica de gabaritos em lote.
+
 ## 8. Divisão de trabalho
 
 - **@lp-parser-llm (Lia):** `ExcelSpecParser`, `NfeLeiauteCatalog` (domínio do leiaute/NT), resolução semântica, RAG.

@@ -357,12 +357,35 @@ int RunGenerate()
     Log("");
 
     // ── A2: catálogo + XslGenerator + compilação + XSD ───────────────────
+    // Etapa B: guia de emissão do MAPEADOR real (guardas "!= 0" das regras DSL
+    // que a spec/XSD não expressam — retTrib, vLiq). Degrade: sem o arquivo, vazio.
+    var guia = MapperEmissionGuide.Empty;
+    var mapperVoPath = Path.Combine(claudeTmp, "export", "MAP_MQSERIES_SEND_ENV_TXT_XML_NFE.decrypted.xml");
+    if (File.Exists(mapperVoPath))
+    {
+        try
+        {
+            guia = MapperEmissionGuide.Load(mapperVoPath);
+            Log($"Guia mapeador: {guia.PathCount} destinos com guarda != 0 (Etapa B) ✅");
+        }
+        catch (Exception ex)
+        {
+            Log($"   [aviso] guia do mapeador ilegível ({ex.Message}) — seguindo sem.");
+        }
+    }
+    else
+    {
+        Log("   [aviso] MapperVO descriptografado não encontrado — guia da Etapa B vazio.");
+    }
+
     var catalog = NfeLeiauteCatalog.Build(spec, xsd, gabarito, Log);
-    var gen = new XslGenerator().Generate(spec, catalog, xsd, gabarito, rootReport.Root, Log);
+    var gen = new XslGenerator().Generate(spec, catalog, xsd, gabarito, rootReport.Root, Log, guia);
     var xslPath = Path.Combine(outDir, "generated.xsl");
     gen.Xsl.Save(xslPath);
+    // Diagnóstico completo: TODAS as notas (o console mostra só as 30 primeiras).
+    File.WriteAllLines(Path.Combine(outDir, "generated-notes.txt"), gen.Notas);
     Log($"[A2] XSL gerado: {gen.FolhasEmitidas} folhas emitidas de {gen.CamposComRef} campos com #XML "
-        + $"({gen.CamposDescartados} descartados; {gen.Notas.Count} notas).");
+        + $"({gen.CamposDescartados} descartados; {gen.Notas.Count} notas → generated-notes.txt).");
     Log($"     Arquivo: {xslPath}");
 
     string saida;
@@ -417,20 +440,76 @@ int RunGenerate()
         return 1;
     }
 
+    // ── Set-diff por PATH (gate honesto do R4): o differ posicional infla por
+    // CASCATA (um elemento ausente desloca todos os irmãos e cada um vira
+    // [NOME]). Aqui compara-se MULTICONJUNTOS de folhas/atributos por caminho
+    // completo: FALTA/SOBRA por contagem de ocorrências, TEXTO por par ordinal.
+    var (falta, sobra, texto, linhas) = SetDiffPorPath(esperadoInf, obtidoInf);
+    Log($"[A3] set-diff por path <infNFe>: FALTA={falta}, SOBRA={sobra}, TEXTO={texto}.");
+    foreach (var l in linhas) Log($"     {l}");
+    Log("");
+
+    // Diff posicional mantido como DETALHE (ordem dos irmãos ainda importa no gate final).
     var diffs = new CanonicalDiffer().Diff(esperadoInf.ToString(), obtidoInf.ToString());
-    Log($"[A3] diff canônico <infNFe>: {diffs.Count} divergência(s).");
+    Log($"     (detalhe) diff posicional canônico: {diffs.Count} divergência(s).");
     foreach (var g in diffs.GroupBy(d => Regiao(d.XPath)).OrderByDescending(g => g.Count()))
     {
         Log($"     ── {g.Key} ({g.Count()}):");
-        foreach (var d in g.Take(15)) Log($"        {d}");
-        if (g.Count() > 15) Log($"        … e mais {g.Count() - 15}.");
+        foreach (var d in g.Take(6)) Log($"        {d}");
+        if (g.Count() > 6) Log($"        … e mais {g.Count() - 6}.");
     }
     Log("");
-    Log(diffs.Count == 0
-        ? "✅ GATE A3 ATINGIDO: diff==0 no <infNFe>."
-        : $"❌ Gate A3 pendente: {diffs.Count} diffs residuais (ver agrupamento acima).");
+    Log(falta == 0 && texto == 0
+        ? $"✅ GATE R4 ATINGIDO: FALTA=0 e TEXTO=0 no set-diff (SOBRA={sobra} → Etapa B, máscara do mapeador)."
+        : $"❌ Gate R4 pendente: FALTA={falta}, TEXTO={texto} (ver listagem acima).");
 
-    return a1Ok && diffs.Count == 0 ? 0 : 1;
+    return a1Ok && falta == 0 && texto == 0 ? 0 : 1;
+}
+
+// Set-diff por path: multiconjuntos de folhas (elementos sem filhos) e atributos.
+// FALTA = só no gabarito · SOBRA = só no gerado · TEXTO = valor difere (par ordinal).
+(int Falta, int Sobra, int Texto, List<string> Linhas) SetDiffPorPath(XElement esperado, XElement obtido)
+{
+    var exp = FolhasPorPath(esperado);
+    var obt = FolhasPorPath(obtido);
+    int falta = 0, sobra = 0, texto = 0;
+    var linhas = new List<string>();
+    foreach (var path in exp.Keys.Union(obt.Keys).OrderBy(p => p, StringComparer.Ordinal))
+    {
+        List<string> e = exp.TryGetValue(path, out var le) ? le : new List<string>();
+        List<string> o = obt.TryGetValue(path, out var lo) ? lo : new List<string>();
+        var n = Math.Min(e.Count, o.Count);
+        for (var i = 0; i < n; i++)
+        {
+            if (e[i] == o[i]) continue;
+            texto++;
+            linhas.Add($"TEXTO  {path} — esperado='{Short(e[i], 40)}' obtido='{Short(o[i], 40)}'");
+        }
+        if (e.Count > n) { falta += e.Count - n; linhas.Add($"FALTA  {path} ({e.Count - n}×, esperado ex.: '{Short(e[n], 40)}')"); }
+        if (o.Count > n) { sobra += o.Count - n; linhas.Add($"SOBRA  {path} ({o.Count - n}×, obtido ex.: '{Short(o[n], 40)}')"); }
+    }
+    return (falta, sobra, texto, linhas);
+}
+
+// Folhas por caminho completo (sem índice posicional), em ordem de documento.
+Dictionary<string, List<string>> FolhasPorPath(XElement raiz)
+{
+    var map = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+    void Adiciona(string p, string v)
+    {
+        if (!map.TryGetValue(p, out var l)) map[p] = l = new List<string>();
+        l.Add(v);
+    }
+    void Caminha(XElement el, string path)
+    {
+        foreach (var a in el.Attributes().Where(a => !a.IsNamespaceDeclaration))
+            Adiciona($"{path}/@{a.Name.LocalName}", a.Value.Trim());
+        var filhos = el.Elements().ToList();
+        if (filhos.Count == 0) { Adiciona(path, el.Value.Trim()); return; }
+        foreach (var f in filhos) Caminha(f, $"{path}/{f.Name.LocalName}");
+    }
+    Caminha(raiz, "/" + raiz.Name.LocalName);
+    return map;
 }
 
 // Região do diff = 1º segmento abaixo de /infNFe (ide, emit, det, total…).

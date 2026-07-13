@@ -76,11 +76,18 @@ public sealed class XslGenerator
     private static readonly HashSet<string> ZeroOmitTypes = new(StringComparer.Ordinal)
         { "TDec_1104", "TDec_1204" };
 
+    // Grupos especializados do produto (variantes por TIPO de produto — as posições
+    // da spec se sobrepõem entre eles). Sem driver de variante → descarte (Etapa B).
+    private static readonly System.Text.RegularExpressions.Regex EspecializadoProd = new(
+        @"/prod/(veicProd|med|arma|comb|DI|detExport|rastro|nRECOPI|infProdNFF|infProdEmb|gCred|gAgropecuario)/",
+        System.Text.RegularExpressions.RegexOptions.Compiled);
+
     private readonly List<string> _notas = new();
     private int _descartados;
 
     private XsdLeiauteIndex _xsd = null!;
     private XDocument _rootTree = null!;
+    private MapperEmissionGuide _guia = MapperEmissionGuide.Empty;
 
     public XslGenReport Generate(
         SpecModel spec,
@@ -88,10 +95,12 @@ public sealed class XslGenerator
         XsdLeiauteIndex xsd,
         NfeGabarito? gabarito,
         XDocument rootTree,
-        Action<string>? log = null)
+        Action<string>? log = null,
+        MapperEmissionGuide? guia = null)
     {
         _xsd = xsd;
         _rootTree = rootTree;
+        _guia = guia ?? MapperEmissionGuide.Empty;
         _notas.Clear();
         _descartados = 0;
 
@@ -124,11 +133,17 @@ public sealed class XslGenerator
         var det = new List<Emissao>();
 
         // Especiais primeiro: infCpl (§7.3.5) DEDUPLICA a lista de folhas antes
-        // da montagem; o atributo Id vem da chave de acesso (44 chars).
+        // da montagem; o atributo Id vem da chave de acesso (44 chars); e R4/T1:
+        // tpEmis/cNF/cDV/procEmi derivados da MESMA chave (vencem usos normais).
         var infCpl = EmitirInfCpl(spec, folhas);
         if (infCpl is not null) topo.Add(infCpl);
         var id = EmitirAtributoId(spec, detBlocks);
         if (id is not null) topo.Add(id);
+        topo.AddRange(EmitirDerivadosDaChave(spec, detBlocks, folhas));
+
+        // Choices ESCALARES fora do det (dest/emit/transporta: CNPJ|CPF|idEstrangeiro):
+        // agrupadas por pai e emitidas como UM xsl:choose (R1 — rodada 1 §7.6).
+        var choicesEscalares = new Dictionary<string, List<(Uso U, XsdLeiauteNode N)>>(StringComparer.Ordinal);
 
         foreach (var u in folhas)
         {
@@ -137,12 +152,46 @@ public sealed class XslGenerator
                 Nota($"#{u.F.XmlRef}: destino '{u.Path}' não é folha do XSD — descartado.");
                 continue;
             }
+            if (node.IsAttribute)
+            {
+                // R3: atributo (det/@nItem, infNFe/@Id) tem regra própria — nunca vira elemento.
+                Nota($"#{u.F.XmlRef}: destino '{u.Path}' é ATRIBUTO no XSD (coberto por regra própria) — descartado.");
+                _descartados++;
+                continue;
+            }
             var scopeDet = u.Path.StartsWith(DetPath + "/", StringComparison.Ordinal);
+            if (scopeDet && EspecializadoProd.IsMatch(u.Path))
+            {
+                // Grupos ESPECIALIZADOS do produto (veículo/medicamento/combustível/
+                // DI/export…): variantes que COMPARTILHAM posições na spec — sem o
+                // driver do tipo de produto viram ruído. Descarte honesto (Etapa B).
+                Nota($"#{u.F.XmlRef}: grupo especializado de produto ('{u.Path}') sem driver de variante — descartado (Etapa B).");
+                _descartados++;
+                continue;
+            }
+            if (node.InChoice && !scopeDet)
+            {
+                var pai = ParentOf(u.Path);
+                if (!choicesEscalares.TryGetValue(pai, out var lista))
+                    choicesEscalares[pai] = lista = new List<(Uso, XsdLeiauteNode)>();
+                lista.Add((u, node));
+                continue;
+            }
             var sel = scopeDet ? SelDet(u, masterDet) : SelTop(u);
-            var (expr, test) = ValorETeste(u.F, node, sel);
+            var (expr, test) = ValorETeste(u.F, node, sel, scopeDet);
+            // Etapa B: guia do MAPEADOR — destino com guarda "!= 0" na regra DSL
+            // real só emite com valor > 0 (retTrib, cobr/fat/vLiq…). Só APERTA o
+            // teste; NaN (vazio) e zeros ficam de fora, como no gabarito.
+            if (_guia.ExigeNaoZero(u.Path))
+            {
+                test = $"number(translate({sel},' ','')) > 0";
+                Nota($"#{u.F.XmlRef}: guia do mapeador — '{LeafName(u.Path)}' só emite com valor != 0 (Etapa B).");
+            }
             var conteudo = new XElement(node.Name, ValueOf(expr));
             (scopeDet ? det : topo).Add(new Emissao(node.Order, ParentOf(u.Path), conteudo, test));
         }
+
+        topo.AddRange(EmitirChoicesEscalares(choicesEscalares));
 
         // Choices de imposto (dentro do escopo det).
         det.AddRange(EmitirChoices(membros, masterDet));
@@ -177,6 +226,9 @@ public sealed class XslGenerator
 
         // Grupos OPCIONAIS com todos os filhos condicionais → xsl:if com OR.
         EmbrulharGruposOpcionais(enviNFe, "enviNFe");
+
+        // R1b: remove cascas (grupos literais que sobraram só com comentários de gap).
+        RemoverCascasVazias(enviNFe);
 
         var doc = new XDocument(
             new XElement(Xs + "stylesheet",
@@ -319,6 +371,17 @@ public sealed class XslGenerator
                 u.Path = $"{ImpostoPath}/ICMS/*/{leaf}";
                 result.Add(u);
             }
+            else if (!u.DetBlock && candidatos.Count > 1
+                     && MelhorPorAfinidade(candidatos, usos, u) is { } eleito)
+            {
+                // R2 (rodada 1 §7.6): homônimos de TOTAIS (vPIS em ICMSTot × ISSQNtot) →
+                // vence o pai com mais destinos do MESMO bloco. SÓ para blocos não-det:
+                // na região det a afinidade inunda prod/* com campos que o dedup por
+                // valor então elege errado (regressão da rodada 2: qCom cru, SOBRA DI/comb).
+                Nota($"#{u.F.XmlRef}: reancorado por afinidade de bloco ({u.Path} → {eleito.XPath}).");
+                u.Path = eleito.XPath;
+                result.Add(u);
+            }
             else
             {
                 Nota($"#{u.F.XmlRef}: região do bloco ({(u.DetBlock ? "det" : "não-det")}) "
@@ -368,8 +431,12 @@ public sealed class XslGenerator
         var rel = path[(ImpostoPath.Length + 1)..];
 
         if (rel.StartsWith("ICMS/", StringComparison.Ordinal)) return Regiao.Icms;
+        // Inclui o CURINGA "IPI/*/CST" (multi-ref IPITrib|IPINT com docs idênticas
+        // após o strip de enum — R4). Folhas DIRETAS do IPI (CNPJProd, cEnq) NÃO
+        // são membros do choice e continuam como folhas normais.
         if (rel.StartsWith("IPI/IPITrib/", StringComparison.Ordinal)
-            || rel.StartsWith("IPI/IPINT/", StringComparison.Ordinal)) return Regiao.Ipi;
+            || rel.StartsWith("IPI/IPINT/", StringComparison.Ordinal)
+            || rel.StartsWith("IPI/*/", StringComparison.Ordinal)) return Regiao.Ipi;
         if (rel.StartsWith("PIS/", StringComparison.Ordinal)) return Regiao.Pis;
         if (rel.StartsWith("COFINS/", StringComparison.Ordinal)) return Regiao.Cofins;
         return null;
@@ -513,7 +580,7 @@ public sealed class XslGenerator
             if (membros.TryGetValue(node.Name, out var u))
             {
                 var sel = SelDet(u, masterDet);
-                var (expr, test) = ValorETeste(u.F, node, sel);
+                var (expr, test) = ValorETeste(u.F, node, sel, scopeDet: true);
                 var folha = new XElement(node.Name, ValueOf(expr));
                 variante.Add(new XElement(Xs + "if", new XAttribute("test", test), folha));
             }
@@ -593,8 +660,15 @@ public sealed class XslGenerator
         {
             foreach (var (f, slug) in TclGenerator.NamedFields(block))
             {
+                // Campos de CONTROLE carregam a descrição do bloco ("Bloco-081 -
+                // Informações para EDI") — não são o conteúdo; pula.
+                if (slug is "Tipo_Registro" or "codigoRegistro") continue;
+
                 var desc = Fold(f.FieldName ?? "");
-                if (!desc.Contains("complementar", StringComparison.OrdinalIgnoreCase)) continue;
+                // "Informações Complementares" OU a convenção FiatMQ "Informações
+                // para EDI" (o bloco repetido 081 alimenta o infCpl no gabarito).
+                if (!desc.Contains("complementar", StringComparison.OrdinalIgnoreCase)
+                    && !desc.Contains("para edi", StringComparison.OrdinalIgnoreCase)) continue;
 
                 // Se algum uso normal já mira infCpl, o especial vence (dedup honesto).
                 folhas.RemoveAll(u =>
@@ -618,30 +692,97 @@ public sealed class XslGenerator
     }
 
     /// <summary>
-    /// Atributo obrigatório infNFe/@Id = 'NFe' + chave de acesso (44 dígitos).
-    /// O campo-chave é o único da spec com Tamanho 44 fora da região det.
+    /// Localiza o campo da CHAVE DE ACESSO na spec: o único com Tamanho 44 e
+    /// 'chave' na descrição, fora da região det. Null se não existir.
     /// </summary>
-    private Emissao? EmitirAtributoId(SpecModel spec, HashSet<string> detBlocks)
+    private static (SpecBlock Block, string Slug)? AcharCampoChave(SpecModel spec, HashSet<string> detBlocks)
     {
-        const string idPath = "enviNFe/NFe/infNFe/@Id";
-        if (!_xsd.TryByPath(idPath, out var node)) return null;
-
         foreach (var block in spec.Blocks.Where(b => !detBlocks.Contains(b.Name)))
         {
             foreach (var (f, slug) in TclGenerator.NamedFields(block))
             {
                 if (f.Tamanho != 44) continue;
                 if (!Fold(f.FieldName ?? "").Contains("chave", StringComparison.OrdinalIgnoreCase)) continue;
-
-                var attr = new XElement(Xs + "attribute", new XAttribute("name", "Id"),
-                    new XElement(Xs + "value-of",
-                        new XAttribute("select", $"concat('NFe', normalize-space(ROOT/{block.Name}/{slug}))")));
-                Nota($"@Id: NFe + {block.Name}/{slug} (campo de 44 chars com 'chave' na descrição).");
-                return new Emissao(node.Order, InfNFePath, attr, Test: null);
+                return (block, slug);
             }
         }
-        Nota("@Id: campo da chave de acesso (44 chars) NÃO encontrado — XSD acusará a falta.");
         return null;
+    }
+
+    /// <summary>
+    /// Atributo obrigatório infNFe/@Id = 'NFe' + chave de acesso (44 dígitos).
+    /// </summary>
+    private Emissao? EmitirAtributoId(SpecModel spec, HashSet<string> detBlocks)
+    {
+        const string idPath = "enviNFe/NFe/infNFe/@Id";
+        if (!_xsd.TryByPath(idPath, out var node)) return null;
+
+        var chave = AcharCampoChave(spec, detBlocks);
+        if (chave is null)
+        {
+            Nota("@Id: campo da chave de acesso (44 chars) NÃO encontrado — XSD acusará a falta.");
+            return null;
+        }
+        var (block, slug) = chave.Value;
+
+        var attr = new XElement(Xs + "attribute", new XAttribute("name", "Id"),
+            new XElement(Xs + "value-of",
+                new XAttribute("select", $"concat('NFe', normalize-space(ROOT/{block.Name}/{slug}))")));
+        Nota($"@Id: NFe + {block.Name}/{slug} (campo de 44 chars com 'chave' na descrição).");
+        return new Emissao(node.Order, InfNFePath, attr, Test: null);
+    }
+
+    // Leiaute FIXO da chave de acesso NF-e (44 dígitos), verificado no gabarito:
+    //   cUF(1-2) AAMM(3-6) CNPJ(7-20) mod(21-22) serie(23-25) nNF(26-34)
+    //   tpEmis(35) cNF(36-43) cDV(44)
+    // Campos de ide deriváveis por substring (R4/T1): posição 1-based p/ XPath.
+    private static readonly (string Leaf, int Inicio, int Tamanho)[] DerivadosDaChave =
+    [
+        ("tpEmis", 35, 1), ("cNF", 36, 8), ("cDV", 44, 1)
+    ];
+
+    /// <summary>
+    /// R4/T1 — campos de ide derivados da CHAVE DE ACESSO: tpEmis/cNF/cDV por
+    /// substring da chave (leiaute fixo acima) e procEmi = constante '0'
+    /// (NF-e emitida por aplicativo do contribuinte — convenção do mapeador).
+    /// O especial VENCE qualquer uso normal nesses destinos (dedup honesto,
+    /// mesmo padrão do infCpl): o cDV vinha de um campo mal-resolvido e saía '0'.
+    /// </summary>
+    private IEnumerable<Emissao> EmitirDerivadosDaChave(
+        SpecModel spec, HashSet<string> detBlocks, List<Uso> folhas)
+    {
+        const string idePath = "enviNFe/NFe/infNFe/ide";
+        var campo = AcharCampoChave(spec, detBlocks);
+        if (campo is null) yield break;
+        var (block, slug) = campo.Value;
+
+        var chave = $"normalize-space(ROOT/{block.Name}/{slug})";
+        var destinos = DerivadosDaChave.Select(d => $"{idePath}/{d.Leaf}")
+            .Append($"{idePath}/procEmi")
+            .ToHashSet(StringComparer.Ordinal);
+
+        // Dedup: o valor derivado da chave é AUTORITATIVO — remove usos normais.
+        folhas.RemoveAll(u =>
+        {
+            var bate = destinos.Contains(u.Path);
+            if (bate) Nota($"#{u.F.XmlRef}: '{u.Path}' coberto pela derivação da chave de acesso (R4/T1).");
+            return bate;
+        });
+
+        foreach (var (leaf, inicio, tamanho) in DerivadosDaChave)
+        {
+            if (!_xsd.TryByPath($"{idePath}/{leaf}", out var node)) continue;
+            var folha = new XElement(node.Name,
+                ValueOf($"substring({chave},{inicio},{tamanho})"));
+            Nota($"{leaf}: substring({block.Name}/{slug},{inicio},{tamanho}) — derivado da chave de acesso.");
+            yield return new Emissao(node.Order, idePath, folha, Test: null);
+        }
+
+        if (_xsd.TryByPath($"{idePath}/procEmi", out var procEmi))
+        {
+            Nota("procEmi: constante '0' (emissão por aplicativo do contribuinte).");
+            yield return new Emissao(procEmi.Order, idePath, new XElement("procEmi", "0"), Test: null);
+        }
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -710,29 +851,122 @@ public sealed class XslGenerator
     /// </summary>
     private void EmbrulharGruposOpcionais(XElement el, string path)
     {
-        foreach (var child in el.Elements()
-                     .Where(c => c.Name.Namespace == XNamespace.None).ToList())
+        foreach (var child in el.Elements().ToList())
         {
+            // Desce por elementos XSL (for-each/if/choose…) SEM avançar o path
+            // literal — senão os grupos do det (impostoDevol, DFeReferenciado…)
+            // nunca são visitados e viram casca vazia (bug da rodada 1 §7.6/R1).
+            if (child.Name.Namespace != XNamespace.None)
+            {
+                EmbrulharGruposOpcionais(child, path);
+                continue;
+            }
+
             var childPath = $"{path}/{child.Name.LocalName}";
             EmbrulharGruposOpcionais(child, childPath);
 
             if (!_xsd.TryByPath(childPath, out var node) || !node.IsGroup) continue;
             if (node.Occurs.StartsWith('1') && !node.InChoice) continue;
 
-            var testes = new List<string>();
-            var todosCondicionais = true;
-            foreach (var c in child.Elements())
-            {
-                if (c.Name == Xs + "if") testes.Add((string)c.Attribute("test")!);
-                else if (c.Name == Xs + "comment") { /* comentário não conta */ }
-                else { todosCondicionais = false; break; }
-            }
-            if (!todosCondicionais || testes.Count == 0) continue;
+            // R4: coleta RECURSIVA — grupos literais intermediários obrigatórios
+            // (ex.: impostoDevol→IPI 1-1) são atravessados; sem isso a casca
+            // <impostoDevol><IPI/></impostoDevol> vazava quando o teste da única
+            // folha (vIPIDevol zerado) não disparava em runtime.
+            var testes = ColetarTestesSeTudoCondicional(child);
+            if (testes is null || testes.Count == 0) continue;
 
             var wrapper = new XElement(Xs + "if",
                 new XAttribute("test", string.Join(" or ", testes.Distinct())));
             child.ReplaceWith(wrapper);
             wrapper.Add(child);
+        }
+    }
+
+    /// <summary>
+    /// Testes de emissão de TODO o conteúdo de um grupo, descendo por grupos
+    /// literais aninhados. Null = existe conteúdo INCONDICIONAL (value-of,
+    /// for-each, texto) em algum nível — o grupo sempre terá conteúdo e não
+    /// deve ser embrulhado.
+    /// </summary>
+    private static List<string>? ColetarTestesSeTudoCondicional(XElement grupo)
+    {
+        var testes = new List<string>();
+        foreach (var n in grupo.Nodes())
+        {
+            switch (n)
+            {
+                case XComment:
+                case XText t when string.IsNullOrWhiteSpace(t.Value):
+                    continue;
+                case XElement el when el.Name == Xs + "if":
+                    testes.Add((string)el.Attribute("test")!);
+                    continue;
+                case XElement el when el.Name == Xs + "choose":
+                    testes.AddRange(el.Elements(Xs + "when")
+                        .Select(w => (string)w.Attribute("test")!));
+                    continue;
+                case XElement el when el.Name.Namespace == XNamespace.None:
+                    var sub = ColetarTestesSeTudoCondicional(el);
+                    if (sub is null) return null;
+                    testes.AddRange(sub);
+                    continue;
+                default:
+                    return null;   // value-of/for-each/texto = conteúdo incondicional
+            }
+        }
+        return testes;
+    }
+
+    /// <summary>
+    /// R1b: pós-passo que remove grupos literais SEM conteúdo real (sobraram só
+    /// comentários de gap) — o gabarito nunca tem elemento vazio (§7.3.4).
+    /// </summary>
+    private static void RemoverCascasVazias(XElement el)
+    {
+        foreach (var child in el.Elements()
+                     .Where(c => c.Name.Namespace == XNamespace.None).ToList())
+        {
+            RemoverCascasVazias(child);
+            var temConteudo = child.Nodes().Any(n =>
+                n is XElement || (n is XText t && !string.IsNullOrWhiteSpace(t.Value)));
+            if (!temConteudo && !child.HasAttributes) child.Remove();
+        }
+    }
+
+    /// <summary>
+    /// R1: choice de folhas ESCALARES (dest/emit/transporta CNPJ|CPF|idEstrangeiro):
+    /// UM xsl:choose na ordem do XSD, escolhendo a 1ª alternativa com conteúdo REAL
+    /// — zeros-only conta como vazio (idEstrangeiro '000…0' não é identificação).
+    /// </summary>
+    private IEnumerable<Emissao> EmitirChoicesEscalares(
+        Dictionary<string, List<(Uso U, XsdLeiauteNode N)>> porPai)
+    {
+        foreach (var (pai, membros) in porPai)
+        {
+            var ordenados = membros.OrderBy(m => m.N.Order).ToList();
+            var testes = new List<string>();
+            var choose = new XElement(Xs + "choose");
+            foreach (var (u, node) in ordenados)
+            {
+                var sel = SelTop(u);
+                var (expr, _) = ValorETeste(u.F, node, sel);
+                var teste = $"translate(normalize-space({sel}), '0', '') != ''";
+                testes.Add(teste);
+                choose.Add(new XElement(Xs + "when", new XAttribute("test", teste),
+                    new XElement(node.Name, ValueOf(expr))));
+            }
+
+            if (ordenados.Count == 1)
+            {
+                // Sem irmão de choice resolvido: emite direto (teste zeros-aware).
+                var (u, node) = ordenados[0];
+                var (expr, _) = ValorETeste(u.F, node, SelTop(u));
+                yield return new Emissao(node.Order, pai,
+                    new XElement(node.Name, ValueOf(expr)), testes[0]);
+                continue;
+            }
+            yield return new Emissao(ordenados[0].N.Order, pai, choose,
+                string.Join(" or ", testes));
         }
     }
 
@@ -745,19 +979,29 @@ public sealed class XslGenerator
     /// Decimais por STRING (sem double); zeros à esquerda por tipo XSD;
     /// datas por máscara; default = normalize-space.
     /// </summary>
-    private static (string Expr, string Test) ValorETeste(SpecField f, XsdLeiauteNode node, string sel)
+    private static (string Expr, string Test) ValorETeste(
+        SpecField f, XsdLeiauteNode node, string sel, bool scopeDet = false)
     {
         var tam = f.Fim - f.Inicio + 1;
 
         // N com decimais: insere o ponto por substring (precisão exata em 10 casas).
-        if (f.Tipo == 'N' && f.Decimais is int d and > 0 && tam > d)
+        // R5: o corte é pela LARGURA REAL (strip de espaços via translate) — slices
+        // com padding (ex.: '00000000000000 ') quebravam o corte fixo da spec.
+        // Rodada 4: o nº de casas vem do TIPO XSD (TDec_0302a04 → 2; TDec_1104v → 4);
+        // a coluna Decimais da spec (range '0-4') é só fallback.
+        var casas = DecimaisDoTipo(node.TypeName) ?? f.Decimais;
+        if (f.Tipo == 'N' && casas is int d and > 0 && tam > d)
         {
-            var intLen = tam - d;
-            var expr = $"concat(format-number(number(substring({sel},1,{intLen})),'0'),"
-                     + $"'.',substring({sel},{intLen + 1},{d}))";
-            var test = ZeroOmitTypes.Contains(node.TypeName)
-                ? $"number({sel}) > 0"                     // quantidade zero = não informado
-                : $"normalize-space({sel}) != ''";         // 0.00 monetário é emitido
+            var v = $"translate({sel},' ','')";
+            var expr = $"concat(format-number(number(concat('0',substring({v},1,string-length({v})-{d}))),'0'),"
+                     + $"'.',substring({v},string-length({v})-{d}+1,{d}))";
+            // Convenção do gabarito: no ITEM (det) o decimal OPCIONAL zerado é
+            // OMITIDO (prod/vFrete, vSeg…); nos totais/transp o 0.00 é emitido.
+            // Zero-omit por PREFIXO de tipo (TDec_1204v ≠ match exato — rodada 4).
+            var zeroOmit = ZeroOmitTypes.Any(t => node.TypeName.StartsWith(t, StringComparison.Ordinal));
+            var test = zeroOmit || (scopeDet && node.Occurs.StartsWith('0'))
+                ? $"number({sel}) > 0"                     // zero = não informado
+                : $"normalize-space({sel}) != ''";         // 0.00 é emitido
             return (expr, test);
         }
 
@@ -812,6 +1056,35 @@ public sealed class XslGenerator
     }
 
     private static string LeafName(string path) => path[(path.LastIndexOf('/') + 1)..];
+
+    /// <summary>
+    /// Casas decimais implícitas no TIPO XSD do leiaute: TDec_iiDD[aMM][v] → DD
+    /// (base, não o máximo): TDec_0302a04→2, TDec_1104v→4, TDec_1110→10. null se
+    /// o tipo não for TDec (aí vale a coluna Decimais da spec).
+    /// </summary>
+    private static int? DecimaisDoTipo(string typeName)
+    {
+        var m = System.Text.RegularExpressions.Regex.Match(typeName, @"^TDec_\d{2}(\d{2})");
+        return m.Success ? int.Parse(m.Groups[1].Value) : null;
+    }
+
+    /// <summary>
+    /// R2: desempate entre folhas homônimas de mesma região pela AFINIDADE do
+    /// bloco — vence o pai que já hospeda mais destinos resolvidos de campos do
+    /// MESMO bloco da spec (empate ou zero → null = descarte honesto).
+    /// </summary>
+    private static XsdLeiauteNode? MelhorPorAfinidade(
+        List<XsdLeiauteNode> candidatos, List<Uso> usos, Uso u)
+    {
+        var placar = candidatos
+            .Select(c => (Node: c, Afinidade: usos.Count(o =>
+                !ReferenceEquals(o, u) && o.B.Name == u.B.Name
+                && o.Path.StartsWith(ParentOf(c.XPath) + "/", StringComparison.Ordinal))))
+            .OrderByDescending(p => p.Afinidade)
+            .ToList();
+        return placar[0].Afinidade > 0 && placar[0].Afinidade > placar[1].Afinidade
+            ? placar[0].Node : null;
+    }
 
     private static XElement ValueOf(string expr) =>
         new(Xs + "value-of", new XAttribute("select", expr));

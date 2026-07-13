@@ -197,7 +197,9 @@ public sealed class ExcelSpecParser
         var tipoRaw = Get(c, "H");
         var tipo = tipoRaw.Length > 0 ? char.ToUpperInvariant(tipoRaw[0]) : '?';
 
-        int? dec = TryInt(Get(c, "I"), out var d) ? d : null;
+        // Decimais na planilha pode ser RANGE/notação COBOL: "0-4"→4, "0-10"→10,
+        // "11v0-4"→4 (rodada 3 §7.6: quebrava qCom/vUnCom). Regra: último número.
+        int? dec = TryInt(Get(c, "I"), out var d) ? d : UltimoNumero(Get(c, "I"));
         var fmtRaw = Get(c, "J");
         var fmt = string.IsNullOrWhiteSpace(fmtRaw) ? null : fmtRaw;
 
@@ -257,6 +259,13 @@ public sealed class ExcelSpecParser
     private static bool TryInt(string s, out int value) =>
         int.TryParse(s, System.Globalization.NumberStyles.Integer,
             System.Globalization.CultureInfo.InvariantCulture, out value);
+
+    /// <summary>Último número de um texto ("0-4"→4, "11v0-4"→4); null se não houver.</summary>
+    private static int? UltimoNumero(string s)
+    {
+        var m = System.Text.RegularExpressions.Regex.Match(s, @"(\d+)\s*$");
+        return m.Success ? int.Parse(m.Groups[1].Value) : null;
+    }
 
     /// <summary>Builder mutável interno; congelado em <see cref="SpecBlock"/> no fim.</summary>
     private sealed class BlockBuilder(string name, int lineCode)
