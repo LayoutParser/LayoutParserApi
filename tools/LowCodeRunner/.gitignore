@@ -1,0 +1,5 @@
+# Nada de binário proprietário nem licença no git.
+libs/
+globalfolder/
+bin/
+obj/
