@@ -478,6 +478,17 @@ ao interpretador (todas determinísticas):
 Ordem de ataque: **B2.1** = 17 campos (constantes + if/else + controle) → **B2.2** = `bloco290` (acumulador, o único
 complexo). Gate: **set-diff do DOCUMENTO COMPLETO = 0/0/0** (hoje: FALTA=18, SOBRA=0, TEXTO=0).
 
+> **✅ CONCLUÍDO (2026-07-13, arquiteto inline).** Set-diff do documento COMPLETO = **FALTA=0, SOBRA=0, TEXTO=0**.
+> Componentes: `ai/XslSynth/Excel/{DadosAdicEmitter,Bloco290Emitter}.cs`, plugados no `XslGenerator` DEPOIS do
+> `RemoverCascasVazias` (o `B2BDirectory` é intencionalmente vazio). Achados: (a) `B2BDirectory`/`B2BPDFDirectory` =
+> `GetConfigParametersValue` → vazios; `Codigo_Connector`='MQ', `CodigoImpressao`=1 (input sobrescrito) constantes;
+> (b) `PrinterKey`/`ContingencyPrinterKey` são **LinkMappings** do mesmo `Endereco_de_Impressao`; (c) `BaseForm` =
+> CNPJ-raiz(8)+'_'+IdOverlay; (d) grupo Conv51/ST = ramo else `'0,00'` pt-BR; (e) `dadosAdic/infCpl` clonado do
+> `infAdic/infCpl` (garante igualdade); (f) **`bloco290`**: as larguras dos `PadRight` IGUALAM as dos campos LINHA000
+> → `substring(concat(campo,espaços),1,n)` por segmento; 24 segmentos, 337 chars, **char a char** com o gabarito.
+> Únicas difs byte restantes = declaração XML + ordem de atributos `Id`/`versao` (cosméticas). O mapeamento
+> input→slug veio da Lia (R4-followup). XSD do `<NFe>` continua VÁLIDO.
+
 ### 8.3 Semântica das funções DSL — fonte da verdade (2026-07-13)
 
 As funções chamadas pelas regras vivem em duas DLLs (ambas em `tools/LowCodeRunner/`):
