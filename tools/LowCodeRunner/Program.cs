@@ -1,15 +1,28 @@
 using System;
 using System.IO;
 using System.Text;
-using appConnector.Client.Core.Util;   // MappersHelper (init completa do host: ConnectorApplicationManager + licença)
+using System.Threading;
+using appConnector.Client.Core;              // ConnectorApplicationManager (config do host: _configuration)
+using appConnector.Client.Core.Controller;   // EDocsClientConnectorManager (o manager do Service1.OnStart)
+using appConnector.Client.Core.Util;         // MappersHelper (executa o mapeador)
 
 namespace LayoutParserLowCodeRunner
 {
     /// <summary>
-    /// CLI: usa o MappersHelper do appConnector (que faz o bootstrap completo do SDK) para
-    /// executar um mapeador e gravar o XML final (gabarito), ou LISTar os mapeadores do package.
+    /// CLI que replica o bootstrap do host FiatMQ (Service1.OnStart) para destravar o SDK Sysmiddle
+    /// e então executa um mapeador (gera o XML gabarito) ou LISTa os mapeadores do package.
+    ///
+    /// Descoberta (descompilação da Bin da instância):
+    ///  - Service1.OnStart faz apenas: new EDocsClientConnectorManager().Start();
+    ///  - Start() -> LoadConfigurationXml() -> ConnectorApplicationManager.Instance.SetConfiguration(connector).
+    ///    É ESSA chamada que popula ConnectorApplicationManager._configuration. Sem ela, GetServerPackage()
+    ///    (usado por ExecuteMappingDocumentById) estoura NullReference e o MappersHelper entra em loop infinito.
+    ///  - A licença NÃO é machine-bound: LicenseController lê o global.config (LicenseCode com checksum + data de
+    ///    expiração embutida) e valida offline. Os projetos/mapeadores carregam de arquivo local (DbProviderType=File,
+    ///    ConnectionString=exportContext.data) — não do SQL Server do cliente. Logo, roda sem VPN.
+    ///
     /// Uso: LayoutParserLowCodeRunner &lt;globalFolder&gt; &lt;package&gt; &lt;mapperGuid|LIST&gt; &lt;input&gt; &lt;output&gt;
-    /// (rode DE DENTRO da Bin da instância instalada e licenciada).
+    /// (rode DE DENTRO da Bin da instância; globalFolder = pasta com o global.config de paths locais).
     /// </summary>
     internal static class Program
     {
@@ -23,37 +36,119 @@ namespace LayoutParserLowCodeRunner
 
             string globalFolder = args[0], package = args[1], mapperGuid = args[2], inputPath = args[3], outputPath = args[4];
 
+            int exitCode;
             try
             {
-                var helper = MappersHelper.Instance;
-
-                // Descoberta: LIST imprime os mapeadores do package (package vazio = server package da instância).
-                if (string.Equals(mapperGuid, "LIST", StringComparison.OrdinalIgnoreCase))
+                // ── P2: Bootstrap ── replica Service1.OnStart. Os transportes (MQ/DB) tentam subir e FALHAM
+                // sem VPN — é esperado; capturamos e seguimos, pois só precisamos do SetConfiguration.
+                if (!Bootstrap(TimeSpan.FromSeconds(90)))
                 {
-                    Console.Error.WriteLine("[BOOT] LIST globalFolder={0} package='{1}'", globalFolder, package);
-                    var mappers = helper.GetMappers(package, globalFolder);
-                    Console.Error.WriteLine("Mapeadores encontrados: {0}", mappers != null ? mappers.Count : 0);
-                    if (mappers != null)
-                        foreach (var kv in mappers)
-                            Console.Out.WriteLine("{0}\t{1}", kv.Value.IdentifierGuid, kv.Value.Name);
-                    return 0;
+                    Console.Error.WriteLine("[FATAL] Bootstrap nao populou ConnectorApplicationManager._configuration.");
+                    exitCode = 3;
                 }
-
-                if (!File.Exists(inputPath)) { Console.Error.WriteLine("Input nao encontrado: " + inputPath); return 4; }
-                string document = File.ReadAllText(inputPath);
-
-                Console.Error.WriteLine("[BOOT] globalFolder={0} mapper={1}", globalFolder, mapperGuid);
-                string result = helper.ExecuteMappingDocumentById(mapperGuid, document, globalFolder, Path.GetFileName(inputPath));
-
-                File.WriteAllText(outputPath, result ?? string.Empty, new UTF8Encoding(false));
-                Console.Error.WriteLine("[OK] {0} chars -> {1}", (result ?? string.Empty).Length, outputPath);
-                return 0;
+                else
+                {
+                    exitCode = Run(globalFolder, package, mapperGuid, inputPath, outputPath);
+                }
             }
             catch (Exception ex)
             {
                 Console.Error.WriteLine("[FATAL] " + ex);
-                return 1;
+                exitCode = 1;
             }
+
+            // Força a saída: o bootstrap deixou threads de transporte/falha vivas em background (fire-and-forget).
+            Console.Out.Flush();
+            Console.Error.Flush();
+            Environment.Exit(exitCode);
+            return exitCode; // inalcançável
+        }
+
+        /// <summary>
+        /// Replica o OnStart do host: instancia o EDocsClientConnectorManager e chama Start() numa thread de
+        /// fundo (as threads de transporte podem bloquear/loopar sem VPN). Aguarda até que o SetConfiguration
+        /// tenha rodado (config != null) ou o timeout. Degrade gracioso: qualquer erro do Start é logado, não fatal.
+        /// </summary>
+        private static bool Bootstrap(TimeSpan timeout)
+        {
+            Console.Error.WriteLine("[BOOT] Iniciando bootstrap (EDocsClientConnectorManager.Start)...");
+            var manager = new EDocsClientConnectorManager();
+
+            var bootThread = new Thread(() =>
+            {
+                try
+                {
+                    manager.Start();
+                    Console.Error.WriteLine("[BOOT] manager.Start() retornou.");
+                }
+                catch (Exception ex)
+                {
+                    // Transportes (MQ/DB) inacessiveis sem VPN caem aqui — esperado.
+                    Console.Error.WriteLine("[BOOT-WARN] Start() lancou (esperado sem VPN): {0}", ex.Message);
+                }
+            })
+            {
+                IsBackground = true,
+                Name = "LowCodeRunner-Bootstrap"
+            };
+            bootThread.Start();
+
+            // O SetConfiguration roda no INICIO do Start() (LoadConfigurationXml), antes dos ActionManagers.
+            // Basta esperar _configuration ser populado — não precisamos que o Start() inteiro conclua.
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            while (sw.Elapsed < timeout)
+            {
+                if (ConnectorApplicationManager.Instance.GetConfiguration() != null)
+                {
+                    Console.Error.WriteLine("[BOOT] Config carregada em {0:n1}s. ServerPackage='{1}'.",
+                        sw.Elapsed.TotalSeconds, SafeServerPackage());
+                    return true;
+                }
+                Thread.Sleep(200);
+            }
+
+            Console.Error.WriteLine("[BOOT] Timeout ({0:n0}s) aguardando a config.", timeout.TotalSeconds);
+            return ConnectorApplicationManager.Instance.GetConfiguration() != null;
+        }
+
+        private static string SafeServerPackage()
+        {
+            try { return ConnectorApplicationManager.Instance.GetServerPackage(); }
+            catch { return "(indisponivel)"; }
+        }
+
+        private static int Run(string globalFolder, string package, string mapperGuid, string inputPath, string outputPath)
+        {
+            var helper = MappersHelper.Instance;
+
+            // ── LIST: imprime os mapeadores do package (descoberta) ──
+            if (string.Equals(mapperGuid, "LIST", StringComparison.OrdinalIgnoreCase))
+            {
+                Console.Error.WriteLine("[LIST] globalFolder={0} package='{1}'", globalFolder, package);
+                var mappers = helper.GetMappers(package, globalFolder);
+                Console.Error.WriteLine("Mapeadores encontrados: {0}", mappers != null ? mappers.Count : 0);
+                if (mappers != null)
+                    foreach (var kv in mappers)
+                        Console.Out.WriteLine("{0}\t{1}", kv.Value.IdentifierGuid, kv.Value.Name);
+                return 0;
+            }
+
+            // ── EXEC: executa um mapeador sobre o input e grava o XML gabarito ──
+            if (!File.Exists(inputPath)) { Console.Error.WriteLine("Input nao encontrado: " + inputPath); return 4; }
+            string document = File.ReadAllText(inputPath);
+
+            Console.Error.WriteLine("[EXEC] globalFolder={0} mapper={1} input={2}", globalFolder, mapperGuid, Path.GetFileName(inputPath));
+            string result = helper.ExecuteMappingDocumentById(mapperGuid, document, globalFolder, Path.GetFileName(inputPath));
+
+            File.WriteAllText(outputPath, result ?? string.Empty, new UTF8Encoding(false));
+            int len = (result ?? string.Empty).Length;
+            Console.Error.WriteLine("[OK] {0} chars -> {1}", len, outputPath);
+            if (len == 0)
+            {
+                Console.Error.WriteLine("[WARN] Mapeador retornou vazio (mapperGuid errado, licenca invalida ou parser sem match).");
+                return 5;
+            }
+            return 0;
         }
     }
 }

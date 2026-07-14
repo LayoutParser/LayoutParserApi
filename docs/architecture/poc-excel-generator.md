@@ -447,7 +447,84 @@ por pai igual) e variáveis DSL com ACENTOS (`#.valorRetençãoPrevidencia` → 
 traduzir com o `DslBlockInterpreter` já existente + fontes de controle (`#XML=NA`). Depois: **runner (passo 3)** —
 descompilar o stub `FiatMQ_Instance_FiatMQ.exe` (6 KB) e fazer da Instance_FiatMQ a fábrica de gabaritos em lote.
 
-## 8. Divisão de trabalho
+## 8. Plano da Etapa B2 — envelope + `dadosAdic` (doc completo diff==0)
+
+> **Status:** planejado (Aria, 2026-07-13) · execução: Dex (interpretador) + Lia (domínio DSL) · pós-merge PR #1.
+
+### 8.1 Fato central (verificado no MapperVO)
+
+**Os 18 campos faltantes são TODOS dirigidos por regras DSL do mapeador** (nenhum vem da spec Excel — lá são `NA`).
+Padrões reais encontrados:
+
+| Padrão | Exemplo real | Construto DSL |
+|---|---|---|
+| Constante | `Rule_idLote: T.enviNFe/idLote = '00001';` · `Rule_indSinc: = 0` | atribuição literal |
+| **if/else com literal no else** | `Rule_vlrCOFINSST/vlrPISST`: `if(IsNullOrEmpty(x)!=True() && x!='xml' && ConvertToInt32(0,x)!=0) → FormaterDecimal(x,2) ELSE → '0,00'` | else + guarda tripla + **formato pt-BR com vírgula** |
+| Campo de controle → tag | `B2BDirectory`, `PrinterKey`, `BaseForm`, `CodigoImpressao`, `Codigo_Connector` (fontes: LINHA000) | atribuição direta/condicional |
+| **Acumulador string** | `Rule_bloco290`: `#.bloco290 = Concat(#.bloco290, PadRight('', ' ', 3, false)); … T.…/bloco290 = #.bloco290` | Concat/PadRight em loop — eco do bloco de controle |
+
+### 8.2 Design
+
+**Reusar o tradutor de regras que JÁ EXISTE** (`DslBlockInterpreter`/`DslRuleTranslator` do fluxo `--real`), plugado ao
+`--generate` **escopado aos targets fora do `infNFe`** (envelope `enviNFe/*` + `NFe/dadosAdic/*`). Extensões necessárias
+ao interpretador (todas determinísticas):
+
+1. **`else`** → `xsl:choose` (hoje só `if…begin…end`);
+2. **guardas compostas**: `&&`, `x != 'xml'` → `normalize-space(sel) != 'xml'`, `ConvertToInt32(0,x) != 0` → `number(sel) > 0`;
+3. **literais** como valor (`'00001'`, `0`, `'0,00'` — preservar a vírgula pt-BR: são extensão, não SEFAZ);
+4. **funções de string**: `Concat` → `concat()`, `PadRight(s,c,n)` → `substring(concat(s,'ccc…'),1,n)`;
+5. **variáveis globais `$.`** (ex.: `$.buildChaveAcesso`) — resolver por pré-passo (já temos a chave no `--generate`).
+
+Ordem de ataque: **B2.1** = 17 campos (constantes + if/else + controle) → **B2.2** = `bloco290` (acumulador, o único
+complexo). Gate: **set-diff do DOCUMENTO COMPLETO = 0/0/0** (hoje: FALTA=18, SOBRA=0, TEXTO=0).
+
+### 8.3 Semântica das funções DSL — fonte da verdade (2026-07-13)
+
+As funções chamadas pelas regras vivem em duas DLLs (ambas em `tools/LowCodeRunner/`):
+- **`Functions/ndd.ConnectUs.Functions.dll`** (NDD, ~2.8MB) — `IsNullOrEmpty`, `Concat`, `PadLeft/PadRight`,
+  `StringFormat`, `Substring`, `DateTimeNow`, `ReplaceDotToComma`… **COM FONTE** em
+  `D:\Projetos\git.ndd\ConnectUs.Functions\src\ndd.ConnectUs.Functions` (acessível nesta máquina) — ler a fonte real
+  antes de traduzir qualquer função para XSLT.
+- **`libs/SysMiddle.ConnectUs.Functions.dll`** (Sysmiddle 3ª parte, ~1.3MB, SEM fonte) — funções padrão no padrão
+  `*Function` (`ConvertToInt32Function`, `ConvertToDecimalFunction`, `FormaterDecimal*`…) — semântica por
+  descompilação (ILSpy) quando necessário.
+
+### 8.4 Riscos
+- `bloco290` reconstrói uma linha de 290+ chars por concatenação — traduzir fielmente exige PadRight correto (testar
+  char a char vs gabarito). Se travar, alternativa honesta: eco bruto de região do input (comparar com o gabarito decide).
+- Formato pt-BR (`'0,00'`) NÃO pode passar pelo pipeline de decimais SEFAZ (ponto) — manter como literal do else.
+
+## 9. Plano do Runner (fábrica de gabaritos em lote)
+
+> **Status:** planejado (Aria, 2026-07-13) · execução: Dex · pré-requisito: nenhum (independente de B2).
+
+### 9.1 Descoberta que muda o jogo (strings do stub de 6 KB)
+
+O `FiatMQ_Instance_FiatMQ.exe` é um **Windows Service** mínimo (assembly original `appConnector.Client.Connector.exe`):
+`Service1.OnStart` instancia **`EDocsClientConnectorManager`** (campo `_eDocsClientManager`, interface `IManager` de
+`appConnector.Client.Interface`), classe que vive em **`appConnector.Client.Core.dll`** — a MESMA que o
+`tools/LowCodeRunner` já referencia. **É este manager que faz a init completa (licença incluída).**
+
+### 9.2 Sequência de trabalho
+
+1. **Descompilar** (ILSpy/ilspycmd) `EDocsClientConnectorManager` + `IManager` na Bin da instância: mapear o método de
+   start exato, a ordem de init e onde a licença é registrada; confirmar dependências de config (`global.config`,
+   `ConfigParameters/ConfigParameters.xml`, `Settings/`).
+2. **Adaptar o `tools/LowCodeRunner`**: replicar o `OnStart` (instanciar o manager → start → aguardar init) e SÓ ENTÃO
+   chamar `MappersHelper/ExecuteMapper`; `OnStop` no finally. Rodar DE DENTRO da Bin da instância trazida
+   (`.claude/tmp/servidor/fiatmq/Instance_FiatMQ/AppConnector.DIR/Bin`).
+3. **Modo lote**: varrer `Examples/LAY_*` (inputs reais .mq_series/.txt) → executar o mapeador → gravar pares
+   input→XML em `.claude/tmp/gabaritos/` → alimentar o loop diff==0 com N pares (generalização além do par único).
+
+### 9.3 Riscos (avaliar no passo 1 ANTES de rodar)
+- ⚠️ **O manager é o CONECTOR completo**: o start pode tentar abrir filas MQ/diretórios/DB do servidor. Mitigação:
+  inspecionar `ConfigParameters.xml` e **desabilitar componentes** de transporte antes de rodar (manter só o núcleo de
+  mapeamento); ambiente sem VPN já isolaria endpoints, mas o desligamento explícito é o caminho limpo.
+- Licença pode ser máquina-bound (falhou fora do host antes) — se o start do manager não bastar nesta máquina,
+  fallback: rodar o runner NO SERVIDOR (onde a instância é licenciada), via o mesmo exe.
+- Versões: usar EXCLUSIVAMENTE as DLLs da Bin da instância (v4.4.1 consistente) — nada de misturar com `.claude/tmp/sysmiddle` (v4.5).
+
+## 10. Divisão de trabalho
 
 - **@lp-parser-llm (Lia):** `ExcelSpecParser`, `NfeLeiauteCatalog` (domínio do leiaute/NT), resolução semântica, RAG.
 - **@lp-backend-dev (Dex):** `TclGenerator`, `XslGenerator`, wiring no `Program.cs` (`--excel`), integração com `XsdValidator`.

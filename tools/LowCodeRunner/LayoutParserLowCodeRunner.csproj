@@ -12,16 +12,22 @@
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
   </PropertyGroup>
 
-  <!-- Compila só contra o SysMiddle.Base da instância INSTALADA (v4.4.1, consistente + licenciada).
-       Private=false: NÃO copia; o exe roda DE DENTRO da Bin instalada, onde estão todas as deps. -->
+  <!-- Bin da instância NOVA trazida do servidor (v4.4.1, consistente + licenciada, DbProviderType=File).
+       Caminho relativo ao repo. Private=false: NÃO copia; o exe roda DE DENTRO da Bin, onde estão todas as deps
+       (o probing resolve tudo localmente e o Assembly.Location aponta para a Bin, como o host espera). -->
+  <PropertyGroup>
+    <InstanceBin>$(MSBuildProjectDirectory)\..\..\.claude\tmp\servidor\fiatmq\Instance_FiatMQ\AppConnector.DIR\Bin</InstanceBin>
+  </PropertyGroup>
+
   <ItemGroup>
+    <!-- MapperBasicVO (retorno do GetMappers no modo LIST) -->
     <Reference Include="SysMiddle.Base">
-      <HintPath>C:\NDDigital\AppConnector\Business\FiatMQ\Instance_fiatmq\AppConnector.DIR\Bin\SysMiddle.Base.dll</HintPath>
+      <HintPath>$(InstanceBin)\SysMiddle.Base.dll</HintPath>
       <Private>false</Private>
     </Reference>
-    <!-- O MappersHelper (init completa: ConnectorApplicationManager + licença) mora aqui -->
+    <!-- EDocsClientConnectorManager (bootstrap), ConnectorApplicationManager (config) e MappersHelper (execução) -->
     <Reference Include="appConnector.Client.Core">
-      <HintPath>C:\NDDigital\AppConnector\Business\FiatMQ\Instance_fiatmq\AppConnector.DIR\Bin\appConnector.Client.Core.dll</HintPath>
+      <HintPath>$(InstanceBin)\appConnector.Client.Core.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>
