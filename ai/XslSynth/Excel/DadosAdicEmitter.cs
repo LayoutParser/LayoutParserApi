@@ -74,28 +74,6 @@ public sealed class DadosAdicEmitter
     private static XElement Folha(string nome, string select) =>
         new(nome, new XElement(Xs + "value-of", new XAttribute("select", select)));
 
-    /// <summary>
-    /// dadosAdic/infCpl = concat dos segmentos das LINHA081 repetidas (mesmo conteúdo
-    /// do infAdic/infCpl — Rule_infCpl que itera I.LINHA081). Reusa o for-each padrão.
-    /// </summary>
-    private static XElement InfCplDadosAdic(SpecModel spec)
-    {
-        var bloco = spec.Blocks.FirstOrDefault(b =>
-            b.Fields.Any(f => (f.FieldName ?? "").Contains("para EDI", StringComparison.OrdinalIgnoreCase)
-                              || (f.FieldName ?? "").Contains("Complementar", StringComparison.OrdinalIgnoreCase)));
-        var campo = bloco?.Fields.FirstOrDefault(f =>
-            (f.FieldName ?? "").Contains("para EDI", StringComparison.OrdinalIgnoreCase)
-            || (f.FieldName ?? "").Contains("Complementar", StringComparison.OrdinalIgnoreCase));
-
-        var infCpl = new XElement("infCpl");
-        if (bloco is not null && campo is not null)
-        {
-            var slug = TclGenerator.NamedFields(bloco)
-                .First(t => ReferenceEquals(t.Field, campo) || t.Field.Item == campo.Item).Name;
-            infCpl.Add(new XElement(Xs + "for-each",
-                new XAttribute("select", $"ROOT/{bloco.Name}"),
-                new XElement(Xs + "value-of", new XAttribute("select", $"normalize-space({slug})"))));
-        }
-        return infCpl;
-    }
+    /// <summary>Clona um nó (elementos XSLT como for-each/value-of são copiados fundo).</summary>
+    private static XNode Clonar(XNode n) => n is XElement e ? new XElement(e) : new XText(((XText)n).Value);
 }
