@@ -529,6 +529,34 @@ O `FiatMQ_Instance_FiatMQ.exe` é um **Windows Service** mínimo (assembly origi
 3. **Modo lote**: varrer `Examples/LAY_*` (inputs reais .mq_series/.txt) → executar o mapeador → gravar pares
    input→XML em `.claude/tmp/gabaritos/` → alimentar o loop diff==0 com N pares (generalização além do par único).
 
+### 9.5 Trilha A1 — modo lote: harness pronto, bug de parsing RECONFIRMADO em doc novo (2026-07-15, arquiteto inline)
+
+**Harness de lote validado end-to-end:** exe reconstruído, copiado pra dentro da Bin da instância
+(`AppConnector.DIR/Bin`), invocado via WSL-interop com paths **Windows** (`C:\...` — paths POSIX `/mnt/c/...`
+falham com "Input nao encontrado", o processo é um binário Windows real). Loop bash funcional. **Custo por
+invocação: ~36s** (bootstrap + JIT via interop) — para lote de centenas de arquivos, rodar em background ou,
+mais rápido, **direto da sessão Windows nativa** (sem overhead de interop) — ver `multi-session-execution-plan.md`.
+
+**Achado 1 — outros clientes reais já disponíveis localmente:** `.claude/tmp/servidor/layoutparser/Examples/`
+tem pastas `LAY_CNHI_*`, `LAY_IVECCO_*`, `LAY_MARELLI_TXT_SAP_*` (SAP, não MQSeries!), além do genérico
+`LAY_TXT_MQSERIES_ENVNFE_4.00_NFe` (281 arquivos, o bucket FIAT — confirmado pelo padrão de nome
+`QMWNFe1_QMWNFE1.SAPiens_MRB` e tamanho 35400 bytes = 59×600, bate com o gabarito já validado). **Isso já
+destrava dado real pra generalização (A2/A3) sem esperar nada** — só falta o GUID do mapeador de cada cliente
+(CNHI/IVECCO/MARELLI) pra rodar o EXEC; hoje só temos o GUID FIAT decriptado (`MAP_f31a6758-69c9-4cf6-92d2-24f0e27a1ab5`).
+
+**Achado 2 — bug de parsing RECONFIRMADO, não era acaso do documento testado antes:** rodei EXEC num documento
+FIAT **nunca testado** (`20251107_102250_QMWNFe1_...mq_series`) → saída idêntica ao padrão já visto:
+`<?xml version="1.0"?><enviNFe versao="4.00"><idLote>00001</idLote><indSinc>0</indSinc></enviNFe>` (97 chars,
+só as constantes do envelope). **Confirma que o problema é sistemático no parser de input do mapeador, não
+peculiaridade de um arquivo.** Próximo passo concreto (não feito ainda): decriptar a definição do layout
+`LAY_ad4fb6f4` (via `LayoutParserDecrypt`, projeto irmão em `../LayoutParserDecrypt`, ainda não compilado
+localmente) pra inspecionar o campo de tipo de parser real (`TextDelimited` vs largura-fixa) e comparar com o
+que o mapeador espera — é isso que decide se o fix é do lado do dado (Connect Us) ou de como o runner invoca o parser.
+
+**Estado do gate A1:** 🟡 harness pronto e provado; **bloqueado** para produzir gabaritos úteis em lote até o
+bug de parsing ser corrigido. Rodar o lote completo agora só geraria 281 saídas envelope-only idênticas —
+sem valor. Não fazer isso até o parser estar corrigido.
+
 ### 9.4 🎯 EXECUÇÃO — o runner DESTRAVOU (2026-07-14, arquiteto inline)
 
 **O runner que ficou bloqueado o projeto inteiro agora BOOTA, valida a licença OFFLINE e EXECUTA o mapeador.**
