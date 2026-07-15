@@ -120,9 +120,10 @@ namespace LayoutParserApi.Controllers
                 
                 var documentStructure = _parserService.BuildDocumentStructure(result);
 
-                // Calcular validações e posições das linhas para o front-end (apenas para layouts configurados)
+                // Calcular validações e posições das linhas para o front-end
+                // ✅ Resolução mesclada: LimitOfCaracters > 0 → allowlist manual → null (sem validação)
                 List<LineValidationInfo>? lineValidations = null;
-                var expectedLineLength = LayoutLineSizeConfiguration.GetLineSizeForLayout(flattenedLayout.LayoutGuid);
+                var expectedLineLength = LineLengthResolver.Resolve(flattenedLayout);
                 
                 if (expectedLineLength.HasValue)
                     lineValidations = _parserService.CalculateLineValidations(flattenedLayout, expectedLineLength.Value);

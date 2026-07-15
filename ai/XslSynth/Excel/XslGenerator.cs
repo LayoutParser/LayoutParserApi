@@ -201,7 +201,23 @@ public sealed class XslGenerator
         MontarEscopo(enviNFe, "enviNFe", topo);
 
         var infNFe = Achar(enviNFe, "NFe", "infNFe");
-        infNFe?.Add(new XAttribute("versao", versao));
+        if (infNFe is not null)
+        {
+            // B3 (cosmético): o gabarito serializa <infNFe Id="…" versao="…"> — Id ANTES
+            // de versao. xsl:attribute sai sempre DEPOIS dos atributos literais do
+            // elemento, então o Id vira atributo literal com AVT (mesma expressão,
+            // avaliada em runtime) e os dois entram na ordem do gabarito — o XElement
+            // serializa atributos na ordem de Add.
+            var idAttr = infNFe.Elements(Xs + "attribute")
+                .FirstOrDefault(a => (string?)a.Attribute("name") == "Id");
+            var idSelect = idAttr?.Element(Xs + "value-of")?.Attribute("select")?.Value;
+            if (idSelect is not null)
+            {
+                idAttr!.Remove();
+                infNFe.Add(new XAttribute("Id", $"{{{idSelect}}}"));
+            }
+            infNFe.Add(new XAttribute("versao", versao));
+        }
 
         // Bloco det: for-each sobre a linha-mestre; irmãs correlacionadas por
         // ORDINAL ($i = posição do item) — suficiente para o par real (1 item);

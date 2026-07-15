@@ -1,3 +1,4 @@
+using LayoutParserApi.Models.Configuration;
 using LayoutParserApi.Models.Database;
 using LayoutParserApi.Models.Entities;
 using LayoutParserApi.Services.Interfaces;
@@ -203,7 +204,9 @@ namespace LayoutParserApi.Services.Transformation
 
                 // 5. Aplicar transformação TCL para gerar XML intermediário
                 // O TCL processa o TXT original e gera XML estruturado
-                var intermediateXml = await ApplyTclTransformationAsync(inputText, tclPath, inputLayout.Name);
+                // ✅ Resolver tamanho de linha pelo GUID do layout de entrada (allowlist); sem dado melhor, default legado
+                var inputLineLength = LineLengthResolver.Resolve(0, inputLayoutGuid) ?? LineLengthResolver.LegacyDefaultLineLength;
+                var intermediateXml = await ApplyTclTransformationAsync(inputText, tclPath, inputLayout.Name, inputLineLength);
                 if (string.IsNullOrEmpty(intermediateXml))
                 {
                     result.Errors.Add("Erro ao aplicar transformação TCL");
@@ -509,7 +512,7 @@ namespace LayoutParserApi.Services.Transformation
         /// Aplica transformação TCL: TXT -> XML intermediário
         /// O TCL processa o TXT original e gera XML estruturado
         /// </summary>
-        private async Task<string> ApplyTclTransformationAsync(string txtContent, string tclPath, string layoutName)
+        private async Task<string> ApplyTclTransformationAsync(string txtContent, string tclPath, string layoutName, int lineLength = LineLengthResolver.LegacyDefaultLineLength)
         {
             try
             {
@@ -538,7 +541,7 @@ namespace LayoutParserApi.Services.Transformation
 
                 // Processar TXT usando o TCL (MAP)
                 // O TCL define a estrutura de linhas e campos
-                // MQSeries: arquivos podem ser de largura fixa (600 caracteres por linha) sem quebras de linha
+                // MQSeries: arquivos podem ser de largura fixa (sem quebras de linha)
                 List<string> txtLines;
 
                 // Verificar se o arquivo tem quebras de linha
@@ -547,8 +550,8 @@ namespace LayoutParserApi.Services.Transformation
                 if (!hasLineBreaks && txtContent.Length > 0)
                 {
                     // Arquivo sem quebras de linha - provavelmente formato MQSeries de largura fixa
-                    // Dividir em segmentos de 600 caracteres (tamanho padrão de linha MQSeries)
-                    const int mqseriesLineLength = 600;
+                    // Dividir em segmentos do tamanho de linha resolvido para o layout de entrada
+                    int mqseriesLineLength = lineLength;
                     txtLines = new List<string>();
 
                     _logger.LogInformation("Arquivo TXT sem quebras de linha detectado. Tamanho total: {TotalChars} chars. Dividindo em segmentos de {LineLength} caracteres.",
@@ -561,7 +564,7 @@ namespace LayoutParserApi.Services.Transformation
 
                         // Adicionar segmento mesmo se for parcialmente espaço em branco
                         // Linhas MQSeries podem ter espaços em branco, mas ainda conter dados válidos
-                        // Se o segmento tem exatamente 600 caracteres ou é o último (pode ser menor), adicionar
+                        // Se o segmento tem exatamente o tamanho da linha ou é o último (pode ser menor), adicionar
                         if (segmentLength >= 1)
                             txtLines.Add(segment);
                     }

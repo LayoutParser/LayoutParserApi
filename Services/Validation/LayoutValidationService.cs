@@ -80,11 +80,12 @@ namespace LayoutParserApi.Services.Validation
                 }
 
                 var normalizedGuid = NormalizeLayoutGuid(layoutGuid);
-                var expectedLineLength = LayoutLineSizeConfiguration.GetLineSizeForLayout(normalizedGuid);
+                // ✅ Resolução mesclada: LimitOfCaracters > 0 → allowlist manual → null (sem validação)
+                var expectedLineLength = LineLengthResolver.Resolve(layout.LimitOfCaracters, normalizedGuid);
 
                 if (!expectedLineLength.HasValue)
                 {
-                    // Layout não está na lista de layouts que devem ser validados
+                    // Layout sem tamanho de linha resolvível (nem LimitOfCaracters nem allowlist)
                     _logger.LogDebug("Layout {LayoutGuid} ({Name}) não está na lista de layouts para validação. Pulando validação.", layoutGuid, layoutRecord.Name);
                     return new LayoutValidationResult
                     {
@@ -385,7 +386,9 @@ namespace LayoutParserApi.Services.Validation
                     LayoutType = root.Element("LayoutType")?.Value ?? "",
                     Name = root.Element("Name")?.Value ?? "",
                     Description = root.Element("Description")?.Value ?? "",
-                    LimitOfCaracters = int.TryParse(root.Element("LimitOfCaracters")?.Value, out var limit) ? limit : 600,
+                    // ✅ 0 = não-informado (cai para a allowlist na resolução mesclada).
+                    // Um 600 fabricado aqui venceria a allowlist e quebraria os layouts de 2500 chars.
+                    LimitOfCaracters = int.TryParse(root.Element("LimitOfCaracters")?.Value, out var limit) ? limit : 0,
                     Elements = new List<LineElement>()
                 };
 
