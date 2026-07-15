@@ -2,7 +2,9 @@
 
 > **Autor:** @lp-architect (Aria) · **Status:** Proposta (design) · **Data:** 2026-07-10
 > **Escopo:** desenhar o desenvolvimento. A implementação é de `@lp-backend-dev` (Dex) e `@lp-parser-llm` (Lia); QA por `@lp-qa` (Quinn).
-> **Relacionado:** [`ia-xslt-synthesis.md`](ia-xslt-synthesis.md) · memória `server-assets-inventory`, `sysmiddle-runtime-e-sintese`.
+> **Relacionado:** [`ia-xslt-synthesis.md`](ia-xslt-synthesis.md) · [`multi-client-layout-generalization.md`](multi-client-layout-generalization.md)
+> (generalização além da FIAT, 2026-07-15) · [`multi-session-execution-plan.md`](multi-session-execution-plan.md)
+> (divisão Trilha A/B entre as duas sessões Claude Code) · memória `server-assets-inventory`, `sysmiddle-runtime-e-sintese`.
 
 ---
 
@@ -428,7 +430,7 @@ Catálogo: **62 Alta / 400 Média / 166 não-resolvidos** (era 55/383/190); cobe
 
 ```
 [A3] set-diff por path <infNFe>: FALTA=0, SOBRA=0, TEXTO=0
-     XSD (elemento NFe): VÁLIDO ✅ (resta só a assinatura — esperado, a PoC não assina)
+     XSD (elemento NFe): VÁLIDO ✅ (resta só a assinatura — fora de escopo PERMANENTE, quem assina é o e-forms)
 ```
 
 **O pipeline determinístico Excel→TCL→ROOT→XSL reproduz o `<infNFe>` do mapeador de produção IDENTICAMENTE
@@ -447,10 +449,208 @@ por pai igual) e variáveis DSL com ACENTOS (`#.valorRetençãoPrevidencia` → 
 traduzir com o `DslBlockInterpreter` já existente + fontes de controle (`#XML=NA`). Depois: **runner (passo 3)** —
 descompilar o stub `FiatMQ_Instance_FiatMQ.exe` (6 KB) e fazer da Instance_FiatMQ a fábrica de gabaritos em lote.
 
-## 8. Divisão de trabalho
+## 8. Plano da Etapa B2 — envelope + `dadosAdic` (doc completo diff==0)
+
+> **Status:** planejado (Aria, 2026-07-13) · execução: Dex (interpretador) + Lia (domínio DSL) · pós-merge PR #1.
+
+### 8.1 Fato central (verificado no MapperVO)
+
+**Os 18 campos faltantes são TODOS dirigidos por regras DSL do mapeador** (nenhum vem da spec Excel — lá são `NA`).
+Padrões reais encontrados:
+
+| Padrão | Exemplo real | Construto DSL |
+|---|---|---|
+| Constante | `Rule_idLote: T.enviNFe/idLote = '00001';` · `Rule_indSinc: = 0` | atribuição literal |
+| **if/else com literal no else** | `Rule_vlrCOFINSST/vlrPISST`: `if(IsNullOrEmpty(x)!=True() && x!='xml' && ConvertToInt32(0,x)!=0) → FormaterDecimal(x,2) ELSE → '0,00'` | else + guarda tripla + **formato pt-BR com vírgula** |
+| Campo de controle → tag | `B2BDirectory`, `PrinterKey`, `BaseForm`, `CodigoImpressao`, `Codigo_Connector` (fontes: LINHA000) | atribuição direta/condicional |
+| **Acumulador string** | `Rule_bloco290`: `#.bloco290 = Concat(#.bloco290, PadRight('', ' ', 3, false)); … T.…/bloco290 = #.bloco290` | Concat/PadRight em loop — eco do bloco de controle |
+
+### 8.2 Design
+
+**Reusar o tradutor de regras que JÁ EXISTE** (`DslBlockInterpreter`/`DslRuleTranslator` do fluxo `--real`), plugado ao
+`--generate` **escopado aos targets fora do `infNFe`** (envelope `enviNFe/*` + `NFe/dadosAdic/*`). Extensões necessárias
+ao interpretador (todas determinísticas):
+
+1. **`else`** → `xsl:choose` (hoje só `if…begin…end`);
+2. **guardas compostas**: `&&`, `x != 'xml'` → `normalize-space(sel) != 'xml'`, `ConvertToInt32(0,x) != 0` → `number(sel) > 0`;
+3. **literais** como valor (`'00001'`, `0`, `'0,00'` — preservar a vírgula pt-BR: são extensão, não SEFAZ);
+4. **funções de string**: `Concat` → `concat()`, `PadRight(s,c,n)` → `substring(concat(s,'ccc…'),1,n)`;
+5. **variáveis globais `$.`** (ex.: `$.buildChaveAcesso`) — resolver por pré-passo (já temos a chave no `--generate`).
+
+Ordem de ataque: **B2.1** = 17 campos (constantes + if/else + controle) → **B2.2** = `bloco290` (acumulador, o único
+complexo). Gate: **set-diff do DOCUMENTO COMPLETO = 0/0/0** (hoje: FALTA=18, SOBRA=0, TEXTO=0).
+
+> **✅ CONCLUÍDO (2026-07-13, arquiteto inline).** Set-diff do documento COMPLETO = **FALTA=0, SOBRA=0, TEXTO=0**.
+> Componentes: `ai/XslSynth/Excel/{DadosAdicEmitter,Bloco290Emitter}.cs`, plugados no `XslGenerator` DEPOIS do
+> `RemoverCascasVazias` (o `B2BDirectory` é intencionalmente vazio). Achados: (a) `B2BDirectory`/`B2BPDFDirectory` =
+> `GetConfigParametersValue` → vazios; `Codigo_Connector`='MQ', `CodigoImpressao`=1 (input sobrescrito) constantes;
+> (b) `PrinterKey`/`ContingencyPrinterKey` são **LinkMappings** do mesmo `Endereco_de_Impressao`; (c) `BaseForm` =
+> CNPJ-raiz(8)+'_'+IdOverlay; (d) grupo Conv51/ST = ramo else `'0,00'` pt-BR; (e) `dadosAdic/infCpl` clonado do
+> `infAdic/infCpl` (garante igualdade); (f) **`bloco290`**: as larguras dos `PadRight` IGUALAM as dos campos LINHA000
+> → `substring(concat(campo,espaços),1,n)` por segmento; 24 segmentos, 337 chars, **char a char** com o gabarito.
+> Únicas difs byte restantes = declaração XML + ordem de atributos `Id`/`versao` (cosméticas). O mapeamento
+> input→slug veio da Lia (R4-followup). XSD do `<NFe>` continua VÁLIDO.
+
+### 8.3 Semântica das funções DSL — fonte da verdade (2026-07-13)
+
+As funções chamadas pelas regras vivem em duas DLLs (ambas em `tools/LowCodeRunner/`):
+- **`Functions/ndd.ConnectUs.Functions.dll`** (NDD, ~2.8MB) — `IsNullOrEmpty`, `Concat`, `PadLeft/PadRight`,
+  `StringFormat`, `Substring`, `DateTimeNow`, `ReplaceDotToComma`… **COM FONTE** em
+  `D:\Projetos\git.ndd\ConnectUs.Functions\src\ndd.ConnectUs.Functions` (acessível nesta máquina) — ler a fonte real
+  antes de traduzir qualquer função para XSLT.
+- **`libs/SysMiddle.ConnectUs.Functions.dll`** (Sysmiddle 3ª parte, ~1.3MB, SEM fonte) — funções padrão no padrão
+  `*Function` (`ConvertToInt32Function`, `ConvertToDecimalFunction`, `FormaterDecimal*`…) — semântica por
+  descompilação (ILSpy) quando necessário.
+
+### 8.4 Riscos
+- `bloco290` reconstrói uma linha de 290+ chars por concatenação — traduzir fielmente exige PadRight correto (testar
+  char a char vs gabarito). Se travar, alternativa honesta: eco bruto de região do input (comparar com o gabarito decide).
+- Formato pt-BR (`'0,00'`) NÃO pode passar pelo pipeline de decimais SEFAZ (ponto) — manter como literal do else.
+
+## 9. Plano do Runner (fábrica de gabaritos em lote)
+
+> **Status:** planejado (Aria, 2026-07-13) · execução: Dex · pré-requisito: nenhum (independente de B2).
+
+### 9.1 Descoberta que muda o jogo (strings do stub de 6 KB)
+
+O `FiatMQ_Instance_FiatMQ.exe` é um **Windows Service** mínimo (assembly original `appConnector.Client.Connector.exe`):
+`Service1.OnStart` instancia **`EDocsClientConnectorManager`** (campo `_eDocsClientManager`, interface `IManager` de
+`appConnector.Client.Interface`), classe que vive em **`appConnector.Client.Core.dll`** — a MESMA que o
+`tools/LowCodeRunner` já referencia. **É este manager que faz a init completa (licença incluída).**
+
+### 9.2 Sequência de trabalho
+
+1. **Descompilar** (ILSpy/ilspycmd) `EDocsClientConnectorManager` + `IManager` na Bin da instância: mapear o método de
+   start exato, a ordem de init e onde a licença é registrada; confirmar dependências de config (`global.config`,
+   `ConfigParameters/ConfigParameters.xml`, `Settings/`).
+2. **Adaptar o `tools/LowCodeRunner`**: replicar o `OnStart` (instanciar o manager → start → aguardar init) e SÓ ENTÃO
+   chamar `MappersHelper/ExecuteMapper`; `OnStop` no finally. Rodar DE DENTRO da Bin da instância trazida
+   (`.claude/tmp/servidor/fiatmq/Instance_FiatMQ/AppConnector.DIR/Bin`).
+3. **Modo lote**: varrer `Examples/LAY_*` (inputs reais .mq_series/.txt) → executar o mapeador → gravar pares
+   input→XML em `.claude/tmp/gabaritos/` → alimentar o loop diff==0 com N pares (generalização além do par único).
+
+### 9.5 Trilha A1 — modo lote: harness pronto, bug de parsing RECONFIRMADO em doc novo (2026-07-15, arquiteto inline)
+
+**Harness de lote validado end-to-end:** exe reconstruído, copiado pra dentro da Bin da instância
+(`AppConnector.DIR/Bin`), invocado via WSL-interop com paths **Windows** (`C:\...` — paths POSIX `/mnt/c/...`
+falham com "Input nao encontrado", o processo é um binário Windows real). Loop bash funcional. **Custo por
+invocação: ~36s** (bootstrap + JIT via interop) — para lote de centenas de arquivos, rodar em background ou,
+mais rápido, **direto da sessão Windows nativa** (sem overhead de interop) — ver `multi-session-execution-plan.md`.
+
+**Achado 1 — outros clientes reais já disponíveis localmente:** `.claude/tmp/servidor/layoutparser/Examples/`
+tem pastas `LAY_CNHI_*`, `LAY_IVECCO_*`, `LAY_MARELLI_TXT_SAP_*` (SAP, não MQSeries!), além do genérico
+`LAY_TXT_MQSERIES_ENVNFE_4.00_NFe` (281 arquivos, o bucket FIAT — confirmado pelo padrão de nome
+`QMWNFe1_QMWNFE1.SAPiens_MRB` e tamanho 35400 bytes = 59×600, bate com o gabarito já validado). **Isso já
+destrava dado real pra generalização (A2/A3) sem esperar nada** — só falta o GUID do mapeador de cada cliente
+(CNHI/IVECCO/MARELLI) pra rodar o EXEC; hoje só temos o GUID FIAT decriptado (`MAP_f31a6758-69c9-4cf6-92d2-24f0e27a1ab5`).
+
+**Achado 2 — bug de parsing RECONFIRMADO, não era acaso do documento testado antes:** rodei EXEC num documento
+FIAT **nunca testado** (`20251107_102250_QMWNFe1_...mq_series`) → saída idêntica ao padrão já visto:
+`<?xml version="1.0"?><enviNFe versao="4.00"><idLote>00001</idLote><indSinc>0</indSinc></enviNFe>` (97 chars,
+só as constantes do envelope). **Confirma que o problema é sistemático no parser de input do mapeador, não
+peculiaridade de um arquivo.** Próximo passo concreto (não feito ainda): decriptar a definição do layout
+`LAY_ad4fb6f4` (via `LayoutParserDecrypt`, projeto irmão em `../LayoutParserDecrypt`, ainda não compilado
+localmente) pra inspecionar o campo de tipo de parser real (`TextDelimited` vs largura-fixa) e comparar com o
+que o mapeador espera — é isso que decide se o fix é do lado do dado (Connect Us) ou de como o runner invoca o parser.
+
+**Estado do gate A1:** 🟡 harness pronto e provado; **bloqueado** para produzir gabaritos úteis em lote até o
+bug de parsing ser corrigido. Rodar o lote completo agora só geraria 281 saídas envelope-only idênticas —
+sem valor. Não fazer isso até o parser estar corrigido.
+
+### 9.4 🎯 EXECUÇÃO — o runner DESTRAVOU (2026-07-14, arquiteto inline)
+
+**O runner que ficou bloqueado o projeto inteiro agora BOOTA, valida a licença OFFLINE e EXECUTA o mapeador.**
+Sequência que funcionou (do `tools/LowCodeRunner`, exe rodando de dentro da Bin da instância):
+
+1. **Build** — faltava a ref `appConnector.Client.Interface` (tipo `Connector`); adicionada. Build verde net481.
+2. **Bootstrap** — `EDocsClientConnectorManager.Start()` em thread de fundo popula `ConnectorApplicationManager._configuration`
+   (config carrega em ~0.6s; `Inicialização da InstanceFactory realizada com sucesso`).
+3. **global.config localizado** — os dois configs (Bin + runner) tinham paths do servidor; reescritos p/ locais
+   (`exportContext.data`, `Functions`, `logger.xml`), `LicenseCode` preservado (`.bak` de backup).
+4. **Gate de licença do APIManager (o muro real, distinto do ConnectorApplicationManager)** — descoberto por
+   decompilação (ilspycmd): o ctor de `SysMiddle.API.APIManager` pega `ILicenseController` de
+   `SysMiddle.Base.InstanceFactory.GetInstance<ILicenseController>()`; **a InstanceFactory não auto-mapeou a interface
+   ao concreto** (`SysMiddle.ConnectUs.Core.Helper.General.LicenseController` não foi escaneado neste ambiente) → retornava
+   null → `"Controle de licença não encontrado"` → retry infinito (20MB+ de logs). **Fix (1 linha):**
+   `InstanceFactory.Instance.CreateType(typeof(ILicenseController), typeof(LicenseController))` + setar
+   `APIManager.GlobalConfigurationFileName` ANTES do `MappersHelper`.
+5. **Execução** — `MappersHelper.ExecuteMappingDocumentById(MAP_f31a6758…, doc, globalFolder, fileName)` → `[OK]`, API
+   carregada, XML produzido. **Licença validada offline, sem VPN, sem host.**
+
+**Último detalhe (não é a licença nem o motor):** a saída atual traz só o **envelope** (`enviNFe/idLote/indSinc` — as
+regras CONSTANTES do mapeador). Os campos que dependem do INPUT vieram vazios porque o layout de input `LAY_ad4fb6f4` é
+**`TextDelimited`** e o documento está sendo alimentado como largura-fixa (600) sem o delimitador de registro que esse
+parser espera (parse com `isIgnoreValidationsErrorsInInputParser=true` → falha silenciosa → só constantes sobrevivem).
+**Próximo passo p/ o gabarito completo:** descobrir o delimitador/record-size do `LAY_ad4fb6f4` (na config do layout dentro
+do `exportContext.data`) e alimentar o input no formato certo. Engine + licença + carga do projeto: **100% funcionais.**
+
+Artefatos: `tools/LowCodeRunner/{Program.cs,LayoutParserLowCodeRunner.csproj}` (fix de licença), exe copiado p/ a Bin,
+saída em `.claude/tmp/gabaritos/runner-output.xml`. Fonte decompilada em scratchpad (`smbase`, `accore`, `cus`).
+
+### 9.3 Riscos (avaliar no passo 1 ANTES de rodar)
+- ⚠️ **O manager é o CONECTOR completo**: o start pode tentar abrir filas MQ/diretórios/DB do servidor. Mitigação:
+  inspecionar `ConfigParameters.xml` e **desabilitar componentes** de transporte antes de rodar (manter só o núcleo de
+  mapeamento); ambiente sem VPN já isolaria endpoints, mas o desligamento explícito é o caminho limpo.
+- Licença pode ser máquina-bound (falhou fora do host antes) — se o start do manager não bastar nesta máquina,
+  fallback: rodar o runner NO SERVIDOR (onde a instância é licenciada), via o mesmo exe.
+- Versões: usar EXCLUSIVAMENTE as DLLs da Bin da instância (v4.4.1 consistente) — nada de misturar com `.claude/tmp/sysmiddle` (v4.5).
+
+## 10. Divisão de trabalho
 
 - **@lp-parser-llm (Lia):** `ExcelSpecParser`, `NfeLeiauteCatalog` (domínio do leiaute/NT), resolução semântica, RAG.
 - **@lp-backend-dev (Dex):** `TclGenerator`, `XslGenerator`, wiring no `Program.cs` (`--excel`), integração com `XsdValidator`.
 - **@lp-qa (Quinn):** gates por fase, validação XSD, métricas de cobertura.
 - **@lp-devops (Gage):** segredos/rotação; qualquer push.
 - **@lp-architect (Aria):** este design; revisão de convergência dos dois catálogos (Excel × GUID).
+
+---
+
+## 11. Estado geral e pendências consolidadas (2026-07-15, arquiteto)
+
+> **Propósito desta seção:** ponto único de verdade sobre "o que já está pronto" vs. "o que falta", para que
+> nenhuma pendência se perca entre handoffs. Substitui a necessidade de reconstruir o estado a partir do git log.
+
+### 11.1 O que está PRONTO (marcos fechados)
+
+| Marco | Estado | Evidência |
+|---|---|---|
+| PoC-0/1: Excel→`SpecModel`→TCL | ✅ | §4 — 73 blocos/1042 campos, TCL bem-formado |
+| PoC-2: `NfeLeiauteCatalog` (#XML→XPath) | ✅ | §4/§7.8 — 62 Alta/400 Média/166 não-resolvidos, cobertura 71,5% |
+| Etapa A (PoC-3): `RootTreeBuilder`+`XslGenerator`, diff==0 no `<infNFe>` | ✅ | §7.9 — set-diff FALTA=0/SOBRA=0/TEXTO=0, XSD válido |
+| Etapa B1: `MapperEmissionGuide` (máscara das 8 SOBRAs de `retTrib`/`cobr`) | ✅ | §7.9 |
+| Etapa B2: `DadosAdicEmitter`+`Bloco290Emitter` (envelope+extensão FIAT) | ✅ | §8.2 — **documento COMPLETO diff==0** (só cosmético restante) |
+| **LowCodeRunner: bootstrap + licença OFFLINE + execução do mapeador** | ✅ | §9.4 — muro de licença (o bloqueio histórico do projeto) caiu |
+
+**Leitura:** a cadeia determinística Excel→TCL→ROOT→XSL está **provada ponta-a-ponta contra um gabarito real**
+(reproduz `enviNFe` completo, byte a byte, exceto ordem de atributos), e o runner Sysmiddle — que travava o
+projeto desde o início — **valida licença e executa sem VPN/host**. Estes dois fatos, juntos, são o que muda o
+projeto de "PoC de viabilidade" para "motor pronto para generalizar".
+
+### 11.2 O que FALTA — priorizado por alavancagem
+
+| # | Pendência | Bloco | Dono sugerido | Depende de |
+|---|---|---|---|---|
+| 1 | **Confirmar a estrutura física real do layout `LAY_ad4fb6f4` no Connect Us** (é `TextDelimited` ou largura-fixa? hoje é alimentado como 600 fixo) — ⚠️ **correção (2026-07-15, usuário):** campo de saída vazio **não é**, por si só, evidência de bug — depende do documento do cliente e das regras de negócio fiscais (item/CFOP/NCM). Só é bug se a estrutura FÍSICA da linha (tamanho) não bater com o que o Connect Us define para esse layout. Ver [`multi-client-layout-generalization.md`](multi-client-layout-generalization.md) §3 | Runner | Dex | nada — é o próximo passo imediato (§9.4) |
+| 2 | **Modo lote do runner** (varrer `Examples/LAY_*`, gravar pares input→XML em `.claude/tmp/gabaritos/`) | Runner | Dex | #1 |
+| 3 | **Generalização além do par único**: variantes ICMS10/20/30/40/51/60/70/90/CSOSN, grupos especializados (veículos/ANVISA/ANP/combustível/DI), 2ª aba do Excel (Layout-Receb = retorno), outras versões/NT | Cobertura | Lia (domínio) + Dex | #2 (precisa de gabaritos novos p/ testar) |
+| 4 | **P0 — Catálogo GUID→XPath** (destrava os 237 LinkMappings do XslSynth, cruzamento com o catálogo Excel) | Roadmap P0 | Lia | runner funcional — **já destravado**, ainda não iniciado |
+| 5 | Diffs cosméticos residuais (declaração XML, ordem de atributos `Id`/`versao`) | Etapa B2 | Dex | nada — trivial, só não foi fechado |
+| 6 | ~~Assinatura digital (`<Signature>`)~~ — **fechado (2026-07-15, usuário): fora do escopo PERMANENTE desta aplicação**, não é um item de PoC a completar depois. Quem assina o documento é o **e-forms**; esta aplicação cobre apenas geração de TCL/XSL/XSLT + validação posicional do TXT. Não faz parte de nenhuma fase futura. | — | — | **fechado** |
+| 7 | P1 — RAG few-shot sobre corpus G2KA (9 regras difíceis do `DslBlockInterpreter`: `&&`, `else`, aninhamento) | Roadmap P1 | Lia | nada — não iniciado |
+| 8 | **Integração no runtime de produção**: hoje tudo vive em `ai/XslSynth` (fora do build da API) + `tools/LowCodeRunner` (exe separado); nada plugado em `Services/LowCode/LowCodeTransformationService` ou exposto por endpoint — **confirmado pelo usuário (2026-07-15): essa decisão só faz sentido depois que #3 provar que o motor generaliza, não só o par único.** Não é tarefa desta rodada. | Arquitetura | Aria (decide) → Dex (implementa) | #3 (generalizar antes de promover) |
+| 9 | P1 — Pipeline "NT nova" (auto-regenerar o Excel-spec a partir do diff de XSD + PDF da NT) | Roadmap P1 | Lia | apenas desenhado (§5), zero código |
+| 10 | P2 — Detector de anomalia (`MLData/DocumentPatterns` coleta features mas não pontua) | Roadmap P2 | Lia | não iniciado |
+| 11 | **🔴🔴 Rotação de segredos — ACHADO MAIS GRAVE do que o registrado**: verificado em 2026-07-15, `appsettings.json` (HEAD, branch atual, remote `github.com/LayoutParser/LayoutParserApi`) **ainda tem a senha do SQL Server em texto plano** (`Database:Password`). O checklist de `security.md` marca esse item como "[x] Removido" — **está desatualizado/incorreto**. Não é só "chave antiga comprometida" — é uma credencial viva, versionada, hoje. | Segurança | Gage | **ação imediata do operador**, ver [`security.md`](../../.claude/rules/security.md) |
+| 12 | Quality gate formal (@lp-qa ainda não rodou um ciclo PASS/FAIL sobre esta trilha — os gates até aqui foram autoavaliados inline por Dex/Lia/Aria) — **confirmado pelo usuário (2026-07-15): fica adiado até o item #3 (generalização) provar que o motor não depende só do par único** | Processo | Quinn | #1–#5, #3 |
+| 13 | Documentação de produto (README bilíngue, XML docs/Swagger) — `docs/architecture/*.md` é doc interna de design, não é a doc de produto | Processo | Duda | #8 (documentar depois de decidir a integração) |
+
+### 11.3 Recomendação de sequenciamento (Aria)
+
+1. **Fechar #1+#2 (runner completo)** — é o menor esforço com maior alavancagem: sem isso, #3 e #4 não têm como
+   gerar dados novos para testar.
+2. **#3 em paralelo com #4** — generalização de variantes e o catálogo GUID→XPath não competem pelo mesmo código.
+3. **#5 antes de #12** — feche o cosmético barato antes de pedir o gate formal da Quinn.
+4. **#8 é uma decisão de arquitetura, não uma tarefa** — só depois de #3 provar que o motor generaliza (não só o
+   par único) faz sentido decidir *como* ele entra em produção (novo serviço? endpoint dedicado? substitui
+   caminho do mapeador Sysmiddle?). Escalar para o usuário quando #3 estiver satisfatório.
+5. **#11 é independente e crítico** — pode/deve rodar em paralelo a qualquer momento (`@lp-devops`).
