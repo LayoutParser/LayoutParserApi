@@ -391,7 +391,9 @@ int RunGenerate()
     string saida;
     try
     {
-        saida = new XsltApplier().Apply(gen.Xsl, rootReport.Root);
+        // B3: modo fiel ao gabarito — declaração <?xml version="1.0"?> + linha única,
+        // como o mapeador de produção serializa (fecha os diffs cosméticos residuais).
+        saida = new XsltApplier().Apply(gen.Xsl, rootReport.Root, fielAoGabarito: true);
     }
     catch (Exception ex)
     {

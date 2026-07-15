@@ -1,4 +1,5 @@
-﻿using LayoutParserApi.Models.Entities;
+﻿using LayoutParserApi.Models.Configuration;
+using LayoutParserApi.Models.Entities;
 using LayoutParserApi.Models.Parsing;
 using LayoutParserApi.Models.Responses;
 using LayoutParserApi.Models.Structure;
@@ -17,8 +18,8 @@ namespace LayoutParserApi.Services.Interfaces
         /// Calcula validações e posições dos campos para cada linha do layout
         /// </summary>
         /// <param name="layout">Layout a ser validado</param>
-        /// <param name="expectedLineLength">Tamanho esperado da linha (padrão: 600)</param>
-        List<LineValidationInfo> CalculateLineValidations(Layout layout, int expectedLineLength = 600);
+        /// <param name="expectedLineLength">Tamanho esperado da linha (padrão: default legado, ver <see cref="LineLengthResolver"/>)</param>
+        List<LineValidationInfo> CalculateLineValidations(Layout layout, int expectedLineLength = LineLengthResolver.LegacyDefaultLineLength);
         
         /// <summary>
         /// Parseia XML do layout para objeto Layout (sem precisar de arquivo txt)

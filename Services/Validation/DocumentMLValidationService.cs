@@ -1,3 +1,4 @@
+using LayoutParserApi.Models.Configuration;
 using LayoutParserApi.Models.ML;
 using LayoutParserApi.Models.Validation;
 using LayoutParserApi.Services.Interfaces;
@@ -96,17 +97,20 @@ namespace LayoutParserApi.Services.Validation
             {
                 await SaveTrainingSampleAsync(documentContent, layoutGuid, errors, metadata);
 
+                // ✅ Resolver tamanho de linha pelo GUID (allowlist); sem dado melhor, cai no default legado
+                var expectedLineLength = LineLengthResolver.Resolve(0, layoutGuid) ?? LineLengthResolver.LegacyDefaultLineLength;
+
                 var pattern = new DocumentPattern
                 {
                     LayoutGuid = layoutGuid,
                     DocumentLength = documentContent.Length,
-                    LineCount = documentContent.Length / 600,
+                    LineCount = documentContent.Length / expectedLineLength,
                     ErrorsFound = errors?.Count ?? 0,
                     CreatedAt = DateTime.UtcNow
                 };
 
                 // Extrair features do documento
-                pattern.Features = ExtractDocumentFeatures(documentContent);
+                pattern.Features = ExtractDocumentFeatures(documentContent, expectedLineLength);
 
                 // Salvar padrão
                 await SavePatternAsync(pattern);
@@ -246,8 +250,10 @@ namespace LayoutParserApi.Services.Validation
                 context.LineType = "HEADER";
             else
             {
-                // Estimar tipo de linha baseado na posição (assumindo que cada linha tem 600 chars)
-                int estimatedLineNumber = lineError.StartPosition / 600;
+                // Estimar tipo de linha baseado na posição (usando o tamanho esperado do próprio erro,
+                // com fallback no default legado quando não informado)
+                int lineLength = lineError.ExpectedLength > 0 ? lineError.ExpectedLength : LineLengthResolver.LegacyDefaultLineLength;
+                int estimatedLineNumber = lineError.StartPosition / lineLength;
                 context.LineType = $"LINHA{estimatedLineNumber:D3}";
             }
 
@@ -257,14 +263,14 @@ namespace LayoutParserApi.Services.Validation
         /// <summary>
         /// Extrai features de um documento para aprendizado
         /// </summary>
-        private Dictionary<string, object> ExtractDocumentFeatures(string documentContent)
+        private Dictionary<string, object> ExtractDocumentFeatures(string documentContent, int expectedLineLength = LineLengthResolver.LegacyDefaultLineLength)
         {
             var features = new Dictionary<string, object>();
 
             features["totalLength"] = documentContent.Length;
-            features["lineCount"] = documentContent.Length / 600;
+            features["lineCount"] = documentContent.Length / expectedLineLength;
             features["hasHeader"] = documentContent.StartsWith("HEADER");
-            features["averageLineLength"] = documentContent.Length / (documentContent.Length / 600.0);
+            features["averageLineLength"] = documentContent.Length / (documentContent.Length / (double)expectedLineLength);
 
             // Contar tipos de caracteres
             features["numericCharCount"] = documentContent.Count(char.IsDigit);

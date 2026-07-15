@@ -104,8 +104,9 @@ namespace LayoutParserApi.Controllers
                         }
 
                         // Verificar se o layout deve ter cálculo de validação
+                        // ✅ Resolução mesclada: LimitOfCaracters > 0 → allowlist manual → null (sem validação)
                         var layoutGuidString = layoutRecord.LayoutGuid.ToString();
-                        var expectedLineLength = LayoutLineSizeConfiguration.GetLineSizeForLayout(layoutGuidString);
+                        var expectedLineLength = LineLengthResolver.Resolve(layout.LimitOfCaracters, layoutGuidString);
 
                         List<LineValidationInfo>? lineValidations = null;
                         int validLines = 0;
