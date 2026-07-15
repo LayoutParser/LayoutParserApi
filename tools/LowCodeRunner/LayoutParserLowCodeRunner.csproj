@@ -30,6 +30,16 @@
       <HintPath>$(InstanceBin)\appConnector.Client.Core.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <!-- Connector (tipo retornado por GetConfiguration/SetConfiguration) -->
+    <Reference Include="appConnector.Client.Interface">
+      <HintPath>$(InstanceBin)\appConnector.Client.Interface.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- LicenseController concreto (o Initialize da InstanceFactory não o auto-mapeia aqui) -->
+    <Reference Include="SysMiddle.ConnectUs.Core">
+      <HintPath>$(InstanceBin)\SysMiddle.ConnectUs.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
   </ItemGroup>
 
 </Project>

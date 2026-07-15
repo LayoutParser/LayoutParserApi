@@ -119,6 +119,20 @@ namespace LayoutParserLowCodeRunner
 
         private static int Run(string globalFolder, string package, string mapperGuid, string inputPath, string outputPath)
         {
+            // ── Gate de licença do APIManager (SEPARADO do ConnectorApplicationManager) ──
+            // Descoberta por decompilação (SysMiddle.Base.InstanceFactory + SysMiddle.API.APIManager):
+            //  1) O ctor do APIManager pega o ILicenseController de InstanceFactory.GetInstance<ILicenseController>();
+            //     se a InstanceFactory NÃO tem o mapeamento interface→concreto, GetInstance retorna null (IsInterface)
+            //     e o ctor lança "Controle de licença ... não encontrado" → MappersHelper em retry infinito.
+            //  2) Neste ambiente o Initialize() da InstanceFactory NÃO escaneou SysMiddle.ConnectUs.Core.dll,
+            //     então ILicenseController ficou sem concreto. Registramos o mapeamento EXPLICITAMENTE.
+            //  3) Depois, SETAR GlobalConfigurationFileName instancia o LicenseController(configLocation) com o
+            //     global.config (que tem o LicenseCode) → licença validada offline.
+            SysMiddle.Base.InstanceFactory.Instance.CreateType(
+                typeof(SysMiddle.Base.Interface.ILicenseController),
+                typeof(SysMiddle.ConnectUs.Core.Helper.General.LicenseController));
+            SysMiddle.API.APIManager.GlobalConfigurationFileName = Path.Combine(globalFolder, "global.config");
+
             var helper = MappersHelper.Instance;
 
             // ── LIST: imprime os mapeadores do package (descoberta) ──
