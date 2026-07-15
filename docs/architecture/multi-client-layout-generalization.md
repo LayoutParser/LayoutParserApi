@@ -204,8 +204,8 @@ justifica a omissão" — rastreabilidade da decisão, não comparação posicio
 | Fase | Entregável | Dono | Depende de |
 |---|---|---|---|
 | G0 | ✅ **Concluído (2026-07-15, arquiteto inline)** — Investigar `LayoutLineSizeConfiguration` vs `Layout.LimitOfCaracters`. Achado: `LimitOfCaracters=0` real para ao menos 1 dos 9 GUIDs (evidência em XML decriptado); a allowlist compensa dado sujo conhecido, não é redundante (§4.2) | Aria | nada |
-| G1 | Implementar resolução mesclada (`LimitOfCaracters` > 0 → override da allowlist → null) e substituir os ~20 literais `600` no núcleo (`Services/`) por essa função única | Dex | G0 ✅ |
-| G2 | `RootTreeBuilder`/`NfeGabaritoMiner` recebem tamanho de linha como parâmetro, não constante | Dex | nada — independente de G1 |
+| G1 | ✅ **Concluído (2026-07-15, Trilha B — commit `d096364`, merged PR #3, auditado pela Aria):** `Models/Configuration/LineLengthResolver.cs` (precedência `LimitOfCaracters>0` → allowlist → null; `LegacyDefaultLineLength=600` é o único literal remanescente); 3 gates de allowlist migrados (`ParseController`, `MonitoringController`, `LayoutValidationService`); fallback de parse `? limit : 600` corrigido para `? limit : 0` (um 600 fabricado venceria a allowlist e quebraria os layouts de 2500); literais residuais só em `Services/Generation/**` (fora do escopo, follow-up registrado) | Dex | G0 ✅ |
+| G2 | ✅ **Concluído (2026-07-15, Trilha B — mesmo commit):** `RootTreeBuilder.Build`/`NfeGabarito.Load` com parâmetro `lineLength` (default 600 p/ CLI; guard `ArgumentOutOfRangeException` p/ ≤0); valor real virá de `Layout.LimitOfCaracters` via `LineLengthResolver` na integração C1 | Dex | nada |
 | G3 | `LayoutSpecExtractor` — 2º adaptador de ingestão de spec via Connect Us/LowCodeRunner (Fonte B, §4.3) | Lia | runner em modo lote (`poc-excel-generator.md` §11 item 2) |
 | G4 | Generalizar `MapperEmissionGuide` de "8 campos conhecidos" para motor de condicionalidade genérico (§4.4) | Lia | G3 (precisa de mais mapeadores reais para generalizar o padrão) |
 | G5 | Corrigir a redação da pendência #1 em `poc-excel-generator.md` §11 (feito nesta sessão, ver §7 abaixo) | Aria | — |
