@@ -2,7 +2,8 @@
 
 > **Autor:** @lp-architect (Aria) · **Status:** Proposta (design) · **Data:** 2026-07-10
 > **Escopo:** desenhar o desenvolvimento. A implementação é de `@lp-backend-dev` (Dex) e `@lp-parser-llm` (Lia); QA por `@lp-qa` (Quinn).
-> **Relacionado:** [`ia-xslt-synthesis.md`](ia-xslt-synthesis.md) · memória `server-assets-inventory`, `sysmiddle-runtime-e-sintese`.
+> **Relacionado:** [`ia-xslt-synthesis.md`](ia-xslt-synthesis.md) · [`multi-client-layout-generalization.md`](multi-client-layout-generalization.md)
+> (generalização além da FIAT, 2026-07-15) · memória `server-assets-inventory`, `sysmiddle-runtime-e-sintese`.
 
 ---
 
@@ -428,7 +429,7 @@ Catálogo: **62 Alta / 400 Média / 166 não-resolvidos** (era 55/383/190); cobe
 
 ```
 [A3] set-diff por path <infNFe>: FALTA=0, SOBRA=0, TEXTO=0
-     XSD (elemento NFe): VÁLIDO ✅ (resta só a assinatura — esperado, a PoC não assina)
+     XSD (elemento NFe): VÁLIDO ✅ (resta só a assinatura — fora de escopo PERMANENTE, quem assina é o e-forms)
 ```
 
 **O pipeline determinístico Excel→TCL→ROOT→XSL reproduz o `<infNFe>` do mapeador de produção IDENTICAMENTE
@@ -572,3 +573,55 @@ saída em `.claude/tmp/gabaritos/runner-output.xml`. Fonte decompilada em scratc
 - **@lp-qa (Quinn):** gates por fase, validação XSD, métricas de cobertura.
 - **@lp-devops (Gage):** segredos/rotação; qualquer push.
 - **@lp-architect (Aria):** este design; revisão de convergência dos dois catálogos (Excel × GUID).
+
+---
+
+## 11. Estado geral e pendências consolidadas (2026-07-15, arquiteto)
+
+> **Propósito desta seção:** ponto único de verdade sobre "o que já está pronto" vs. "o que falta", para que
+> nenhuma pendência se perca entre handoffs. Substitui a necessidade de reconstruir o estado a partir do git log.
+
+### 11.1 O que está PRONTO (marcos fechados)
+
+| Marco | Estado | Evidência |
+|---|---|---|
+| PoC-0/1: Excel→`SpecModel`→TCL | ✅ | §4 — 73 blocos/1042 campos, TCL bem-formado |
+| PoC-2: `NfeLeiauteCatalog` (#XML→XPath) | ✅ | §4/§7.8 — 62 Alta/400 Média/166 não-resolvidos, cobertura 71,5% |
+| Etapa A (PoC-3): `RootTreeBuilder`+`XslGenerator`, diff==0 no `<infNFe>` | ✅ | §7.9 — set-diff FALTA=0/SOBRA=0/TEXTO=0, XSD válido |
+| Etapa B1: `MapperEmissionGuide` (máscara das 8 SOBRAs de `retTrib`/`cobr`) | ✅ | §7.9 |
+| Etapa B2: `DadosAdicEmitter`+`Bloco290Emitter` (envelope+extensão FIAT) | ✅ | §8.2 — **documento COMPLETO diff==0** (só cosmético restante) |
+| **LowCodeRunner: bootstrap + licença OFFLINE + execução do mapeador** | ✅ | §9.4 — muro de licença (o bloqueio histórico do projeto) caiu |
+
+**Leitura:** a cadeia determinística Excel→TCL→ROOT→XSL está **provada ponta-a-ponta contra um gabarito real**
+(reproduz `enviNFe` completo, byte a byte, exceto ordem de atributos), e o runner Sysmiddle — que travava o
+projeto desde o início — **valida licença e executa sem VPN/host**. Estes dois fatos, juntos, são o que muda o
+projeto de "PoC de viabilidade" para "motor pronto para generalizar".
+
+### 11.2 O que FALTA — priorizado por alavancagem
+
+| # | Pendência | Bloco | Dono sugerido | Depende de |
+|---|---|---|---|---|
+| 1 | **Confirmar a estrutura física real do layout `LAY_ad4fb6f4` no Connect Us** (é `TextDelimited` ou largura-fixa? hoje é alimentado como 600 fixo) — ⚠️ **correção (2026-07-15, usuário):** campo de saída vazio **não é**, por si só, evidência de bug — depende do documento do cliente e das regras de negócio fiscais (item/CFOP/NCM). Só é bug se a estrutura FÍSICA da linha (tamanho) não bater com o que o Connect Us define para esse layout. Ver [`multi-client-layout-generalization.md`](multi-client-layout-generalization.md) §3 | Runner | Dex | nada — é o próximo passo imediato (§9.4) |
+| 2 | **Modo lote do runner** (varrer `Examples/LAY_*`, gravar pares input→XML em `.claude/tmp/gabaritos/`) | Runner | Dex | #1 |
+| 3 | **Generalização além do par único**: variantes ICMS10/20/30/40/51/60/70/90/CSOSN, grupos especializados (veículos/ANVISA/ANP/combustível/DI), 2ª aba do Excel (Layout-Receb = retorno), outras versões/NT | Cobertura | Lia (domínio) + Dex | #2 (precisa de gabaritos novos p/ testar) |
+| 4 | **P0 — Catálogo GUID→XPath** (destrava os 237 LinkMappings do XslSynth, cruzamento com o catálogo Excel) | Roadmap P0 | Lia | runner funcional — **já destravado**, ainda não iniciado |
+| 5 | Diffs cosméticos residuais (declaração XML, ordem de atributos `Id`/`versao`) | Etapa B2 | Dex | nada — trivial, só não foi fechado |
+| 6 | ~~Assinatura digital (`<Signature>`)~~ — **fechado (2026-07-15, usuário): fora do escopo PERMANENTE desta aplicação**, não é um item de PoC a completar depois. Quem assina o documento é o **e-forms**; esta aplicação cobre apenas geração de TCL/XSL/XSLT + validação posicional do TXT. Não faz parte de nenhuma fase futura. | — | — | **fechado** |
+| 7 | P1 — RAG few-shot sobre corpus G2KA (9 regras difíceis do `DslBlockInterpreter`: `&&`, `else`, aninhamento) | Roadmap P1 | Lia | nada — não iniciado |
+| 8 | **Integração no runtime de produção**: hoje tudo vive em `ai/XslSynth` (fora do build da API) + `tools/LowCodeRunner` (exe separado); nada plugado em `Services/LowCode/LowCodeTransformationService` ou exposto por endpoint — **confirmado pelo usuário (2026-07-15): essa decisão só faz sentido depois que #3 provar que o motor generaliza, não só o par único.** Não é tarefa desta rodada. | Arquitetura | Aria (decide) → Dex (implementa) | #3 (generalizar antes de promover) |
+| 9 | P1 — Pipeline "NT nova" (auto-regenerar o Excel-spec a partir do diff de XSD + PDF da NT) | Roadmap P1 | Lia | apenas desenhado (§5), zero código |
+| 10 | P2 — Detector de anomalia (`MLData/DocumentPatterns` coleta features mas não pontua) | Roadmap P2 | Lia | não iniciado |
+| 11 | **🔴🔴 Rotação de segredos — ACHADO MAIS GRAVE do que o registrado**: verificado em 2026-07-15, `appsettings.json` (HEAD, branch atual, remote `github.com/LayoutParser/LayoutParserApi`) **ainda tem a senha do SQL Server em texto plano** (`Database:Password`). O checklist de `security.md` marca esse item como "[x] Removido" — **está desatualizado/incorreto**. Não é só "chave antiga comprometida" — é uma credencial viva, versionada, hoje. | Segurança | Gage | **ação imediata do operador**, ver [`security.md`](../../.claude/rules/security.md) |
+| 12 | Quality gate formal (@lp-qa ainda não rodou um ciclo PASS/FAIL sobre esta trilha — os gates até aqui foram autoavaliados inline por Dex/Lia/Aria) — **confirmado pelo usuário (2026-07-15): fica adiado até o item #3 (generalização) provar que o motor não depende só do par único** | Processo | Quinn | #1–#5, #3 |
+| 13 | Documentação de produto (README bilíngue, XML docs/Swagger) — `docs/architecture/*.md` é doc interna de design, não é a doc de produto | Processo | Duda | #8 (documentar depois de decidir a integração) |
+
+### 11.3 Recomendação de sequenciamento (Aria)
+
+1. **Fechar #1+#2 (runner completo)** — é o menor esforço com maior alavancagem: sem isso, #3 e #4 não têm como
+   gerar dados novos para testar.
+2. **#3 em paralelo com #4** — generalização de variantes e o catálogo GUID→XPath não competem pelo mesmo código.
+3. **#5 antes de #12** — feche o cosmético barato antes de pedir o gate formal da Quinn.
+4. **#8 é uma decisão de arquitetura, não uma tarefa** — só depois de #3 provar que o motor generaliza (não só o
+   par único) faz sentido decidir *como* ele entra em produção (novo serviço? endpoint dedicado? substitui
+   caminho do mapeador Sysmiddle?). Escalar para o usuário quando #3 estiver satisfatório.
+5. **#11 é independente e crítico** — pode/deve rodar em paralelo a qualquer momento (`@lp-devops`).
