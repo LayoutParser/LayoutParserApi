@@ -1,4 +1,5 @@
-﻿using LayoutParserApi.Models.Entities;
+﻿using LayoutParserApi.Models.Configuration;
+using LayoutParserApi.Models.Entities;
 using LayoutParserApi.Models.Enums;
 using LayoutParserApi.Models.Logging;
 using LayoutParserApi.Models.Parsing;
@@ -59,19 +60,21 @@ namespace LayoutParserApi.Services.Implementations
 
                 _layoutValidator.ValidateCompleteLayout(result.Layout);
 
-                // Valida se todas as linhas têm 600 posições (regra específica para MQSeries)
+                // Valida se todas as linhas têm o tamanho esperado (regra específica para MQSeries)
+                // ✅ Tamanho resolvido do layout (LimitOfCaracters → allowlist → default legado 600)
+                int documentLineLength = LineLengthResolver.ResolveOrDefault(result.Layout);
                 DocumentValidationResult documentValidation = null;
                 bool isMqSeriesLayout = IsMqSeriesLayout(result.Layout);
 
                 if (isMqSeriesLayout)
                 {
-                    documentValidation = _documentValidationService.ValidateDocument(result.RawText);
+                    documentValidation = _documentValidationService.ValidateDocument(result.RawText, documentLineLength);
                     _techLogger.LogTechnical(new TechLogEntry
                     {
                         RequestId = Guid.NewGuid().ToString(),
                         Endpoint = "ParseAsync",
                         Level = "Info",
-                        Message = $"Layout MQSeries detectado - aplicando validacao de 600 caracteres por linha"
+                        Message = $"Layout MQSeries detectado - aplicando validacao de {documentLineLength} caracteres por linha"
                     });
                 }
                 else
@@ -88,7 +91,7 @@ namespace LayoutParserApi.Services.Implementations
                         RequestId = Guid.NewGuid().ToString(),
                         Endpoint = "ParseAsync",
                         Level = "Info",
-                        Message = $"Layout nao-MQSeries ({result.Layout?.LayoutType ?? "Unknown"}) - validação de 600 caracteres nao aplicada"
+                        Message = $"Layout nao-MQSeries ({result.Layout?.LayoutType ?? "Unknown"}) - validação de tamanho de linha nao aplicada"
                     });
                 }
 
@@ -191,8 +194,10 @@ namespace LayoutParserApi.Services.Implementations
             }
 
             // Usar detectedType para IDOC, senão usar layoutType do banco
+            // ✅ Tamanho de linha resolvido uma única vez para todo o parse (fonte: resolver mesclado)
+            int layoutLineLength = LineLengthResolver.ResolveOrDefault(layout);
             var splitType = detectedType == "idoc" ? "idoc" : layout.LayoutType;
-            var lines = _lineSplitter.SplitTextIntoLines(text, splitType);
+            var lines = _lineSplitter.SplitTextIntoLines(text, splitType, layoutLineLength);
 
             _techLogger.LogTechnical(new TechLogEntry
             {
@@ -206,7 +211,7 @@ namespace LayoutParserApi.Services.Implementations
 
             for (int lineIndex = 0; lineIndex < lines.Length; lineIndex++)
             {
-                int expectedLength = 600;
+                int expectedLength = layoutLineLength;
                 LineElement matchingLineConfig = null;
 
                 if (layout?.Elements != null)
@@ -235,9 +240,9 @@ namespace LayoutParserApi.Services.Implementations
                     matchingLineConfig = FindMatchingLineConfigRecursive(lines[lineIndex], layout.Elements);
                     if (matchingLineConfig != null)
                     {
-                        expectedLength = SumLengthFieldFromFieldElements(matchingLineConfig);
+                        expectedLength = SumLengthFieldFromFieldElements(matchingLineConfig, layoutLineLength);
                         if (expectedLength <= 0)
-                            expectedLength = 600;
+                            expectedLength = layoutLineLength;
                     }
                 }
 
@@ -272,7 +277,7 @@ namespace LayoutParserApi.Services.Implementations
 
                     if (currentOccurrence < maxOccurrences)
                         // Chamar ParseLineFields com a próxima ocorrência (currentOccurrence já é o máximo atual, então usamos ele)
-                        ParseLineFields(currentLine, matchingLineConfig, parsedFields, currentOccurrence);
+                        ParseLineFields(currentLine, matchingLineConfig, parsedFields, currentOccurrence, layoutLineLength);
                     else
                     {
                         _techLogger.LogTechnical(new TechLogEntry
@@ -702,7 +707,7 @@ namespace LayoutParserApi.Services.Implementations
             return sequence.Length == 6 && sequence.All(char.IsDigit) && int.TryParse(sequence, out _);
         }
 
-        private void ParseLineFields(string line, LineElement lineConfig, List<ParsedField> parsedFields, int occurrenceIndex)
+        private void ParseLineFields(string line, LineElement lineConfig, List<ParsedField> parsedFields, int occurrenceIndex, int expectedLineLength = LineLengthResolver.LegacyDefaultLineLength)
         {
             _techLogger.LogTechnical(new TechLogEntry
             {
@@ -720,7 +725,7 @@ namespace LayoutParserApi.Services.Implementations
                 Message = $"Linha completa ({line.Length} chars): {line.Substring(0, Math.Min(100, line.Length))}..."
             });
 
-            string paddedLine = line.PadRight(600);
+            string paddedLine = line.PadRight(expectedLineLength);
 
             // IMPORTANTE: Extrair diretamente da linha original, não do paddedLine, para garantir que seja o valor correto
             string lineSequence = line.Length >= 6 ? line.Substring(0, 6) : line.PadRight(6).Substring(0, 6);
@@ -841,14 +846,14 @@ namespace LayoutParserApi.Services.Implementations
 
             FiltrarParsedFields(parsedFields);
 
-            if (currentPosition != 600)
+            if (currentPosition != expectedLineLength)
             {
                 _techLogger.LogTechnical(new TechLogEntry
                 {
                     RequestId = Guid.NewGuid().ToString(),
                     Endpoint = "ParseTextWithSequenceValidation",
                     Level = "Warn",
-                    Message = $"AVISO: Terminou em {currentPosition}, deveria terminar em 600"
+                    Message = $"AVISO: Terminou em {currentPosition}, deveria terminar em {expectedLineLength}"
                 });
             }
         }
@@ -1013,7 +1018,8 @@ namespace LayoutParserApi.Services.Implementations
 
                     if (typeAttr?.Value == "LineElementVO")
                     {
-                        var line = ParseLineElementWithHierarchy(lineElem, xsi);
+                        // ✅ Tamanho de linha resolvido do próprio layout recém-parseado (apenas para o log de validação)
+                        var line = ParseLineElementWithHierarchy(lineElem, xsi, LineLengthResolver.ResolveOrDefault(layout));
                         if (line != null)
                             layout.Elements.Add(line);
                     }
@@ -1023,7 +1029,7 @@ namespace LayoutParserApi.Services.Implementations
             return layout;
         }
 
-        private LineElement ParseLineElementWithHierarchy(XElement lineElem, XNamespace xsi)
+        private LineElement ParseLineElementWithHierarchy(XElement lineElem, XNamespace xsi, int expectedLineLength = LineLengthResolver.LegacyDefaultLineLength)
         {
             var line = new LineElement
             {
@@ -1075,7 +1081,7 @@ namespace LayoutParserApi.Services.Implementations
                     }
                     else if (childTypeAttr?.Value == "LineElementVO")
                     {
-                        var childLine = ParseLineElementWithHierarchy(childElem, xsi);
+                        var childLine = ParseLineElementWithHierarchy(childElem, xsi, expectedLineLength);
                         if (childLine != null)
                         {
                             string childLineJson = JsonConvert.SerializeObject(childLine);
@@ -1107,12 +1113,12 @@ namespace LayoutParserApi.Services.Implementations
             int totalLength = CalculateLineLengthForValidation(line);
             if (totalLength > 0) // Se tiver campos
             {
-                string validationStatus = totalLength == 600 ? "OK" : $" AVISO: {totalLength} posições (esperado: 600)";
+                string validationStatus = totalLength == expectedLineLength ? "OK" : $" AVISO: {totalLength} posições (esperado: {expectedLineLength})";
                 _techLogger.LogTechnical(new TechLogEntry
                 {
                     RequestId = Guid.NewGuid().ToString(),
                     Endpoint = "ParseLayoutFromXDocument",
-                    Level = totalLength == 600 ? "Info" : "Warn",
+                    Level = totalLength == expectedLineLength ? "Info" : "Warn",
                     Message = $"Validação tamanho {line.Name}: {validationStatus}"
                 });
             }
@@ -1173,14 +1179,16 @@ namespace LayoutParserApi.Services.Implementations
             var linesExpected = ExtractExpectedLinesFromLayout(result.Layout);
             var missingLines = linesExpected.Count - linesPresent.Count;
 
-            // Calcular total de linhas lógicas (para mqseries com 600 chars por linha)
+            // Calcular total de linhas lógicas (para mqseries com largura fixa por linha)
+            // ✅ Tamanho de linha resolvido do layout (resolver mesclado, default legado)
+            int summaryLineLength = LineLengthResolver.ResolveOrDefault(result.Layout);
             int totalLogicalLines = 0;
             if (!string.IsNullOrEmpty(result.RawText))
             {
                 var cleanContent = result.RawText.Replace("\r", "").Replace("\n", "");
-                if (cleanContent.Length >= 600 && cleanContent.Length % 600 == 0)
-                    // Linhas de comprimento fixo de 600
-                    totalLogicalLines = cleanContent.Length / 600;
+                if (cleanContent.Length >= summaryLineLength && cleanContent.Length % summaryLineLength == 0)
+                    // Linhas de comprimento fixo
+                    totalLogicalLines = cleanContent.Length / summaryLineLength;
                 else
                     // Linhas físicas (quebras de linha)
                     totalLogicalLines = result.RawText.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length;
@@ -1302,9 +1310,12 @@ namespace LayoutParserApi.Services.Implementations
 
             var missingRequiredLines = IdentifyMissingRequiredLines(linesPresent, linesExpected);
 
-            var lineDetails = BuildLineDetails(result.ParsedFields, linesExpected, result.RawText);
+            // ✅ Tamanho de linha resolvido do layout (resolver mesclado, default legado)
+            int structureLineLength = LineLengthResolver.ResolveOrDefault(result.Layout);
 
-            var validation = BuildDocumentValidation(result, missingRequiredLines, linesPresent, linesExpected);
+            var lineDetails = BuildLineDetails(result.ParsedFields, linesExpected, result.RawText, structureLineLength);
+
+            var validation = BuildDocumentValidation(result, missingRequiredLines, linesPresent, linesExpected, structureLineLength);
 
             return new DocumentStructure
             {
@@ -1444,10 +1455,10 @@ namespace LayoutParserApi.Services.Implementations
             return missingLines;
         }
 
-        private Dictionary<string, LineDetail> BuildLineDetails(List<ParsedField> parsedFields, List<string> linesExpected, string rawText)
+        private Dictionary<string, LineDetail> BuildLineDetails(List<ParsedField> parsedFields, List<string> linesExpected, string rawText, int expectedLineLength = LineLengthResolver.LegacyDefaultLineLength)
         {
             var lineDetails = new Dictionary<string, LineDetail>();
-            var physicalLines = ExtractPhysicalLines(rawText);
+            var physicalLines = ExtractPhysicalLines(rawText, expectedLineLength);
 
             // Mapear sequencial (primeiros 6 chars) -> conteúdo da linha física
             var seqToLine = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -1494,7 +1505,7 @@ namespace LayoutParserApi.Services.Implementations
             return lineDetails;
         }
 
-        private DocumentValidation BuildDocumentValidation(ParsingResult result, List<string> missingRequiredLines, List<string> linesPresent, List<string> linesExpected)
+        private DocumentValidation BuildDocumentValidation(ParsingResult result, List<string> missingRequiredLines, List<string> linesPresent, List<string> linesExpected, int expectedLineLength = LineLengthResolver.LegacyDefaultLineLength)
         {
             var hasMissingLines = missingRequiredLines.Any();
             var hasFieldErrors = result.Summary?.ErrorFields > 0;
@@ -1514,7 +1525,7 @@ namespace LayoutParserApi.Services.Implementations
                 OverallStatus = overallStatus,
 
                 MissingRequiredLines = missingRequiredLines,
-                StructuralErrors = IdentifyStructuralErrors(result.RawText),
+                StructuralErrors = IdentifyStructuralErrors(result.RawText, expectedLineLength),
                 ValidationWarnings = IdentifyValidationWarnings(result.ParsedFields),
                 CriticalErrors = IdentifyCriticalErrors(missingRequiredLines, result.ParsedFields),
 
@@ -1561,7 +1572,7 @@ namespace LayoutParserApi.Services.Implementations
             return requiredLines.Contains(lineName);
         }
 
-        private static List<string> ExtractPhysicalLines(string rawText)
+        private static List<string> ExtractPhysicalLines(string rawText, int expectedLineLength = LineLengthResolver.LegacyDefaultLineLength)
         {
             if (string.IsNullOrEmpty(rawText))
                 return new List<string>();
@@ -1569,13 +1580,13 @@ namespace LayoutParserApi.Services.Implementations
             // Remover quebras para análise posicional contínua
             var clean = rawText.Replace("\r", "").Replace("\n", "");
 
-            // MQSeries: blocos de 600 caracteres (mesmo com erro pode não ser múltiplo de 600)
-            if (clean.StartsWith("HEADER", StringComparison.OrdinalIgnoreCase) && clean.Length >= 600)
+            // MQSeries: blocos de largura fixa (mesmo com erro pode não ser múltiplo exato)
+            if (clean.StartsWith("HEADER", StringComparison.OrdinalIgnoreCase) && clean.Length >= expectedLineLength)
             {
                 var lines = new List<string>();
-                for (int i = 0; i < clean.Length; i += 600)
+                for (int i = 0; i < clean.Length; i += expectedLineLength)
                 {
-                    var len = Math.Min(600, clean.Length - i);
+                    var len = Math.Min(expectedLineLength, clean.Length - i);
                     lines.Add(clean.Substring(i, len));
                 }
                 return lines;
@@ -1956,7 +1967,7 @@ namespace LayoutParserApi.Services.Implementations
             return warnings;
         }
 
-        private List<string> IdentifyStructuralErrors(string rawText)
+        private List<string> IdentifyStructuralErrors(string rawText, int expectedLineLength = LineLengthResolver.LegacyDefaultLineLength)
         {
             var errors = new List<string>();
 
@@ -1973,28 +1984,28 @@ namespace LayoutParserApi.Services.Implementations
             if (!cleanText.StartsWith("HEADER"))
                 errors.Add("Documento nao comeca com HEADER");
 
-            // Validar se o tamanho total é múltiplo de 600
-            if (cleanText.Length < 600)
+            // Validar se o tamanho total é múltiplo do tamanho de linha esperado
+            if (cleanText.Length < expectedLineLength)
             {
-                errors.Add($"Documento muito pequeno ({cleanText.Length} caracteres, mínimo 600)");
+                errors.Add($"Documento muito pequeno ({cleanText.Length} caracteres, mínimo {expectedLineLength})");
                 return errors;
             }
 
-            if (cleanText.Length % 600 != 0)
-                errors.Add($"Tamanho do documento ({cleanText.Length} caracteres) nao e multiplo de 600. Possivel linha incompleta.");
+            if (cleanText.Length % expectedLineLength != 0)
+                errors.Add($"Tamanho do documento ({cleanText.Length} caracteres) nao e multiplo de {expectedLineLength}. Possivel linha incompleta.");
 
-            // Validar blocos lógicos de 600 caracteres
-            int totalLogicalLines = cleanText.Length / 600;
+            // Validar blocos lógicos do tamanho de linha esperado
+            int totalLogicalLines = cleanText.Length / expectedLineLength;
             for (int i = 0; i < totalLogicalLines; i++)
             {
-                int startPos = i * 600;
-                if (startPos + 600 <= cleanText.Length)
+                int startPos = i * expectedLineLength;
+                if (startPos + expectedLineLength <= cleanText.Length)
                 {
-                    var logicalLine = cleanText.Substring(startPos, 600);
+                    var logicalLine = cleanText.Substring(startPos, expectedLineLength);
                     var lineNumber = i + 1;
 
                     if (ContainsInvalidCharacters(logicalLine))
-                        errors.Add($"Bloco logico {lineNumber} (posicao {startPos}-{startPos + 599}): Contem caracteres invalidos ou nao-ASCII");
+                        errors.Add($"Bloco logico {lineNumber} (posicao {startPos}-{startPos + expectedLineLength - 1}): Contem caracteres invalidos ou nao-ASCII");
                 }
             }
 
@@ -2049,7 +2060,7 @@ namespace LayoutParserApi.Services.Implementations
         }
 
         // Método para somar o comprimento total dos campos de um LineElement (incluindo aninhados)
-        private int SumLengthFieldFromFieldElements(LineElement lineElement)
+        private int SumLengthFieldFromFieldElements(LineElement lineElement, int expectedLineLength = LineLengthResolver.LegacyDefaultLineLength)
         {
             if (lineElement == null || lineElement.Elements == null)
                 return 0;
@@ -2101,8 +2112,8 @@ namespace LayoutParserApi.Services.Implementations
             {
                 RequestId = Guid.NewGuid().ToString(),
                 Endpoint = "SumLengthFieldFromFieldElements",
-                Level = totalLength == 600 ? "Info" : "Warn",
-                Message = $"Linha: {lineElement.Name ?? "Desconhecida"} | Campos: {fieldCount} ({fieldsLength} chars) + InitialValue ({initialValueLength}) + Seq. anterior ({sequenceFromPreviousLine}) = {totalLength}" + (totalLength != 600 ? "  DIFERENTE DE 600!" : " ✓")
+                Level = totalLength == expectedLineLength ? "Info" : "Warn",
+                Message = $"Linha: {lineElement.Name ?? "Desconhecida"} | Campos: {fieldCount} ({fieldsLength} chars) + InitialValue ({initialValueLength}) + Seq. anterior ({sequenceFromPreviousLine}) = {totalLength}" + (totalLength != expectedLineLength ? $"  DIFERENTE DE {expectedLineLength}!" : " ✓")
             });
 
             return totalLength;
@@ -2170,7 +2181,7 @@ namespace LayoutParserApi.Services.Implementations
             return _layoutNormalizer.ReordenarSequences(layout);
         }
 
-        private void ValidateLineLayout(LineElement lineConfig)
+        private void ValidateLineLayout(LineElement lineConfig, int expectedLineLength = LineLengthResolver.LegacyDefaultLineLength)
         {
             try
             {
@@ -2324,12 +2335,12 @@ namespace LayoutParserApi.Services.Implementations
                 if (childLineElements.Any())
                 {
                     // Para LINHA020: deve ter APENAS os campos próprios + initialValue + sequence
-                    // Os filhos são linhas SEPARADAS de 600 caracteres cada
-                    isValid = totalLength <= 600;
+                    // Os filhos são linhas SEPARADAS (cada uma com o tamanho de linha esperado)
+                    isValid = totalLength <= expectedLineLength;
 
                     string validationMsg = isValid ? "VALIDO (linha com filhos)" : " AVISO: Linha com filhos";
 
-                    if (lineConfig.Name == "LINHA020" && totalLength != 600)
+                    if (lineConfig.Name == "LINHA020" && totalLength != expectedLineLength)
                         validationMsg += $". LINHA020 tem {totalLength} chars (campos proprios apenas)";
 
                     _techLogger.LogTechnical(new TechLogEntry
@@ -2342,19 +2353,19 @@ namespace LayoutParserApi.Services.Implementations
                 else
                 {
                     // Para linhas sem filhos: cálculo normal
-                    isValid = totalLength == 600;
+                    isValid = totalLength == expectedLineLength;
 
                     _techLogger.LogTechnical(new TechLogEntry
                     {
                         RequestId = Guid.NewGuid().ToString(),
                         Level = isValid ? "Info" : "Error",
-                        Message = $"TOTAL: {totalLength} caracteres → {(isValid ? "VALIDO (600)" : "INVÁLIDO (deveria ser 600)")}"
+                        Message = $"TOTAL: {totalLength} caracteres → {(isValid ? $"VALIDO ({expectedLineLength})" : $"INVÁLIDO (deveria ser {expectedLineLength})")}"
                     });
                 }
 
                 if (!isValid && !childLineElements.Any())
                 {
-                    int difference = 600 - totalLength;
+                    int difference = expectedLineLength - totalLength;
                     _techLogger.LogTechnical(new TechLogEntry
                     {
                         RequestId = Guid.NewGuid().ToString(),
@@ -2418,7 +2429,7 @@ namespace LayoutParserApi.Services.Implementations
                             Message = $"CHAMANDO ValidateLineLayout PARA: {childLine.Name}"
                         });
 
-                        ValidateLineLayout(childLine); // Validar recursivamente
+                        ValidateLineLayout(childLine, expectedLineLength); // Validar recursivamente
                     }
 
                     _techLogger.LogTechnical(new TechLogEntry
@@ -2650,7 +2661,7 @@ namespace LayoutParserApi.Services.Implementations
             }
         }
 
-        private void ValidateLineLayoutWithResult(LineElement lineConfig, List<LineValidationResult> results)
+        private void ValidateLineLayoutWithResult(LineElement lineConfig, List<LineValidationResult> results, int expectedLineLength = LineLengthResolver.LegacyDefaultLineLength)
         {
             try
             {
@@ -2669,7 +2680,7 @@ namespace LayoutParserApi.Services.Implementations
                 int totalLength = initialValueLength + fieldsLength + sequenceFromPreviousLine;
 
                 bool hasChildren = childLineElements.Any();
-                bool isValid = hasChildren ? totalLength <= 600 : totalLength == 600;
+                bool isValid = hasChildren ? totalLength <= expectedLineLength : totalLength == expectedLineLength;
 
                 var result = new LineValidationResult
                 {
@@ -2696,7 +2707,7 @@ namespace LayoutParserApi.Services.Implementations
                 // Validar elementos filhos recursivamente
                 if (childLineElements.Any())
                     foreach (var childLine in childLineElements)
-                        ValidateLineLayoutWithResult(childLine, results);
+                        ValidateLineLayoutWithResult(childLine, results, expectedLineLength);
             }
             catch (Exception ex)
             {
@@ -2710,7 +2721,7 @@ namespace LayoutParserApi.Services.Implementations
             }
         }
 
-        private void ShowValidationSummary(List<LineValidationResult> results)
+        private void ShowValidationSummary(List<LineValidationResult> results, int expectedLineLength = LineLengthResolver.LegacyDefaultLineLength)
         {
             _techLogger.LogTechnical(new TechLogEntry
             {
@@ -2720,8 +2731,8 @@ namespace LayoutParserApi.Services.Implementations
                 Message = "=== RESUMO DA VALIDACAO ==="
             });
 
-            // Linhas válidas (exatamente 600 caracteres)
-            var validLines = results.Where(r => r.IsValid && !r.HasChildren && r.TotalLength == 600).ToList();
+            // Linhas válidas (exatamente o tamanho de linha esperado)
+            var validLines = results.Where(r => r.IsValid && !r.HasChildren && r.TotalLength == expectedLineLength).ToList();
             if (validLines.Any())
             {
                 _techLogger.LogTechnical(new TechLogEntry
@@ -2729,7 +2740,7 @@ namespace LayoutParserApi.Services.Implementations
                     RequestId = Guid.NewGuid().ToString(),
                     Endpoint = "ValidateCompleteLayout",
                     Level = "Info",
-                    Message = $"LINHAS VALIDAS (600 caracteres): {validLines.Count}"
+                    Message = $"LINHAS VALIDAS ({expectedLineLength} caracteres): {validLines.Count}"
                 });
 
                 foreach (var line in validLines.OrderBy(r => r.LineName))
@@ -2744,7 +2755,7 @@ namespace LayoutParserApi.Services.Implementations
                 }
             }
 
-            // Linhas com filhos (não precisam ter 600)
+            // Linhas com filhos (não precisam ter o tamanho exato)
             var linesWithChildren = results.Where(r => r.HasChildren).ToList();
             if (linesWithChildren.Any())
             {
@@ -2768,7 +2779,7 @@ namespace LayoutParserApi.Services.Implementations
                 }
             }
 
-            // Linhas inválidas (não têm 600 caracteres)
+            // Linhas inválidas (não têm o tamanho de linha esperado)
             var invalidLines = results.Where(r => !r.IsValid && !r.HasChildren).ToList();
             if (invalidLines.Any())
             {
@@ -2782,7 +2793,7 @@ namespace LayoutParserApi.Services.Implementations
 
                 foreach (var line in invalidLines.OrderBy(r => r.LineName))
                 {
-                    int difference = 600 - line.TotalLength;
+                    int difference = expectedLineLength - line.TotalLength;
                     _techLogger.LogTechnical(new TechLogEntry
                     {
                         RequestId = Guid.NewGuid().ToString(),
@@ -2793,8 +2804,8 @@ namespace LayoutParserApi.Services.Implementations
                 }
             }
 
-            // Linhas válidas mas com tamanho diferente de 600 (com filhos)
-            var validNonStandardLines = results.Where(r => r.IsValid && r.HasChildren && r.TotalLength != 600).ToList();
+            // Linhas válidas mas com tamanho diferente do esperado (com filhos)
+            var validNonStandardLines = results.Where(r => r.IsValid && r.HasChildren && r.TotalLength != expectedLineLength).ToList();
             if (validNonStandardLines.Any())
             {
                 _techLogger.LogTechnical(new TechLogEntry
@@ -2830,7 +2841,7 @@ namespace LayoutParserApi.Services.Implementations
         /// <summary>
         /// Calcula validações e posições dos campos para cada linha do layout
         /// </summary>
-        public List<LineValidationInfo> CalculateLineValidations(Layout layout, int expectedLineLength = 600)
+        public List<LineValidationInfo> CalculateLineValidations(Layout layout, int expectedLineLength = LineLengthResolver.LegacyDefaultLineLength)
         {
             var lineValidations = new List<LineValidationInfo>();
 
@@ -2855,7 +2866,7 @@ namespace LayoutParserApi.Services.Implementations
                 // Separar campos normais da tag Sequencia
                 var fieldsToCalculate = fieldElements.Where(f => !f.Name.Equals("Sequencia", StringComparison.OrdinalIgnoreCase)).OrderBy(f => f.Sequence).ToList();
 
-                // Buscar tag Sequencia (pertence à próxima linha, mas completa esta até 600)
+                // Buscar tag Sequencia (pertence à próxima linha, mas completa esta até o tamanho esperado)
                 var sequenciaField = fieldElements.FirstOrDefault(f => f.Name.Equals("Sequencia", StringComparison.OrdinalIgnoreCase));
                 int sequenciaLength = sequenciaField?.LengthField ?? 6;
 

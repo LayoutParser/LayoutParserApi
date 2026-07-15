@@ -1,3 +1,4 @@
+using LayoutParserApi.Models.Configuration;
 using LayoutParserApi.Services.Parsing.Interfaces;
 
 using System.Text.RegularExpressions;
@@ -68,10 +69,12 @@ namespace LayoutParserApi.Services.Parsing.Implementations
             if (!cleanContent.StartsWith("HEADER"))
                 return false;
 
-            // ✅ Não exigir múltiplo de 600 aqui.
-            // Arquivos MQSeries com erro (linha com 601+) deixam de ser múltiplos de 600,
+            // ✅ Não exigir múltiplo do tamanho de linha aqui.
+            // Arquivos MQSeries com erro (linha com 601+) deixam de ser múltiplos exatos,
             // mas ainda são MQSeries e precisam ser detectados como tal.
-            if (cleanContent.Length < 600)
+            // NOTA: a detecção roda ANTES de existir layout resolvido — heurística FIAT (600)
+            // preservada via constante legada até a fase C1 integrar o resolver.
+            if (cleanContent.Length < LineLengthResolver.LegacyDefaultLineLength)
                 return false;
 
             // Verificar se tem padrões sequenciais típicos do mqseries
@@ -86,9 +89,9 @@ namespace LayoutParserApi.Services.Parsing.Implementations
             // Verificar se termina com linha 999 (típico do mqseries)
             var endsWithLinha999 = cleanContent.Contains("999999") || Regex.IsMatch(cleanContent, @"\d{6}999");
 
-            // Verificar se tem múltiplas "linhas" lógicas de 600 caracteres (mínimo 2)
-            // (mesmo com erro, o tamanho tende a ser >= 1200 para documentos reais)
-            int logicalLineCount = cleanContent.Length / 600;
+            // Verificar se tem múltiplas "linhas" lógicas de tamanho legado (mínimo 2)
+            // (mesmo com erro, o tamanho tende a ser >= 2x o tamanho da linha para documentos reais)
+            int logicalLineCount = cleanContent.Length / LineLengthResolver.LegacyDefaultLineLength;
 
             return logicalLineCount >= 2 && (sequentialMatches.Count >= 3 || endsWithLinha999);
         }

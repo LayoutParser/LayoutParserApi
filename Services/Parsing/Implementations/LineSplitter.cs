@@ -1,3 +1,4 @@
+using LayoutParserApi.Models.Configuration;
 using LayoutParserApi.Models.Logging;
 using LayoutParserApi.Services.Interfaces;
 using LayoutParserApi.Services.Parsing.Interfaces;
@@ -13,12 +14,12 @@ namespace LayoutParserApi.Services.Parsing.Implementations
             _techLogger = techLogger;
         }
 
-        public string[] SplitTextIntoLines(string text, string layoutType)
+        public string[] SplitTextIntoLines(string text, string layoutType, int lineLength = LineLengthResolver.LegacyDefaultLineLength)
         {
             if (string.IsNullOrEmpty(text))
                 return new string[0];
 
-            // Layout posicional de 600 caracteres (TextPositional ou mqseries)
+            // Layout posicional de largura fixa (TextPositional ou mqseries)
             if (layoutType == "mqseries" || layoutType == "TextPositional")
             {
                 _techLogger.LogTechnical(new TechLogEntry
@@ -26,9 +27,9 @@ namespace LayoutParserApi.Services.Parsing.Implementations
                     RequestId = Guid.NewGuid().ToString(),
                     Endpoint = "SplitTextIntoLines",
                     Level = "Info",
-                    Message = $"Usando split de layout posicional (600 chars) para tipo: {layoutType}"
+                    Message = $"Usando split de layout posicional ({lineLength} chars) para tipo: {layoutType}"
                 });
-                return SplitTextIntoFixedLengthLines(text, 600);
+                return SplitTextIntoFixedLengthLines(text, lineLength);
             }
             else if (layoutType == "idoc")
             {
