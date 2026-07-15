@@ -10,6 +10,29 @@
 
 ---
 
+## 0. ⚠️ CORREÇÃO CRÍTICA (2026-07-15) — "branch por trilha" num só diretório NÃO isola; usar `git worktree`
+
+O plano original mandava cada sessão fazer `git checkout <sua-branch>` na **mesma pasta**. **Isso estava errado
+e causou intermingling real:** as duas apps apontam para o mesmo diretório = **um único working tree**. A branch
+é propriedade do working tree, compartilhada pelas duas sessões — quando uma faz `checkout`, muda a branch para
+ambas, e as alterações não-commitadas das duas se acumulam juntas. Observado na prática: trabalho da Trilha A
+(fix do runner) e da Trilha B (LineLengthResolver, Services/*) apareceram misturados no mesmo `git status`.
+
+**Correção aplicada (isolamento real via `git worktree`):**
+```
+/mnt/c/.../LayoutParserApi          → feat/lowcode-runner-bootstrap  (Trilha A · sessão CLI)
+/mnt/c/.../LayoutParserApi-trackB   → feat/multi-client-track-b      (Trilha B · sessão Windows)
+```
+- A sessão CLI (Trilha A) **não pode se realocar** no meio da execução → fica na pasta principal.
+- A **sessão Windows (Trilha B) deve abrir a pasta `../LayoutParserApi-trackB`** (o worktree isolado). A partir
+  daí, cada sessão tem pasta + branch próprias DE VERDADE; `git status`/commits de uma não vazam para a outra.
+- Compartilhado entre os worktrees (mesmo `.git`): histórico de commits e, por serem gitignored e fora do
+  versionamento, `.claude/tmp/` (inclui o `Instance_FiatMQ` e os gabaritos). Ou seja: a regra de §1 (só a
+  Trilha A roda o runner) **continua valendo** — o worktree isola git, não o `.claude/tmp/` nem o processo do runner.
+- Merge no final: `git merge feat/multi-client-track-b` (ou PR) a partir da branch A, quando as fases fecharem.
+
+---
+
 ## 1. Por que a divisão é assim (restrição real, não escolha arbitrária)
 
 Mesma máquina/disco ⇒ **`.claude/tmp/` e `tools/LowCodeRunner/{globalfolder,bin}` já são visíveis para as duas
