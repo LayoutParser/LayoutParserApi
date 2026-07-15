@@ -587,6 +587,63 @@ do `exportContext.data`) e alimentar o input no formato certo. Engine + licença
 Artefatos: `tools/LowCodeRunner/{Program.cs,LayoutParserLowCodeRunner.csproj}` (fix de licença), exe copiado p/ a Bin,
 saída em `.claude/tmp/gabaritos/runner-output.xml`. Fonte decompilada em scratchpad (`smbase`, `accore`, `cus`).
 
+### 9.5 🎯 RESOLVIDO — o "envelope-only" era BITNESS, não parsing (2026-07-15, arquiteto inline)
+
+**A hipótese do §9.4 (layout `TextDelimited` alimentado como largura-fixa → parser não fatia) está REFUTADA.**
+O log de runtime da instância (`AppConnector.DIR/Log/logdefault.txt`, execução das 12:18) prova o contrário, na ordem:
+
+```
+12:18:24  Iniciando execução de parser do Layout 'TextDelimited' guid LAY_ad4fb6f4 ...
+12:18:24  Execução do parser para o Layout 'TextDelimited' ... concluída COM SUCESSO   ← parser OK!
+12:18:24  Iniciando carregamento das funções das regras
+12:18:24  FALHA no carregamento das funções: 'Could not load file or assembly
+          ...Bin\SysMiddle.ConnectUs.Functions.dll ... An attempt was made to load a
+          program with an incorrect format.'                                            ← BadImageFormatException
+12:18:47  Regra 'Regra_chaveDeAcesso' não pode ser executada (ConcatString/DateTimeNow/
+          GenerateAccessKey 'does not exist in the current context')
+12:18:47  Documento gerado: '<?xml version="1.0"?><enviNFe ...><idLote>00001</idLote>
+          <indSinc>0</indSinc></enviNFe>'                                               ← envelope-only
+```
+
+**Causa raiz (com evidência de PE header / corflags):**
+- O stack Sysmiddle v4.4.1 é **32-bit (x86)** — igual ao host de produção `FiatMQ_Instance_FiatMQ.exe`
+  (`32BITREQ=True, 32BITPREF=True`). `SysMiddle.ConnectUs.Functions.dll` (Bin) = **x86**.
+- O runner compilava **AnyCPU** (`32BITREQ=False`) → num SO 64-bit, um processo .NET Framework AnyCPU roda
+  como **64-bit**. `RuleContext.LoadRuleFunction()` fazia `Assembly.LoadFrom` da DLL de funções x86 dentro do
+  processo x64 → **`BadImageFormatException`** ("incorrect format").
+- Sem as funções carregadas, **toda regra que as usa falha** — inclusive `Regra_chaveDeAcesso` (`GenerateAccessKey`),
+  que produz `enviNFe/NFe/infNFe/@Id`. Como o `@Id` é obrigatório e ancora o ramo `<NFe>`, sua falha **suprime o
+  ramo NFe inteiro** → sobram só as regras de literal-constante (`idLote='00001'`, `indSinc=0`) = **envelope-only**.
+- Agravante: a bitness estava **cruzada/inconsistente** entre as duas pastas de função —
+  Bin: `SysMiddle...`=x86 / `ndd...`=**x64**; `Functions/`: `SysMiddle...`=**x64** / `ndd...`=x86. Vestígios de
+  tentativas anteriores de "consertar" trocando a DLL em vez de a bitness do processo (o caminho errado).
+
+**Por que o experimento CRLF (§ pistas) não mudou nada:** `runner-output-crlf.xml` é IDÊNTICO ao
+`runner-output.xml` (ambos 97 chars) — porque o problema nunca foi o fatiamento (o parser já concluía com sucesso),
+e sim a carga das funções. Injetar delimitador não tinha como ajudar.
+
+**Fix aplicado (2 partes, determinístico):**
+1. `tools/LowCodeRunner/LayoutParserLowCodeRunner.csproj`: `<PlatformTarget>x86</PlatformTarget>` — o runner passa
+   a rodar 32-bit, casando com o host e todas as DLLs Sysmiddle (exe pós-build: `32BITREQ=True`).
+2. Bitness das funções **consistentemente x86** nas DUAS pastas (Bin + `FunctionAssembliesPath`): substituídas as
+   duas cópias x64 rebeldes (`ndd...` na Bin, `SysMiddle...` em `Functions/`) pelas x86 de mesma versão
+   (SysMiddle 4.4.1.0, ndd 1.0.0.0). Backups `.x64.bak` (a cópia tracked em `Functions/` já tem histórico no git).
+
+**Prova (antes → depois, mesmo mapeador MAP_f31a6758, sem VPN):**
+
+| Input | Antes (AnyCPU/x64) | Depois (x86) |
+|---|---|---|
+| `20251107_102250_QMWNFe1_…mq_series` (26 reg.) | 97 chars envelope-only | **6644 chars** — `<NFe><infNFe Id="NFe33251116701716004658…">` + ide (cUF=33, nNF=7, cDV=6), emit (CNPJ Stellantis), dest, det, total, transp, pag, dadosAdic |
+| `entrega-teste/input-exemplo.txt` (par real §7, 59 reg.) | 97 chars | **4246 chars — IDÊNTICO byte-a-byte ao `gabarito-esperado-env.xml`**, exceto 1 espaço a mais na declaração XML (`<?xml␣␣version` vs `<?xml␣version`) — cosmético (mesmo item #5 de §11.2) |
+
+O log pós-fix (13:53) tem **zero "incorrect format"**, **zero falha de `chaveDeAcesso"`**, e a chave gerada é
+internamente consistente (cUF|AAMM|CNPJ|mod|serie|nNF|tpEmis|cNF|cDV todos batendo com os campos fatiados).
+**O runner Sysmiddle reproduz a saída de produção — o motor real está 100% funcional.**
+
+Artefatos: `.csproj` (PlatformTarget x86) + `Functions/SysMiddle.ConnectUs.Functions.dll` (x86, tracked); saídas
+`.claude/tmp/gabaritos/{runner-output-x86fix.xml, runner-output-gabarito-input.xml}`.
+**Desbloqueia o modo lote (§9.2 passo 3 / §11.2 #2) — a fábrica de gabaritos está pronta.**
+
 ### 9.3 Riscos (avaliar no passo 1 ANTES de rodar)
 - ⚠️ **O manager é o CONECTOR completo**: o start pode tentar abrir filas MQ/diretórios/DB do servidor. Mitigação:
   inspecionar `ConfigParameters.xml` e **desabilitar componentes** de transporte antes de rodar (manter só o núcleo de
@@ -620,6 +677,7 @@ saída em `.claude/tmp/gabaritos/runner-output.xml`. Fonte decompilada em scratc
 | Etapa B1: `MapperEmissionGuide` (máscara das 8 SOBRAs de `retTrib`/`cobr`) | ✅ | §7.9 |
 | Etapa B2: `DadosAdicEmitter`+`Bloco290Emitter` (envelope+extensão FIAT) | ✅ | §8.2 — **documento COMPLETO diff==0** (só cosmético restante) |
 | **LowCodeRunner: bootstrap + licença OFFLINE + execução do mapeador** | ✅ | §9.4 — muro de licença (o bloqueio histórico do projeto) caiu |
+| **LowCodeRunner: saída COMPLETA (fim do "envelope-only")** — fix de bitness x86 | ✅ | §9.5 — reproduz o `gabarito-esperado-env.xml` **byte-a-byte** (só 1 espaço na decl. XML) |
 
 **Leitura:** a cadeia determinística Excel→TCL→ROOT→XSL está **provada ponta-a-ponta contra um gabarito real**
 (reproduz `enviNFe` completo, byte a byte, exceto ordem de atributos), e o runner Sysmiddle — que travava o
@@ -630,7 +688,7 @@ projeto de "PoC de viabilidade" para "motor pronto para generalizar".
 
 | # | Pendência | Bloco | Dono sugerido | Depende de |
 |---|---|---|---|---|
-| 1 | **Confirmar a estrutura física real do layout `LAY_ad4fb6f4` no Connect Us** (é `TextDelimited` ou largura-fixa? hoje é alimentado como 600 fixo) — ⚠️ **correção (2026-07-15, usuário):** campo de saída vazio **não é**, por si só, evidência de bug — depende do documento do cliente e das regras de negócio fiscais (item/CFOP/NCM). Só é bug se a estrutura FÍSICA da linha (tamanho) não bater com o que o Connect Us define para esse layout. Ver [`multi-client-layout-generalization.md`](multi-client-layout-generalization.md) §3 | Runner | Dex | nada — é o próximo passo imediato (§9.4) |
+| 1 | ~~**Confirmar a estrutura física real do layout `LAY_ad4fb6f4`**~~ — **RESOLVIDO (2026-07-15, §9.5):** o layout **É** `TextDelimited` e **o parser conclui COM SUCESSO** (confirmado no log de runtime); o "envelope-only" nunca foi parsing. Causa raiz real = **bitness**: runner AnyCPU→x64 não carregava a DLL de funções x86 (`BadImageFormatException`) → regras (incl. `chaveDeAcesso`) falhavam → ramo `<NFe>` suprimido. Fix: `PlatformTarget=x86` + DLLs de função x86 consistentes. Runner agora reproduz o gabarito byte-a-byte. | Runner | ~~Dex~~ Aria | **fechado** |
 | 2 | **Modo lote do runner** (varrer `Examples/LAY_*`, gravar pares input→XML em `.claude/tmp/gabaritos/`) | Runner | Dex | #1 |
 | 3 | **Generalização além do par único**: variantes ICMS10/20/30/40/51/60/70/90/CSOSN, grupos especializados (veículos/ANVISA/ANP/combustível/DI), 2ª aba do Excel (Layout-Receb = retorno), outras versões/NT | Cobertura | Lia (domínio) + Dex | #2 (precisa de gabaritos novos p/ testar) |
 | 4 | **P0 — Catálogo GUID→XPath** (destrava os 237 LinkMappings do XslSynth, cruzamento com o catálogo Excel) | Roadmap P0 | Lia | runner funcional — **já destravado**, ainda não iniciado |
@@ -646,8 +704,9 @@ projeto de "PoC de viabilidade" para "motor pronto para generalizar".
 
 ### 11.3 Recomendação de sequenciamento (Aria)
 
-1. **Fechar #1+#2 (runner completo)** — é o menor esforço com maior alavancagem: sem isso, #3 e #4 não têm como
-   gerar dados novos para testar.
+1. ~~**Fechar #1+#2 (runner completo)**~~ — **#1 FECHADO (§9.5): runner produz saída completa idêntica ao gabarito.**
+   Resta **#2 (modo lote)** — agora desbloqueado; é o menor esforço com maior alavancagem: varrer `Examples/LAY_*`,
+   gravar pares input→XML em `.claude/tmp/gabaritos/`, alimentando #3 e #4 com gabaritos reais em quantidade.
 2. **#3 em paralelo com #4** — generalização de variantes e o catálogo GUID→XPath não competem pelo mesmo código.
 3. **#5 antes de #12** — feche o cosmético barato antes de pedir o gate formal da Quinn.
 4. **#8 é uma decisão de arquitetura, não uma tarefa** — só depois de #3 provar que o motor generaliza (não só o

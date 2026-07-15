@@ -1,3 +1,4 @@
+using LayoutParserApi.Models.Configuration;
 using LayoutParserApi.Models.Validation;
 using LayoutParserApi.Services.Interfaces;
 
@@ -20,11 +21,12 @@ namespace LayoutParserApi.Services.Validation
         }
 
         /// <summary>
-        /// Valida um documento TXT baseado nas sequências (6 dígitos) - cada linha deve ter exatamente 600 caracteres
+        /// Valida um documento TXT baseado nas sequências (6 dígitos) - cada linha deve ter exatamente o tamanho esperado
         /// </summary>
         /// <param name="documentContent">Conteúdo completo do documento TXT</param>
+        /// <param name="expectedLineLength">Tamanho esperado de cada linha (default legado, ver <see cref="LineLengthResolver"/>)</param>
         /// <returns>Resultado da validação com lista de erros encontrados</returns>
-        public DocumentValidationResult ValidateDocument(string documentContent)
+        public DocumentValidationResult ValidateDocument(string documentContent, int expectedLineLength = LineLengthResolver.LegacyDefaultLineLength)
         {
             var result = new DocumentValidationResult();
 
@@ -40,9 +42,9 @@ namespace LayoutParserApi.Services.Validation
                 // Remover quebras de linha para análise contínua
                 var cleanText = documentContent.Replace("\r", "").Replace("\n", "");
 
-                if (cleanText.Length < 600)
+                if (cleanText.Length < expectedLineLength)
                 {
-                    result.ErrorMessage = $"Documento muito pequeno ({cleanText.Length} caracteres, mínimo 600)";
+                    result.ErrorMessage = $"Documento muito pequeno ({cleanText.Length} caracteres, mínimo {expectedLineLength})";
                     result.IsValid = false;
                     return result;
                 }
@@ -64,7 +66,7 @@ namespace LayoutParserApi.Services.Validation
                             StartPosition = currentPosition,
                             EndPosition = cleanText.Length - 1,
                             ActualLength = cleanText.Length - currentPosition,
-                            ExpectedLength = 600,
+                            ExpectedLength = expectedLineLength,
                             ErrorMessage = $"Linha incompleta: sequência não encontrada ou incompleta na posição {currentPosition}"
                         });
                         result.ProcessingStopped = true;
@@ -73,7 +75,7 @@ namespace LayoutParserApi.Services.Validation
 
                     string currentSequence = cleanText.Substring(currentPosition, 6);
                     int lineStart = currentPosition;
-                    int expectedLineEnd = currentPosition + 600;
+                    int expectedLineEnd = currentPosition + expectedLineLength;
 
                     // Verificar se linha cabe no documento
                     if (expectedLineEnd > cleanText.Length)
@@ -87,8 +89,8 @@ namespace LayoutParserApi.Services.Validation
                             StartPosition = lineStart,
                             EndPosition = cleanText.Length - 1,
                             ActualLength = actualLength,
-                            ExpectedLength = 600,
-                            ErrorMessage = $"Última linha tem {actualLength} caracteres (esperado: 600). Faltam {600 - actualLength} caracteres."
+                            ExpectedLength = expectedLineLength,
+                            ErrorMessage = $"Última linha tem {actualLength} caracteres (esperado: {expectedLineLength}). Faltam {expectedLineLength - actualLength} caracteres."
                         });
                         result.InvalidLinesCount++;
                         result.ProcessingStopped = true;
@@ -100,9 +102,9 @@ namespace LayoutParserApi.Services.Validation
                     
                     if (expectedLineEnd <= cleanText.Length)
                     {
-                        // Linha completa disponível - extrair exatamente 600 caracteres
-                        currentLine = cleanText.Substring(currentPosition, 600);
-                        actualLineLength = 600;
+                        // Linha completa disponível - extrair exatamente o tamanho esperado
+                        currentLine = cleanText.Substring(currentPosition, expectedLineLength);
+                        actualLineLength = expectedLineLength;
                     }
                     else
                     {
@@ -111,7 +113,7 @@ namespace LayoutParserApi.Services.Validation
                         actualLineLength = currentLine.Length;
                     }
                     
-                    // Se próxima sequência não estiver onde esperado, linha atual pode ter excedido 600
+                    // Se próxima sequência não estiver onde esperado, linha atual pode ter excedido o tamanho esperado
                     bool lineExceedsLimit = false;
                     int excessChars = 0;
                     
@@ -134,7 +136,7 @@ namespace LayoutParserApi.Services.Validation
                                         // Encontrou sequência válida deslocada → linha atual excedeu
                                         excessChars = offset;
                                         lineExceedsLimit = true;
-                                        actualLineLength = 600 + offset; // Ajustar para o tamanho real
+                                        actualLineLength = expectedLineLength + offset; // Ajustar para o tamanho real
                                         break;
                                     }
                                 }
@@ -151,8 +153,8 @@ namespace LayoutParserApi.Services.Validation
                             StartPosition = lineStart,
                             EndPosition = lineStart + actualLineLength - 1,
                             ActualLength = actualLineLength,
-                            ExpectedLength = 600,
-                            ErrorMessage = $"Linha excede 600 caracteres: {actualLineLength} caracteres encontrados (excedendo em {excessChars} caracteres). A partir desta linha, o documento está desalinhado."
+                            ExpectedLength = expectedLineLength,
+                            ErrorMessage = $"Linha excede {expectedLineLength} caracteres: {actualLineLength} caracteres encontrados (excedendo em {excessChars} caracteres). A partir desta linha, o documento está desalinhado."
                         });
                         result.InvalidLinesCount++;
                     }
@@ -169,8 +171,8 @@ namespace LayoutParserApi.Services.Validation
                                 Sequence = currentSequence,
                                 StartPosition = lineStart,
                                 EndPosition = expectedLineEnd - 1,
-                                ActualLength = 600,
-                                ExpectedLength = 600,
+                                ActualLength = expectedLineLength,
+                                ExpectedLength = expectedLineLength,
                                 ErrorMessage = "HEADER encontrado fora da primeira linha"
                             });
                             result.InvalidLinesCount++;
@@ -185,8 +187,8 @@ namespace LayoutParserApi.Services.Validation
                             Sequence = currentSequence,
                             StartPosition = lineStart,
                             EndPosition = expectedLineEnd - 1,
-                            ActualLength = 600,
-                            ExpectedLength = 600,
+                            ActualLength = expectedLineLength,
+                            ExpectedLength = expectedLineLength,
                             ErrorMessage = $"Sequência inválida: '{currentSequence}' (deve ser numérica de 6 dígitos ou 'HEADER')"
                         });
                         result.InvalidLinesCount++;
@@ -216,7 +218,7 @@ namespace LayoutParserApi.Services.Validation
                         }
                     }
                     
-                    // Avançar para próxima linha (sempre avançar 600, mesmo se houver erro)
+                    // Avançar para próxima linha (sempre avançar o tamanho esperado, mesmo se houver erro)
                     currentPosition = expectedLineEnd;
                     lineIndex++;
                     result.TotalLinesProcessed++;
@@ -228,7 +230,7 @@ namespace LayoutParserApi.Services.Validation
 
                 result.IsValid = result.LineErrors.Count == 0;
                 if (result.IsValid)
-                    result.ErrorMessage = "Documento válido - todas as linhas têm 600 caracteres";
+                    result.ErrorMessage = $"Documento válido - todas as linhas têm {expectedLineLength} caracteres";
                 else
                     result.ErrorMessage = $"Encontrados {result.LineErrors.Count} erro(s) de tamanho em {result.InvalidLinesCount} linha(s) do documento";
 

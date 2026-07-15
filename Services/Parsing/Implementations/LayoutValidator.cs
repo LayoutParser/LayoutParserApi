@@ -1,3 +1,4 @@
+using LayoutParserApi.Models.Configuration;
 using LayoutParserApi.Models.Entities;
 using LayoutParserApi.Models.Logging;
 using LayoutParserApi.Models.Structure;
@@ -49,14 +50,17 @@ namespace LayoutParserApi.Services.Parsing.Implementations
                     Message = $"Total de linhas no layout: {layout.Elements.Count}"
                 });
 
+                // ✅ Tamanho de linha resolvido do próprio layout (LimitOfCaracters → allowlist → default legado)
+                int expectedLineLength = LineLengthResolver.ResolveOrDefault(layout);
+
                 var validationResults = new List<LineValidationResult>();
 
                 foreach (var line in layout.Elements)
                 {
-                    ValidateLineLayoutWithResult(line, validationResults);
+                    ValidateLineLayoutWithResult(line, validationResults, expectedLineLength);
                 }
 
-                ShowValidationSummary(validationResults);
+                ShowValidationSummary(validationResults, expectedLineLength);
 
                 _techLogger.LogTechnical(new TechLogEntry
                 {
@@ -79,7 +83,7 @@ namespace LayoutParserApi.Services.Parsing.Implementations
             }
         }
 
-        private void ValidateLineLayoutWithResult(LineElement lineConfig, List<LineValidationResult> results)
+        private void ValidateLineLayoutWithResult(LineElement lineConfig, List<LineValidationResult> results, int expectedLineLength)
         {
             try
             {
@@ -96,7 +100,7 @@ namespace LayoutParserApi.Services.Parsing.Implementations
                 int totalLength = initialValueLength + fieldsLength + sequenceFromPreviousLine;
 
                 bool hasChildren = childLineElements.Any();
-                bool isValid = hasChildren ? totalLength <= 600 : totalLength == 600;
+                bool isValid = hasChildren ? totalLength <= expectedLineLength : totalLength == expectedLineLength;
 
                 var result = new LineValidationResult
                 {
@@ -123,7 +127,7 @@ namespace LayoutParserApi.Services.Parsing.Implementations
                 {
                     foreach (var childLine in childLineElements)
                     {
-                        ValidateLineLayoutWithResult(childLine, results);
+                        ValidateLineLayoutWithResult(childLine, results, expectedLineLength);
                     }
                 }
 
@@ -140,7 +144,7 @@ namespace LayoutParserApi.Services.Parsing.Implementations
             }
         }
 
-        private void ShowValidationSummary(List<LineValidationResult> results)
+        private void ShowValidationSummary(List<LineValidationResult> results, int expectedLineLength)
         {
             _techLogger.LogTechnical(new TechLogEntry
             {
@@ -150,7 +154,7 @@ namespace LayoutParserApi.Services.Parsing.Implementations
                 Message = "=== RESUMO DA VALIDAÇÃO ==="
             });
 
-            var validLines = results.Where(r => r.IsValid && !r.HasChildren && r.TotalLength == 600).ToList();
+            var validLines = results.Where(r => r.IsValid && !r.HasChildren && r.TotalLength == expectedLineLength).ToList();
             if (validLines.Any())
             {
                 _techLogger.LogTechnical(new TechLogEntry
@@ -158,7 +162,7 @@ namespace LayoutParserApi.Services.Parsing.Implementations
                     RequestId = Guid.NewGuid().ToString(),
                     Endpoint = "ValidateCompleteLayout",
                     Level = "Info",
-                    Message = $"LINHAS VÁLIDAS (600 caracteres): {validLines.Count}"
+                    Message = $"LINHAS VÁLIDAS ({expectedLineLength} caracteres): {validLines.Count}"
                 });
 
                 foreach (var line in validLines.OrderBy(r => r.LineName))
@@ -209,7 +213,7 @@ namespace LayoutParserApi.Services.Parsing.Implementations
 
                 foreach (var line in invalidLines.OrderBy(r => r.LineName))
                 {
-                    int difference = 600 - line.TotalLength;
+                    int difference = expectedLineLength - line.TotalLength;
                     _techLogger.LogTechnical(new TechLogEntry
                     {
                         RequestId = Guid.NewGuid().ToString(),
@@ -220,7 +224,7 @@ namespace LayoutParserApi.Services.Parsing.Implementations
                 }
             }
 
-            var validNonStandardLines = results.Where(r => r.IsValid && r.HasChildren && r.TotalLength != 600).ToList();
+            var validNonStandardLines = results.Where(r => r.IsValid && r.HasChildren && r.TotalLength != expectedLineLength).ToList();
             if (validNonStandardLines.Any())
             {
                 _techLogger.LogTechnical(new TechLogEntry

@@ -6,7 +6,8 @@ namespace XslSynth.Excel;
 // ─────────────────────────────────────────────────────────────────────────────
 // RootTreeBuilder — PoC-3/A1: TXT posicional MQSeries → árvore XML ROOT.
 //
-// O TXT NÃO tem quebras de linha: registros são fatias FIXAS de 600 chars.
+// O TXT NÃO tem quebras de linha: registros são fatias FIXAS de tamanho único
+// (600 chars no leiaute NF-e do CLI; parametrizável via lineLength no Build).
 // HEADER/TRAILER são identificados pelos MARCADORES das posições 1-6
 // ("HEADER" / seq "999999") — NUNCA pelas posições 7-9, que no HEADER/TRAILER
 // contêm o ano ("202x") e gerariam blocos fantasma (o "LINHA202" da PoC-1).
@@ -24,7 +25,7 @@ namespace XslSynth.Excel;
 
 /// <summary>Resultado da montagem do ROOT (com contagens para o gate A1).</summary>
 /// <param name="Root">Documento <c>&lt;ROOT&gt;&lt;LINHA…&gt;</c> na ordem do arquivo.</param>
-/// <param name="Registros">Total de fatias de 600 chars lidas.</param>
+/// <param name="Registros">Total de fatias de tamanho fixo (<c>lineLength</c>) lidas.</param>
 /// <param name="RegistrosSemBloco">Registros cujo código não existe na spec (ignorados).</param>
 /// <param name="BlocosDesconhecidos">Códigos de bloco não encontrados na spec.</param>
 public sealed record RootBuildReport(
@@ -39,12 +40,23 @@ public sealed record RootBuildReport(
 /// </summary>
 public sealed class RootTreeBuilder
 {
-    private const int LineLength = 600;
-
-    public RootBuildReport Build(string txtPath, SpecModel spec, Action<string>? log = null)
+    /// <summary>
+    /// Monta a árvore ROOT fatiando o TXT em registros de tamanho fixo.
+    /// </summary>
+    /// <param name="lineLength">
+    /// Tamanho fixo de cada registro do TXT. Default 600 (padrão MQSeries/NF-e do
+    /// CLI atual). Quando o motor for integrado à API (fase C1), o valor real deve
+    /// vir de <c>Layout.LimitOfCaracters</c>, resolvido via <c>LineLengthResolver</c>
+    /// do núcleo — não hardcode por cliente.
+    /// </param>
+    public RootBuildReport Build(string txtPath, SpecModel spec, Action<string>? log = null, int lineLength = 600)
     {
         if (!File.Exists(txtPath))
             throw new FileNotFoundException($"TXT de entrada não encontrado: {txtPath}", txtPath);
+
+        if (lineLength <= 0)
+            throw new ArgumentOutOfRangeException(nameof(lineLength), lineLength,
+                "Tamanho de linha deve ser positivo.");
 
         // Latin-1: padrão dos arquivos MQSeries (mesma leitura do NfeGabaritoMiner).
         var raw = File.ReadAllText(txtPath, Encoding.Latin1);
@@ -60,9 +72,9 @@ public sealed class RootTreeBuilder
         var semBloco = 0;
         var desconhecidos = new List<string>();
 
-        for (var i = 0; i + LineLength <= raw.Length; i += LineLength)
+        for (var i = 0; i + lineLength <= raw.Length; i += lineLength)
         {
-            var rec = raw.Substring(i, LineLength);
+            var rec = raw.Substring(i, lineLength);
             registros++;
 
             // Marcadores nas posições 1-6; pos 7-9 SÓ para as linhas de dados.

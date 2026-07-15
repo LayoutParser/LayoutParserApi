@@ -1,3 +1,4 @@
+using LayoutParserApi.Models.Configuration;
 using LayoutParserApi.Models.Validation;
 using LayoutParserApi.Services.Validation;
 using Microsoft.AspNetCore.Mvc;
@@ -44,7 +45,9 @@ namespace LayoutParserApi.Controllers
                     return BadRequest(new { error = "Conteúdo do documento é obrigatório" });
                 }
 
-                var result = _documentValidationService.ValidateDocument(request.DocumentContent);
+                // ✅ Resolver tamanho de linha pelo GUID informado (allowlist); sem dado melhor, default legado
+                var expectedLineLength = LineLengthResolver.Resolve(0, request.LayoutGuid) ?? LineLengthResolver.LegacyDefaultLineLength;
+                var result = _documentValidationService.ValidateDocument(request.DocumentContent, expectedLineLength);
 
                 // Se houver erros, gerar sugestões ML
                 if (!result.IsValid && result.LineErrors.Any() && !string.IsNullOrEmpty(request.LayoutGuid))

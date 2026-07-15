@@ -1,4 +1,6 @@
-﻿namespace LayoutParserApi.Models.Validation
+﻿using LayoutParserApi.Models.Configuration;
+
+namespace LayoutParserApi.Models.Validation
 {
     /// <summary>
     /// Erro encontrado em uma linha específica do layout
@@ -6,7 +8,7 @@
     public class LineValidationError
     {
         public string LineName { get; set; } = ""; // HEADER, LINHA000, LINHA001, etc.
-        public int ExpectedLength { get; set; } = 600;
+        public int ExpectedLength { get; set; } = LineLengthResolver.LegacyDefaultLineLength;
         public int ActualLength { get; set; }
         public int Difference { get; set; } // Positivo = falta, Negativo = sobra
         public string InitialValue { get; set; } = "";

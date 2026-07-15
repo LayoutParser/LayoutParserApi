@@ -3,6 +3,14 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net481</TargetFramework>
+    <!-- CAUSA RAIZ do "envelope-only" (2026-07-15, arquiteto): o stack Sysmiddle v4.4.1 é 32-bit (x86),
+         igual ao host de produção FiatMQ_Instance_FiatMQ.exe (32BITREQ). Sem PlatformTarget, o runner
+         compilava AnyCPU → rodava como processo 64-bit → RuleContext.LoadRuleFunction() estourava
+         BadImageFormatException ("incorrect format") ao carregar SysMiddle.ConnectUs.Functions.dll (x86)
+         no processo x64 → funções DSL (ConcatString/DateTimeNow/GenerateAccessKey/…) ficavam ausentes →
+         a regra chaveDeAcesso falhava → o ramo <NFe> inteiro era suprimido → saía só o envelope.
+         Fixar em x86 casa a bitness com todas as DLLs Sysmiddle e o host. -->
+    <PlatformTarget>x86</PlatformTarget>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>

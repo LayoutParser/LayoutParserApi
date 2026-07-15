@@ -14,7 +14,8 @@ namespace XslSynth.Excel;
 // descartados; valores distintivos (CNPJ, nNF, natOp, datas) ancoram com certeza.
 //
 // O TXT MQSeries NÃO tem quebras de linha: registros são fatias FIXAS de
-// 600 chars (pos 1-6 = sequência/HEADER/999999; pos 7-9 = código do bloco).
+// tamanho único — 600 chars no leiaute NF-e do CLI, parametrizável via
+// lineLength no Load (pos 1-6 = sequência/HEADER/999999; pos 7-9 = código do bloco).
 //
 // Desenho: docs/architecture/poc-excel-generator.md §3.4 (camada empírica).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -22,9 +23,7 @@ namespace XslSynth.Excel;
 /// <summary>Par gabarito carregado: registros por bloco + índice valor→XPaths do output.</summary>
 public sealed class NfeGabarito
 {
-    private const int LineLength = 600;
-
-    /// <summary>Registros de 600 chars por bloco ("HEADER", "LINHA001", "TRAILER").</summary>
+    /// <summary>Registros de tamanho fixo por bloco ("HEADER", "LINHA001", "TRAILER").</summary>
     public IReadOnlyDictionary<string, List<string>> RecordsByBlock { get; }
 
     /// <summary>Valor exato (texto) → XPaths de folha do output onde ele aparece.</summary>
@@ -47,14 +46,24 @@ public sealed class NfeGabarito
     /// Carrega o par. O TXT é lido em Latin-1 (padrão dos arquivos MQSeries);
     /// o XML de saída não tem namespace (enviNFe plano).
     /// </summary>
-    public static NfeGabarito Load(string txtPath, string xmlPath)
+    /// <param name="lineLength">
+    /// Tamanho fixo de cada registro do TXT. Default 600 (padrão MQSeries/NF-e do
+    /// CLI atual). Quando o motor for integrado à API (fase C1), o valor real deve
+    /// vir de <c>Layout.LimitOfCaracters</c>, resolvido via <c>LineLengthResolver</c>
+    /// do núcleo — não hardcode por cliente.
+    /// </param>
+    public static NfeGabarito Load(string txtPath, string xmlPath, int lineLength = 600)
     {
-        // ── Input: fatias fixas de 600 chars, agrupadas pelo código do bloco ──
+        if (lineLength <= 0)
+            throw new ArgumentOutOfRangeException(nameof(lineLength), lineLength,
+                "Tamanho de linha deve ser positivo.");
+
+        // ── Input: fatias fixas de lineLength chars, agrupadas pelo código do bloco ──
         var raw = File.ReadAllText(txtPath, Encoding.Latin1);
         var records = new Dictionary<string, List<string>>(StringComparer.Ordinal);
-        for (var i = 0; i + LineLength <= raw.Length; i += LineLength)
+        for (var i = 0; i + lineLength <= raw.Length; i += lineLength)
         {
-            var rec = raw.Substring(i, LineLength);
+            var rec = raw.Substring(i, lineLength);
             var seq = rec[..6];
             var key = seq == "HEADER" ? "HEADER"
                     : seq == "999999" ? "TRAILER"
