@@ -488,7 +488,12 @@ complexo). Gate: **set-diff do DOCUMENTO COMPLETO = 0/0/0** (hoje: FALTA=18, SOB
 > CNPJ-raiz(8)+'_'+IdOverlay; (d) grupo Conv51/ST = ramo else `'0,00'` pt-BR; (e) `dadosAdic/infCpl` clonado do
 > `infAdic/infCpl` (garante igualdade); (f) **`bloco290`**: as larguras dos `PadRight` IGUALAM as dos campos LINHA000
 > → `substring(concat(campo,espaços),1,n)` por segmento; 24 segmentos, 337 chars, **char a char** com o gabarito.
-> Únicas difs byte restantes = declaração XML + ordem de atributos `Id`/`versao` (cosméticas). O mapeamento
+> ~~Únicas difs byte restantes = declaração XML + ordem de atributos `Id`/`versao` (cosméticas).~~
+> **Fechado (2026-07-15, fase B3 da Trilha B):** havia na verdade **três** difs cosméticas — declaração XML,
+> ordem `Id`/`versao` e uma 3ª não registrada aqui (o serializador do mapeador nunca emite tag self-closing:
+> `<B2BDirectory></B2BDirectory>`, não `<B2BDirectory/>`). Todas fechadas via serialização fiel opt-in
+> (`XsltApplier.Apply(..., fielAoGabarito: true)`, usada pelo fluxo `--generate`): `cmp` retorna **IDÊNTICO
+> byte a byte** ao gabarito (4245 bytes, linha única). O mapeamento
 > input→slug veio da Lia (R4-followup). XSD do `<NFe>` continua VÁLIDO.
 
 ### 8.3 Semântica das funções DSL — fonte da verdade (2026-07-13)
@@ -675,12 +680,13 @@ Artefatos: `.csproj` (PlatformTarget x86) + `Functions/SysMiddle.ConnectUs.Funct
 | PoC-2: `NfeLeiauteCatalog` (#XML→XPath) | ✅ | §4/§7.8 — 62 Alta/400 Média/166 não-resolvidos, cobertura 71,5% |
 | Etapa A (PoC-3): `RootTreeBuilder`+`XslGenerator`, diff==0 no `<infNFe>` | ✅ | §7.9 — set-diff FALTA=0/SOBRA=0/TEXTO=0, XSD válido |
 | Etapa B1: `MapperEmissionGuide` (máscara das 8 SOBRAs de `retTrib`/`cobr`) | ✅ | §7.9 |
-| Etapa B2: `DadosAdicEmitter`+`Bloco290Emitter` (envelope+extensão FIAT) | ✅ | §8.2 — **documento COMPLETO diff==0** (só cosmético restante) |
+| Etapa B2: `DadosAdicEmitter`+`Bloco290Emitter` (envelope+extensão FIAT) | ✅ | §8.2 — **documento COMPLETO diff==0** |
+| **Trilha B (2026-07-15): B1 resolver de linha no núcleo · B2 `lineLength` paramétrico · B3 byte-idêntico** | ✅ | commit `d096364` (merged PR #3) — `LineLengthResolver` + gates de allowlist; §8.2 (cosmético fechado, `cmp` idêntico) |
 | **LowCodeRunner: bootstrap + licença OFFLINE + execução do mapeador** | ✅ | §9.4 — muro de licença (o bloqueio histórico do projeto) caiu |
 | **LowCodeRunner: saída COMPLETA (fim do "envelope-only")** — fix de bitness x86 | ✅ | §9.5 — reproduz o `gabarito-esperado-env.xml` **byte-a-byte** (só 1 espaço na decl. XML) |
 
 **Leitura:** a cadeia determinística Excel→TCL→ROOT→XSL está **provada ponta-a-ponta contra um gabarito real**
-(reproduz `enviNFe` completo, byte a byte, exceto ordem de atributos), e o runner Sysmiddle — que travava o
+(reproduz `enviNFe` completo, **byte a byte absoluto** — cosmético fechado na fase B3, 2026-07-15), e o runner Sysmiddle — que travava o
 projeto desde o início — **valida licença e executa sem VPN/host**. Estes dois fatos, juntos, são o que muda o
 projeto de "PoC de viabilidade" para "motor pronto para generalizar".
 
@@ -692,7 +698,7 @@ projeto de "PoC de viabilidade" para "motor pronto para generalizar".
 | 2 | **Modo lote do runner** (varrer `Examples/LAY_*`, gravar pares input→XML em `.claude/tmp/gabaritos/`) | Runner | Dex | #1 |
 | 3 | **Generalização além do par único**: variantes ICMS10/20/30/40/51/60/70/90/CSOSN, grupos especializados (veículos/ANVISA/ANP/combustível/DI), 2ª aba do Excel (Layout-Receb = retorno), outras versões/NT | Cobertura | Lia (domínio) + Dex | #2 (precisa de gabaritos novos p/ testar) |
 | 4 | **P0 — Catálogo GUID→XPath** (destrava os 237 LinkMappings do XslSynth, cruzamento com o catálogo Excel) | Roadmap P0 | Lia | runner funcional — **já destravado**, ainda não iniciado |
-| 5 | Diffs cosméticos residuais (declaração XML, ordem de atributos `Id`/`versao`) | Etapa B2 | Dex | nada — trivial, só não foi fechado |
+| 5 | ~~Diffs cosméticos residuais~~ — **fechado (2026-07-15, Trilha B fase B3):** eram 3 (declaração XML, ordem `Id`/`versao`, self-closing vs par aberto/fechado); serialização fiel opt-in no `XsltApplier` + `@Id` como atributo literal AVT no XSL; verificado por reexecução (`cmp` = idêntico). Candidato a teste de regressão no gate C2 (Quinn). | Etapa B2 | ~~Dex~~ | **fechado** |
 | 6 | ~~Assinatura digital (`<Signature>`)~~ — **fechado (2026-07-15, usuário): fora do escopo PERMANENTE desta aplicação**, não é um item de PoC a completar depois. Quem assina o documento é o **e-forms**; esta aplicação cobre apenas geração de TCL/XSL/XSLT + validação posicional do TXT. Não faz parte de nenhuma fase futura. | — | — | **fechado** |
 | 7 | P1 — RAG few-shot sobre corpus G2KA (9 regras difíceis do `DslBlockInterpreter`: `&&`, `else`, aninhamento) | Roadmap P1 | Lia | nada — não iniciado |
 | 8 | **Integração no runtime de produção**: hoje tudo vive em `ai/XslSynth` (fora do build da API) + `tools/LowCodeRunner` (exe separado); nada plugado em `Services/LowCode/LowCodeTransformationService` ou exposto por endpoint — **confirmado pelo usuário (2026-07-15): essa decisão só faz sentido depois que #3 provar que o motor generaliza, não só o par único.** Não é tarefa desta rodada. | Arquitetura | Aria (decide) → Dex (implementa) | #3 (generalizar antes de promover) |
