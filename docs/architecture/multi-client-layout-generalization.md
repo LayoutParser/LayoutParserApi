@@ -5,7 +5,8 @@
 > do núcleo da API deixam de assumir **implicitamente "é sempre FIAT, é sempre 600 posições"**.
 > **Gatilho:** correção de rumo pedida pelo usuário — ver §1.
 > **Relacionado:** [`poc-excel-generator.md`](poc-excel-generator.md) (a PoC que expôs o problema) ·
-> [`ia-xslt-synthesis.md`](ia-xslt-synthesis.md).
+> [`ia-xslt-synthesis.md`](ia-xslt-synthesis.md) ·
+> [`multi-session-execution-plan.md`](multi-session-execution-plan.md) (divisão B1/B2 deste doc para a Trilha B).
 
 ---
 

@@ -3,7 +3,8 @@
 > **Autor:** @lp-architect (Aria) · **Status:** Proposta (design) · **Data:** 2026-07-10
 > **Escopo:** desenhar o desenvolvimento. A implementação é de `@lp-backend-dev` (Dex) e `@lp-parser-llm` (Lia); QA por `@lp-qa` (Quinn).
 > **Relacionado:** [`ia-xslt-synthesis.md`](ia-xslt-synthesis.md) · [`multi-client-layout-generalization.md`](multi-client-layout-generalization.md)
-> (generalização além da FIAT, 2026-07-15) · memória `server-assets-inventory`, `sysmiddle-runtime-e-sintese`.
+> (generalização além da FIAT, 2026-07-15) · [`multi-session-execution-plan.md`](multi-session-execution-plan.md)
+> (divisão Trilha A/B entre as duas sessões Claude Code) · memória `server-assets-inventory`, `sysmiddle-runtime-e-sintese`.
 
 ---
 
