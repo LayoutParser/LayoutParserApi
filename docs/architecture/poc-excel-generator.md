@@ -527,6 +527,36 @@ O `FiatMQ_Instance_FiatMQ.exe` é um **Windows Service** mínimo (assembly origi
 3. **Modo lote**: varrer `Examples/LAY_*` (inputs reais .mq_series/.txt) → executar o mapeador → gravar pares
    input→XML em `.claude/tmp/gabaritos/` → alimentar o loop diff==0 com N pares (generalização além do par único).
 
+### 9.4 🎯 EXECUÇÃO — o runner DESTRAVOU (2026-07-14, arquiteto inline)
+
+**O runner que ficou bloqueado o projeto inteiro agora BOOTA, valida a licença OFFLINE e EXECUTA o mapeador.**
+Sequência que funcionou (do `tools/LowCodeRunner`, exe rodando de dentro da Bin da instância):
+
+1. **Build** — faltava a ref `appConnector.Client.Interface` (tipo `Connector`); adicionada. Build verde net481.
+2. **Bootstrap** — `EDocsClientConnectorManager.Start()` em thread de fundo popula `ConnectorApplicationManager._configuration`
+   (config carrega em ~0.6s; `Inicialização da InstanceFactory realizada com sucesso`).
+3. **global.config localizado** — os dois configs (Bin + runner) tinham paths do servidor; reescritos p/ locais
+   (`exportContext.data`, `Functions`, `logger.xml`), `LicenseCode` preservado (`.bak` de backup).
+4. **Gate de licença do APIManager (o muro real, distinto do ConnectorApplicationManager)** — descoberto por
+   decompilação (ilspycmd): o ctor de `SysMiddle.API.APIManager` pega `ILicenseController` de
+   `SysMiddle.Base.InstanceFactory.GetInstance<ILicenseController>()`; **a InstanceFactory não auto-mapeou a interface
+   ao concreto** (`SysMiddle.ConnectUs.Core.Helper.General.LicenseController` não foi escaneado neste ambiente) → retornava
+   null → `"Controle de licença não encontrado"` → retry infinito (20MB+ de logs). **Fix (1 linha):**
+   `InstanceFactory.Instance.CreateType(typeof(ILicenseController), typeof(LicenseController))` + setar
+   `APIManager.GlobalConfigurationFileName` ANTES do `MappersHelper`.
+5. **Execução** — `MappersHelper.ExecuteMappingDocumentById(MAP_f31a6758…, doc, globalFolder, fileName)` → `[OK]`, API
+   carregada, XML produzido. **Licença validada offline, sem VPN, sem host.**
+
+**Último detalhe (não é a licença nem o motor):** a saída atual traz só o **envelope** (`enviNFe/idLote/indSinc` — as
+regras CONSTANTES do mapeador). Os campos que dependem do INPUT vieram vazios porque o layout de input `LAY_ad4fb6f4` é
+**`TextDelimited`** e o documento está sendo alimentado como largura-fixa (600) sem o delimitador de registro que esse
+parser espera (parse com `isIgnoreValidationsErrorsInInputParser=true` → falha silenciosa → só constantes sobrevivem).
+**Próximo passo p/ o gabarito completo:** descobrir o delimitador/record-size do `LAY_ad4fb6f4` (na config do layout dentro
+do `exportContext.data`) e alimentar o input no formato certo. Engine + licença + carga do projeto: **100% funcionais.**
+
+Artefatos: `tools/LowCodeRunner/{Program.cs,LayoutParserLowCodeRunner.csproj}` (fix de licença), exe copiado p/ a Bin,
+saída em `.claude/tmp/gabaritos/runner-output.xml`. Fonte decompilada em scratchpad (`smbase`, `accore`, `cus`).
+
 ### 9.3 Riscos (avaliar no passo 1 ANTES de rodar)
 - ⚠️ **O manager é o CONECTOR completo**: o start pode tentar abrir filas MQ/diretórios/DB do servidor. Mitigação:
   inspecionar `ConfigParameters.xml` e **desabilitar componentes** de transporte antes de rodar (manter só o núcleo de
