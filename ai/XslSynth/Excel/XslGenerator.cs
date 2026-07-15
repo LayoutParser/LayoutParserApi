@@ -230,6 +230,10 @@ public sealed class XslGenerator
         // R1b: remove cascas (grupos literais que sobraram só com comentários de gap).
         RemoverCascasVazias(enviNFe);
 
+        // Etapa B2: envelope (idLote/indSinc) + bloco proprietário <dadosAdic>.
+        // DEPOIS do RemoverCascasVazias — o B2BDirectory é intencionalmente vazio.
+        new DadosAdicEmitter().Aplicar(enviNFe, spec, _rootTree, log);
+
         var doc = new XDocument(
             new XElement(Xs + "stylesheet",
                 new XAttribute("version", "1.0"),
