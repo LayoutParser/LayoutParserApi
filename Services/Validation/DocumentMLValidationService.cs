@@ -19,15 +19,19 @@ namespace LayoutParserApi.Services.Validation
         private readonly ILogger<DocumentMLValidationService> _logger;
         private readonly string _learningDataPath;
         private readonly string _trainingSamplesPath;
+        private readonly IDocumentAnomalyDetector? _anomalyDetector;
         private Dictionary<string, DocumentPattern> _learnedPatterns = new();
 
         public DocumentMLValidationService(
             ITechLogger techLogger,
             ILogger<DocumentMLValidationService> logger,
-            IConfiguration configuration)
+            IConfiguration configuration,
+            IDocumentAnomalyDetector? anomalyDetector = null)
         {
             _techLogger = techLogger;
             _logger = logger;
+            // ✅ Dependência opcional: sem o detector registrado, o serviço segue funcionando normalmente
+            _anomalyDetector = anomalyDetector;
             _learningDataPath = configuration["ML:LearningDataPath"] ?? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "MLData", "DocumentPatterns");
             _trainingSamplesPath = configuration["ML:TrainingSamplesPath"] ?? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "MLData", "TrainingSamples");
 
@@ -68,6 +72,32 @@ namespace LayoutParserApi.Services.Validation
                 // Se não houver padrões, gerar sugestões baseadas em regras
                 if (!suggestions.Any())
                     suggestions.AddRange(GenerateRuleBasedSuggestions(lineError, context));
+
+                // ✅ Enriquecimento opcional com o score de anomalia (P2) — resiliente:
+                // qualquer falha aqui é engolida e NUNCA quebra a resposta principal
+                try
+                {
+                    if (_anomalyDetector != null)
+                    {
+                        var anomaly = await _anomalyDetector.DetectAsync(documentContent, layoutGuid);
+                        if (anomaly.AnomalyScore.HasValue && anomaly.IsAnomalous)
+                        {
+                            suggestions.Add(new ErrorSuggestion
+                            {
+                                FieldName = "Documento completo",
+                                CurrentLength = documentContent?.Length ?? 0,
+                                SuggestedLength = 0,
+                                Action = "review",
+                                Reason = $"[Anomalia] {anomaly.Explanation}",
+                                Confidence = anomaly.AnomalyScore.Value * anomaly.Confidence
+                            });
+                        }
+                    }
+                }
+                catch (Exception anomalyEx)
+                {
+                    _logger.LogWarning(anomalyEx, "Falha ao enriquecer sugestões com score de anomalia (ignorada)");
+                }
 
                 // Ordenar por confiança
                 suggestions = suggestions.OrderByDescending(s => s.Confidence).ToList();
@@ -265,19 +295,9 @@ namespace LayoutParserApi.Services.Validation
         /// </summary>
         private Dictionary<string, object> ExtractDocumentFeatures(string documentContent, int expectedLineLength = LineLengthResolver.LegacyDefaultLineLength)
         {
-            var features = new Dictionary<string, object>();
-
-            features["totalLength"] = documentContent.Length;
-            features["lineCount"] = documentContent.Length / expectedLineLength;
-            features["hasHeader"] = documentContent.StartsWith("HEADER");
-            features["averageLineLength"] = documentContent.Length / (documentContent.Length / (double)expectedLineLength);
-
-            // Contar tipos de caracteres
-            features["numericCharCount"] = documentContent.Count(char.IsDigit);
-            features["alphaCharCount"] = documentContent.Count(char.IsLetter);
-            features["spaceCharCount"] = documentContent.Count(char.IsWhiteSpace);
-
-            return features;
+            // ✅ Lógica centralizada no DocumentFeatureExtractor — helper compartilhado com o
+            // DocumentAnomalyDetectorService para garantir features idênticas às do histórico
+            return DocumentFeatureExtractor.Extract(documentContent, expectedLineLength);
         }
 
         /// <summary>

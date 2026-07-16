@@ -245,6 +245,8 @@ try
     builder.Services.AddScoped<LayoutLearningService>();
     builder.Services.AddScoped<XmlFormatterService>();
     builder.Services.AddScoped<FileStorageService>();
+    // ✅ Detector de anomalia por z-score sobre MLData/DocumentPatterns (P2 do roadmap)
+    builder.Services.AddScoped<IDocumentAnomalyDetector, DocumentAnomalyDetectorService>();
 
     // Validation Services
     builder.Services.AddScoped<LayoutValidationService>();
