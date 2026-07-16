@@ -1,6 +1,6 @@
 # Plano de Execução Multi-Sessão — Trilha A (CLI) × Trilha B (Windows UI)
 
-> **Autor:** @lp-architect (Aria) · **Status:** Ativo · **Data:** 2026-07-15
+> **Autor:** @lp-architect (Aria) · **Status:** Trilha B COMPLETA (merged) · Trilha A INCOMPLETA — ver §7 · **Data:** 2026-07-15 (criação) / **2026-07-16 (auditoria de reconciliação, ver §7)**
 > **Contexto:** o usuário opera **duas sessões Claude Code na mesma máquina** (mesmo disco C:, mesma pasta do
 > repo): esta sessão CLI (WSL) e uma sessão Windows Claude Code UI nativa. Objetivo: dividir o trabalho
 > pendente (ver [`poc-excel-generator.md`](poc-excel-generator.md) §11 e
@@ -111,9 +111,95 @@ sem sobreposição.** Confirmado: nenhuma fase de A e nenhuma de B tocam o mesmo
 
 ---
 
-## 6. Estado agora (2026-07-15)
+## 6. Estado em 2026-07-15 (histórico — ver §7 para o estado real corrigido em 2026-07-16)
 
 - Branch `feat/multi-client-track-b` criada localmente, sincronizada com o HEAD atual desta sessão.
 - Trilha A (esta sessão) segue para **A1 — modo lote do runner**.
 - Trilha B fica livre para a sessão Windows começar por **B1** (não depende de nada, G0 já fechado) assim que
   o usuário abrir aquela sessão e fizer o checkout.
+
+---
+
+## 7. Auditoria de reconciliação (2026-07-16, Aria) — Trilha B fechada, Trilha A NÃO
+
+### 7.1 Trilha B — CONFIRMADA completa e mergeada
+
+`feat/multi-client-track-b` foi mergeada em `master` em duas PRs: **#3** (commit `d096364` — B1
+resolver de tamanho de linha + B2 parametrização) e **#5** (commits `346c8d5`/`c60fd74`/`1d583fa` —
+B3 diffs cosméticos byte-idênticos, B4 índice few-shot, B5/B6 detector de anomalias + CLI XSD diff).
+Todas as 6 fases (B1-B6) estão em `master`. Nada pendente aqui.
+
+### 7.2 Trilha A — NÃO fechada. O que de fato existe
+
+A branch `feat/lowcode-runner-bootstrap` **não tem nenhum commit além do que já está em `master`**
+(mergeada via PR #4, commit `05ebb3c` — só o texto deste plano, zero código de A1-A5).
+
+O trabalho de A1 que de fato aconteceu ficou em **outra branch, não mergeada**:
+`docs/track-a-a1-status` (commits `8daae8a`, `9ae36d6`). Auditoria do diff completo contra
+`master` (`git diff master...docs/track-a-a1-status`) confirma que essa branch contém
+**exclusivamente atualizações de documentação/memória** — `poc-excel-generator.md` §11.1/11.2/11.3
+e um novo memory file do Lia (`multi-client-mappers.md`). **Nenhum arquivo de código-fonte foi
+alterado nela** (não `tools/LowCodeRunner/*`, não `ai/XslSynth/*`).
+
+O que essa documentação registra, e que é o achado real de valor da sessão:
+- **62 pares input→XML reais do cliente FIAT** foram gerados em `.claude/tmp/gabaritos/fiat-sweep/`
+  (+ `_manifest.tsv`), rodando o `.exe` do runner em lote **via harness bash externo** (não código
+  commitável) — `.claude/tmp/` é gitignored, os dados não estão no controle de versão do repo de
+  produção.
+- **Descoberta multi-cliente**: o package único `938f9978-…` contém os 170 mapeadores de TODOS os
+  clientes (FIAT/CNHI/IVECCO/MARELLI/COMAU/PSCA/…) — generalizar é escolher o maperador certo, não
+  trocar de package. GUIDs dos mapeadores SEND_ENV de 4 clientes já identificados (FIAT
+  `MAP_f31a6758`, CNHI `MAP_f1a6453f`, IVECCO `MAP_166b4df6`, MARELLI `MAP_204a020e`/`MAP_1cfab556`)
+  e gabaritos adicionais gerados para eles (`.claude/tmp/gabaritos/{cnhi,ivecco,marelli}/` +
+  `multi-client-manifest.tsv`), trazendo variantes fiscais reais (ICMS10/ICMS40, IPITrib,
+  PISNT/Outr) que o FIAT sozinho não exercita — ver
+  `.claude/agent-memory/lp-parser-llm/multi-client-mappers.md` (nessa branch, não em `master`).
+
+**Conclusão:** A1 está **PARCIAL** — o dado existe (fábrica de gabaritos provada, à mão), o
+**código do modo lote não existe** (item #2 de `poc-excel-generator.md` §11.2, correção pendente:
+o texto atual em `master` ainda mostra #2 como pendência plena, não reflete o "PARCIAL" registrado
+em `docs/track-a-a1-status` — corrigido nesta rodada, ver §7.4). A2 (generalização de variantes),
+A3 (catálogo GUID→XPath), A4 (`LayoutSpecExtractor`/G3) e A5 (generalizar `MapperEmissionGuide`/G4)
+**não foram iniciadas** — confirmado por inspeção de `ai/XslSynth/Core/` e `ai/XslSynth/Excel/`:
+nenhum arquivo novo (`GuidXPathCatalog.cs`, `LayoutSpecExtractor.cs`) existe, e
+`tools/LowCodeRunner/Program.cs` continua single-shot (`Uso: LayoutParserLowCodeRunner
+<globalFolder> <package> <mapperGuid|LIST> <input> <output>` — uma execução por chamada, sem laço
+de varredura).
+
+### 7.3 Decisão de reconciliação de branches (executar via `@lp-devops`, NÃO por mim)
+
+Recomendação: **descartar `feat/lowcode-runner-bootstrap`** (não tem nada que `master` não tenha —
+mergeá-la de novo é no-op) e **trazer `docs/track-a-a1-status` para dentro de uma branch de trabalho
+nova para o retomar de A1-A5** (ex.: `feat/lowcode-batch-mode`, criada a partir de `master` +
+cherry-pick/merge dos 2 commits de doc dessa branch). Não decido isso sozinha porque envolve
+`git branch -D` / merge — escalo a operação para `@lp-devops`:
+
+```
+1. git checkout master && git pull
+2. git checkout -b feat/lowcode-batch-mode
+3. git merge docs/track-a-a1-status   # traz só doc/memory, sem conflito esperado (arquivos não tocados por B1-B6)
+4. git branch -d feat/lowcode-runner-bootstrap        # local, sem código próprio
+5. git push origin --delete feat/lowcode-runner-bootstrap docs/track-a-a1-status   # após confirmação do usuário
+```
+
+### 7.4 Plano de finalização da Trilha A (o que falta, por fase)
+
+| Fase | Falta | Arquivos | Dono | Depende de |
+|---|---|---|---|---|
+| **A1** | Codificar o **modo lote** no runner (hoje é bash externo repetindo `EXEC` um a um): novo modo `SWEEP <globalFolder> <package> <examplesDir> <outDir>` que itera `Examples/LAY_*`, chama a mesma lógica de `EXEC` para cada input, grava manifest. Reaproveitar os 62 pares já gerados como fixture de regressão em vez de regerar. | `tools/LowCodeRunner/Program.cs`, `SysmiddleMapperExecutor.cs` | `@lp-backend-dev` (Dex) | nada (runner já funcional) |
+| **A1(b)** | Estender a varredura a CNHI/IVECCO/MARELLI usando os GUIDs de mapeador já identificados (ver §7.2) — precisa decidir se o modo `SWEEP` aceita GUID de mapeador por cliente ou se isso fica em script separado | mesmo `Program.cs` + os dados já em `.claude/tmp/gabaritos/{cnhi,ivecco,marelli}` | `@lp-parser-llm` (Lia) | A1 |
+| **A2** | Generalizar além do par único: variantes ICMS10/20/30/40/51/60/70/90/CSOSN, grupos especiais (veículo/ANVISA/ANP/combustível/DI), 2ª aba do Excel (Layout-Receb), outras versões de NT — usar os gabaritos multi-cliente de A1(b) como fixtures novas | `ai/XslSynth/Excel/{XslGenerator.cs,NfeLeiauteCatalog.cs}` | Lia (domínio) + Dex (código) | A1(b) — sem gabaritos de outros clientes, A2 fica testando só o caso FIAT de novo |
+| **A3** | P0 — Catálogo GUID→XPath (destrava os 237 `LinkMappings` do XslSynth) | novo arquivo `ai/XslSynth/Core/GuidXPathCatalog.cs` | Lia | nada — pode rodar em paralelo a A1/A2 (já destravado desde que o runner funciona) |
+| **A4** | G3 — `LayoutSpecExtractor` (2º adaptador de ingestão via Connect Us, `multi-client-layout-generalization.md` §4.3) | novo arquivo em `ai/XslSynth/Excel/` | Dex (wiring) + Lia (domínio) | A1 (modo lote fornece dados de teste) |
+| **A5** | G4 — Generalizar `MapperEmissionGuide` de 8 campos hardcoded para motor genérico de condicionalidade | `ai/XslSynth/Excel/MapperEmissionGuide.cs` | Dex + Lia | A3/A4 — precisa de mapeadores reais adicionais para não generalizar em cima de 1 exemplo só |
+
+**Sequenciamento recomendado:** A1 (código do modo lote, baixo esforço/alta alavancagem porque
+formaliza o que já foi provado à mão) → A1(b) em paralelo com A3 (não competem por arquivo) → A2
+depois de A1(b) (precisa de diversidade fiscal real, não só FIAT) → A4/A5 por último (dependem de
+volume de mapeadores reais que só A1(b)/A2 produzem).
+
+**Item de doc pendente:** `master`'s `poc-excel-generator.md` §11.2 item #2 ainda mostra "Modo lote
+do runner" como pendência plena (Dono: Dex, sem menção ao PARCIAL); a versão em
+`docs/track-a-a1-status` já tem a correção (PARCIAL, com o detalhamento (a)/(b)). Ao aplicar a
+reconciliação de branches do §7.3, essa correção de doc vem junto automaticamente — não precisa
+reescrever à mão.
