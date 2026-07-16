@@ -684,6 +684,7 @@ Artefatos: `.csproj` (PlatformTarget x86) + `Functions/SysMiddle.ConnectUs.Funct
 | **Trilha B (2026-07-15): B1 resolver de linha no núcleo · B2 `lineLength` paramétrico · B3 byte-idêntico** | ✅ | commit `d096364` (merged PR #3) — `LineLengthResolver` + gates de allowlist; §8.2 (cosmético fechado, `cmp` idêntico) |
 | **LowCodeRunner: bootstrap + licença OFFLINE + execução do mapeador** | ✅ | §9.4 — muro de licença (o bloqueio histórico do projeto) caiu |
 | **LowCodeRunner: saída COMPLETA (fim do "envelope-only")** — fix de bitness x86 | ✅ | §9.5 — reproduz o `gabarito-esperado-env.xml` **byte-a-byte** (só 1 espaço na decl. XML) |
+| **A1 (dado): sweep FIAT em lote — 62 pares input→XML reais** | ✅ *(dado; código do modo lote ainda em bash — ver §11.2#2)* | `.claude/tmp/gabaritos/fiat-sweep/` — 62 XML completos (4–12 KB, não envelope-only, pós-fix x86, 2026-07-15 14:09–14:58) + `_manifest.tsv` (input→chars→status, todos OK) |
 
 **Leitura:** a cadeia determinística Excel→TCL→ROOT→XSL está **provada ponta-a-ponta contra um gabarito real**
 (reproduz `enviNFe` completo, **byte a byte absoluto** — cosmético fechado na fase B3, 2026-07-15), e o runner Sysmiddle — que travava o
@@ -695,7 +696,7 @@ projeto de "PoC de viabilidade" para "motor pronto para generalizar".
 | # | Pendência | Bloco | Dono sugerido | Depende de |
 |---|---|---|---|---|
 | 1 | ~~**Confirmar a estrutura física real do layout `LAY_ad4fb6f4`**~~ — **RESOLVIDO (2026-07-15, §9.5):** o layout **É** `TextDelimited` e **o parser conclui COM SUCESSO** (confirmado no log de runtime); o "envelope-only" nunca foi parsing. Causa raiz real = **bitness**: runner AnyCPU→x64 não carregava a DLL de funções x86 (`BadImageFormatException`) → regras (incl. `chaveDeAcesso`) falhavam → ramo `<NFe>` suprimido. Fix: `PlatformTarget=x86` + DLLs de função x86 consistentes. Runner agora reproduz o gabarito byte-a-byte. | Runner | ~~Dex~~ Aria | **fechado** |
-| 2 | **Modo lote do runner** (varrer `Examples/LAY_*`, gravar pares input→XML em `.claude/tmp/gabaritos/`) | Runner | Dex | #1 |
+| 2 | **Modo lote do runner** — **PARCIAL (2026-07-15, Aria):** o *dado* já existe p/ FIAT → **62 pares input→XML reais** em `.claude/tmp/gabaritos/fiat-sweep/` (+ `_manifest.tsv`), todos completos pós-fix x86. Resta: **(a)** codificar o modo lote NO runner (hoje o `Program.cs` é single-shot `LIST`/`EXEC`; o sweep foi orquestrado por harness bash externo) → **Dex**; **(b)** estender a outros clientes (CNHI/IVECCO/MARELLI) — precisa do GUID do mapeador de cada um (via modo `LIST` do runner sobre o package do cliente, OU decrypt) → **Lia**. Só FIAT (`MAP_f31a6758`) foi varrido. | Runner | Dex (a) + Lia (b) | #1 ✅ |
 | 3 | **Generalização além do par único**: variantes ICMS10/20/30/40/51/60/70/90/CSOSN, grupos especializados (veículos/ANVISA/ANP/combustível/DI), 2ª aba do Excel (Layout-Receb = retorno), outras versões/NT | Cobertura | Lia (domínio) + Dex | #2 (precisa de gabaritos novos p/ testar) |
 | 4 | **P0 — Catálogo GUID→XPath** (destrava os 237 LinkMappings do XslSynth, cruzamento com o catálogo Excel) | Roadmap P0 | Lia | runner funcional — **já destravado**, ainda não iniciado |
 | 5 | ~~Diffs cosméticos residuais~~ — **fechado (2026-07-15, Trilha B fase B3):** eram 3 (declaração XML, ordem `Id`/`versao`, self-closing vs par aberto/fechado); serialização fiel opt-in no `XsltApplier` + `@Id` como atributo literal AVT no XSL; verificado por reexecução (`cmp` = idêntico). Candidato a teste de regressão no gate C2 (Quinn). | Etapa B2 | ~~Dex~~ | **fechado** |
@@ -710,9 +711,13 @@ projeto de "PoC de viabilidade" para "motor pronto para generalizar".
 
 ### 11.3 Recomendação de sequenciamento (Aria)
 
-1. ~~**Fechar #1+#2 (runner completo)**~~ — **#1 FECHADO (§9.5): runner produz saída completa idêntica ao gabarito.**
-   Resta **#2 (modo lote)** — agora desbloqueado; é o menor esforço com maior alavancagem: varrer `Examples/LAY_*`,
-   gravar pares input→XML em `.claude/tmp/gabaritos/`, alimentando #3 e #4 com gabaritos reais em quantidade.
+1. ~~**Fechar #1+#2 (runner completo)**~~ — **#1 FECHADO (§9.5)** e **#2 PARCIAL (§11.2):** o *dado* de A1 já
+   existe p/ FIAT (62 pares em `fiat-sweep/`). O que resta de #2 tem baixa alavancagem SOZINHO: (a) codificar o
+   modo lote no runner (Dex) só formaliza o que o bash já faz; (b) mais gabaritos FIAT trazem pouca diversidade
+   (é quase todo CST=ICMS00). **A alavancagem real está em habilitar OUTROS clientes** (CNHI/IVECCO/MARELLI, que
+   têm SAP/variantes distintas) — isso exige o GUID do mapeador de cada um (via modo `LIST` do runner sobre o
+   package do cliente — mais barato que compilar o `LayoutParserDecrypt`). É esse passo (b, Lia) que destrava #3
+   de verdade; (a, Dex) é higiene de código de A1.
 2. **#3 em paralelo com #4** — generalização de variantes e o catálogo GUID→XPath não competem pelo mesmo código.
 3. **#5 antes de #12** — feche o cosmético barato antes de pedir o gate formal da Quinn.
 4. **#8 é uma decisão de arquitetura, não uma tarefa** — só depois de #3 provar que o motor generaliza (não só o
