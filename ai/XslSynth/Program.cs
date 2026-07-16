@@ -2,6 +2,7 @@ using System.Xml.Linq;
 using XslSynth.Core;
 using XslSynth.Excel;
 using XslSynth.Model;
+using XslSynth.NtPipeline;
 using XslSynth.Synthesis;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -14,6 +15,10 @@ using XslSynth.Synthesis;
 //   dotnet run -- --excel <x>  → gera o TCL <MAP> a partir da spec .xlsx (PoC-0/1)
 //   dotnet run -- --catalog <x> → catálogo #XML → XPath NF-e + relatório (PoC-2)
 //   dotnet run -- --generate <x> → TXT→ROOT→XSL→saída + diff vs gabarito (PoC-3)
+//   dotnet run -- --rag <pasta>  → injeta o índice RAG few-shot no tradutor (P1)
+//   dotnet run -- --rag-stats    → tamanho do índice por chave + demo de recuperação
+//   dotnet run -- --xsd-diff <velho.xsd> <novo.xsd> [--delta-out <json>]
+//                              → S1 do pipeline NT: delta de XSD por XPath (B5 P-1)
 //
 // Arquitetura: docs/architecture/ia-xslt-synthesis.md · poc-excel-generator.md
 // ─────────────────────────────────────────────────────────────────────────────
@@ -24,6 +29,12 @@ Log("╔════════════════════════
 Log("║  XslSynth — síntese de XSLT guiada por verificador                 ║");
 Log("╚══════════════════════════════════════════════════════════════════╝");
 Log("");
+
+if (args.Contains("--xsd-diff"))
+    return RunXsdDiff();
+
+if (args.Contains("--rag-stats"))
+    return await RunRagStatsAsync();
 
 if (args.Contains("--generate"))
     return RunGenerate();
@@ -468,6 +479,87 @@ int RunGenerate()
     return a1Ok && falta == 0 && texto == 0 ? 0 : 1;
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// Fluxo XSD-DIFF (pipeline NT, S1 — protótipo B5 P-1): snapshot dos dois
+// pacotes XSD (includes resolvidos a partir da pasta de CADA arquivo) → delta
+// por XPath (Added/Removed/TypeChanged/OccurrenceChanged/FacetChanged) →
+// JSON versionável + resumo no console. 100% determinístico — SEM LLM.
+// Desenho: docs/architecture/nt-pipeline-design.md §4–5.
+// ══════════════════════════════════════════════════════════════════════════
+int RunXsdDiff()
+{
+    var idx = Array.IndexOf(args, "--xsd-diff");
+    string? Pos(int off) =>
+        idx + off < args.Length && !args[idx + off].StartsWith("--") ? args[idx + off] : null;
+    var velhoPath = Pos(1);
+    var novoPath = Pos(2);
+    if (velhoPath is null || novoPath is null || !File.Exists(velhoPath) || !File.Exists(novoPath))
+    {
+        Log("❌ Informe os dois XSD (arquivos existentes).");
+        Log("   Uso: dotnet run -- --xsd-diff <velho.xsd> <novo.xsd> [--delta-out <arquivo.json>]");
+        return 2;
+    }
+
+    Log("Modo      : XSD-DIFF (pipeline NT, S1 — determinístico, sem LLM)");
+    Log($"XSD velho : {velhoPath}");
+    Log($"XSD novo  : {novoPath}");
+    Log("");
+
+    XsdSchemaSnapshot velho, novo;
+    try
+    {
+        velho = XsdDiffer.LoadSnapshot(velhoPath);
+        novo = XsdDiffer.LoadSnapshot(novoPath);
+    }
+    catch (Exception ex)
+    {
+        Log($"❌ Falha ao compilar os XSD: {ex.Message}");
+        return 1;
+    }
+
+    foreach (var aviso in velho.Avisos.Concat(novo.Avisos).Take(5))
+        Log($"   [aviso XSD] {aviso}");
+
+    Log($"Snapshot velho: {velho.Nodes.Count} nós ({velho.DuplicadosIgnorados} XPaths de choice colapsados).");
+    Log($"Snapshot novo : {novo.Nodes.Count} nós ({novo.DuplicadosIgnorados} colapsados).");
+    Log("");
+
+    var delta = XsdDiffer.Diff(velho, novo);
+
+    Log("── Resumo do delta ───────────────────────────────────────────────");
+    foreach (var (kind, qtd) in delta.Resumo)
+        Log($"   {kind,-18} {qtd,5}");
+    Log($"   {"TOTAL",-18} {delta.Total,5}");
+    Log("");
+
+    if (delta.Total == 0)
+    {
+        Log("✅ IDENTIDADE: 0 deltas — os dois XSD descrevem o mesmo leiaute.");
+    }
+    else
+    {
+        foreach (var g in delta.Entradas.GroupBy(e => e.Kind))
+        {
+            Log($"── {g.Key} ({g.Count()}) ──────────────────────────────────────────");
+            foreach (var e in g.Take(12))
+            {
+                Log($"   {e.XPath}");
+                if (e.Antes is not null) Log($"      antes : {Short(e.Antes, 110)}");
+                if (e.Depois is not null) Log($"      depois: {Short(e.Depois, 110)}");
+            }
+            if (g.Count() > 12) Log($"   … e mais {g.Count() - 12}.");
+        }
+    }
+    Log("");
+
+    var deltaOut = FindArgAfter("--delta-out") ?? Path.Combine(ResolveExportDir(), "xsd-delta.json");
+    Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(deltaOut))!);
+    File.WriteAllText(deltaOut, delta.ToJson());
+    Log($"XsdDelta (JSON) salvo em: {deltaOut}");
+
+    return 0;
+}
+
 // Set-diff por path: multiconjuntos de folhas (elementos sem filhos) e atributos.
 // FALTA = só no gabarito · SOBRA = só no gerado · TEXTO = valor difere (par ordinal).
 (int Falta, int Sobra, int Texto, List<string> Linhas) SetDiffPorPath(XElement esperado, XElement obtido)
@@ -583,6 +675,139 @@ string ResolveExportDir()
 }
 
 // ══════════════════════════════════════════════════════════════════════════
+// Fluxo RAG-STATS (P1): constrói o FewShotIndex a partir do corpus real e
+// imprime (a) o tamanho do índice por chave tipo|versão|padrão e (b) UMA
+// demonstração de recuperação para uma regra DIFÍCIL real (com && ou else)
+// do MapperVO usado no fluxo --generate, quando acessível em disco.
+// Com --ollama: traduz a regra difícil COM e SEM few-shot e compara.
+// ══════════════════════════════════════════════════════════════════════════
+async Task<int> RunRagStatsAsync()
+{
+    var corpusDir = FindArgAfter("--rag") ?? Path.Combine(
+        Path.GetDirectoryName(ResolveExportDir())!, "servidor", "layoutparser", "Examples");
+    if (!Directory.Exists(corpusDir))
+    {
+        Log("❌ Pasta de corpus não encontrada.");
+        Log("   Uso: dotnet run -- --rag-stats [--rag <pasta-corpus>] [--mapper <mapper.decrypted.xml>]");
+        return 2;
+    }
+
+    Log("Modo      : RAG-STATS (índice few-shot, P1 — determinístico, sem embeddings)");
+    Log($"Corpus    : {corpusDir}");
+    Log("");
+
+    var index = FewShotIndex.Build(corpusDir, Log);
+
+    // Regras DSL do mapeador real entram no índice também (DSL análoga + pares fáceis).
+    var mapperPath = FindArgAfter("--mapper") ?? FindMapperByClimb();
+    XslSynth.Model.MapperVo? mapper = null;
+    if (mapperPath is not null && File.Exists(mapperPath))
+    {
+        try
+        {
+            mapper = new RealMapperParser().ParseFile(mapperPath);
+            index.AddMapper(mapper, Path.GetFileName(mapperPath));
+            Log($"[rag] mapeador real indexado: {mapper.Rules.Count} regras DSL ({Path.GetFileName(mapperPath)}).");
+        }
+        catch (Exception ex)
+        {
+            Log($"   [aviso] mapeador ilegível ({ex.Message}) — stats só do corpus.");
+        }
+    }
+    else
+    {
+        Log("   [aviso] MapperVO descriptografado não encontrado — demo de recuperação indisponível.");
+    }
+    Log("");
+
+    // ── (a) Tamanho do índice por chave ──────────────────────────────────
+    Log("── Índice por chave (tipo|versão|padrão) ─────────────────────────");
+    Log($"   {"Chave",-28} {"total",5} {"pares",5} {"sóDSL",5} {"sóXSL",5}");
+    foreach (var (chave, total, pares, soDsl, soXslt) in index.Stats())
+        Log($"   {chave,-28} {total,5} {pares,5} {soDsl,5} {soXslt,5}");
+    Log($"   TOTAL: {index.Count} exemplos.");
+    Log("");
+
+    // ── (b) Demo de recuperação para UMA regra difícil real ──────────────
+    if (mapper is null) return 0;
+
+    var dificil = mapper.Rules.FirstOrDefault(r =>
+    {
+        var t = FewShotIndex.ClassifyTraits(r.ContentValue);
+        return t.HasFlag(DslTraits.CompostaAnd) || t.HasFlag(DslTraits.Else);
+    });
+    if (dificil is null)
+    {
+        Log("   [aviso] nenhuma regra com && ou else no mapeador — demo pulada.");
+        return 0;
+    }
+
+    var traits = FewShotIndex.ClassifyTraits(dificil.ContentValue);
+    Log("── Demo de recuperação (regra difícil real) ──────────────────────");
+    Log($"   Regra   : {dificil.Name}");
+    Log($"   Traços  : {traits} (primário: {FewShotIndex.Rotulo(FewShotIndex.Primario(traits))})");
+    Log($"   DSL     : {Short((dificil.ContentValue ?? "").Trim(), 160)}");
+    Log("");
+    var recuperados = index.Retrieve(dificil, k: 3);
+    Log($"   Recuperados: {recuperados.Count} exemplo(s).");
+    var n = 0;
+    foreach (var ex in recuperados)
+    {
+        n++;
+        var forma = ex is { Dsl: not null, Xslt: not null } ? "par DSL→XSLT"
+            : ex.Xslt is not null ? "estilo XSL real" : "DSL análoga";
+        Log($"   ── #{n} [{ex.Chave}] {forma} · origem: {ex.Origem}");
+        if (ex.Dsl is not null) Log($"      DSL : {Short(ex.Dsl.ReplaceLineEndings(" "), 140)}");
+        if (ex.Xslt is not null) Log($"      XSLT: {Short(ex.Xslt.ReplaceLineEndings(" "), 140)}");
+    }
+    Log("");
+
+    // ── (c) Opcional: tradução da regra difícil COM e SEM few-shot (--ollama) ──
+    if (!args.Contains("--ollama"))
+    {
+        Log("   (passe --ollama para comparar a tradução da regra com e sem few-shot)");
+        return 0;
+    }
+    var client = new OllamaClient(Log);
+    if (!await client.IsReachableAsync())
+    {
+        Log("   [aviso] Ollama indisponível — comparação com/sem few-shot pulada.");
+        return 0;
+    }
+
+    Log($"── Comparação com/sem few-shot (Ollama {client.Model}) ───────────");
+    var sem = await new DslRuleTranslator(client, Log).TranslateAsync(dificil);
+    var com = await new DslRuleTranslator(client, Log, index).TranslateAsync(dificil);
+    foreach (var (rotulo, tr) in new[] { ("SEM few-shot", sem), ("COM few-shot", com) })
+    {
+        // Source==Ollama ⇒ o corpo COMPILOU (o tradutor só aceita XSLT que compila).
+        var compilou = tr.Source == TranslationSource.Ollama;
+        var temChoose = tr.BodyXsl.Contains("xsl:otherwise", StringComparison.Ordinal);
+        var temAnd = System.Text.RegularExpressions.Regex.IsMatch(tr.BodyXsl, @"test=""[^""]*\band\b");
+        Log($"   {rotulo}: fonte={tr.Source} · XSLT do LLM compilou={(compilou ? "sim" : $"não (caiu para {tr.Source})")}"
+            + $" · choose/otherwise={(temChoose ? "sim" : "não")} · test com 'and'={(temAnd ? "sim" : "não")}");
+        Log($"      corpo: {Short(tr.BodyXsl.ReplaceLineEndings(" "), 180)}");
+    }
+
+    return 0;
+}
+
+// Sobe da pasta do exe procurando o MapperVO real (SEM olhar args posicionais —
+// aqui o valor após --rag é uma PASTA e não pode ser confundido com o mapeador).
+string? FindMapperByClimb()
+{
+    var dir = new DirectoryInfo(AppContext.BaseDirectory);
+    while (dir is not null)
+    {
+        var candidate = Path.Combine(dir.FullName,
+            ".claude", "tmp", "export", "MAP_MQSERIES_SEND_ENV_TXT_XML_NFE.decrypted.xml");
+        if (File.Exists(candidate)) return candidate;
+        dir = dir.Parent;
+    }
+    return null;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
 // Fluxo REAL: MapperVO Sysmiddle descriptografado → candidato XSLT + cobertura
 // (verificação POSSÍVEL sem gabarito de runtime: compila + % de cobertura)
 // ══════════════════════════════════════════════════════════════════════════
@@ -630,10 +855,27 @@ async Task<int> RunRealAsync()
         }
     }
 
+    // Índice RAG few-shot (P1) — opt-in via --rag <pasta-corpus>; sem a flag o
+    // comportamento (e o prompt) permanecem idênticos.
+    FewShotIndex? fewShot = null;
+    var ragDir = FindArgAfter("--rag");
+    if (ragDir is not null)
+    {
+        if (Directory.Exists(ragDir))
+        {
+            fewShot = FewShotIndex.Build(ragDir, Log);
+            Log($"[rag] few-shot habilitado: {fewShot.Count} exemplos indexados de {ragDir}.");
+        }
+        else
+        {
+            Log($"   [aviso] pasta de corpus '{ragDir}' não existe — seguindo SEM few-shot.");
+        }
+    }
+
     // Interpretador determinístico (multi-saída) primeiro; só cai no tradutor 1-saída
     // (fallback simples ou Ollama) quando o padrão dominante não é reconhecido.
     var interpreter = new DslBlockInterpreter();
-    var translator = new DslRuleTranslator(ollama, Log);
+    var translator = new DslRuleTranslator(ollama, Log, fewShot);
     var translations = new List<RuleTranslation>(mapper.Rules.Count);
     int rulesInterpreted = 0, rulesFallback = 0, rulesOllama = 0, rulesStub = 0;
 
@@ -710,22 +952,20 @@ string DetermineRoot(MapperVo m)
     return root ?? "nfeProc";
 }
 
-// Resolve o caminho do mapeador real: arg explícito, senão sobe da pasta do exe
-// procurando .claude/tmp/export/MAP_MQSERIES_SEND_ENV_TXT_XML_NFE.decrypted.xml.
+// Resolve o caminho do mapeador real: arg explícito (ignorando VALORES de flags,
+// ex.: a pasta após --rag), senão sobe da pasta do exe procurando
+// .claude/tmp/export/MAP_MQSERIES_SEND_ENV_TXT_XML_NFE.decrypted.xml.
 string? FindRealMapper()
 {
-    var explicitArg = args.FirstOrDefault(a => !a.StartsWith("--"));
+    var flagValues = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var flag in new[] { "--rag", "--mapper", "--xsd", "--txt", "--xml",
+                 "--excel", "--catalog", "--generate", "--debug-ref" })
+        if (FindArgAfter(flag) is { } v) flagValues.Add(v);
+
+    var explicitArg = args.FirstOrDefault(a => !a.StartsWith("--") && !flagValues.Contains(a));
     if (explicitArg is not null && File.Exists(explicitArg)) return explicitArg;
 
-    var dir = new DirectoryInfo(AppContext.BaseDirectory);
-    while (dir is not null)
-    {
-        var candidate = Path.Combine(dir.FullName,
-            ".claude", "tmp", "export", "MAP_MQSERIES_SEND_ENV_TXT_XML_NFE.decrypted.xml");
-        if (File.Exists(candidate)) return candidate;
-        dir = dir.Parent;
-    }
-    return explicitArg;
+    return FindMapperByClimb() ?? explicitArg;
 }
 
 // ══════════════════════════════════════════════════════════════════════════

@@ -37,11 +37,14 @@ public sealed class DslRuleTranslator
 {
     private readonly OllamaClient? _ollama;
     private readonly Action<string> _log;
+    private readonly FewShotIndex? _fewShot;
 
-    public DslRuleTranslator(OllamaClient? ollama, Action<string>? log = null)
+    /// <param name="fewShot">Índice RAG few-shot opcional (P1). Null = prompt idêntico ao anterior.</param>
+    public DslRuleTranslator(OllamaClient? ollama, Action<string>? log = null, FewShotIndex? fewShot = null)
     {
         _ollama = ollama;
         _log = log ?? Console.WriteLine;
+        _fewShot = fewShot;
     }
 
     public bool OllamaEnabled => _ollama is not null;
@@ -77,7 +80,7 @@ public sealed class DslRuleTranslator
 
     // ── Prompt ──────────────────────────────────────────────────────────────
 
-    private static string BuildPrompt(MapperRule rule, string dsl)
+    private string BuildPrompt(MapperRule rule, string dsl)
     {
         var leaf = rule.TargetPath is { } p ? Xslt.Segments(p).LastOrDefault() ?? "valor" : "valor";
         var sb = new StringBuilder();
@@ -98,10 +101,50 @@ public sealed class DslRuleTranslator
         sb.AppendLine("    externo, SEM <xsl:stylesheet>, SEM explicação, SEM cercas de código.");
         sb.AppendLine("  • Namespace: xsl = http://www.w3.org/1999/XSL/Transform");
         sb.AppendLine();
+        AppendFewShot(sb, rule);
         sb.AppendLine($"Regra: {rule.Name}");
         sb.AppendLine("DSL:");
         sb.AppendLine(dsl);
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Injeta a seção few-shot no prompt (RAG P1) — só quando um <see cref="FewShotIndex"/>
+    /// foi fornecido no construtor E há exemplos análogos ao padrão da regra. Exemplos podem
+    /// ser: par DSL→XSLT (verificado), fragmento de XSL REAL de produção (estilo) ou DSL
+    /// análoga sem alvo (mostrada por último, apenas como variação do padrão).
+    /// </summary>
+    private void AppendFewShot(StringBuilder sb, MapperRule rule)
+    {
+        var exemplos = _fewShot?.Retrieve(rule, k: 3);
+        if (exemplos is not { Count: > 0 }) return;
+
+        sb.AppendLine("Exemplos análogos do corpus real (siga o MESMO estilo XSLT):");
+        var n = 0;
+        foreach (var ex in exemplos)
+        {
+            n++;
+            var padrao = FewShotIndex.Rotulo(FewShotIndex.Primario(ex.Traits));
+            switch (ex)
+            {
+                case { Dsl: not null, Xslt: not null }:
+                    sb.AppendLine($"── Exemplo {n} (padrão {padrao}, DSL→XSLT verificado):");
+                    sb.AppendLine("DSL:");
+                    sb.AppendLine(ex.Dsl);
+                    sb.AppendLine("XSLT:");
+                    sb.AppendLine(ex.Xslt);
+                    break;
+                case { Xslt: not null }:
+                    sb.AppendLine($"── Exemplo {n} (padrão {padrao}, XSL real de produção {ex.Tipo} {ex.Versao} — estilo alvo):");
+                    sb.AppendLine(ex.Xslt);
+                    break;
+                default:
+                    sb.AppendLine($"── Exemplo {n} (padrão {padrao}, DSL análoga real — sem XSLT alvo conhecido):");
+                    sb.AppendLine(ex.Dsl!);
+                    break;
+            }
+        }
+        sb.AppendLine();
     }
 
     /// <summary>Extrai o XSLT da resposta do LLM (tira cercas ```; desembrulha stylesheet/folha).</summary>
