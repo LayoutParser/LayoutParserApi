@@ -1,6 +1,6 @@
 # Plano de Execução Multi-Sessão — Trilha A (CLI) × Trilha B (Windows UI)
 
-> **Autor:** @lp-architect (Aria) · **Status:** Trilha B COMPLETA (merged) · Trilha A INCOMPLETA — ver §7 · **Data:** 2026-07-15 (criação) / **2026-07-16 (auditoria de reconciliação, ver §7)**
+> **Autor:** @lp-architect (Aria) · **Status:** Trilha B COMPLETA (merged) · Trilha A: A1 pronto (branch `feat/lowcode-batch-mode`), A2–A5 especificadas (ver §8), ainda não implementadas · **Data:** 2026-07-15 (criação) / 2026-07-16 (auditoria de reconciliação §7 + especificação A2–A5 §8)
 > **Contexto:** o usuário opera **duas sessões Claude Code na mesma máquina** (mesmo disco C:, mesma pasta do
 > repo): esta sessão CLI (WSL) e uma sessão Windows Claude Code UI nativa. Objetivo: dividir o trabalho
 > pendente (ver [`poc-excel-generator.md`](poc-excel-generator.md) §11 e
@@ -203,3 +203,110 @@ do runner" como pendência plena (Dono: Dex, sem menção ao PARCIAL); a versão
 `docs/track-a-a1-status` já tem a correção (PARCIAL, com o detalhamento (a)/(b)). Ao aplicar a
 reconciliação de branches do §7.3, essa correção de doc vem junto automaticamente — não precisa
 reescrever à mão.
+
+---
+
+## 8. Especificação de A2–A5 (2026-07-16, Aria) — contrato para retomada pós-A1
+
+**Ponto de partida confirmado:** A1 (`SWEEP` real em `tools/LowCodeRunner/Program.cs`) está
+implementado na branch `feat/lowcode-batch-mode` (`dotnet build` verde, commit local). Isso muda o
+estado de dependência de A2–A5: elas deixam de depender de "dado gerado à mão via bash" e passam a
+depender de "o modo lote existe como comando repetível" — a diferença importa porque A2/A4
+precisam rodar o SWEEP de novo (para CNHI/IVECCO/MARELLI e para o adaptador Connect Us) sem
+reescrever scripts ad-hoc a cada vez.
+
+Cada especificação abaixo segue o mesmo formato: **o que deve existir ao final**, **critérios de
+aceite**, **dependências reais**, **domínio (Lia) vs infra .NET pura (Dex)**.
+
+### 8.1 A2 — Generalização além do par único (ICMS10-90/CSOSN, grupos especiais)
+
+- **O que deve existir:** `ai/XslSynth/Excel/XslGenerator.cs` e `NfeLeiauteCatalog.cs` deixam de
+  assumir o único gabarito FIAT como verdade de referência e passam a resolver, por documento, qual
+  variante de grupo fiscal (ICMS 00/10/20/30/40/51/60/70/90, CSOSN, grupos especiais — veículo/
+  ANVISA/ANP/combustível/DI) aplicar, usando como fixtures os gabaritos multi-cliente já minerados em
+  `.claude/tmp/gabaritos/{fiat-sweep,cnhi,ivecco,marelli}/` (ver §7.2). Não é reescrever os
+  geradores — é parametrizar a seleção de variante em vez de hardcode do caso único.
+- **Critério de aceite:** rodar `XslGenerator` contra pelo menos 2 clientes com regime fiscal
+  diferente do FIAT (ex.: CNHI/IVECCO, que já têm ICMS10/ICMS40/IPITrib/PISNT-Outr conforme §7.2)
+  produz XML que bate (`CanonicalDiffer`, diff==0) contra o gabarito real daquele cliente — não
+  apenas contra FIAT.
+- **Depende de:** A1(b) — a extensão do SWEEP para CNHI/IVECCO/MARELLI usando os GUIDs de mapeador
+  já identificados. Sem essa diversidade fiscal real, A2 fica testando o caso FIAT de novo com
+  nomes diferentes.
+- **Dono:** domínio primário — Lia decide as regras de seleção de variante (conhecimento fiscal +
+  leitura do mapeador real via `MapperEmissionGuide`/DSL); Dex entra só se a mudança exigir refactor
+  estrutural do `XslGenerator` que fuja de lógica de domínio pura (ex.: assinatura de método, DI).
+
+### 8.2 A3 — Catálogo GUID→XPath (237 LinkMappings)
+
+- **O que deve existir:** novo arquivo `ai/XslSynth/Core/GuidXPathCatalog.cs`, expondo um contrato
+  do tipo `IReadOnlyDictionary<string TargetGuid, string XPathNfe>` (ou serviço equivalente,
+  `TryResolve(string targetGuid, out string xpath)`), construído rodando o parser da API no layout
+  NF-e alvo (mesmo mecanismo que já prova `FLD→Nome→pos` no `jsonGerado`) para extrair a árvore
+  `TAG_/GRT_ → path`. Este catálogo é uma das duas fontes que convergem para o mesmo XPath NF-e —
+  a outra é o catálogo de leiaute do Excel (P0 original) — e devem se validar mutuamente.
+  Ver `poc-excel-generator.md` §5 "P0 — Fechar o catálogo GUID→XPath".
+- **Critério de aceite:** o catálogo resolve os 237 `LinkMappings` hoje travados no `XslSynth` (ou
+  documenta objetivamente quantos restam sem correspondência e por quê); cruzamento com o catálogo
+  Excel não apresenta divergência não-explicada para o layout NF-e usado como referência.
+- **Depende de:** apenas o runner funcional (já destravado desde A1/A1 original) — **pode rodar em
+  paralelo a A1(b)/A2**, não compete por arquivo com elas (`ai/XslSynth/Core/` vs
+  `ai/XslSynth/Excel/`).
+- **Dono:** domínio primário — Lia (extração de árvore GUID→XPath é parsing de domínio, não
+  infraestrutura); Dex só se for preciso novo endpoint/serviço de suporte na API para rodar o
+  parser sobre o layout alvo fora do fluxo normal de request.
+
+### 8.3 A4 — G3: `LayoutSpecExtractor` (2º adaptador de ingestão via Connect Us)
+
+- **O que deve existir:** novo arquivo em `ai/XslSynth/Excel/LayoutSpecExtractor.cs`, implementando
+  o mesmo contrato de saída que `ExcelSpecParser.cs` já produz (`SpecModel`), mas com fonte de dados
+  o layout/mapeador do Connect Us via `LowCodeRunner` em vez da planilha do cliente. Arquitetura de
+  dois adaptadores convergindo para o mesmo `SpecModel` (ver `multi-client-layout-generalization.md`
+  §4.3): `ExcelSpecParser` (Fonte A, client-provided) e `LayoutSpecExtractor` (Fonte B,
+  client-agnostic real — não depende de o cliente fornecer planilha nenhuma).
+- **Critério de aceite:** para o layout FIAT (que tem as duas fontes disponíveis), `LayoutSpecExtractor`
+  e `ExcelSpecParser` produzem `SpecModel`s que convergem (mesma validação cruzada de §4.3) — prova
+  que o adaptador novo está correto antes de confiar nele para um cliente sem planilha.
+- **Depende de:** A1 (modo lote fornece os dados de teste repetíveis — sem `SWEEP`, cada iteração de
+  `LayoutSpecExtractor` exigiria rodar o `.exe` manualmente por gabarito). A1 já está pronto; A4 pode
+  começar assim que o build de A1 for validado por Lia/Quinn.
+- **Dono:** trabalho misto — Lia desenha e implementa a extração de domínio (leitura do
+  mapeador/DSL, mapeamento para `SpecModel`); Dex entra para o *wiring* de infraestrutura puro (I/O
+  do `LowCodeRunner`, invocação do processo externo, tratamento de falha/timeout do `.exe` seguindo
+  o padrão de resiliência do projeto — nunca deixar o `.exe` travar o pipeline). Lia decide via sua
+  própria tool Task se delega a parte de wiring a Dex.
+
+### 8.4 A5 — G4: Generalizar `MapperEmissionGuide`
+
+- **O que deve existir:** `ai/XslSynth/Excel/MapperEmissionGuide.cs` deixa de resolver apenas os 8
+  campos hardcoded (os que apareceram como SOBRA no único gabarito FIAT disponível quando foi
+  escrito) e passa a ser o motor genérico de condicionalidade: para qualquer campo, qualquer
+  mapeador, a pergunta "o mapeador real emitiria isto para este documento?" é respondida lendo as
+  regras DSL reais (não uma lista estática de 8 nomes). Ver `multi-client-layout-generalization.md`
+  §4.4.
+- **Critério de aceite:** rodado contra mapeadores de pelo menos 2 clientes adicionais (não apenas
+  FIAT), o motor generalizado decide presença/ausência de campo condicional sem precisar de código
+  novo por campo — e mantém retrocompatibilidade nos 8 campos originais (regressão contra o gabarito
+  FIAT já provado). Nota de gate (@lp-qa/Quinn, já registrada em §4.4): para documentos sem gabarito
+  prévio, o gate correto não é `diff==0` posicional, é rastreabilidade — todo campo emitido/omitido
+  tem uma regra do mapeador que o justifica.
+- **Depende de:** A3 e A4 — generalizar em cima de 1 exemplo é o erro que motivou este item; precisa
+  de volume de mapeadores reais (que só A1(b)/A2/A4 produzem) antes de abstrair a regra.
+- **Dono:** trabalho misto — Lia lidera (é a mesma linha de raciocínio de domínio fiscal de A2/A4);
+  Dex entra apenas se a generalização exigir mudança de assinatura/DI que toque `Program.cs` ou
+  outros consumidores fora de `ai/XslSynth/Excel/`.
+
+### 8.5 Sequenciamento consolidado (dado A1 pronto)
+
+```
+A1 ✅ (código do modo lote, pronto nesta branch)
+  → A1(b) [Lia: estender SWEEP a CNHI/IVECCO/MARELLI]  ⟂ A3 [Lia: GuidXPathCatalog — não competem por arquivo]
+      → A2 [Lia+Dex: variantes fiscais, usa gabaritos de A1(b)]
+      → A4 [Lia+Dex: LayoutSpecExtractor, usa modo lote de A1]
+          → A5 [Lia+Dex: generalizar MapperEmissionGuide, usa volume de A2/A3/A4]
+```
+
+Nenhuma fase de A2–A5 toca os mesmos arquivos que B1–B6 (já mergeadas em `master`) — sem risco de
+conflito residual. Risco real a monitorar: A2 e A5 tocam `ai/XslSynth/Excel/XslGenerator.cs`/
+`MapperEmissionGuide.cs` em sequência, não em paralelo — se Lia decidir rodar A2 e A5 ao mesmo tempo
+em sessões distintas, isso precisa de coordenação (não é o desenho recomendado aqui).
