@@ -807,6 +807,38 @@ string? FindMapperByClimb()
     return null;
 }
 
+// A3: sobe da pasta do exe procurando o LayoutVO exportado do Connect Us cujo
+// <LayoutGuid> bate com o TargetLayoutGuid do mapeador (ex.:
+// Documentos/Layout/layout-nfe.xml). Local conhecido no ambiente desta sessão:
+// .claude/tmp/servidor/layoutparser/actions-runner/_work/.../Documentos/Layout/.
+// Degrade: nada encontrado → null (GuidXPathCatalog.Load já trata ausência).
+string? FindTargetLayoutByClimb(string? targetLayoutGuid)
+{
+    if (string.IsNullOrWhiteSpace(targetLayoutGuid)) return null;
+    var dir = new DirectoryInfo(AppContext.BaseDirectory);
+    while (dir is not null)
+    {
+        var layoutDir = Path.Combine(dir.FullName, ".claude", "tmp", "servidor", "layoutparser",
+            "actions-runner", "_work", "LayoutParserApi", "LayoutParserApi", "Documentos", "Layout");
+        if (Directory.Exists(layoutDir))
+        {
+            foreach (var candidate in Directory.EnumerateFiles(layoutDir, "layout-*.xml"))
+            {
+                try
+                {
+                    // Mesma pegadinha de encoding do MapperVO (ver GuidXPathCatalog.Load).
+                    var text = XslSynth.Core.RealMapperParser.DecodeAndFixDeclaration(File.ReadAllBytes(candidate));
+                    if ((string?)XDocument.Parse(text).Root?.Element("LayoutGuid") == targetLayoutGuid)
+                        return candidate;
+                }
+                catch { /* arquivo ilegível — tenta o próximo (degrade gracioso) */ }
+            }
+        }
+        dir = dir.Parent;
+    }
+    return null;
+}
+
 // ══════════════════════════════════════════════════════════════════════════
 // Fluxo REAL: MapperVO Sysmiddle descriptografado → candidato XSLT + cobertura
 // (verificação POSSÍVEL sem gabarito de runtime: compila + % de cobertura)
@@ -836,8 +868,22 @@ async Task<int> RunRealAsync()
     Log("");
 
     // ── Passo 2: transpila os LinkMappings → folhas XSLT (determinístico, sem IA) ──
-    var links = new LinkMappingTranspiler().Transpile(mapper);
+    // A3: catálogo GUID→XPath do TargetLayoutGuid (LayoutVO real exportado do
+    // Connect Us) — resolve os 237 LinkMappings pelo GUID em vez do sufixo de
+    // Name. Degrade gracioso: LayoutVO ausente/guid não bate → catálogo vazio,
+    // comportamento idêntico ao anterior (folha por convenção de nome).
+    var layoutPath = FindTargetLayoutByClimb(mapper.TargetLayoutGuid);
+    var guidCatalog = GuidXPathCatalog.Load(layoutPath ?? "", Log);
+    if (layoutPath is null)
+        Log("   [aviso] LayoutVO do TargetLayoutGuid não encontrado — catálogo GUID→XPath vazio (A3 degrada).");
+    else if (guidCatalog.LayoutGuid != mapper.TargetLayoutGuid)
+        Log($"   [aviso] LayoutGuid do arquivo ('{guidCatalog.LayoutGuid}') != TargetLayoutGuid do mapeador "
+            + $"('{mapper.TargetLayoutGuid}') — resoluções podem não bater; segue mesmo assim (degrade).");
+
+    var links = new LinkMappingTranspiler { TargetCatalog = guidCatalog }.Transpile(mapper);
     Log($"[1] LinkMappings → folhas XSLT : {links.Count} transpilados, {links.Skipped} sem folha derivável.");
+    Log($"      [A3] {links.ResolvedByGuid}/{links.Count} folhas resolvidas pelo catálogo GUID→XPath "
+        + $"({guidCatalog.Count} GUIDs no catálogo).");
 
     // ── Passo 3: traduz as Rules DSL → XSLT (Ollama opcional; senão fallback) ──
     OllamaClient? ollama = null;
