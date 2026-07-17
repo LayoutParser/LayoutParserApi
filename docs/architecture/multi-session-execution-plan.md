@@ -1,6 +1,6 @@
 # Plano de Execução Multi-Sessão — Trilha A (CLI) × Trilha B (Windows UI)
 
-> **Autor:** @lp-architect (Aria) · **Status:** Trilha B COMPLETA (merged) · Trilha A: A1 pronto (branch `feat/lowcode-batch-mode`), A2–A5 especificadas (ver §8), ainda não implementadas · **Data:** 2026-07-15 (criação) / 2026-07-16 (auditoria de reconciliação §7 + especificação A2–A5 §8)
+> **Autor:** @lp-architect (Aria) · **Status:** Trilha B COMPLETA (merged) · Trilha A: A1 revisado/confirmado, A3 quase completa (235/237), A2 parcial (1/2 clientes), A5 já satisfeita na sintaxe (ressalva de validação), A4 bloqueada por dado externo — ver §8 (revisado) e §9 · **Data:** 2026-07-15 (criação) / 2026-07-16 (auditoria de reconciliação §7 + especificação A2–A5 §8) / 2026-07-17 (revisão pós-execução real por Lia em `feat/lowcode-batch-mode`, §8 corrigida + §9 veredito)
 > **Contexto:** o usuário opera **duas sessões Claude Code na mesma máquina** (mesmo disco C:, mesma pasta do
 > repo): esta sessão CLI (WSL) e uma sessão Windows Claude Code UI nativa. Objetivo: dividir o trabalho
 > pendente (ver [`poc-excel-generator.md`](poc-excel-generator.md) §11 e
@@ -218,83 +218,102 @@ reescrever scripts ad-hoc a cada vez.
 Cada especificação abaixo segue o mesmo formato: **o que deve existir ao final**, **critérios de
 aceite**, **dependências reais**, **domínio (Lia) vs infra .NET pura (Dex)**.
 
-### 8.1 A2 — Generalização além do par único (ICMS10-90/CSOSN, grupos especiais)
+### 8.1 A2 — Generalização além do par único (ICMS10-90/CSOSN, grupos especiais) · **PARCIAL (1/2)**
 
-- **O que deve existir:** `ai/XslSynth/Excel/XslGenerator.cs` e `NfeLeiauteCatalog.cs` deixam de
-  assumir o único gabarito FIAT como verdade de referência e passam a resolver, por documento, qual
-  variante de grupo fiscal (ICMS 00/10/20/30/40/51/60/70/90, CSOSN, grupos especiais — veículo/
-  ANVISA/ANP/combustível/DI) aplicar, usando como fixtures os gabaritos multi-cliente já minerados em
-  `.claude/tmp/gabaritos/{fiat-sweep,cnhi,ivecco,marelli}/` (ver §7.2). Não é reescrever os
-  geradores — é parametrizar a seleção de variante em vez de hardcode do caso único.
-- **Critério de aceite:** rodar `XslGenerator` contra pelo menos 2 clientes com regime fiscal
-  diferente do FIAT (ex.: CNHI/IVECCO, que já têm ICMS10/ICMS40/IPITrib/PISNT-Outr conforme §7.2)
-  produz XML que bate (`CanonicalDiffer`, diff==0) contra o gabarito real daquele cliente — não
-  apenas contra FIAT.
-- **Depende de:** A1(b) — a extensão do SWEEP para CNHI/IVECCO/MARELLI usando os GUIDs de mapeador
-  já identificados. Sem essa diversidade fiscal real, A2 fica testando o caso FIAT de novo com
-  nomes diferentes.
-- **Dono:** domínio primário — Lia decide as regras de seleção de variante (conhecimento fiscal +
-  leitura do mapeador real via `MapperEmissionGuide`/DSL); Dex entra só se a mudança exigir refactor
-  estrutural do `XslGenerator` que fuja de lógica de domínio pura (ex.: assinatura de método, DI).
+> **Atualização 2026-07-17 (Aria, pós-execução real por Lia em `feat/lowcode-batch-mode`):** a
+> premissa "único gabarito FIAT como verdade" já não procede — `XslGenerator.cs` **já generaliza por
+> CST** (ICMS 00-90, IPITrib/IPINT, PIS/COFINS Aliq/Qtde/NT/Outr) antes desta rodada. O que faltava
+> era prova empírica contra clientes com regime diferente. Resultado real: **CNHI fecha limpo**
+> (FALTA=0/SOBRA=0/TEXTO=0, critério de aceite atingido). **IVECCO não fecha** — gaps diagnosticados,
+> não são "falta de generalização de CST", são bugs/lacunas específicos:
+> - `normalize-space()` colapsa espaço duplo que o gabarito real preserva;
+> - homônimos `xPed`/`nItemPed` mal-selecionados (colisão de nome de campo entre grupos);
+> - `dest/enderDest/fone` ausente na saída;
+> - grupo `IBSCBSTot` (Reforma Tributária, layout novo) sem suporte ainda;
+> - convenção de separador do `infCpl` varia por cliente e não está parametrizada.
+>
+> **Critério de aceite original ("≥2 clientes, diff==0") fica 1 de 2 — NÃO fechado.** Não é uma nova
+> rodada de "generalização de CST" (isso já existia); é uma lista curta e concreta de 5 correções
+> pontuais em IVECCO. Reclassifico A2 como fase de bugfix dirigido a gap, não mais de arquitetura de
+> generalização.
+- **Critério de aceite revisado:** os 5 itens acima corrigidos e IVECCO fechando diff==0 nos 2
+  documentos testados, sem regressão em CNHI/FIAT.
+- **Depende de:** nada além do que já está disponível (gabaritos de IVECCO já existem). Pronto para
+  retomada imediata.
+- **Dono:** Lia (leitura de mapeador/DSL para resolver os homônimos e o separador; decisão fiscal
+  sobre `IBSCBSTot`); Dex só se `normalize-space()` exigir mudança estrutural na serialização XML.
 
-### 8.2 A3 — Catálogo GUID→XPath (237 LinkMappings)
+### 8.2 A3 — Catálogo GUID→XPath (237 LinkMappings) · **PRATICAMENTE COMPLETA (235/237)**
 
-- **O que deve existir:** novo arquivo `ai/XslSynth/Core/GuidXPathCatalog.cs`, expondo um contrato
-  do tipo `IReadOnlyDictionary<string TargetGuid, string XPathNfe>` (ou serviço equivalente,
-  `TryResolve(string targetGuid, out string xpath)`), construído rodando o parser da API no layout
-  NF-e alvo (mesmo mecanismo que já prova `FLD→Nome→pos` no `jsonGerado`) para extrair a árvore
-  `TAG_/GRT_ → path`. Este catálogo é uma das duas fontes que convergem para o mesmo XPath NF-e —
-  a outra é o catálogo de leiaute do Excel (P0 original) — e devem se validar mutuamente.
-  Ver `poc-excel-generator.md` §5 "P0 — Fechar o catálogo GUID→XPath".
-- **Critério de aceite:** o catálogo resolve os 237 `LinkMappings` hoje travados no `XslSynth` (ou
-  documenta objetivamente quantos restam sem correspondência e por quê); cruzamento com o catálogo
-  Excel não apresenta divergência não-explicada para o layout NF-e usado como referência.
-- **Depende de:** apenas o runner funcional (já destravado desde A1/A1 original) — **pode rodar em
-  paralelo a A1(b)/A2**, não compete por arquivo com elas (`ai/XslSynth/Core/` vs
-  `ai/XslSynth/Excel/`).
-- **Dono:** domínio primário — Lia (extração de árvore GUID→XPath é parsing de domínio, não
-  infraestrutura); Dex só se for preciso novo endpoint/serviço de suporte na API para rodar o
-  parser sobre o layout alvo fora do fluxo normal de request.
+> **Atualização 2026-07-17:** implementada e integrada. `ai/XslSynth/Core/GuidXPathCatalog.cs`
+> existe, plugado em `LinkMappingTranspiler.cs` e `Program.cs` com degradação graciosa (funciona sem
+> o catálogo, melhora com ele — alinhado ao princípio de resiliência do projeto). Achado-chave:
+> `Documentos/Layout/layout-nfe.xml` é o LayoutVO real do Connect Us cujo `LayoutGuid` bate com o
+> `TargetLayoutGuid` do mapeador SEND_ENV — a peça que faltava para resolver a árvore
+> `TAG_/GRT_ → path` contra o layout certo. **235/237 LinkMappings resolvidos**; os 2 restantes são
+> destino `ATT_`/atributo, exclusão por design documentada (não é gap, é fora de escopo do catálogo).
+> Confirmado sem regressão em A2/CNHI após a integração. Dois bugs reais corrigidos no próprio código
+> antes de fechar: encoding declarado UTF-16 vs real UTF-8; pretty-print quebrando
+> `<ElementGuid>`/`<Name>` por falta de `.Trim()` — **ver §9 sobre necessidade de revisão desses
+> fixes** antes de considerar A3 100% encerrada.
+- **Critério de aceite:** atingido (235/237 + justificativa documentada dos 2 restantes). Falta
+  apenas: (a) confirmar os 2 fixes de encoding/trim sob revisão de `@lp-qa`; (b) validar o catálogo
+  contra o layout de ao menos 1 cliente não-FIAT quando A4 destravar (mesmo mecanismo serve de
+  segunda prova).
+- **Depende de:** nada — já rodou.
+- **Dono:** Lia (concluído); revisão pontual de Quinn recomendada (ver §9).
 
-### 8.3 A4 — G3: `LayoutSpecExtractor` (2º adaptador de ingestão via Connect Us)
+### 8.3 A4 — G3: `LayoutSpecExtractor` (2º adaptador de ingestão via Connect Us) · **BLOQUEADA — dado externo**
 
-- **O que deve existir:** novo arquivo em `ai/XslSynth/Excel/LayoutSpecExtractor.cs`, implementando
-  o mesmo contrato de saída que `ExcelSpecParser.cs` já produz (`SpecModel`), mas com fonte de dados
-  o layout/mapeador do Connect Us via `LowCodeRunner` em vez da planilha do cliente. Arquitetura de
-  dois adaptadores convergindo para o mesmo `SpecModel` (ver `multi-client-layout-generalization.md`
-  §4.3): `ExcelSpecParser` (Fonte A, client-provided) e `LayoutSpecExtractor` (Fonte B,
-  client-agnostic real — não depende de o cliente fornecer planilha nenhuma).
-- **Critério de aceite:** para o layout FIAT (que tem as duas fontes disponíveis), `LayoutSpecExtractor`
-  e `ExcelSpecParser` produzem `SpecModel`s que convergem (mesma validação cruzada de §4.3) — prova
-  que o adaptador novo está correto antes de confiar nele para um cliente sem planilha.
-- **Depende de:** A1 (modo lote fornece os dados de teste repetíveis — sem `SWEEP`, cada iteração de
-  `LayoutSpecExtractor` exigiria rodar o `.exe` manualmente por gabarito). A1 já está pronto; A4 pode
-  começar assim que o build de A1 for validado por Lia/Quinn.
-- **Dono:** trabalho misto — Lia desenha e implementa a extração de domínio (leitura do
-  mapeador/DSL, mapeamento para `SpecModel`); Dex entra para o *wiring* de infraestrutura puro (I/O
-  do `LowCodeRunner`, invocação do processo externo, tratamento de falha/timeout do `.exe` seguindo
-  o padrão de resiliência do projeto — nunca deixar o `.exe` travar o pipeline). Lia decide via sua
-  própria tool Task se delega a parte de wiring a Dex.
+> **Atualização 2026-07-17:** bloqueio real, não falta de esforço. Lia precisa do LayoutVO de
+> **ENTRADA** real (`InputLayoutGuid = LAY_ad4fb6f4-…`) exportado do Connect Us. O único arquivo local
+> parecido, `layout-mqseries.xml`, tem `LayoutGuid` diferente — não é o mesmo layout, usá-lo produziria
+> um `SpecModel` que valida contra o layout errado (falso-positivo silencioso). Lia recusou
+> implementar com dado fictício, corretamente — é a mesma classe de erro que motivou registrar A5
+> como "não generalizar em cima de 1 exemplo só" (§8.4). Decisão correta, mantenho.
+- **Ação concreta que precisa do usuário:** exportar do Connect Us o LayoutVO cujo `LayoutGuid` seja
+  `LAY_ad4fb6f4-…` (o mesmo GUID hoje referenciado como `InputLayoutGuid` pelo mapeador em uso) e
+  colocá-lo em `Documentos/Layout/` (mesmo padrão de `layout-nfe.xml`, que destravou A3). Sem esse
+  arquivo, A4 não tem como progredir — não é um problema de código.
+- **Critério de aceite:** inalterado (convergência `LayoutSpecExtractor` × `ExcelSpecParser` para o
+  layout FIAT).
+- **Depende de:** exportação do LayoutVO de entrada pelo usuário/Connect Us. Escalo esse pedido
+  explicitamente — ver §9.
+- **Dono:** Lia (domínio) + Dex (wiring), assim que o dado existir.
 
-### 8.4 A5 — G4: Generalizar `MapperEmissionGuide`
+### 8.4 A5 — G4: Generalizar `MapperEmissionGuide` · **JÁ SATISFEITA NA SINTAXE — premissa original desatualizada**
 
-- **O que deve existir:** `ai/XslSynth/Excel/MapperEmissionGuide.cs` deixa de resolver apenas os 8
-  campos hardcoded (os que apareceram como SOBRA no único gabarito FIAT disponível quando foi
-  escrito) e passa a ser o motor genérico de condicionalidade: para qualquer campo, qualquer
-  mapeador, a pergunta "o mapeador real emitiria isto para este documento?" é respondida lendo as
-  regras DSL reais (não uma lista estática de 8 nomes). Ver `multi-client-layout-generalization.md`
-  §4.4.
-- **Critério de aceite:** rodado contra mapeadores de pelo menos 2 clientes adicionais (não apenas
-  FIAT), o motor generalizado decide presença/ausência de campo condicional sem precisar de código
-  novo por campo — e mantém retrocompatibilidade nos 8 campos originais (regressão contra o gabarito
-  FIAT já provado). Nota de gate (@lp-qa/Quinn, já registrada em §4.4): para documentos sem gabarito
-  prévio, o gate correto não é `diff==0` posicional, é rastreabilidade — todo campo emitido/omitido
-  tem uma regra do mapeador que o justifica.
-- **Depende de:** A3 e A4 — generalizar em cima de 1 exemplo é o erro que motivou este item; precisa
-  de volume de mapeadores reais (que só A1(b)/A2/A4 produzem) antes de abstrair a regra.
-- **Dono:** trabalho misto — Lia lidera (é a mesma linha de raciocínio de domínio fiscal de A2/A4);
-  Dex entra apenas se a generalização exigir mudança de assinatura/DI que toque `Program.cs` ou
-  outros consumidores fora de `ai/XslSynth/Excel/`.
+> **Atualização 2026-07-17 — correção da minha própria especificação anterior.** A premissa "resolve
+> apenas os 8 campos hardcoded" estava **desatualizada**, não errada quando escrita: no estado atual
+> da branch, `MapperEmissionGuide.Load(mapperVoPath)` já é parametrizado por **qualquer** `MapperVO`
+> (não FIAT fixo) e extrai, via regex sobre a DSL real (`if(#.x != 0) begin … end`), **todos** os
+> `T.path` sob essa guarda — não uma lista estática de 8 nomes. Isso já foi exercitado contra CNHI em
+> A2 (parte do 0/0/0). Ou seja: **a generalização de SINTAXE DSL está feita e em uso real
+> multi-cliente.**
+>
+> **Distinção que Lia apontou corretamente e que precisa ficar registrada:** o motor cobre um único
+> padrão sintático — guarda `!= 0`, bloco `begin...end` não aninhado (a regex é `Singleline` +
+> lazy `.*?`, documentada como assumindo "os corpos reais não aninham outro begin/end"). Isso é
+> **genérico na sintaxe DSL para esse padrão**, mas **não é** um motor genérico de condicionalidade
+> fiscal arbitrária — não cobre, por exemplo, comparações diferentes de `!= 0` (`> 0`, `IsNullOrEmpty`
+> como guarda principal), múltiplas condições combinadas, ou blocos aninhados. A visão original da
+> §8.4 (motor genérico de condicionalidade *qualquer que seja a forma da regra*) segue sendo mais
+> ampla do que o que existe — mas não há evidência ainda de que essa amplitude seja *necessária*: os
+> mapeadores reais analisados até aqui (FIAT, CNHI) usam exatamente esse padrão.
+- **Critério de aceite revisado (substitui o original):** A5 está **concluída para o padrão de guarda
+  `!= 0` não-aninhado**, validado em 2 clientes (FIAT retrocompat + CNHI real). Falta, para fechar
+  com confiança total: (a) rodar contra IVECCO/MARELLI decriptografados e confirmar que nenhum deles
+  usa um padrão de guarda fora do coberto (`> 0`, aninhamento, `IsNullOrEmpty` como guarda de
+  emissão) — se algum usar, essa é uma extensão pontual da regex/parser, não uma reescrita; (b) se
+  nenhum padrão novo aparecer, fechar A5 como está e retirar a nota de "motor genérico de
+  condicionalidade" do vocabulário do plano — o nome correto do que existe é "extrator de guardas
+  `!=0` por mapeador", que é suficiente para o problema real observado até agora.
+- **Depende de:** nada para a validação com CNHI/IVECCO/MARELLI (dados já existem uma vez A2/A1(b)
+  fecharem). Não depende mais de A3/A4 como a especificação original supunha — essa dependência foi
+  outra premissa que não se confirmou (A5 não precisava do catálogo GUID→XPath nem do
+  `LayoutSpecExtractor` para o que faz hoje).
+- **Dono:** Lia — validação de padrão contra os 3 mapeadores decriptografados restantes; sem
+  necessidade de Dex a menos que apareça um padrão de guarda que exija nova estrutura de regex/AST.
 
 ### 8.5 Sequenciamento consolidado (dado A1 pronto)
 
@@ -310,3 +329,48 @@ Nenhuma fase de A2–A5 toca os mesmos arquivos que B1–B6 (já mergeadas em `m
 conflito residual. Risco real a monitorar: A2 e A5 tocam `ai/XslSynth/Excel/XslGenerator.cs`/
 `MapperEmissionGuide.cs` em sequência, não em paralelo — se Lia decidir rodar A2 e A5 ao mesmo tempo
 em sessões distintas, isso precisa de coordenação (não é o desenho recomendado aqui).
+
+---
+
+## 9. Veredito da Trilha A (2026-07-17, Aria) — pós-execução real por Lia em `feat/lowcode-batch-mode`
+
+**Estado objetivo, por fase:**
+
+| Fase | Veredito | Nota |
+|---|---|---|
+| A1 | ✅ **Confirmado com dado real** | SWEEP rodou contra os 4 clientes de `Examples/` (FIAT 280/280, CNHI 113/113, IVECCO 68/68, MARELLI 8/8 — todos bem-formados). Achado colateral: bug intermitente de interop no runner (1ª chamada pós-cópia do `.exe` não distingue `SWEEP`), sem causa-raiz — ver nota de risco abaixo. |
+| A2 | 🟡 **Parcial (1/2)** | CNHI fecha diff==0; IVECCO tem 5 gaps concretos e diagnosticados (não é falha de arquitetura — são bugfixes pontuais). Reclassificada em §8.1. |
+| A3 | ✅ **Praticamente completa (235/237)** | Os 2 restantes são exclusão por design. Dois bugs de código corrigidos pela própria Lia durante a implementação — recomendo revisão por Quinn antes de considerar 100% fechada (ver abaixo). |
+| A4 | 🔴 **Bloqueada — dado externo, não código** | Falta o LayoutVO de entrada real (`LAY_ad4fb6f4-…`) do Connect Us. Lia recusou corretamente implementar com dado fictício. **Ação do usuário necessária** (ver abaixo). |
+| A5 | ✅ **Satisfeita para o padrão observado, com ressalva de cobertura** | A premissa "8 campos hardcoded" da minha spec original estava desatualizada — o motor já é genérico por mapeador/path para o padrão de guarda `!= 0`. Falta só validar contra IVECCO/MARELLI para descartar padrões de guarda não cobertos. Reclassificada em §8.4. |
+
+**Leitura geral:** a Trilha A avançou mais do que a especificação original previa (A3 e A5 estavam
+listadas como dependentes de A1(b)/A3/A4, mas ambas progrediram independentemente e sem esperar
+essas dependências — a spec de §8 estava conservadora demais no sequenciamento). O único bloqueio
+real e não-negociável é A4, que depende de um artefato externo que ninguém no repo pode produzir.
+A2 e A5 têm escopo residual claro e pequeno (bugfixes/validação dirigida), não redesenho.
+
+**O que merece revisão mais profunda antes de prosseguir (não é bloqueio, é recomendação de gate):**
+
+1. **Os 2 bugs corrigidos por Lia em A3** (encoding UTF-16 declarado vs UTF-8 real; `.Trim()` faltando
+   em `<ElementGuid>`/`<Name>` no pretty-print) — foram corrigidos como efeito colateral de fechar
+   A3, sob pressão de "fazer o catálogo funcionar", não como item de trabalho isolado com teste
+   dedicado. Risco: podem ter efeito em outros consumidores do mesmo parser/serializer fora do
+   escopo de A3 que não foram exercitados pelo SWEEP. **Recomendo passagem por `@lp-qa` (Quinn)**
+   focada nesses dois pontos antes do merge para `master`, não um re-review geral de A1-A5.
+2. **O comportamento intermitente do runner em A1** (1ª invocação pós-cópia do `.exe` falha a
+   distinguir `SWEEP`) — Lia reproduziu mas não achou causa-raiz, atribuindo a interop WSL/PE. Isso
+   é aceitável para uso manual (basta descartar a 1ª chamada), mas é um risco real se A4 ou qualquer
+   automação futura invocar o runner de forma não-interativa (ex.: CI, script sem retry). Não bloqueia
+   nada hoje — **registro para não esquecer se alguém tentar automatizar o SWEEP sem look para esse
+   caso**.
+
+**O que precisa do usuário agora (único item de ação concreta, para desbloquear A4):**
+
+Exportar do Connect Us o **LayoutVO de entrada** cujo `LayoutGuid` é `LAY_ad4fb6f4-…` (o mesmo GUID
+referenciado como `InputLayoutGuid` pelo mapeador em uso) e disponibilizá-lo em `Documentos/Layout/`
+— mesmo padrão de onde `layout-nfe.xml` já vive (que destravou A3). Sem esse arquivo, A4 fica parada;
+nenhuma outra ação de código resolve isso.
+
+**Nada aqui foi enviado (`git push`) nem tocado em branch/CI** — a atualização de §8/§9 é local, na
+branch atual do working tree, via commit deste documento.
