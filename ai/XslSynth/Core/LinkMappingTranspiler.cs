@@ -43,6 +43,17 @@ public sealed class LinkMappingTranspiler
 
         foreach (var link in mapper.LinkMappings.OrderBy(m => m.Sequence))
         {
+            // A3 (polimento pós-235/237): o catálogo resolve TODO GUID presente no
+            // LayoutVO, mas aqui só aceitamos entradas que NÃO sejam atributo
+            // (!entry.IsAttribute) — um LinkMapping cujo TargetGuid é um ATT_ vira
+            // uma folha XSLT normal (xsl:value-of), o que é ERRADO para um
+            // atributo XML (precisa de xsl:attribute, não de elemento-filho).
+            // É exatamente aqui que os 2 LinkMappings remanescentes (de 237) caem:
+            // ambos apontam para ATT_ — exclusão POR DESENHO desta fase (A3 resolve
+            // GUID→XPath; a emissão como atributo é responsabilidade do
+            // XslGenerator/CandidateBuilder, fora do escopo do transpilador de
+            // LinkMappings). Sem catálogo ou GUID não resolvido: cai no fallback
+            // por convenção de nome (comportamento anterior, idêntico).
             GuidXPathEntry? entry = null;
             var temCatalogo = TargetCatalog is not null
                 && TargetCatalog.TryResolve(link.TargetGuid, out entry) && !entry.IsAttribute;

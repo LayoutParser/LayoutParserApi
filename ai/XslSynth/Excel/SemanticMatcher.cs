@@ -79,10 +79,17 @@ public static class SemanticMatcher
     //     o padrão casa " <n>- " ou ":<n>-" no texto plano;
     //   • guidance de preenchimento ("Esta tag poderá ser omitida…", "Deve ser
     //     informado quando…") — cauda do vPag/vIPIDevol que diluía o casamento.
+    // R6 (IVECCO gap #3): "Preencher com Código DDD + número do telefone…" é
+    // instrução de preenchimento repetida em TODOS os campos "fone" do leiaute
+    // (emit/dest/avulsa/transporta…) — dilui a doc com tokens genéricos
+    // (codigo, ddd) e faz uma descrição simples ("Telefone") perder score contra
+    // candidatos com doc mais curta. Corta a instrução, mantendo só o essencial.
     private static readonly Regex Boilerplate = new(
         @"(alterado para aceitar.*$)|(alter[aá]vel se necess[aá]rio.*$)|(\bex\.?\s*:\s.*$)"
         + @"|(\s\d+\s*[-–—]\s.*$)|(:\s*\d+\s*[-–—].*$)"
-        + @"|(\besta tag poder[aá]\b.*$)|(\bdeve(r[aá])? ser informad\w*\b.*$)",
+        + @"|(\besta tag poder[aá]\b.*$)|(\bdeve(r[aá])? ser informad\w*\b.*$)"
+        + @"|(,?\s*preencher com c[oó]digo ddd\b.*$)"
+        + @"|(\s*-?\s*informa[cç][aã]o de interesse\b.*$)",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.Singleline);
 
     /// <summary>
@@ -162,6 +169,24 @@ public static class SemanticMatcher
                 porNome[node.Name] = (cur.Node, cur.Score, cur.Ties + 1);
         }
         if (porNome.Count == 0) return null;
+
+        // R6 (IVECCO gap #2): nome com o morfema "item" (ex.: nItemPed) é uma
+        // variante MAIS ESPECÍFICA de um nome genérico irmão (xPed) — só deve
+        // competir quando a PRÓPRIA descrição da spec também fala de "item".
+        // Bug real: "Número do Pedido de Compra" (sem "item") perdia para
+        // nItemPed porque a doc real do xPed (det/prod) é fraca/verborrágica
+        // ("pedido de compra - Informação de interesse do emissor…") e diluía
+        // o containment; nItemPed tinha doc mais "parecida" por acidente.
+        // Remove os nomes "item" da disputa quando a descrição não os pede —
+        // não zera o score, só os exclui de competir (o nome genérico continua
+        // livre para vencer, mesmo com score numericamente menor).
+        if (!descTokens.Contains("item"))
+        {
+            foreach (var nomeItem in porNome.Keys
+                         .Where(n => n.Contains("item", StringComparison.OrdinalIgnoreCase)).ToList())
+                porNome.Remove(nomeItem);
+            if (porNome.Count == 0) return null;
+        }
 
         (XsdLeiauteNode Node, double Score, int Ties) best = default;
         double second = 0;
