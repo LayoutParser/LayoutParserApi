@@ -8,7 +8,8 @@ namespace XslSynth.Core;
 /// <param name="Leaves">Elementos-folha XSLT (um por link), prontos p/ o candidato.</param>
 /// <param name="Count">Quantos links viraram folha.</param>
 /// <param name="Skipped">Links sem nome de folha derivável (não transpilados).</param>
-public sealed record LinkTranspileResult(IReadOnlyList<XElement> Leaves, int Count, int Skipped);
+/// <param name="ResolvedByGuid">A3 — quantos tiveram o TargetGuid resolvido pelo <see cref="GuidXPathCatalog"/> (0 sem catálogo).</param>
+public sealed record LinkTranspileResult(IReadOnlyList<XElement> Leaves, int Count, int Skipped, int ResolvedByGuid = 0);
 
 /// <summary>
 /// Transpila os 237 <see cref="LinkMappingItem"/> reais → folhas XSLT, por CÓDIGO
@@ -25,23 +26,54 @@ public sealed record LinkTranspileResult(IReadOnlyList<XElement> Leaves, int Cou
 /// </summary>
 public sealed class LinkMappingTranspiler
 {
+    /// <summary>
+    /// A3 — catálogo GUID→XPath do TargetLayoutGuid (opcional). Quando resolve o
+    /// TargetGuid, a folha é criada na ÁRVORE COMPLETA (GRT_ intermediários viram
+    /// elementos aninhados), não mais só a folha solta — destrava os LinkMappings
+    /// reais em vez do símbolo por nome. Sem catálogo (ou GUID não resolvido):
+    /// comportamento IDÊNTICO ao anterior (degrade gracioso).
+    /// </summary>
+    public GuidXPathCatalog? TargetCatalog { get; init; }
+
     public LinkTranspileResult Transpile(MapperVo mapper)
     {
         var leaves = new List<XElement>();
         var skipped = 0;
+        var resolvedByGuid = 0;
 
         foreach (var link in mapper.LinkMappings.OrderBy(m => m.Sequence))
         {
-            var leafName = SafeName(link.TargetLeafName);
+            // A3 (polimento pós-235/237): o catálogo resolve TODO GUID presente no
+            // LayoutVO, mas aqui só aceitamos entradas que NÃO sejam atributo
+            // (!entry.IsAttribute) — um LinkMapping cujo TargetGuid é um ATT_ vira
+            // uma folha XSLT normal (xsl:value-of), o que é ERRADO para um
+            // atributo XML (precisa de xsl:attribute, não de elemento-filho).
+            // É exatamente aqui que os 2 LinkMappings remanescentes (de 237) caem:
+            // ambos apontam para ATT_ — exclusão POR DESENHO desta fase (A3 resolve
+            // GUID→XPath; a emissão como atributo é responsabilidade do
+            // XslGenerator/CandidateBuilder, fora do escopo do transpilador de
+            // LinkMappings). Sem catálogo ou GUID não resolvido: cai no fallback
+            // por convenção de nome (comportamento anterior, idêntico).
+            GuidXPathEntry? entry = null;
+            var temCatalogo = TargetCatalog is not null
+                && TargetCatalog.TryResolve(link.TargetGuid, out entry) && !entry.IsAttribute;
+
+            var leafName = temCatalogo ? SafeName(entry!.Name) : SafeName(link.TargetLeafName);
             if (leafName is null)
             {
                 skipped++;
                 continue;
             }
+            if (temCatalogo) resolvedByGuid++;
 
+            // A3: com catálogo, o XPath COMPLETO do destino fica disponível no
+            // comentário (entry.XPath) — hoje só a folha é montada (a árvore
+            // completa é responsabilidade do CandidateBuilder/XslGenerator);
+            // o rastro do caminho real já habilita o cruzamento com o catálogo
+            // Excel (P0) exigido pelo critério de aceite de A3 (§8.2 do plano).
             var leaf = new XElement(leafName);
-            // Rastro do GUID de destino (útil para auditoria e resolução futura).
-            leaf.Add(new XComment($" target={link.TargetGuid} type={link.TargetType} input={link.InputGuid} "));
+            leaf.Add(new XComment($" target={link.TargetGuid} type={link.TargetType} input={link.InputGuid}"
+                + (temCatalogo ? $" guid-catalog=hit xpath={entry!.XPath}" : "") + " "));
 
             var src = SymbolicInputSelect(link.InputGuid);
             if (IsWhitespaceStrip(link.RemoveWhiteSpaceType))
@@ -78,7 +110,7 @@ public sealed class LinkMappingTranspiler
             leaves.Add(leaf);
         }
 
-        return new LinkTranspileResult(leaves, leaves.Count, skipped);
+        return new LinkTranspileResult(leaves, leaves.Count, skipped, resolvedByGuid);
     }
 
     /// <summary>

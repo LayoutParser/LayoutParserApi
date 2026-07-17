@@ -258,9 +258,13 @@ public sealed class XslGenerator
                     new XAttribute("method", "xml"),
                     new XAttribute("encoding", "utf-8"),
                     new XAttribute("indent", "no")),
-                new XElement(Xs + "template", new XAttribute("match", "/"), enviNFe)));
+                new XElement(Xs + "template", new XAttribute("match", "/"), enviNFe),
+                BuildTrimTemplate()));
 
-        var emitidas = doc.Descendants(Xs + "value-of").Count();
+        // Conta folhas emitidas por value-of OU pelo call-template de trim (R6).
+        var emitidas = doc.Descendants(Xs + "value-of").Count()
+            + doc.Descendants(Xs + "call-template")
+                .Count(e => (string?)e.Attribute("name") == TrimTemplateName);
         foreach (var n in _notas.Take(30)) log?.Invoke($"   [nota] {n}");
         if (_notas.Count > 30) log?.Invoke($"   [nota] … e mais {_notas.Count - 30} notas.");
 
@@ -664,6 +668,15 @@ public sealed class XslGenerator
     /// §7.3.5: infCpl = concat (trim, SEM separador) dos segmentos das linhas
     /// repetidas (LINHA081). O campo é achado deterministicamente: bloco com 2+
     /// ocorrências no ROOT cuja descrição contém "complementar".
+    ///
+    /// R6 (IVECCO gap #5 — TENTATIVA REVERTIDA): tentamos afrouxar para
+    /// bloco com >=1 ocorrência (IVECCO tem o 081 em UMA só, vazia, e o
+    /// gabarito ainda emite &lt;infCpl&gt;&lt;/infCpl&gt;) mas isso fez o
+    /// primeiro bloco "complementar"-like de OUTRA região (produto, com
+    /// conteúdo real "Suspensao de IPI…") vencer por ordem — regressão pior
+    /// que o gap original. Mantido o requisito de repetição (>1) até termos
+    /// um sinal melhor para escolher o bloco 081 correto sem depender da
+    /// contagem de ocorrências (ver nota para @lp-parser-llm no handoff).
     /// </summary>
     private Emissao? EmitirInfCpl(SpecModel spec, List<Uso> folhas)
     {
@@ -703,8 +716,14 @@ public sealed class XslGenerator
                         new XAttribute("select", $"ROOT/{block.Name}"),
                         new XElement(Xs + "value-of",
                             new XAttribute("select", $"normalize-space({slug})"))));
-                var teste = $"ROOT/{block.Name}[normalize-space({slug}) != '']";
-                Nota($"infCpl: concat dos segmentos de {block.Name}/{slug} (regra §7.3.5).");
+                // R6 (IVECCO gap #5): o mapeador emite <infCpl></infCpl> mesmo VAZIO
+                // quando o bloco repetido existe mas todas as ocorrências estão em
+                // branco (achado no gabarito IVECCO). O teste antigo exigia >=1
+                // segmento não-vazio para emitir o elemento — bastava o BLOCO
+                // existir (>=1 ocorrência), independente do conteúdo.
+                var teste = $"ROOT/{block.Name}";
+                Nota($"infCpl: concat dos segmentos de {block.Name}/{slug} (regra §7.3.5; "
+                    + "elemento emitido mesmo vazio quando o bloco existe).");
                 return new Emissao(node.Order, ParentOf(infCplPath), folha, teste);
             }
         }
@@ -1043,12 +1062,30 @@ public sealed class XslGenerator
         // como vêm; campos longos zerados (qVol '000…0') significam "não informado".
         if (f.Tipo == 'N')
         {
-            var test = tam > 3 ? $"number({sel}) > 0" : $"normalize-space({sel}) != ''";
+            // R6 (IVECCO gap #3): a heurística "código longo tudo-zero = não
+            // informado" (qVol, EXTIPI…) NÃO vale para "fone" — o gabarito emite
+            // '00000000000000' verbatim (é um placeholder, não uma quantidade
+            // omissível). XSD tipa os dois como xs:string+pattern numérico
+            // idêntico, então a distinção é por NOME, não por tipo.
+            var test = tam > 3 && node.Name != "fone"
+                ? $"number({sel}) > 0" : $"normalize-space({sel}) != ''";
             return ($"normalize-space({sel})", test);
         }
 
-        return ($"normalize-space({sel})", $"normalize-space({sel}) != ''");
+        // R6 (IVECCO gap #1): campo texto GENÉRICO — normalize-space() colapsa
+        // espaço INTERNO duplo que alguns gabaritos preservam (ex.: xProd com
+        // "ABR60  91752882", dois espaços reais na origem). O valor emitido usa
+        // o template TrimPreservaInterno (só apara as pontas, via marcador
+        // TrimMarker interpretado por ValueOf); o TESTE de emissão continua em
+        // normalize-space (não importa espaço interno para decidir se emite).
+        return ($"{TrimMarker}{sel}", $"normalize-space({sel}) != ''");
     }
+
+    // Marcador consumido por ValueOf: em vez de <xsl:value-of select="{sel}"/>,
+    // gera um <xsl:call-template name="TrimPreservaInterno"> que apara só as
+    // pontas do valor, preservando espaços internos (normalize-space colapsa
+    // os dois, o que quebra campos como xProd com espaço duplo REAL no dado).
+    private const string TrimMarker = "TRIM";
 
     // ══════════════════════════════════════════════════════════════════════
     // Helpers
@@ -1106,8 +1143,39 @@ public sealed class XslGenerator
             ? placar[0].Node : null;
     }
 
-    private static XElement ValueOf(string expr) =>
-        new(Xs + "value-of", new XAttribute("select", expr));
+    private static XElement ValueOf(string expr)
+    {
+        if (expr.StartsWith(TrimMarker, StringComparison.Ordinal))
+        {
+            var sel = expr[TrimMarker.Length..];
+            return new XElement(Xs + "call-template", new XAttribute("name", TrimTemplateName),
+                new XElement(Xs + "with-param", new XAttribute("name", "s"), new XAttribute("select", sel)));
+        }
+        return new(Xs + "value-of", new XAttribute("select", expr));
+    }
+
+    private const string TrimTemplateName = "TrimPreservaInterno";
+
+    /// <summary>
+    /// Template recursivo XSLT 1.0 que apara SÓ as pontas (espaço à esquerda e
+    /// à direita), preservando espaço INTERNO — normalize-space() nativo colapsa
+    /// os dois, o que quebra campos texto com espaço duplo real (R6, gap #1
+    /// diagnosticado em IVECCO: xProd = "…ABR60  91752882…").
+    /// </summary>
+    private static XElement BuildTrimTemplate() =>
+        new(Xs + "template", new XAttribute("name", TrimTemplateName),
+            new XElement(Xs + "param", new XAttribute("name", "s")),
+            new XElement(Xs + "choose",
+                new XElement(Xs + "when", new XAttribute("test", "starts-with($s,' ')"),
+                    new XElement(Xs + "call-template", new XAttribute("name", TrimTemplateName),
+                        new XElement(Xs + "with-param", new XAttribute("name", "s"),
+                            new XAttribute("select", "substring($s,2)")))),
+                new XElement(Xs + "when",
+                    new XAttribute("test", "$s != '' and substring($s,string-length($s))=' '"),
+                    new XElement(Xs + "call-template", new XAttribute("name", TrimTemplateName),
+                        new XElement(Xs + "with-param", new XAttribute("name", "s"),
+                            new XAttribute("select", "substring($s,1,string-length($s)-1)")))),
+                new XElement(Xs + "otherwise", new XElement(Xs + "value-of", new XAttribute("select", "$s")))));
 
     private static string VersaoDoLeiaute(string sheetName)
     {
