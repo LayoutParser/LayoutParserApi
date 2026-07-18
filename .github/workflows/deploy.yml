@@ -5,9 +5,23 @@ on:
     branches:
       - main
       - master
-    # Workflow está no repositório LayoutParserApi, então só aciona quando há push neste repositório
-    paths:
-      - '**'  # Qualquer mudança no LayoutParserApi aciona o deploy
+    # Mudanças SEM efeito de runtime na API publicada NÃO disparam deploy de produção:
+    # docs/harness/memórias, markdown, metadados de repo e as pastas mcp/, ai/ e tools/
+    # (excluídas do build da API via DefaultItemExcludes no .csproj e fora do publish).
+    # Escape manual sempre disponível via workflow_dispatch.
+    paths-ignore:
+      - 'docs/**'
+      - '.claude/**'
+      - '.rtk/**'
+      - 'mcp/**'
+      - 'ai/**'
+      - 'tools/**'
+      - '**/*.md'
+      - '.gitignore'
+      - '.gitattributes'
+      - '.dockerignore'
+      - '.mcp.json.example'
+      - '.github/workflows/ci-dev.yml'
   workflow_dispatch: # Permite executar manualmente
 
 jobs:

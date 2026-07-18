@@ -62,9 +62,13 @@ Settings → Secrets and variables → Actions):
 |------|------|-------|-------------|
 | `DEPLOY_PATH_DEV` | **Variable** | `C:\inetpub\wwwroot\layoutparser` (máquina dev) | Sim — o deploy falha sem ela |
 | `API_URL_DEV` | **Variable** | URL da instância dev (default `http://localhost:5100` se ausente) | Não |
-| `DB_PASSWORD_DEV` | **Secret** | Senha do SQL **JÁ ROTACIONADA** (não a comprometida!) | Não — sem ela a API sobe degradada (sem SQL) |
+| `DB_PASSWORD_DEV` | **Secret** | Senha do SQL **atual em uso** (hoje ainda a comprometida — ver nota abaixo) | Não — sem ela a API sobe degradada (sem SQL) |
 
-**Runbook de rotação da senha SQL:**
+> ⚠️ **Status da rotação:** a rotação da senha SQL segue **PENDENTE** — está **bloqueada e
+> escalada ao DBA**. Por necessidade operacional, o secret `DB_PASSWORD_DEV` contém hoje a
+> senha atual (comprometida). Assim que o DBA rotacionar, execute o runbook abaixo.
+
+**Runbook de rotação da senha SQL** (a executar quando a rotação for desbloqueada):
 
 1. No SQL Server: `ALTER LOGIN <login> WITH PASSWORD = '<nova-senha>'`.
 2. No GitHub: atualizar o secret `DB_PASSWORD_DEV` (e o equivalente de produção, quando existir).
