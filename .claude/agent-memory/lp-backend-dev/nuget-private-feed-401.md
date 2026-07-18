@@ -1,6 +1,6 @@
 ---
 name: nuget-private-feed-401
-description: Restore de pacote NuGet novo falha (NU1301 401) por causa do feed privado da org; workaround = nuget.config só com nuget.org
+description: Restore de pacote NuGet novo falha (NU1301 401) pelo feed privado da org APENAS no lado WSL; pelo lado Windows (powershell.exe) o TFS autentica e o restore passa
 metadata:
   type: project
 ---
@@ -21,3 +21,11 @@ um `nuget.config` **escopado na pasta do projeto** com `<clear/>` + só o nuget.
 flag `-s`. Alternativa pontual: `dotnet restore -s https://api.nuget.org/v3/index.json`.
 `nuget.config` não é segredo, mas é config — avise `@lp-devops` que foi adicionado.
 Confirmado em 2026-07-10 ao adicionar `DocumentFormat.OpenXml` (v3.3.0, já no cache).
+
+**Atualização 2026-07-18:** o 401 é específico do lado **WSL** (sem credencial de domínio).
+Rodando `dotnet` pelo lado **Windows** (`powershell.exe -NoProfile -Command "dotnet ..."`),
+o CENTRAL TFS autentica (NTLM/credencial do usuário logado) e o `dotnet add package` +
+restore passam sem workaround — confirmado ao adicionar
+`Microsoft.Extensions.Hosting.WindowsServices` 10.0.10 na API. Regra prática: operação
+NuGet neste repo → preferir o lado Windows; workaround do nuget.config só se precisar
+restaurar pelo WSL.

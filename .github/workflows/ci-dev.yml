@@ -1,8 +1,9 @@
 name: CI Dev (LayoutParserApi)
 
-# CI de DESENVOLVIMENTO — roda exclusivamente no runner local de dev (label 'dev-local').
+# CI/CD de DESENVOLVIMENTO — roda exclusivamente no runner local de dev (label 'dev-local').
 # Deploys de produção exigem a label 'production' (ver deploy.yml): os dois pools nunca se cruzam.
-# Este workflow NÃO faz deploy — apenas valida o build.
+# Este workflow valida o build E faz deploy LOCAL DE DEV: publica a API como serviço Windows
+# NATIVO (sem NSSM) no destino apontado pela Variable DEPLOY_PATH_DEV — espelho fiel de produção.
 
 on:
   push:
@@ -37,6 +38,16 @@ jobs:
       with:
         repository: LayoutParser/LayoutParserLib
         path: LayoutParserLib
+        token: ${{ secrets.GH_PAT_TOKEN || secrets.GITHUB_TOKEN }}
+        fetch-depth: 1
+
+    # O Decrypt é standalone (embute os fontes mínimos da Lib) e compila com dotnet build —
+    # o runner dev-local NÃO possui VS Build Tools/msbuild.exe (não usar setup-msbuild aqui).
+    - name: Checkout LayoutParserDecrypt
+      uses: actions/checkout@v4
+      with:
+        repository: LayoutParser/LayoutParserDecrypt
+        path: LayoutParserDecrypt
         token: ${{ secrets.GH_PAT_TOKEN || secrets.GITHUB_TOKEN }}
         fetch-depth: 1
 
@@ -100,3 +111,273 @@ jobs:
     # Não há projeto de testes (*.Tests.csproj) no repositório hoje — apenas os serviços
     # in-app de Services/Testing. Quando um projeto de testes for adicionado, incluir aqui:
     #   dotnet test <caminho\Projeto.Tests.csproj> --configuration Release
+
+    # ── Deploy local de DEV (serviço Windows NATIVO) ────────────────────────────────
+
+    # Tolerante a falha: o exe do Decrypt raramente muda — se o build quebrar,
+    # seguimos com o binário que já existir no destino.
+    - name: Build LayoutParserDecrypt (Release, .NET Framework 4.8.1)
+      run: |
+        $DECRYPT_PROJECT = Join-Path $PWD.Path "LayoutParserDecrypt\LayoutParserDecrypt.csproj"
+
+        if (-not (Test-Path $DECRYPT_PROJECT)) {
+          Write-Warning "Projeto nao encontrado: $DECRYPT_PROJECT — seguindo sem rebuild do Decrypt."
+          exit 0
+        }
+
+        dotnet build "$DECRYPT_PROJECT" --configuration Release
+        if ($LASTEXITCODE -ne 0) {
+          Write-Warning "Falha ao compilar LayoutParserDecrypt — seguindo com o binario existente (o exe raramente muda)."
+        } else {
+          Write-Host "LayoutParserDecrypt compilado (Release)."
+        }
+        exit 0
+
+    - name: Publish LayoutParserApi (Release)
+      run: |
+        $API_PROJECT = Join-Path $PWD.Path "LayoutParserApi\LayoutParserApi.csproj"
+        $PUBLISH_OUTPUT = Join-Path $PWD.Path "publish-api"
+
+        # --no-build reaproveita o build Release do step anterior (restore + build ja rodaram).
+        dotnet publish "$API_PROJECT" --configuration Release --no-build --output "$PUBLISH_OUTPUT"
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "Falha ao publicar LayoutParserApi"
+          exit 1
+        }
+
+        $API_EXE = Join-Path $PUBLISH_OUTPUT "LayoutParserApi.exe"
+        if (-not (Test-Path $API_EXE)) {
+          Write-Error "LayoutParserApi.exe nao foi gerado em: $PUBLISH_OUTPUT"
+          exit 1
+        }
+        Write-Host "Publish concluido em: $PUBLISH_OUTPUT"
+
+    # DEPLOY_PATH_DEV é uma *Variable* do repositório (path não é segredo).
+    # Nesta máquina de dev o valor esperado é: C:\inetpub\wwwroot\layoutparser
+    - name: Validar destino do deploy (DEPLOY_PATH_DEV)
+      env:
+        DEPLOY_PATH_DEV: ${{ vars.DEPLOY_PATH_DEV }}
+        API_URL_DEV: ${{ vars.API_URL_DEV }}
+      run: |
+        $DEPLOY_PATH = "$env:DEPLOY_PATH_DEV".Trim('"', "'", ' ')
+        if ([string]::IsNullOrWhiteSpace($DEPLOY_PATH)) {
+          Write-Error ("A Variable DEPLOY_PATH_DEV nao esta configurada! " +
+            "Crie em: GitHub -> repo LayoutParserApi -> Settings -> Secrets and variables -> Actions -> aba Variables. " +
+            "Nesta maquina de dev o valor esperado e: C:\inetpub\wwwroot\layoutparser")
+          exit 1
+        }
+
+        # URL da instancia de dev: a porta 5100 evita colidir com o dotnet run do dev (5000).
+        $API_URL = "$env:API_URL_DEV".Trim('"', "'", ' ', '/')
+        if ([string]::IsNullOrWhiteSpace($API_URL)) { $API_URL = "http://localhost:5100" }
+
+        Add-Content -Path $env:GITHUB_ENV -Value "DEPLOY_PATH_RESOLVED=$DEPLOY_PATH"
+        Add-Content -Path $env:GITHUB_ENV -Value "API_URL_RESOLVED=$API_URL"
+        Write-Host "Destino do deploy: $DEPLOY_PATH"
+        Write-Host "URL da API (dev): $API_URL"
+
+    # Parar ANTES de copiar (exe travado se o processo estiver rodando).
+    # Se o serviço existente for o legado do NSSM, ele é removido aqui e recriado
+    # como serviço Windows NATIVO no step de criação (migração NSSM -> nativo).
+    - name: Parar servico (e remover NSSM legado, se houver)
+      run: |
+        $serviceName = "LayoutParserApi"
+        $svc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+        if (-not $svc) {
+          Write-Host "Servico $serviceName nao existe ainda — sera criado adiante."
+          exit 0
+        }
+
+        $imagePath = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$serviceName" -ErrorAction SilentlyContinue).ImagePath
+        Write-Host "Servico existente (Status=$($svc.Status)). ImagePath: $imagePath"
+
+        if ($svc.Status -ne 'Stopped') {
+          Write-Host "Parando servico..."
+          Stop-Service -Name $serviceName -Force -ErrorAction Stop
+          try {
+            $svc.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+          } catch {
+            Write-Error "Timeout ao parar o servico $serviceName — abortando para nao copiar sobre exe em uso."
+            exit 1
+          }
+          Write-Host "Servico parado."
+        }
+
+        if ($imagePath -match 'nssm') {
+          Write-Host "MIGRACAO NSSM -> NATIVO: servico legado gerenciado pelo NSSM detectado."
+          Write-Host "Removendo o registro do servico para recria-lo como servico Windows nativo..."
+          sc.exe delete $serviceName | Out-Null
+          for ($i = 0; $i -lt 10; $i++) {
+            Start-Sleep -Seconds 2
+            if (-not (Get-Service -Name $serviceName -ErrorAction SilentlyContinue)) { break }
+          }
+          if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
+            Write-Error "Servico ainda presente apos delete (marcado para exclusao?). Feche services.msc/handles e re-execute o workflow."
+            exit 1
+          }
+          Write-Host "Servico NSSM removido — sera recriado como nativo."
+        }
+
+    - name: Backup do appsettings e copia dos artefatos
+      run: |
+        $DEPLOY_PATH = $env:DEPLOY_PATH_RESOLVED
+        $API_DEST = Join-Path $DEPLOY_PATH "api"
+        $BACKUPS = Join-Path $DEPLOY_PATH "backups"
+        $SRC = Join-Path $PWD.Path "publish-api"
+
+        New-Item -ItemType Directory -Path $API_DEST -Force | Out-Null
+        New-Item -ItemType Directory -Path $BACKUPS -Force | Out-Null
+
+        # Preservacao do appsettings.json do destino (mesma politica do deploy.yml):
+        # se ja existe um no servidor, ele NAO e sobrescrito — apenas backupeado.
+        $destAppSettings = Join-Path $API_DEST "appsettings.json"
+        $preserveAppSettings = Test-Path $destAppSettings
+        if ($preserveAppSettings) {
+          $backupName = "appsettings-$(Get-Date -Format 'yyyyMMdd-HHmmss').json"
+          Copy-Item -Path $destAppSettings -Destination (Join-Path $BACKUPS $backupName) -Force
+          Write-Host "Backup do appsettings.json do destino: backups\$backupName"
+        } else {
+          Write-Host "Destino sem appsettings.json (primeiro deploy?) — o do publish sera usado."
+        }
+
+        Write-Host "Copiando publish-api -> $API_DEST (preservar appsettings: $preserveAppSettings)..."
+        if ($preserveAppSettings) {
+          Copy-Item -Path (Join-Path $SRC '*') -Destination $API_DEST -Recurse -Force -Exclude 'appsettings.json'
+        } else {
+          Copy-Item -Path (Join-Path $SRC '*') -Destination $API_DEST -Recurse -Force
+        }
+
+        # LayoutParserDecrypt.exe (+ config) — processo externo de descriptografia.
+        $DECRYPT_BIN = Join-Path $PWD.Path "LayoutParserDecrypt\bin\Release"
+        foreach ($f in @('LayoutParserDecrypt.exe', 'LayoutParserDecrypt.exe.config')) {
+          $p = Join-Path $DECRYPT_BIN $f
+          if (Test-Path $p) {
+            Copy-Item -Path $p -Destination $API_DEST -Force
+            Write-Host "  $f copiado."
+          } else {
+            Write-Warning "  $f nao encontrado em $DECRYPT_BIN — mantendo o que existir no destino."
+          }
+        }
+
+        # LayoutParserLib.dll ja vem no publish da API (Reference/HintPath);
+        # fallback: copiar da build Debug da Lib se por algum motivo faltar.
+        $libInDest = Join-Path $API_DEST "LayoutParserLib.dll"
+        if (-not (Test-Path $libInDest)) {
+          $libDll = Join-Path $PWD.Path "LayoutParserLib\bin\Debug\LayoutParserLib.dll"
+          if (Test-Path $libDll) {
+            Copy-Item -Path $libDll -Destination $API_DEST -Force
+            Write-Host "  LayoutParserLib.dll copiada (fallback da build Debug)."
+          } else {
+            Write-Warning "  LayoutParserLib.dll ausente no destino e no fallback!"
+          }
+        }
+
+        $count = (Get-ChildItem -Path $API_DEST -File -Recurse | Measure-Object).Count
+        Write-Host "Copia concluida ($count arquivos no destino)."
+
+    # Serviço Windows NATIVO (Program.cs usa builder.Host.UseWindowsService()).
+    # O ambiente do serviço vive em HKLM\...\Services\LayoutParserApi\Environment (REG_MULTI_SZ):
+    #   - Kestrel__Endpoints__Http__Url: porta da instancia de dev (o appsettings fixa 5000).
+    #   - Database__Password: injetada do secret DB_PASSWORD_DEV (NUNCA ecoar o valor).
+    - name: Criar/configurar servico Windows nativo
+      env:
+        DB_PASSWORD_DEV: ${{ secrets.DB_PASSWORD_DEV }}
+      run: |
+        $serviceName = "LayoutParserApi"
+        $exePath = Join-Path $env:DEPLOY_PATH_RESOLVED "api\LayoutParserApi.exe"
+
+        if (-not (Test-Path $exePath)) {
+          Write-Error "Executavel nao encontrado: $exePath"
+          exit 1
+        }
+
+        if (-not (Get-Service -Name $serviceName -ErrorAction SilentlyContinue)) {
+          Write-Host "Criando servico Windows NATIVO $serviceName..."
+          # Aspas embutidas via variavel (idiom de PowerShell) para o ImagePath ficar citado no registro.
+          $binPath = '"{0}"' -f $exePath
+          sc.exe create $serviceName binPath= $binPath start= auto
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Falha ao criar o servico (sc create retornou $LASTEXITCODE)"
+            exit 1
+          }
+          sc.exe description $serviceName "LayoutParser API (ASP.NET Core) - servico Windows nativo, deploy via CI dev" | Out-Null
+          # Auto-restart em falha: ate 3 restarts com 60s de intervalo; contador zera em 24h.
+          sc.exe failure $serviceName reset= 86400 actions= restart/60000/restart/60000/restart/60000 | Out-Null
+          Write-Host "Servico criado (start=auto, failure actions configuradas)."
+        } else {
+          Write-Host "Servico $serviceName ja existe — binarios atualizados, registro mantido."
+        }
+
+        # Ambiente do servico — reescrito a cada deploy (idempotente).
+        # NUNCA dar echo em valores: o REG_MULTI_SZ e montado em variavel e gravado direto.
+        $envList = @("Kestrel__Endpoints__Http__Url=$($env:API_URL_RESOLVED)")
+        if (-not [string]::IsNullOrWhiteSpace($env:DB_PASSWORD_DEV)) {
+          $envList += "Database__Password=$($env:DB_PASSWORD_DEV)"
+        } else {
+          Write-Warning ("Secret DB_PASSWORD_DEV vazio — a API subira DEGRADADA (sem SQL) ate configurarem o secret " +
+            "em: GitHub -> Settings -> Secrets and variables -> Actions -> aba Secrets.")
+        }
+        Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\$serviceName" -Name "Environment" -Value ([string[]]$envList) -Type MultiString
+        Write-Host "Ambiente do servico configurado ($($envList.Count) variavel(is) definida(s))."
+
+    - name: Iniciar servico e smoke test
+      run: |
+        $serviceName = "LayoutParserApi"
+
+        Write-Host "Iniciando servico $serviceName..."
+        try {
+          Start-Service -Name $serviceName -ErrorAction Stop
+          $svc = Get-Service -Name $serviceName
+          $svc.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+        } catch {
+          Write-Error "Falha ao iniciar o servico: $($_.Exception.Message)"
+          Write-Host "--- Ultimos eventos: System / Service Control Manager ---"
+          Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Service Control Manager' } -MaxEvents 8 -ErrorAction SilentlyContinue |
+            ForEach-Object { Write-Host ("[{0}] {1}" -f $_.TimeCreated, ($_.Message -split "`n")[0]) }
+          Write-Host "--- Ultimos eventos: Application (.NET) ---"
+          Get-WinEvent -LogName Application -MaxEvents 12 -ErrorAction SilentlyContinue |
+            Where-Object { $_.ProviderName -match '\.NET|LayoutParser|Windows Error' } |
+            ForEach-Object { Write-Host ("[{0}] {1}: {2}" -f $_.TimeCreated, $_.ProviderName, ($_.Message -split "`n")[0]) }
+          exit 1
+        }
+
+        # Janela do SCM: se o processo nao estiver integrado ao SCM (sem UseWindowsService),
+        # ele morre logo apos o start (erro 1053) — conferimos que CONTINUA Running.
+        Start-Sleep -Seconds 8
+        $svc = Get-Service -Name $serviceName
+        if ($svc.Status -ne 'Running') {
+          Write-Error "Servico caiu logo apos o start (Status=$($svc.Status)) — provavel falha de inicializacao."
+          Get-WinEvent -LogName Application -MaxEvents 12 -ErrorAction SilentlyContinue |
+            Where-Object { $_.ProviderName -match '\.NET|LayoutParser|Windows Error' } |
+            ForEach-Object { Write-Host ("[{0}] {1}: {2}" -f $_.TimeCreated, $_.ProviderName, ($_.Message -split "`n")[0]) }
+          exit 1
+        }
+        Write-Host "Servico Running (estavel apos 8s)."
+
+        # Smoke test: 404 e aceito como SUCESSO de pipeline (resposta controlada do controller
+        # quando o catalogo esta vazio/sem SQL) — o que valida e a API responder HTTP.
+        $smokeUrl = "$($env:API_URL_RESOLVED)/api/document/layouts"
+        $status = $null
+        for ($i = 1; $i -le 12; $i++) {
+          try {
+            $resp = Invoke-WebRequest -Uri $smokeUrl -UseBasicParsing -TimeoutSec 5
+            $status = [int]$resp.StatusCode
+            break
+          } catch {
+            $r = $_.Exception.Response
+            if ($r -and $r.StatusCode) { $status = [int]$r.StatusCode; break }
+            Write-Host "  tentativa $i/12: API ainda nao responde, aguardando 5s..."
+            Start-Sleep -Seconds 5
+          }
+        }
+
+        if ($null -eq $status) {
+          Write-Error "API nao respondeu em $smokeUrl apos 12 tentativas."
+          exit 1
+        }
+        Write-Host "Smoke test: HTTP $status em $smokeUrl"
+        if ($status -ne 200 -and $status -ne 404) {
+          Write-Error "Status HTTP inesperado no smoke test: $status (aceitos: 200, 404)."
+          exit 1
+        }
+        Write-Host "Deploy de dev concluido com sucesso."

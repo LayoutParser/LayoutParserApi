@@ -25,12 +25,22 @@ using StackExchange.Redis;
 using System.Text.Encodings.Web;
 using System.Text.Json.Serialization;
 
+// ✅ Serviço Windows nativo: sob o SCM o processo inicia com CWD = System32, e o código
+// resolve caminhos relativos via Directory.GetCurrentDirectory() em vários pontos
+// (ex.: DocumentController, diretório de logs). Fixar o CWD na pasta do executável como
+// PRIMEIRA instrução garante que o serviço se comporte igual à execução manual.
+Directory.SetCurrentDirectory(AppContext.BaseDirectory);
+
 // Bootstrap logger for errors before Serilog is configured
 Log.Logger = new LoggerConfiguration().WriteTo.Console().CreateBootstrapLogger();
 
 try
 {
     var builder = WebApplication.CreateBuilder(args);
+
+    // ✅ Permite rodar como serviço Windows nativo (substitui o NSSM); integra o host ao
+    // ciclo de vida do SCM. Fora do SCM (dotnet run / console) é no-op — zero impacto.
+    builder.Host.UseWindowsService();
 
     // Configure Serilog for file and console logging
     var logDirectory = builder.Configuration["Logging:File:Directory"] ?? "Logs";
