@@ -1,0 +1,102 @@
+name: CI Dev (LayoutParserApi)
+
+# CI de DESENVOLVIMENTO — roda exclusivamente no runner local de dev (label 'dev-local').
+# Deploys de produção exigem a label 'production' (ver deploy.yml): os dois pools nunca se cruzam.
+# Este workflow NÃO faz deploy — apenas valida o build.
+
+on:
+  push:
+    branches:
+      - develop
+      - 'feat/**'
+  workflow_dispatch:
+
+# Um push novo na mesma branch cancela o run anterior ainda em andamento
+# (o runner de dev é único — evita fila desnecessária).
+concurrency:
+  group: ci-dev-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # NUNCA adicionar a label 'production' aqui.
+    runs-on: [self-hosted, windows, dev-local]
+    timeout-minutes: 30
+
+    steps:
+    - name: Checkout LayoutParserApi
+      uses: actions/checkout@v4
+      with:
+        path: LayoutParserApi
+
+    # O LayoutParserApi.csproj referencia a Lib via <Reference> com HintPath relativo
+    # (..\LayoutParserLib\bin\Debug\LayoutParserLib.dll) — o checkout lado a lado é
+    # obrigatório, no mesmo padrão do deploy.yml.
+    - name: Checkout LayoutParserLib
+      uses: actions/checkout@v4
+      with:
+        repository: LayoutParser/LayoutParserLib
+        path: LayoutParserLib
+        token: ${{ secrets.GH_PAT_TOKEN || secrets.GITHUB_TOKEN }}
+        fetch-depth: 1
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '10.0.x'
+
+    - name: Build LayoutParserLib (Debug, .NET Framework 4.8.1)
+      run: |
+        # O HintPath da API aponta para bin\Debug — a Lib DEVE ser compilada em Debug
+        # (o deploy.yml compila em Release e depende de artefato residual no runner de prod;
+        # aqui o caminho do HintPath é satisfeito de forma determinística).
+        # A Lib é csproj legado (non-SDK) sem PackageReference: o MSBuild do SDK .NET
+        # compila direto — validado no runner dev-local, que NAO possui VS Build Tools/msbuild.exe.
+        $LIB_PROJECT = Join-Path $PWD.Path "LayoutParserLib\LayoutParserLib.csproj"
+
+        if (-not (Test-Path $LIB_PROJECT)) {
+          Write-Error "Projeto nao encontrado: $LIB_PROJECT"
+          exit 1
+        }
+
+        dotnet build "$LIB_PROJECT" --configuration Debug
+
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "Falha ao compilar LayoutParserLib"
+          exit 1
+        }
+
+        $LIB_DLL = Join-Path $PWD.Path "LayoutParserLib\bin\Debug\LayoutParserLib.dll"
+        if (-not (Test-Path $LIB_DLL)) {
+          Write-Error "LayoutParserLib.dll nao foi gerada em: $LIB_DLL"
+          exit 1
+        }
+
+        Write-Host "LayoutParserLib compilada (Debug): $LIB_DLL"
+
+    - name: Build LayoutParserApi (Release)
+      run: |
+        $API_PROJECT = Join-Path $PWD.Path "LayoutParserApi\LayoutParserApi.csproj"
+
+        if (-not (Test-Path $API_PROJECT)) {
+          Write-Error "Projeto nao encontrado: $API_PROJECT"
+          exit 1
+        }
+
+        dotnet restore "$API_PROJECT"
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "Falha no restore do LayoutParserApi"
+          exit 1
+        }
+
+        dotnet build "$API_PROJECT" --configuration Release --no-restore
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "Falha ao compilar LayoutParserApi"
+          exit 1
+        }
+
+        Write-Host "LayoutParserApi compilada com sucesso (Release)"
+
+    # Não há projeto de testes (*.Tests.csproj) no repositório hoje — apenas os serviços
+    # in-app de Services/Testing. Quando um projeto de testes for adicionado, incluir aqui:
+    #   dotnet test <caminho\Projeto.Tests.csproj> --configuration Release

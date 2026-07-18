@@ -12,27 +12,29 @@ on:
 
 jobs:
   deploy:
-    runs-on: self-hosted  # Runner instalado no servidor (172.25.32.42)
+    # Runner org LayoutParser no servidor de PRODUÇÃO (172.25.32.42 / WINSRV2022-LIB).
+    # A label 'production' garante que o deploy NUNCA rode no runner de dev (label 'dev-local').
+    runs-on: [self-hosted, windows, production]
     timeout-minutes: 60
-    
+
     steps:
     - name: Checkout LayoutParserApi
       uses: actions/checkout@v4
       with:
         path: LayoutParserApi
-    
+
     - name: Checkout LayoutParserLib
       uses: actions/checkout@v4
       with:
-        repository: Elsonc1/LayoutParserLib
+        repository: LayoutParser/LayoutParserLib
         path: LayoutParserLib
         token: ${{ secrets.GH_PAT_TOKEN || secrets.GITHUB_TOKEN }}
         fetch-depth: 1
-    
+
     - name: Checkout LayoutParserDecrypt
       uses: actions/checkout@v4
       with:
-        repository: Elsonc1/LayoutParserDecrypt
+        repository: LayoutParser/LayoutParserDecrypt
         path: LayoutParserDecrypt
         token: ${{ secrets.GH_PAT_TOKEN || secrets.GITHUB_TOKEN }}
         fetch-depth: 1
