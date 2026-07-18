@@ -29,8 +29,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- HintPath sensível à configuração com fallback determinístico para Debug:
+         produção builda a Lib em Release → casa direto; ci-dev builda Lib Debug + API Release
+         → cai no fallback; dev local (tudo Debug) → casa direto. Assim nem ci-dev.yml nem
+         deploy.yml precisam mudar. -->
     <Reference Include="LayoutParserLib">
-      <HintPath>..\LayoutParserLib\bin\Debug\LayoutParserLib.dll</HintPath>
+      <HintPath>..\LayoutParserLib\bin\$(Configuration)\LayoutParserLib.dll</HintPath>
+      <HintPath Condition="!Exists('..\LayoutParserLib\bin\$(Configuration)\LayoutParserLib.dll')">..\LayoutParserLib\bin\Debug\LayoutParserLib.dll</HintPath>
     </Reference>
   </ItemGroup>
 
