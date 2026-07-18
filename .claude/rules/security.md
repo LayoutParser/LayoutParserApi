@@ -12,8 +12,19 @@ hardcoded no código (`GeminiAIService`, `LayoutDatabaseService`, `ElasticSearch
 | Segredo | Onde | Status |
 |---------|------|--------|
 | API key do **Gemini** | `Gemini:ApiKey` | Removido do código/JSON ✅ · **rotacionar (comprometida)** 🔴 |
-| Senha do **SQL Server** | `Database:Password` | Removido do código/JSON ✅ · **rotacionar (comprometida)** 🔴 |
+| Senha do **SQL Server** | `Database:Password` | **REGRESSÃO em 2026-07-18** (ver abaixo) · removido de novo ✅ · **rotacionar (comprometida 2x)** 🔴 |
 | Credenciais do **Elastic** | `ElasticSearch:Username/Password` | Removido do JSON e da senha hardcoded ✅ · rever 🟡 |
+
+### ⚠️ REGRESSÃO (2026-07-18) — senha SQL voltou ao repositório
+
+A senha do SQL Server **reapareceu em texto plano** no `appsettings.json` comitado e entrou no
+**histórico da `master` via merge da PR #7**. A remoção foi refeita em 2026-07-18 (placeholder `""`),
+mas o valor está de novo em commits públicos do histórico.
+
+- **Rotação continua PENDENTE e ficou ainda mais urgente** 🔴 — a exposição agora inclui a master.
+- A futura limpeza de histórico (`git filter-repo`/BFG, seção abaixo) precisará cobrir **também** esses commits novos.
+- Causa raiz a vigiar: ao testar localmente com a senha no JSON, o arquivo acaba indo junto no commit.
+  Use `dotnet user-secrets` (dev) ou o mecanismo de CI abaixo — **nunca** edite o segredo no `appsettings.json`.
 
 ### Plano de remediação
 
@@ -36,6 +47,37 @@ dotnet user-secrets set "ElasticSearch:Password" "<senha>"   # se usar Elastic
 # Produção: variáveis de ambiente no formato Section__Key
 #   Database__Password=...  Gemini__ApiKey=...  ElasticSearch__Password=...
 ```
+
+### Segredos no CI de dev (`ci-dev.yml`) — mecanismo e runbook de rotação
+
+O deploy de dev instala a API como **serviço Windows nativo** e injeta o segredo no ambiente
+**do serviço** (registro `HKLM\SYSTEM\...\Services\LayoutParserApi\Environment`, `REG_MULTI_SZ`)
+a partir do secret **`DB_PASSWORD_DEV`** do GitHub Actions. O valor nunca aparece em log
+(o Actions mascara secrets e o workflow não ecoa o valor).
+
+**Variables/Secrets que o operador precisa criar** (GitHub → repo `LayoutParserApi` →
+Settings → Secrets and variables → Actions):
+
+| Nome | Tipo | Valor | Obrigatório |
+|------|------|-------|-------------|
+| `DEPLOY_PATH_DEV` | **Variable** | `C:\inetpub\wwwroot\layoutparser` (máquina dev) | Sim — o deploy falha sem ela |
+| `API_URL_DEV` | **Variable** | URL da instância dev (default `http://localhost:5100` se ausente) | Não |
+| `DB_PASSWORD_DEV` | **Secret** | Senha do SQL **JÁ ROTACIONADA** (não a comprometida!) | Não — sem ela a API sobe degradada (sem SQL) |
+
+**Runbook de rotação da senha SQL:**
+
+1. No SQL Server: `ALTER LOGIN <login> WITH PASSWORD = '<nova-senha>'`.
+2. No GitHub: atualizar o secret `DB_PASSWORD_DEV` (e o equivalente de produção, quando existir).
+3. Redisparar o deploy (`workflow_dispatch` do CI Dev ou novo push) — o step reescreve o
+   `Environment` do serviço e reinicia a API com a senha nova.
+4. Validar smoke test verde e conexão SQL nos logs (sem imprimir a senha).
+
+### Estado-alvo recomendado (não implementado)
+
+Migrar a conexão SQL para **autenticação integrada Windows / gMSA** (Group Managed Service Account):
+elimina a senha da configuração por completo e o AD rotaciona a credencial automaticamente.
+Com isso, `DB_PASSWORD_DEV`/`Database__Password` deixam de existir. Recomendação de arquitetura —
+exige alinhamento com o time de infra/AD antes de qualquer mudança.
 
 ### Limpeza do histórico do git (proposta — NÃO executar sem confirmação)
 
