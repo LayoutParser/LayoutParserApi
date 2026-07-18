@@ -31,8 +31,9 @@ jobs:
         path: LayoutParserApi
 
     # O LayoutParserApi.csproj referencia a Lib via <Reference> com HintPath relativo
-    # (..\LayoutParserLib\bin\Debug\LayoutParserLib.dll) — o checkout lado a lado é
-    # obrigatório, no mesmo padrão do deploy.yml.
+    # sensível à configuração (..\LayoutParserLib\bin\$(Configuration)\, com fallback
+    # condicional para bin\Debug quando a DLL da configuração não existe) — o checkout
+    # lado a lado é obrigatório, no mesmo padrão do deploy.yml.
     - name: Checkout LayoutParserLib
       uses: actions/checkout@v4
       with:
@@ -58,9 +59,10 @@ jobs:
 
     - name: Build LayoutParserLib (Debug, .NET Framework 4.8.1)
       run: |
-        # O HintPath da API aponta para bin\Debug — a Lib DEVE ser compilada em Debug
-        # (o deploy.yml compila em Release e depende de artefato residual no runner de prod;
-        # aqui o caminho do HintPath é satisfeito de forma determinística).
+        # Aqui a Lib é compilada em Debug e a API em Release: o HintPath da API é sensível
+        # à configuração ($(Configuration)) e, como bin\Release da Lib não existe neste run,
+        # o fallback condicional do .csproj (!Exists → bin\Debug) resolve a DLL — não há
+        # obrigação de config casada entre Lib e API.
         # A Lib é csproj legado (non-SDK) sem PackageReference: o MSBuild do SDK .NET
         # compila direto — validado no runner dev-local, que NAO possui VS Build Tools/msbuild.exe.
         $LIB_PROJECT = Join-Path $PWD.Path "LayoutParserLib\LayoutParserLib.csproj"
