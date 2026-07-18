@@ -12,7 +12,9 @@ on:
 
 jobs:
   deploy:
-    runs-on: [self-hosted, windows]  # Runner org LayoutParser, instalado no servidor (172.25.32.42 / WINSRV2022-LIB)
+    # Runner org LayoutParser no servidor de PRODUÇÃO (172.25.32.42 / WINSRV2022-LIB).
+    # A label 'production' garante que o deploy NUNCA rode no runner de dev (label 'dev-local').
+    runs-on: [self-hosted, windows, production]
     timeout-minutes: 60
 
     steps:
