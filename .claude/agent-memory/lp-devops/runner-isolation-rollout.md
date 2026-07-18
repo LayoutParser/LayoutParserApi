@@ -1,6 +1,6 @@
 ---
 name: runner-isolation-rollout
-description: CI dev agora FAZ deploy (serviço Windows nativo, porta 5100) — criar DEPLOY_PATH_DEV/API_URL_DEV/DB_PASSWORD_DEV no GitHub ANTES do próximo push em feat/**; rotação da senha SQL pendente
+description: CI dev agora FAZ deploy (serviço Windows nativo, porta 5100) — criar DEPLOY_PATH_DEV/API_URL_DEV/DB_PASSWORD_DEV no GitHub ANTES do próximo push em feat/**; rotação SQL BLOQUEADA/escalada ao DBA; deploy prod com paths-ignore
 metadata:
   type: project
 ---
@@ -12,7 +12,7 @@ Estado 2026-07-18 (fim do dia): isolamento de runners CONCLUÍDO — prod label 
 **Why:** espelho fiel de prod em dev (prod vai migrar de NSSM para serviço nativo com o mesmo mecanismo) e fim da senha SQL em arquivo — houve REGRESSÃO em 2026-07-18 (senha voltou comitada e entrou na master via PR #7; re-sanitizada; **rotação PENDENTE** 🔴).
 
 **How to apply — antes do PRÓXIMO push em `develop`/`feat/**`:**
-1. Criar no GitHub (repo Api → Settings → Secrets and variables → Actions): Variable `DEPLOY_PATH_DEV=C:\inetpub\wwwroot\layoutparser`, Variable `API_URL_DEV` (opcional; default `http://localhost:5100`), Secret `DB_PASSWORD_DEV` (senha JÁ rotacionada). Sem `DEPLOY_PATH_DEV` o ci-dev FALHA no guard (proposital). Sem `DB_PASSWORD_DEV` a API sobe degradada (sem SQL) com Write-Warning.
-2. Push na master dispara o deploy.yml de PRODUÇÃO — nunca empacotar mudança de CI sem revisar esse efeito colateral.
-3. Prod NSSM→nativo: spec entregue no relatório de 2026-07-18, NÃO executada — o deploy.yml de prod segue o antigo (Stop/Start-Service apenas, sem criar serviço).
+1. Criar no GitHub (repo Api → Settings → Secrets and variables → Actions): Variable `DEPLOY_PATH_DEV=C:\inetpub\wwwroot\layoutparser`, Variable `API_URL_DEV` (opcional; default `http://localhost:5100`), Secret `DB_PASSWORD_DEV`. **Rotação da senha SQL BLOQUEADA — escalada ao DBA (status 2026-07-18)**: por necessidade operacional o secret contém a senha atual (comprometida); trocar assim que o DBA rotacionar (runbook em `rules/security.md`). Sem `DEPLOY_PATH_DEV` o ci-dev FALHA no guard (proposital). Sem `DB_PASSWORD_DEV` a API sobe degradada (sem SQL) com Write-Warning.
+2. Push na master dispara o deploy.yml de PRODUÇÃO — desde o commit `e50eb44` (2026-07-18) o trigger usa `paths-ignore` (docs/, .claude/, .rtk/, mcp/, ai/, tools/, *.md, metadados, ci-dev.yml), então push só de docs/harness NÃO deploya mais; mudanças de runtime continuam deployando.
+3. Prod NSSM→nativo: spec entregue no relatório de 2026-07-18, NÃO executada — o deploy.yml de prod segue o antigo (Stop/Start-Service apenas, sem criar serviço). Branch `feat/windows-service-deploy` criada (a partir de `e50eb44`) para hospedar essa migração.
 4. Armadilha de PowerShell aprendida: `binPath= "\"$exe\""` é idiom de cmd — em PS o backslash não escapa; usar `$binPath = '"{0}"' -f $exePath; sc.exe create ... binPath= $binPath`.
