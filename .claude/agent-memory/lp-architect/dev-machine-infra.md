@@ -14,4 +14,4 @@ Estado montado em 2026-07-18 na máquina dev `NDD-NOT-10910` (usuário `NDDIGITA
 - API ainda **sem** `UseWindowsService` (spec pendente com @lp-backend-dev); execução manual: `dotnet LayoutParserApi.dll` na pasta api. Redis local existe (localhost:6379). IIS instalado e rodando, mas **sem** ANCM/Hosting Bundle.
 - Máquina de PRODUÇÃO: WINSRV2022-LIB / 172.25.32.42 — nunca tocar a partir daqui.
 
-Ver também [[security-regression-appsettings]].
+Ver também [[security-regression-appsettings]] e [[runner-tls-cert-incident]] (falha do runner em 2026-07-20 — não era a máquina, era certificado expirado do lado do GitHub).

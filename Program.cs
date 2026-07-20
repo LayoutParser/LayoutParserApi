@@ -213,6 +213,9 @@ try
     builder.Services.AddScoped<IDecryptionService, DecryptionService>();
     builder.Services.AddScoped<MapperDatabaseService>();
     builder.Services.AddScoped<ICachedLayoutService, CachedLayoutService>();
+    // ✅ Warm-up do cache permanente (layouts/mapeadores) roda em background APÓS app.Run(),
+    // não bloqueia mais o startup / report ao Service Control Manager do Windows.
+    builder.Services.AddHostedService<CachePermanentWarmupBackgroundService>();
 
     // XML Analysis Services
     builder.Services.AddScoped<XmlAnalysisService>();
@@ -343,61 +346,10 @@ try
 
     app.MapControllers();
 
-    // Inicializar cache permanente de layouts e mapeadores na inicialização
-    try
-    {
-        Log.Information("Iniciando populacao do cache permanente...");
-
-        using (var scope = app.Services.CreateScope())
-        {
-            var cachedLayoutService = scope.ServiceProvider.GetRequiredService<ICachedLayoutService>();
-            var cachedMapperService = scope.ServiceProvider.GetRequiredService<ICachedMapperService>();
-
-            Log.Information("Populando cache de layouts...");
-
-            // Popular cache de layouts
-            try
-            {
-                await cachedLayoutService.RefreshCacheFromDatabaseAsync();
-                Log.Information("Cache de layouts populado com sucesso");
-            }
-            catch (Exception ex)
-            {
-                Log.Error(ex, "Erro ao popular cache de layouts: {Message}", ex.Message);
-            }
-
-            // Popular cache de mapeadores
-            Log.Information("Populando cache de mapeadores...");
-            try
-            {
-                await cachedMapperService.RefreshCacheFromDatabaseAsync();
-                Log.Information("Cache de mapeadores populado com sucesso");
-            }
-            catch (Exception ex)
-            {
-                Log.Error(ex, "Erro ao popular cache de mapeadores: {Message}", ex.Message);
-                Log.Error(ex, "Stack trace: {StackTrace}", ex.StackTrace);
-            }
-
-            // Verificar se o cache foi criado
-            try
-            {
-                var allMappers = await cachedMapperService.GetAllMappersAsync();
-                Log.Information("Verificacao: {Count} mapeadores disponiveis no cache", allMappers?.Count ?? 0);
-            }
-            catch (Exception ex)
-            {
-                Log.Warning(ex, "Erro ao verificar cache de mapeadores: {Message}", ex.Message);
-            }
-
-            Log.Information("Cache permanente inicializado com sucesso");
-        }
-    }
-    catch (Exception ex)
-    {
-        Log.Error(ex, "Erro ao inicializar cache permanente. A aplicacao continuara, mas o cache pode estar vazio.");
-        Log.Error(ex, "Stack trace: {StackTrace}", ex.StackTrace);
-    }
+    // Nota: a população do cache permanente de layouts/mapeadores foi movida para
+    // CachePermanentWarmupBackgroundService (Services/Database), que roda como IHostedService
+    // em segundo plano após app.Run(). Isso evita bloquear o startup (e o report ao Service
+    // Control Manager do Windows) enquanto aguarda o SQL Server responder.
 
     var kestrelUrl = builder.Configuration["Kestrel:Endpoints:Http:Url"] ?? "http://0.0.0.0:5000";
     Log.Information("LayoutParserApi started successfully. Listening on: {Url}", kestrelUrl);
