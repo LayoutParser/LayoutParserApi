@@ -374,3 +374,44 @@ nenhuma outra ação de código resolve isso.
 
 **Nada aqui foi enviado (`git push`) nem tocado em branch/CI** — a atualização de §8/§9 é local, na
 branch atual do working tree, via commit deste documento.
+
+---
+
+## 10. Nova fase — A6: Proveniência (sidecar) em `DslRuleTranslator` (2026-07-21, Aria)
+
+> **Contexto:** pedido do dono do projeto, fora desta trilha (sessão nova, não relacionada a A1-A5), para
+> instrumentar `DslRuleTranslator.TranslateAsync` (`ai/XslSynth/Synthesis/`) emitindo um sidecar JSON
+> (`generated-provenance.json`, versionado, gerado offline junto do XSLT) mapeando XPath de saída →
+> {regra, fonte, campos de input}. Decisão de não embutir isso no XML de saída (risco de conformidade de
+> schema SEFAZ) já está fechada. Registro aqui só para não colidir com o trabalho ativo de Lia no mesmo
+> subsistema — ver auditoria de reconciliação §7 e spec §8.
+
+| # | Fase | Arquivos tocados | Depende de | Dono |
+|---|---|---|---|---|
+| A6 | Emitir sidecar de proveniência no loop de tradução DSL→XSLT **+ no transpilador de LinkMappings (escopo corrigido, ver ⚠️ abaixo)** | `ai/XslSynth/Synthesis/DslRuleTranslator.cs`, `ai/XslSynth/Core/LinkMappingTranspiler.cs` (+ novo arquivo de emissão do sidecar) | nada — pode rodar em paralelo ao restante de A2 (arquivo diferente) | Lia (mesmo subsistema/dono das fases A1-A5) |
+
+**Sequenciamento recomendado:** A6 pode rodar em paralelo ao restante de A2 (arquivos diferentes, sem
+conflito previsto — A2 toca `Excel/XslGenerator.cs`/bugs de serialização IVECCO, A6 toca
+`Synthesis/DslRuleTranslator.cs`+`Core/LinkMappingTranspiler.cs`), mas é a mesma dona (Lia) — ela decide a
+ordem real de execução dentro da própria fila. Não depende de A3/A4/A5.
+
+**Motivação de negócio (fora desta trilha):** o sidecar alimenta um loop de diagnóstico de erro XSD via
+Ollama (cruza XPath do erro × proveniência → prompt cirúrgico) que substitui a chamada Gemini hoje em
+`XmlAnalysisController.AnalyzeXsdErrorWithAi` — decisão de decomissionar Gemini/OpenAI tomada na mesma
+sessão (ver memória de `@lp-architect`: `gemini-openai-decommission-decision`). O consumidor do sidecar (o
+novo serviço Ollama em `Services/`) é trabalho separado, fora de `ai/XslSynth/`, fora desta trilha. Detalhe
+completo da visão de negócio (diagnóstico semântico fiscal, filtro de assinatura, substituição do
+AppConnector) em [`ia-fiscal-diagnosis-vision.md`](ia-fiscal-diagnosis-vision.md).
+
+**⚠️ Correção de escopo (2026-07-21, mesmo dia, revisão da Aria):** o escopo original desta fase (só
+`DslRuleTranslator`) cobre apenas os ~98 campos via regra DSL — **não** os ~237 campos via `LinkMapping`
+direto (a maioria), que passam por `LinkMappingTranspiler.cs` e hoje **não emitem sidecar nenhum** — em vez
+disso, embutem um `XComment` (`target=... input=... xpath=...`) como filho do próprio elemento de saída,
+dentro do XSLT. Isso sobrevive à transformação (não é instrução `xsl:`, é filho literal do resultado) —
+**exatamente o anti-padrão que a decisão original de proveniência queria evitar** (nunca embutir rastro no
+XML de produção). A6 precisa cobrir os dois mecanismos, e precisa de um passo de "publicação" (ainda
+inexistente) que remova esse comentário de debug antes de qualquer XSLT ir pra `Mapper.XslContent`. Detalhe
+completo em `ia-fiscal-diagnosis-vision.md` §3.1.
+
+*Adicionado por `@lp-architect` (Aria), 2026-07-21 — fora do ciclo normal de auditoria de A1-A5 (§7-9), a
+pedido do dono do projeto numa sessão paralela. Local apenas, não enviado (`git push`).*

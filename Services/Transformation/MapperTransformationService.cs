@@ -13,6 +13,13 @@ using System.Xml.Xsl;
 
 namespace LayoutParserApi.Services.Transformation
 {
+    /// <summary>
+    /// Pathway 1 de transformação - <b>legado</b> (decisão de arquitetura, item 2.1 do
+    /// dispatch de IA em docs/architecture/ai-roadmap-dispatch.md, 2026-07-21): não recebe
+    /// mais investimento novo, é candidato a deprecação (decisão final = usuário/<c>@lp-devops</c>).
+    /// O pathway canônico é <see cref="TransformationPipelineService"/>, usado pelo
+    /// <see cref="LayoutParserApi.Controllers.TransformationExecutionController"/>.
+    /// </summary>
     public class MapperTransformationService : IMapperTransformationService
     {
         private readonly ICachedMapperService _cachedMapperService;

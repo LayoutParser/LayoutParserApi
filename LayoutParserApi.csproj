@@ -17,6 +17,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Bogus" Version="35.6.5" />
     <PackageReference Include="Microsoft.Data.SqlClient" Version="6.1.2" />
     <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.10" />
     <PackageReference Include="Microsoft.VisualStudio.Azure.Containers.Tools.Targets" Version="1.22.1" />
@@ -42,6 +43,13 @@
 
   <ItemGroup>
     <Folder Include="Services\Validation\Models\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Base indexada CFOP x tipo de operacao (item 6.1 do dispatch de IA) - embutida
+         no assembly para nao depender de caminho de arquivo em disco (resiliente a
+         deploy como servico Windows, Docker, etc. - mesmo principio do HintPath acima). -->
+    <EmbeddedResource Include="Data\Fiscal\cfop-tabela.csv" />
   </ItemGroup>
 
 </Project>
