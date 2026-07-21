@@ -11,7 +11,7 @@ hardcoded no código (`GeminiAIService`, `LayoutDatabaseService`, `ElasticSearch
 
 | Segredo | Onde | Status |
 |---------|------|--------|
-| API key do **Gemini** | `Gemini:ApiKey` | Removido do código/JSON ✅ · **rotacionar (comprometida)** 🔴 |
+| API key do **Gemini** | `Gemini:ApiKey` | Removido do código/JSON ✅ · **Gemini decomissionado (2026-07-21) — revogar/desprovisionar, não rotacionar** 🔴 |
 | Senha do **SQL Server** | `Database:Password` | **REGRESSÃO em 2026-07-18** (ver abaixo) · removido de novo ✅ · **rotacionar (comprometida 2x)** 🔴 |
 | Credenciais do **Elastic** | `ElasticSearch:Username/Password` | Removido do JSON e da senha hardcoded ✅ · rever 🟡 |
 
@@ -32,7 +32,8 @@ mas o valor está de novo em commits públicos do histórico.
 - [x] **Remover** os fallbacks hardcoded (`?? "<segredo>"`) no código → `?? string.Empty`.
 - [x] **Ignorar** `appsettings.*.local.json` no `.gitignore`.
 - [x] **Documentar** uso de `dotnet user-secrets` (dev) e env vars `Section__Key` (prod) — ver README §9.
-- [ ] **Rotacionar** as chaves expostas (gerar novas no provedor/banco) — **ação do operador**. 🔴
+- [ ] **Rotacionar** a senha do SQL Server exposta (gerar nova no banco) — **ação do operador, bloqueada/escalada ao DBA** 🔴.
+- [ ] **Revogar/desprovisionar** (não rotacionar) a API key do Gemini exposta — Gemini foi decomissionado, sem consumidor previsto. **Ação do dono do projeto** — ver runbook abaixo 🔴.
 - [ ] **Limpar o histórico do git** (`git filter-repo` / BFG) — **executar via @lp-devops, sob confirmação**.
 
 ### Como configurar os segredos (dev)
@@ -75,6 +76,47 @@ Settings → Secrets and variables → Actions):
 3. Redisparar o deploy (`workflow_dispatch` do CI Dev ou novo push) — o step reescreve o
    `Environment` do serviço e reinicia a API com a senha nova.
 4. Validar smoke test verde e conexão SQL nos logs (sem imprimir a senha).
+
+### Revogação da API key do Gemini — Gemini decomissionado (2026-07-21)
+
+Decisão de arquitetura: Gemini e OpenAI foram **abandonados por completo** como provedores de LLM
+neste projeto — Ollama local assume 100% do papel (loop RAG gerar → validar → corrigir, sem
+fine-tuning). Motivo de fundo: dado fiscal sensível não deve sair pra nuvem sem autorização explícita
+(ver "Regras gerais" abaixo). Detalhe da decisão: [memória de `@lp-architect`](../agent-memory/lp-architect/gemini-openai-decommission-decision.md).
+
+Com o decommission, a ação sobre a chave do Gemini deixa de ser "gerar uma chave nova" (rotação) e
+vira **revogar/desprovisionar de vez** — não há mais consumidor previsto, então não faz sentido reemitir.
+
+> **Nota de risco factual (não é motivo pra baixar a prioridade da revogação):** hoje nenhum dos
+> serviços que consomem a chave do Gemini (`GeminiAIService`, `SemanticAIGenerator` etc.) está
+> registrado no DI em `Program.cs` — os endpoints que dependem deles quebram com exceção em runtime,
+> então a chave não vaza *agora* por acidente de código. Isso não é remediação deliberada, é bug —
+> a remoção desse código morto é tarefa do `@lp-backend-dev` (Dex), já mapeada em
+> `docs/architecture/ai-roadmap-dispatch.md` (Grupo 1). Não muda a urgência de revogar a chave: ela
+> já esteve exposta em texto plano no histórico do repo.
+
+**Fora do alcance do `@lp-devops`:** revogar a chave exige acesso interativo ao console do provedor
+(Google AI Studio / Google Cloud Console) com a conta que a gerou — **não é algo que o agente executa
+via terminal.** Passos manuais para o dono do projeto:
+
+1. Acessar [Google AI Studio → API keys](https://aistudio.google.com/app/apikey) (ou Google Cloud
+   Console → APIs & Services → Credentials, se a chave foi provisionada por lá) com a conta usada
+   para gerar a chave do `Gemini:ApiKey`.
+2. Localizar a chave associada a este projeto e **deletar/revogar** (prefira revogar a apenas
+   desativar, se a UI oferecer as duas opções — revogação impede reuso mesmo que o valor exposto
+   tenha sido copiado por terceiros).
+3. Confirmar, na mesma tela, ausência de uso/billing após a revogação — serve de confirmação de que
+   a chave morreu, além de evitar custo residual.
+4. **Não gerar chave nova.** Checado nesta sessão: não há `GEMINI_API_KEY`/secret equivalente em
+   `.github/workflows/ci-dev.yml` ou `deploy.yml` — nada a limpar do lado do GitHub Actions. Se a
+   decisão de decommission for revertida no futuro, gerar uma chave nova **nesse momento**, não antes.
+5. Avisar `@lp-devops` (ou marcar diretamente neste arquivo) quando a revogação estiver concluída,
+   para atualizar a tabela acima de 🔴 para ✅.
+
+> ⚠️ A limpeza do histórico do git (seção abaixo) continua pendente e **também** cobre os commits
+> onde a chave do Gemini apareceu em texto plano — revogar a chave não substitui essa limpeza, mas
+> reduz a urgência dela especificamente para este segredo (chave morta não é mais explorável mesmo
+> que ainda apareça no histórico).
 
 ### Estado-alvo recomendado (não implementado)
 

@@ -8,6 +8,15 @@ using LayoutParserApi.Services.XmlAnalysis.Models;
 
 namespace LayoutParserApi.Controllers
 {
+    /// <summary>
+    /// Pathway 2 de transformação - <b>canônico</b> (decisão de arquitetura, item 2.1 do
+    /// dispatch de IA em docs/architecture/ai-roadmap-dispatch.md, 2026-07-21): é o pathway
+    /// que o front-end de fato chama hoje. Novo trabalho de transformação (validação XSD,
+    /// diagnóstico via Ollama, etc.) deve entrar aqui - ou na camada de serviço por trás
+    /// dele (<see cref="TransformationPipelineService"/>/<see cref="TransformationValidatorService"/>),
+    /// nunca no controller (ver item 2.2).
+    /// Ver também <see cref="TransformationController"/> (Pathway 1 - legado).
+    /// </summary>
     [ApiController]
     [Route("api/[controller]")]
     public class TransformationExecutionController : ControllerBase

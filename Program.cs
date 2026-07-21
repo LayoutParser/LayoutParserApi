@@ -1,6 +1,7 @@
 using LayoutParserApi.Services.Cache;
 using LayoutParserApi.Services.Database;
 using LayoutParserApi.Services.Filters;
+using LayoutParserApi.Services.Generation.Implementations;
 using LayoutParserApi.Services.Implementations;
 using LayoutParserApi.Services.Interfaces;
 using LayoutParserApi.Services.Learning;
@@ -213,6 +214,9 @@ try
     builder.Services.AddScoped<IDecryptionService, DecryptionService>();
     builder.Services.AddScoped<MapperDatabaseService>();
     builder.Services.AddScoped<ICachedLayoutService, CachedLayoutService>();
+    // ✅ Warm-up do cache permanente (layouts/mapeadores) roda em background APÓS app.Run(),
+    // não bloqueia mais o startup / report ao Service Control Manager do Windows.
+    builder.Services.AddHostedService<CachePermanentWarmupBackgroundService>();
 
     // XML Analysis Services
     builder.Services.AddScoped<XmlAnalysisService>();
@@ -257,11 +261,36 @@ try
     builder.Services.AddScoped<FileStorageService>();
     // ✅ Detector de anomalia por z-score sobre MLData/DocumentPatterns (P2 do roadmap)
     builder.Services.AddScoped<IDocumentAnomalyDetector, DocumentAnomalyDetectorService>();
+    // ✅ Item 4.1/4.2 do roadmap de IA: cenários fiscais sintéticos rotulados (Bogus,
+    // pt_BR, CPF/CNPJ válidos) para o índice RAG da IA fiscal - NÃO fixture de teste,
+    // NÃO treino (sem GPU em produção). Depende de CfopOperationCatalogService (6.1).
+    builder.Services.AddScoped<SyntheticFiscalScenarioGenerator>();
+    // ✅ Item 4.4 do roadmap de IA: checagem de near-duplicate obrigatória para QUALQUER
+    // saída "sintética" antes de indexar - este projeto é material de TCC.
+    builder.Services.AddScoped<NearDuplicateChecker>();
+
+    // RAG Services (retrieval de exemplos para geração sintética)
+    // ✅ Fix incidental (item 1.4 do roadmap de IA, 2026-07-21): RAGService nunca esteve
+    // registrado aqui, o que derruba o RAGController em runtime (falha de resolução de DI
+    // ao primeiro request). RAGService é retrieval puro sobre arquivos locais - sem
+    // dependência de nuvem (Gemini/OpenAI) - não relacionado à decisão de decommission.
+    builder.Services.AddScoped<RAGService>();
 
     // Validation Services
     builder.Services.AddScoped<LayoutValidationService>();
     builder.Services.AddScoped<DocumentValidationService>();
     builder.Services.AddScoped<DocumentMLValidationService>();
+    // ✅ Item 3.1 do roadmap de IA: validação determinística de campo de input
+    // (tamanho/formato/checksum contra o LengthField do Layout XML) - sem IA.
+    builder.Services.AddScoped<FieldContentValidationService>();
+    // ✅ Item 3.2 do roadmap de IA: classificador determinístico de erro XSD
+    // "esperado" (ex.: assinatura digital ausente) vs. defeito real - sem IA.
+    builder.Services.AddScoped<XsdErrorClassifierService>();
+    // ✅ Item 6.1 do roadmap de IA: base indexada CFOP x tipo de operação (lookup
+    // determinístico puro, tabela pública CONFAZ/SEFAZ/Receita Federal) - sem IA.
+    // Ainda sem controller consumidor (isso é o item 6.2, Lia+Dex) - registrado desde
+    // já seguindo o mesmo padrão dos itens 3.1/3.2 acima.
+    builder.Services.AddScoped<CfopOperationCatalogService>();
     builder.Services.Configure<LowCodeRunnerOptions>(builder.Configuration.GetSection("LowCode"));
     builder.Services.AddSingleton<LowCodeTransformationService>();
     builder.Services.AddSingleton<LowCodeAutoTransformationService>();
@@ -343,61 +372,10 @@ try
 
     app.MapControllers();
 
-    // Inicializar cache permanente de layouts e mapeadores na inicialização
-    try
-    {
-        Log.Information("Iniciando populacao do cache permanente...");
-
-        using (var scope = app.Services.CreateScope())
-        {
-            var cachedLayoutService = scope.ServiceProvider.GetRequiredService<ICachedLayoutService>();
-            var cachedMapperService = scope.ServiceProvider.GetRequiredService<ICachedMapperService>();
-
-            Log.Information("Populando cache de layouts...");
-
-            // Popular cache de layouts
-            try
-            {
-                await cachedLayoutService.RefreshCacheFromDatabaseAsync();
-                Log.Information("Cache de layouts populado com sucesso");
-            }
-            catch (Exception ex)
-            {
-                Log.Error(ex, "Erro ao popular cache de layouts: {Message}", ex.Message);
-            }
-
-            // Popular cache de mapeadores
-            Log.Information("Populando cache de mapeadores...");
-            try
-            {
-                await cachedMapperService.RefreshCacheFromDatabaseAsync();
-                Log.Information("Cache de mapeadores populado com sucesso");
-            }
-            catch (Exception ex)
-            {
-                Log.Error(ex, "Erro ao popular cache de mapeadores: {Message}", ex.Message);
-                Log.Error(ex, "Stack trace: {StackTrace}", ex.StackTrace);
-            }
-
-            // Verificar se o cache foi criado
-            try
-            {
-                var allMappers = await cachedMapperService.GetAllMappersAsync();
-                Log.Information("Verificacao: {Count} mapeadores disponiveis no cache", allMappers?.Count ?? 0);
-            }
-            catch (Exception ex)
-            {
-                Log.Warning(ex, "Erro ao verificar cache de mapeadores: {Message}", ex.Message);
-            }
-
-            Log.Information("Cache permanente inicializado com sucesso");
-        }
-    }
-    catch (Exception ex)
-    {
-        Log.Error(ex, "Erro ao inicializar cache permanente. A aplicacao continuara, mas o cache pode estar vazio.");
-        Log.Error(ex, "Stack trace: {StackTrace}", ex.StackTrace);
-    }
+    // Nota: a população do cache permanente de layouts/mapeadores foi movida para
+    // CachePermanentWarmupBackgroundService (Services/Database), que roda como IHostedService
+    // em segundo plano após app.Run(). Isso evita bloquear o startup (e o report ao Service
+    // Control Manager do Windows) enquanto aguarda o SQL Server responder.
 
     var kestrelUrl = builder.Configuration["Kestrel:Endpoints:Http:Url"] ?? "http://0.0.0.0:5000";
     Log.Information("LayoutParserApi started successfully. Listening on: {Url}", kestrelUrl);
