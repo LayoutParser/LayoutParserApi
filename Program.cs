@@ -157,19 +157,21 @@ try
     builder.Services.AddSwaggerGen();
 
     // CORS Configuration
+    // ✅ Origens configuráveis: env var CORS_ALLOWED_ORIGINS tem prioridade sobre
+    // Cors:AllowedOrigins (appsettings). Fallback cobre os cenários de dev conhecidos
+    // (front antigo em 80/81/8080 + LayoutParserReact build estático no IIS em 8081/3000).
+    var corsAllowedOrigins = (Environment.GetEnvironmentVariable("CORS_ALLOWED_ORIGINS")
+        ?? builder.Configuration["Cors:AllowedOrigins"]
+        ?? "http://172.25.32.42:81,http://localhost:81,http://localhost:8080,http://172.25.32.42:80,http://localhost:80,http://127.0.0.1:81,http://127.0.0.1:8080,http://localhost:8081,http://localhost:3000")
+        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    Log.Information("Configuring CORS with allowed origins: {AllowedOrigins}", string.Join(", ", corsAllowedOrigins));
+
     builder.Services.AddCors(options =>
     {
         options.AddDefaultPolicy(policy =>
         {
-            policy.WithOrigins(
-                    "http://172.25.32.42:81",
-                    "http://localhost:81",
-                    "http://localhost:8080",
-                    "http://172.25.32.42:80",
-                    "http://localhost:80",
-                    "http://127.0.0.1:81",
-                    "http://127.0.0.1:8080"
-                  )
+            policy.WithOrigins(corsAllowedOrigins)
                   .AllowAnyMethod().AllowAnyHeader().WithExposedHeaders("*");
         });
     });
