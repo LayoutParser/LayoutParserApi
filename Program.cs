@@ -261,6 +261,13 @@ try
     builder.Services.AddScoped<FileStorageService>();
     // ✅ Detector de anomalia por z-score sobre MLData/DocumentPatterns (P2 do roadmap)
     builder.Services.AddScoped<IDocumentAnomalyDetector, DocumentAnomalyDetectorService>();
+    // ✅ Item 4.1/4.2 do roadmap de IA: cenários fiscais sintéticos rotulados (Bogus,
+    // pt_BR, CPF/CNPJ válidos) para o índice RAG da IA fiscal - NÃO fixture de teste,
+    // NÃO treino (sem GPU em produção). Depende de CfopOperationCatalogService (6.1).
+    builder.Services.AddScoped<SyntheticFiscalScenarioGenerator>();
+    // ✅ Item 4.4 do roadmap de IA: checagem de near-duplicate obrigatória para QUALQUER
+    // saída "sintética" antes de indexar - este projeto é material de TCC.
+    builder.Services.AddScoped<NearDuplicateChecker>();
 
     // RAG Services (retrieval de exemplos para geração sintética)
     // ✅ Fix incidental (item 1.4 do roadmap de IA, 2026-07-21): RAGService nunca esteve
