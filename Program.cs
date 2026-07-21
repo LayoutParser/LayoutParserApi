@@ -1,6 +1,7 @@
 using LayoutParserApi.Services.Cache;
 using LayoutParserApi.Services.Database;
 using LayoutParserApi.Services.Filters;
+using LayoutParserApi.Services.Generation.Implementations;
 using LayoutParserApi.Services.Implementations;
 using LayoutParserApi.Services.Interfaces;
 using LayoutParserApi.Services.Learning;
@@ -261,10 +262,23 @@ try
     // ✅ Detector de anomalia por z-score sobre MLData/DocumentPatterns (P2 do roadmap)
     builder.Services.AddScoped<IDocumentAnomalyDetector, DocumentAnomalyDetectorService>();
 
+    // RAG Services (retrieval de exemplos para geração sintética)
+    // ✅ Fix incidental (item 1.4 do roadmap de IA, 2026-07-21): RAGService nunca esteve
+    // registrado aqui, o que derruba o RAGController em runtime (falha de resolução de DI
+    // ao primeiro request). RAGService é retrieval puro sobre arquivos locais - sem
+    // dependência de nuvem (Gemini/OpenAI) - não relacionado à decisão de decommission.
+    builder.Services.AddScoped<RAGService>();
+
     // Validation Services
     builder.Services.AddScoped<LayoutValidationService>();
     builder.Services.AddScoped<DocumentValidationService>();
     builder.Services.AddScoped<DocumentMLValidationService>();
+    // ✅ Item 3.1 do roadmap de IA: validação determinística de campo de input
+    // (tamanho/formato/checksum contra o LengthField do Layout XML) - sem IA.
+    builder.Services.AddScoped<FieldContentValidationService>();
+    // ✅ Item 3.2 do roadmap de IA: classificador determinístico de erro XSD
+    // "esperado" (ex.: assinatura digital ausente) vs. defeito real - sem IA.
+    builder.Services.AddScoped<XsdErrorClassifierService>();
     builder.Services.Configure<LowCodeRunnerOptions>(builder.Configuration.GetSection("LowCode"));
     builder.Services.AddSingleton<LowCodeTransformationService>();
     builder.Services.AddSingleton<LowCodeAutoTransformationService>();
