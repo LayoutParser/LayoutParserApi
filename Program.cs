@@ -279,6 +279,11 @@ try
     // ✅ Item 3.2 do roadmap de IA: classificador determinístico de erro XSD
     // "esperado" (ex.: assinatura digital ausente) vs. defeito real - sem IA.
     builder.Services.AddScoped<XsdErrorClassifierService>();
+    // ✅ Item 6.1 do roadmap de IA: base indexada CFOP x tipo de operação (lookup
+    // determinístico puro, tabela pública CONFAZ/SEFAZ/Receita Federal) - sem IA.
+    // Ainda sem controller consumidor (isso é o item 6.2, Lia+Dex) - registrado desde
+    // já seguindo o mesmo padrão dos itens 3.1/3.2 acima.
+    builder.Services.AddScoped<CfopOperationCatalogService>();
     builder.Services.Configure<LowCodeRunnerOptions>(builder.Configuration.GetSection("LowCode"));
     builder.Services.AddSingleton<LowCodeTransformationService>();
     builder.Services.AddSingleton<LowCodeAutoTransformationService>();
