@@ -44,4 +44,11 @@
     <Folder Include="Services\Validation\Models\" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Base indexada CFOP x tipo de operacao (item 6.1 do dispatch de IA) - embutida
+         no assembly para nao depender de caminho de arquivo em disco (resiliente a
+         deploy como servico Windows, Docker, etc. - mesmo principio do HintPath acima). -->
+    <EmbeddedResource Include="Data\Fiscal\cfop-tabela.csv" />
+  </ItemGroup>
+
 </Project>
