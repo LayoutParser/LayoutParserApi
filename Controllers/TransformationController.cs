@@ -8,6 +8,14 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace LayoutParserApi.Controllers
 {
+    /// <summary>
+    /// Pathway 1 de transformação - <b>legado</b> (decisão de arquitetura, item 2.1 do
+    /// dispatch de IA em docs/architecture/ai-roadmap-dispatch.md, 2026-07-21): não recebe
+    /// mais investimento novo, é candidato a deprecação. A decisão final de remover é do
+    /// usuário/<c>@lp-devops</c> - nada aqui foi apagado, apenas não adicione funcionalidade
+    /// nova neste controller. O pathway canônico (o que o front-end de fato chama hoje) é o
+    /// <see cref="TransformationExecutionController"/>.
+    /// </summary>
     [ApiController]
     [Route("api/[controller]")]
     public class TransformationController : ControllerBase
