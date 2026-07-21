@@ -8,7 +8,11 @@ using LayoutParserApi.Services.XmlAnalysis.Models;
 namespace LayoutParserApi.Services.XmlAnalysis
 {
     /// <summary>
-    /// Serviço de pipeline de transformação: TXT → MAP/TCL → XML Intermediário → XSL → XML Final
+    /// Serviço de pipeline de transformação: TXT → MAP/TCL → XML Intermediário → XSL → XML Final.
+    /// <b>Pathway 2 - canônico</b> (item 2.1 do dispatch de IA, docs/architecture/ai-roadmap-dispatch.md,
+    /// 2026-07-21): é o serviço por trás do <see cref="LayoutParserApi.Controllers.TransformationExecutionController"/>,
+    /// que o front-end de fato chama hoje. Comparar com <see cref="LayoutParserApi.Services.Transformation.MapperTransformationService"/>
+    /// (Pathway 1 - legado, sem novo investimento).
     /// </summary>
     public class TransformationPipelineService
     {
