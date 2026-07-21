@@ -19,6 +19,8 @@ using XslSynth.Synthesis;
 //   dotnet run -- --rag-stats    → tamanho do índice por chave + demo de recuperação
 //   dotnet run -- --xsd-diff <velho.xsd> <novo.xsd> [--delta-out <json>]
 //                              → S1 do pipeline NT: delta de XSD por XPath (B5 P-1)
+//   dotnet run -- --pdf-smoke <nota-tecnica.pdf>
+//                              → S2 (smoke): viabilidade de extração/segmentação do PDF (B5 P-2)
 //
 // Arquitetura: docs/architecture/ia-xslt-synthesis.md · poc-excel-generator.md
 // ─────────────────────────────────────────────────────────────────────────────
@@ -32,6 +34,9 @@ Log("");
 
 if (args.Contains("--xsd-diff"))
     return RunXsdDiff();
+
+if (args.Contains("--pdf-smoke"))
+    return RunPdfSmoke();
 
 if (args.Contains("--rag-stats"))
     return await RunRagStatsAsync();
@@ -560,6 +565,68 @@ int RunXsdDiff()
     return 0;
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// Fluxo PDF-SMOKE (pipeline NT, S2 — protótipo B5 P-2): mede viabilidade de
+// extrair texto de um PDF de Nota Técnica e segmentar por seção/Grupo/regra
+// de validação. NÃO produz NtRuleMap.json (isso é o S2 completo com LLM,
+// fora de escopo aqui) — só prova que a extração é possível e útil.
+// Desenho: docs/architecture/nt-pipeline-design.md §4-5 (P-2).
+// ══════════════════════════════════════════════════════════════════════════
+int RunPdfSmoke()
+{
+    var pdfPath = FindArgAfter("--pdf-smoke");
+    if (pdfPath is null || !File.Exists(pdfPath))
+    {
+        Log("❌ Informe um PDF existente.");
+        Log("   Uso: dotnet run -- --pdf-smoke <nota-tecnica.pdf>");
+        return 2;
+    }
+
+    Log("Modo      : PDF-SMOKE (pipeline NT, S2 — smoke de extração, sem LLM)");
+    Log($"PDF       : {pdfPath}");
+    Log("");
+
+    PdfSmokeResult r;
+    try
+    {
+        r = PdfSmokeExtractor.Extract(pdfPath);
+    }
+    catch (Exception ex)
+    {
+        Log($"❌ Falha ao extrair o PDF: {ex.Message}");
+        return 1;
+    }
+
+    Log($"Páginas          : {r.Paginas}");
+    Log($"Caracteres total : {r.TotalCaracteres}");
+    Log("");
+
+    Log($"── Menções a 'Grupo X' ({r.MencoesDeGrupo.Count}) ────────────────────────────");
+    foreach (var g in r.MencoesDeGrupo.Take(20)) Log($"   {g}");
+    if (r.MencoesDeGrupo.Count == 0) Log("   (nenhuma — este PDF não usa a convenção 'Grupo <letra>')");
+    Log("");
+
+    Log($"── Regras de validação (padrão <letras><nn>-<nn>) ({r.RegrasDeValidacao.Count}) ──");
+    foreach (var g in r.RegrasDeValidacao.Take(20)) Log($"   {g}");
+    if (r.RegrasDeValidacao.Count > 20) Log($"   … e mais {r.RegrasDeValidacao.Count - 20}.");
+    Log("");
+
+    Log($"── Títulos de seção detectados ({r.TitulosDeSecao.Count}) ─────────────────────");
+    foreach (var t in r.TitulosDeSecao.Take(15)) Log($"   {t}");
+    Log("");
+
+    Log("── Amostra da 1ª página (prova de que o texto saiu legível) ──────");
+    Log($"   {r.AmostraPrimeiraPagina.Replace("\n", " ").Replace("\r", "")}");
+    Log("");
+
+    var viavel = r.TotalCaracteres > 500 && (r.TitulosDeSecao.Count > 0 || r.RegrasDeValidacao.Count > 0);
+    Log(viavel
+        ? "✅ Extração + segmentação estrutural VIÁVEL neste PDF (texto legível + âncoras encontradas)."
+        : "⚠️  Extração rendeu pouco texto ou nenhuma âncora estrutural — reavaliar heurística/ferramenta antes do S2 real.");
+
+    return 0;
+}
+
 // Set-diff por path: multiconjuntos de folhas (elementos sem filhos) e atributos.
 // FALTA = só no gabarito · SOBRA = só no gerado · TEXTO = valor difere (par ordinal).
 (int Falta, int Sobra, int Texto, List<string> Linhas) SetDiffPorPath(XElement esperado, XElement obtido)
@@ -969,18 +1036,45 @@ async Task<int> RunRealAsync()
     Log($"   Cobertura de Rules        : {report.RulesCovered}/{report.RulesTotal} ({report.RulePct})");
     Log("");
 
-    // ── Passo 6: grava o candidato para inspeção ──────────────────────────
+    // ── Passo 6: grava o candidato (DEBUG — ainda com XComment de rastro) ──
     var outPath = Path.Combine(Path.GetDirectoryName(mapperPath)!, "candidate.xslt");
     candidate.Save(outPath);
     Log($"Candidato salvo em: {outPath}");
+    Log("");
+
+    // ── Passo 7 (A6): publicação — sidecar de proveniência + candidato SEM
+    // XComment de debug. É o artefato que, um dia, poderia ser promovido para
+    // Mapper.XslContent — o de debug (passo 6) nunca deveria ser promovido
+    // como está (embute rastro no XML, o anti-padrão que a decisão de
+    // proveniência queria evitar). Ver ai/XslSynth/Core/ProvenancePublisher.cs.
+    var publish = ProvenancePublisher.Publish(mapper, guidCatalog, translations, candidate);
+    var provenancePath = Path.Combine(Path.GetDirectoryName(mapperPath)!, "generated-provenance.json");
+    var publishedPath = Path.Combine(Path.GetDirectoryName(mapperPath)!, "candidate.published.xslt");
+    File.WriteAllText(provenancePath, publish.Sidecar.ToJson());
+    publish.CandidatoPublicavel.Save(publishedPath);
+
+    Log("── [4] Publicação (A6 — sidecar de proveniência) ──────────────────");
+    Log($"   Sidecar: {publish.Sidecar.Total} entradas "
+        + $"({publish.Sidecar.Entradas.Count(e => e.Mecanismo == "LinkMapping")} LinkMapping + "
+        + $"{publish.Sidecar.Entradas.Count(e => e.Mecanismo == "DslRule")} DslRule); "
+        + $"{publish.Sidecar.LinkMappingsSemFolha.Count} LinkMappings sem folha (exclusão por design).");
+    Log($"   generated-provenance.json: {provenancePath}");
+    Log($"   Candidato PUBLICÁVEL (sem XComment de debug): {publishedPath}");
+    Log($"   Comentários de debug removidos: {publish.ComentariosRemovidos}");
+    Log(publish.ComentariosRemanescentes == 0
+        ? "   ✅ auto-verificação: 0 XComment remanescentes no candidato publicável."
+        : $"   ❌ auto-verificação FALHOU: {publish.ComentariosRemanescentes} XComment ainda presentes "
+            + "— NÃO promover este artefato.");
     Log("");
 
     Log("── Limite honesto (o que falta p/ fechar o loop diff==0) ─────────");
     Log("   • select do input é SIMBÓLICO (token do GUID) — precisa do catálogo GUID→XPath.");
     Log("   • sem gabarito de runtime ainda: validamos COMPILAÇÃO + COBERTURA, não igualdade.");
     Log("   • o gabarito virá do host FiatMQ (ver docs/architecture/ia-xslt-synthesis.md §9).");
+    Log("   • sidecar cobre o que HOJE sai como XPath (folha ou completo via catálogo);");
+    Log("     campo de input de Rule é só o que a regex 'I.LINHA/campo' reconhece na DSL.");
 
-    return report.Compiles ? 0 : 1;
+    return report.Compiles && publish.ComentariosRemanescentes == 0 ? 0 : 1;
 }
 
 // Raiz de saída = primeiro segmento mais frequente entre os paths T. das regras.
