@@ -2882,12 +2882,15 @@ namespace LayoutParserApi.Services.Implementations
                 bool isValid = hasChildren ? totalLength <= expectedLineLength : totalLength == expectedLineLength;
 
                 // Calcular posições dos campos (1-based)
+                // Chave composta "Nome#Sequence": campos com mesmo Name na mesma linha (ex: LINHA037 tem
+                // ValorDaBaseDeCalculoDoFCPRetidoAnteriormente duplicado nas sequences 9 e 10) sobrescreviam
+                // a posição um do outro quando a chave era só o Name. Sequence é único dentro da linha.
                 var calculatedPositions = new Dictionary<string, int>();
                 int currentPosition = sequenceFromPreviousLine + initialValueLength;
 
                 foreach (var field in fieldsToCalculate)
                 {
-                    calculatedPositions[field.Name] = currentPosition + 1; // 1-based
+                    calculatedPositions[$"{field.Name}#{field.Sequence}"] = currentPosition + 1; // 1-based
                     currentPosition += field.LengthField;
                 }
 
