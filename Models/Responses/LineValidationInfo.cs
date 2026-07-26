@@ -18,7 +18,9 @@ namespace LayoutParserApi.Models.Responses
         
         /// <summary>
         /// Dicionário com as posições calculadas (1-based) de cada campo
-        /// Key: Nome do campo, Value: Posição inicial (1-based)
+        /// Key: "Nome#Sequence" (composta, pois campos podem se repetir com o mesmo Name na mesma linha
+        /// — ex.: LINHA037 tem ValorDaBaseDeCalculoDoFCPRetidoAnteriormente nas sequences 9 e 10),
+        /// Value: Posição inicial (1-based)
         /// </summary>
         public Dictionary<string, int> CalculatedPositions { get; set; } = new Dictionary<string, int>();
     }
