@@ -227,7 +227,6 @@ LayoutParserDecrypt.exe  (descriptografia Sysmiddle)
 | `Database` | SQL Server (`Server`, `Database`, `UserId`, `Password`). **Use secrets!** |
 | `Ollama:Url` / `Ollama:Model` | LLM local (`http://localhost:11434`, `deepseek-coder:6.7b`). |
 | `Gemini` / `OpenAI` | Provedores de LLM em nuvem. **Use secrets!** |
-| `ElasticSearch` | Sink de logs (`Url`, `Username`, `Password`). |
 | `LowCode` | Runner Sysmiddle (`RunnerPath`, `SysmiddleDir`, `AllowedPackageGuids`). |
 | `LayoutParserDecrypt:Path` | Caminho do `.exe` de descriptografia. |
 | `TransformationPipeline` | Caminhos de TCL/XSL/exemplos/modelos aprendidos. |
@@ -258,8 +257,6 @@ dotnet build ../LayoutParserLib/LayoutParserLib.sln
 #    O UserSecretsId já está no .csproj; basta setar os valores:
 dotnet user-secrets set "Database:Password" "<senha-do-sql>"
 dotnet user-secrets set "Gemini:ApiKey" "<key-do-gemini>"
-dotnet user-secrets set "ElasticSearch:Username" "<usuario-elastic>"   # opcional (só se usar Elastic)
-dotnet user-secrets set "ElasticSearch:Password" "<senha-elastic>"     # opcional
 dotnet user-secrets list                                               # conferir
 
 # 3. Restaurar, buildar e rodar a API
@@ -276,11 +273,10 @@ dotnet run                       # http://0.0.0.0:5000  (Swagger em /swagger)
 > ```bash
 > export Database__Password="<senha-do-sql>"
 > export Gemini__ApiKey="<key-do-gemini>"
-> export ElasticSearch__Password="<senha-elastic>"
 > ```
 >
 > Os valores secretos foram **removidos do código e do `appsettings.json`** (placeholders vazios);
-> se nenhum segredo for fornecido, o recurso correspondente apenas degrada (ex.: Gemini/Elastic ficam inativos).
+> se nenhum segredo for fornecido, o recurso correspondente apenas degrada (ex.: Gemini fica inativo).
 
 ### Docker
 
