@@ -13,7 +13,7 @@ hardcoded no código (`GeminiAIService`, `LayoutDatabaseService`, `ElasticSearch
 |---------|------|--------|
 | API key do **Gemini** | `Gemini:ApiKey` | Removido do código/JSON ✅ · **Gemini decomissionado (2026-07-21) — revogar/desprovisionar, não rotacionar** 🔴 |
 | Senha do **SQL Server** | `Database:Password` | **REGRESSÃO em 2026-07-18** (ver abaixo) · removido de novo ✅ · **rotacionar (comprometida 2x)** 🔴 |
-| Credenciais do **Elastic** | `ElasticSearch:Username/Password` | Removido do JSON e da senha hardcoded ✅ · rever 🟡 |
+| Credenciais do **Elastic** | `ElasticSearch:Username/Password` | ✅ Removido — mecanismo nunca foi conectado ao pipeline real (Serilog é o logging efetivo); código morto (`ILoggingStrategy`/`ElasticSearch*`) e config removidos em 2026-07-27 |
 
 ### ⚠️ REGRESSÃO (2026-07-18) — senha SQL voltou ao repositório
 
@@ -44,9 +44,8 @@ O `UserSecretsId` já está no `.csproj`. A precedência é
 ```bash
 dotnet user-secrets set "Database:Password" "<senha>"
 dotnet user-secrets set "Gemini:ApiKey" "<key>"
-dotnet user-secrets set "ElasticSearch:Password" "<senha>"   # se usar Elastic
 # Produção: variáveis de ambiente no formato Section__Key
-#   Database__Password=...  Gemini__ApiKey=...  ElasticSearch__Password=...
+#   Database__Password=...  Gemini__ApiKey=...
 ```
 
 ### Segredos no CI de dev (`ci-dev.yml`) — mecanismo e runbook de rotação
