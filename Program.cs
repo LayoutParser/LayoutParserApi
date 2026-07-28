@@ -119,14 +119,18 @@ try
             .MinimumLevel.Information()
             .MinimumLevel.Override("Microsoft.AspNetCore", LogEventLevel.Warning)
             .Enrich.FromLogContext()
-            .WriteTo.Console(outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff}] [{Level:u3}] [Corr:{CorrelationId}] {Message:lj}{NewLine}{Exception}")
+            // ✅ Origem padrão de toda entrada é "Backend"; o endpoint de ingestão de log do
+            // cliente (LogsController.PostClientLog) sobrescreve para "Frontend" só no escopo
+            // da própria requisição via LogContext.PushProperty (mesmo padrão do CorrelationId).
+            .Enrich.WithProperty("Source", "Backend")
+            .WriteTo.Console(outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff}] [{Level:u3}] [Corr:{CorrelationId}] [Src:{Source}] {Message:lj}{NewLine}{Exception}")
             .WriteTo.File(
                 Path.Combine(logDirectory, logFileName),
                 rollingInterval: RollingInterval.Infinite,
                 retainedFileCountLimit: retainedFileCountLimit,
                 fileSizeLimitBytes: fileSizeLimitBytes,
                 rollOnFileSizeLimit: true,
-                outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff}] [{Level:u3}] [Corr:{CorrelationId}] {Message:lj}{NewLine}{Exception}",
+                outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff}] [{Level:u3}] [Corr:{CorrelationId}] [Src:{Source}] {Message:lj}{NewLine}{Exception}",
                 shared: true)
             .CreateLogger();
 
@@ -305,6 +309,9 @@ try
     builder.Services.AddScoped<IAuditLogger, AuditLogger>();
     builder.Services.AddScoped<ITechLogger, TechLogger>();
     builder.Services.AddScoped<AuditActionFilter>();
+    // ✅ Leitura unificada dos 3 arquivos de log do ecossistema (Api/Lib/Decrypt) para
+    // GET api/logs (LogsController) — desenho de logging unificado fechado pela arquiteta.
+    builder.Services.AddScoped<IUnifiedLogReaderService, UnifiedLogReaderService>();
 
     var app = builder.Build();
 
