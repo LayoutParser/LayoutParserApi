@@ -1,5 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
+using LayoutParserApi.Models.Entities;
+using LayoutParserApi.Models.Transformation;
 using LayoutParserApi.Services.Database;
 using Microsoft.Extensions.Options;
 
@@ -56,22 +58,46 @@ namespace LayoutParserApi.Services.Transformation.LowCode
             if (string.IsNullOrWhiteSpace(layoutGuid) || string.IsNullOrWhiteSpace(txtContent))
                 return;
 
-            // Selecionar MapperGuid (filtrado por ProjectId e AllowedPackageGuids)
+            // Selecionar candidatos (filtrado por ProjectId e AllowedPackageGuids)
             // ✅ Escopo próprio para o serviço Scoped dentro do fire-and-forget
             using var scope = _scopeFactory.CreateScope();
             var mapperDb = scope.ServiceProvider.GetRequiredService<MapperDatabaseService>();
 
-            var mapper = await mapperDb.GetBestMapperForLayoutGuidAsync(
+            // ✅ Seleção multi-candidato: busca TODOS os candidatos plausíveis (mesma prioridade de
+            // sempre — input match > target match > mais recente), já deduplicados por MapperGuid.
+            var ranked = await mapperDb.GetRankedMapperCandidatesForLayoutGuidAsync(
                 layoutGuid,
                 _opt.ProjectId,
                 _opt.AllowedPackageGuids);
 
-            if (mapper == null || string.IsNullOrWhiteSpace(mapper.MapperGuid))
+            if (ranked.Count == 0 || string.IsNullOrWhiteSpace(ranked[0].MapperGuid))
             {
                 _logger.LogWarning("Nenhum mapper encontrado para layoutGuid={LayoutGuid} nos pacotes permitidos", layoutGuid);
                 return;
             }
 
+            // N==1: comportamento EXATAMENTE igual ao de sempre (sem overhead, sem mudança de shape
+            // dos artefatos persistidos). N>1 depois de deduplicar por MapperGuid = candidatos
+            // genuinamente distintos (não apenas desempate de recência do mesmo mapper).
+            if (ranked.Count == 1)
+            {
+                await TransformSingleAndPersistAsync(ranked[0], layoutGuid, layoutName, txtContent, detectedType, originalFileName);
+                return;
+            }
+
+            var topN = ranked.Take(Math.Max(1, _opt.MultiCandidateTopN)).ToList();
+            _logger.LogInformation(
+                "AutoTransform low-code: {Count} candidatos genuinamente plausíveis para layout={LayoutName} ({LayoutGuid}) — capado em top-{TopN}",
+                topN.Count, layoutName, layoutGuid, _opt.MultiCandidateTopN);
+
+            await TransformMultiCandidateAndPersistAsync(topN, layoutGuid, layoutName, txtContent, detectedType, originalFileName);
+        }
+
+        /// <summary>
+        /// Caminho de hoje (N==1), inalterado: 1 mapper, 1 transformação, 1 conjunto de artefatos.
+        /// </summary>
+        private async Task TransformSingleAndPersistAsync(Mapper mapper, string layoutGuid, string layoutName, string txtContent, string detectedType, string originalFileName)
+        {
             _logger.LogInformation("AutoTransform low-code: layout={LayoutName} ({LayoutGuid}) mapper={MapperName} ({MapperGuid})",
                 layoutName, layoutGuid, mapper.Name, mapper.MapperGuid);
 
@@ -113,6 +139,122 @@ namespace LayoutParserApi.Services.Transformation.LowCode
             };
             var json = System.Text.Json.JsonSerializer.Serialize(meta, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
             await File.WriteAllTextAsync(metaPath, json, Encoding.UTF8);
+        }
+
+        /// <summary>
+        /// Caminho multi-candidato (N&gt;1 mapeadores genuinamente plausíveis): roda a transformação
+        /// low-code contra CADA candidato em paralelo (Task.WhenAll) e persiste todos os N resultados,
+        /// cada um tagueado com MapperGuid/Name, TargetLayoutGuid e indicador de sucesso/erro.
+        /// Resiliência: uma falha de candidato individual é capturada e não derruba os demais.
+        /// </summary>
+        private async Task TransformMultiCandidateAndPersistAsync(List<Mapper> candidates, string layoutGuid, string layoutName, string txtContent, string detectedType, string originalFileName)
+        {
+            var tasks = candidates.Select(async mapper =>
+            {
+                try
+                {
+                    var xml = await _lowCode.TransformAsync(
+                        txtContent,
+                        mapperId: mapper.MapperGuid,
+                        mapperName: null,
+                        fileName: originalFileName);
+
+                    return new LowCodeCandidateResult
+                    {
+                        MapperGuid = mapper.MapperGuid,
+                        MapperName = mapper.Name,
+                        TargetLayoutGuid = mapper.TargetLayoutGuidFromXml ?? mapper.TargetLayoutGuid,
+                        PackageGuid = mapper.PackageGuid,
+                        Success = true,
+                        OutputXml = xml
+                    };
+                }
+                catch (Exception ex)
+                {
+                    // ✅ Falha de UM candidato não derruba os demais — capturada aqui, dentro da própria
+                    // task, para que Task.WhenAll não propague a exceção e aborte o restante.
+                    _logger.LogWarning(ex,
+                        "Falha na transformação low-code do candidato mapper={MapperGuid} ({MapperName}) para layout={LayoutName} ({LayoutGuid})",
+                        mapper.MapperGuid, mapper.Name, layoutName, layoutGuid);
+
+                    return new LowCodeCandidateResult
+                    {
+                        MapperGuid = mapper.MapperGuid,
+                        MapperName = mapper.Name,
+                        TargetLayoutGuid = mapper.TargetLayoutGuidFromXml ?? mapper.TargetLayoutGuid,
+                        PackageGuid = mapper.PackageGuid,
+                        Success = false,
+                        ErrorMessage = ex.Message
+                    };
+                }
+            });
+
+            var results = await Task.WhenAll(tasks);
+
+            _logger.LogInformation(
+                "AutoTransform low-code multi-candidato: layout={LayoutName} ({LayoutGuid}) {SuccessCount}/{Total} candidatos OK",
+                layoutName, layoutGuid, results.Count(r => r.Success), results.Length);
+
+            // Persistir para aprendizado contínuo: 1 input compartilhado + 1 meta.json com o array de
+            // candidatos + 1 arquivo de saída por candidato bem-sucedido.
+            var sha = ComputeSha256(txtContent);
+            var dateFolder = DateTime.UtcNow.ToString("yyyyMMdd");
+            var folder = Path.Combine(_storePath, dateFolder);
+            Directory.CreateDirectory(folder);
+
+            var baseName = $"{sha}_{DateTime.UtcNow:HHmmss}";
+            var metaPath = Path.Combine(folder, $"{baseName}.meta.json");
+            var inPath = Path.Combine(folder, $"{baseName}.input.txt");
+
+            await File.WriteAllTextAsync(inPath, txtContent, Encoding.UTF8);
+
+            var candidateMeta = new List<object>();
+            for (int i = 0; i < results.Length; i++)
+            {
+                var r = results[i];
+                string? outputFile = null;
+                if (r.Success)
+                {
+                    outputFile = $"{baseName}.cand{i}_{SanitizeForFileName(r.MapperGuid)}.lowcode.xml";
+                    await File.WriteAllTextAsync(Path.Combine(folder, outputFile), r.OutputXml ?? "", Encoding.UTF8);
+                }
+
+                candidateMeta.Add(new
+                {
+                    mapperGuid = r.MapperGuid,
+                    mapperName = r.MapperName,
+                    targetLayoutGuid = r.TargetLayoutGuid,
+                    packageGuid = r.PackageGuid,
+                    success = r.Success,
+                    outputFile,
+                    outputLength = r.Success ? (r.OutputXml ?? "").Length : 0,
+                    errorMessage = r.Success ? null : r.ErrorMessage
+                });
+            }
+
+            var meta = new
+            {
+                createdAtUtc = DateTime.UtcNow,
+                layoutGuid,
+                layoutName,
+                detectedType,
+                originalFileName,
+                sha256 = sha,
+                inputLength = txtContent.Length,
+                multiCandidate = true,
+                candidateCount = results.Length,
+                successCount = results.Count(r => r.Success),
+                candidates = candidateMeta
+            };
+            var json = System.Text.Json.JsonSerializer.Serialize(meta, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+            await File.WriteAllTextAsync(metaPath, json, Encoding.UTF8);
+        }
+
+        private static string SanitizeForFileName(string s)
+        {
+            if (string.IsNullOrWhiteSpace(s)) return "unknown";
+            var invalid = Path.GetInvalidFileNameChars();
+            return new string(s.Where(c => !invalid.Contains(c)).ToArray());
         }
 
         private static string ComputeSha256(string input)
