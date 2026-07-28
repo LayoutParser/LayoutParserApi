@@ -183,7 +183,7 @@ namespace LayoutParserApi.Services.Logging
                     try
                     {
                         var lines = await ReadAllLinesSharedAsync(file.FullName);
-                        result.AddRange(ParseLines(lines, fixedSource, pattern));
+                        result.AddRange(ParseLines(lines, fixedSource, pattern, file.Name));
                     }
                     catch (Exception ex)
                     {
@@ -222,10 +222,19 @@ namespace LayoutParserApi.Services.Logging
         /// continuação da entrada anterior (ex.: stack trace multi-linha) — não é descartada
         /// silenciosamente nem quebra o parse do arquivo (try/catch por linha).
         /// </summary>
-        private List<UnifiedLogEntry> ParseLines(IReadOnlyList<string> lines, string? fixedSource, Regex pattern)
+        /// <remarks>
+        /// ✅ FIX (incidente 2026-07-28): linha malformada NUNCA loga Warning-com-stack-trace
+        /// individualmente — isso é auto-amplificador (muitas linhas malformadas = muitos
+        /// warnings = rotação/eviction acelerada dos logs pelo rollOnFileSizeLimit/
+        /// retainedFileCountLimit do Serilog, causa direta da perda de logs históricos reais).
+        /// Falha por linha vira Debug (barato, sem stack trace em arquivo por padrão) e as
+        /// ocorrências são agregadas num único Warning resumido ao final do arquivo.
+        /// </remarks>
+        private List<UnifiedLogEntry> ParseLines(IReadOnlyList<string> lines, string? fixedSource, Regex pattern, string fileName)
         {
             var entries = new List<UnifiedLogEntry>();
             UnifiedLogEntry? current = null;
+            var malformedCount = 0;
 
             foreach (var rawLine in lines)
             {
@@ -250,8 +259,14 @@ namespace LayoutParserApi.Services.Logging
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Falha ao parsear linha de log, linha ignorada");
+                    malformedCount++;
+                    _logger.LogDebug(ex, "Falha ao parsear linha de log em {FileName}, linha ignorada", fileName);
                 }
+            }
+
+            if (malformedCount > 0)
+            {
+                _logger.LogWarning("{Count} linha(s) malformada(s) em {FileName}, ignoradas", malformedCount, fileName);
             }
 
             return entries;
@@ -273,7 +288,11 @@ namespace LayoutParserApi.Services.Logging
             }
             else
             {
-                if (!DateTime.TryParse(tsRaw, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind | DateTimeStyles.AssumeUniversal, out timestamp))
+                // ✅ FIX (incidente 2026-07-28): RoundtripKind + AssumeUniversal é combinação
+                // inválida no .NET — TryParse LANÇA ArgumentException em vez de retornar false,
+                // fazendo 100% das linhas Lib/Decrypt falharem o parse. RoundtripKind sozinho já
+                // preserva Kind=Utc pro sufixo "Z" do formato "O" usado pelo RollingFileLogger.
+                if (!DateTime.TryParse(tsRaw, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out timestamp))
                     return null;
             }
 
