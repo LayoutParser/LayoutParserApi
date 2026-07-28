@@ -39,7 +39,7 @@ namespace LayoutParserApi.Services.Transformation.LowCode
 
         public Task RunInBackgroundAsync(string layoutGuid, string layoutName, string txtContent, string detectedType, string originalFileName)
         {
-            // fire-and-forget
+            // fire-and-forget (chamador não quer/precisa do resultado — usar RunAsync quando precisar)
             return Task.Run(async () =>
             {
                 try
@@ -53,10 +53,22 @@ namespace LayoutParserApi.Services.Transformation.LowCode
             });
         }
 
-        private async Task TransformAndPersistAsync(string layoutGuid, string layoutName, string txtContent, string detectedType, string originalFileName)
+        /// <summary>
+        /// Mesma operação de <see cref="RunInBackgroundAsync"/>, mas retornando o resultado (ao invés de
+        /// fire-and-forget) para permitir entrega SÍNCRONA com teto de tempo por quem chama (ex.:
+        /// <c>ParseController</c>, que aguarda até <c>LowCode:SyncDeliveryTimeoutSeconds</c> e cai para
+        /// processamento em background se estourar — a persistência em disco acontece de qualquer forma,
+        /// dentro desta mesma chamada, então o trabalho não se perde mesmo se o chamador parar de esperar.
+        /// Falhas estruturais (ex.: banco fora do ar ao buscar candidatos) propagam como exceção — cabe ao
+        /// chamador decidir como degradar (nunca deve virar 500 do endpoint principal de parse).
+        /// </summary>
+        public Task<LowCodeAutoTransformResult> RunAsync(string layoutGuid, string layoutName, string txtContent, string detectedType, string originalFileName)
+            => TransformAndPersistAsync(layoutGuid, layoutName, txtContent, detectedType, originalFileName);
+
+        private async Task<LowCodeAutoTransformResult> TransformAndPersistAsync(string layoutGuid, string layoutName, string txtContent, string detectedType, string originalFileName)
         {
             if (string.IsNullOrWhiteSpace(layoutGuid) || string.IsNullOrWhiteSpace(txtContent))
-                return;
+                return new LowCodeAutoTransformResult { Applicable = false };
 
             // Selecionar candidatos (filtrado por ProjectId e AllowedPackageGuids)
             // ✅ Escopo próprio para o serviço Scoped dentro do fire-and-forget
@@ -73,7 +85,7 @@ namespace LayoutParserApi.Services.Transformation.LowCode
             if (ranked.Count == 0 || string.IsNullOrWhiteSpace(ranked[0].MapperGuid))
             {
                 _logger.LogWarning("Nenhum mapper encontrado para layoutGuid={LayoutGuid} nos pacotes permitidos", layoutGuid);
-                return;
+                return new LowCodeAutoTransformResult { Applicable = false };
             }
 
             // N==1: comportamento EXATAMENTE igual ao de sempre (sem overhead, sem mudança de shape
@@ -81,8 +93,46 @@ namespace LayoutParserApi.Services.Transformation.LowCode
             // genuinamente distintos (não apenas desempate de recência do mesmo mapper).
             if (ranked.Count == 1)
             {
-                await TransformSingleAndPersistAsync(ranked[0], layoutGuid, layoutName, txtContent, detectedType, originalFileName);
-                return;
+                var mapper = ranked[0];
+                try
+                {
+                    var single = await TransformSingleAndPersistAsync(mapper, layoutGuid, layoutName, txtContent, detectedType, originalFileName);
+                    return new LowCodeAutoTransformResult
+                    {
+                        Applicable = true,
+                        MultiCandidate = false,
+                        Candidates = new List<LowCodeCandidateResult> { single }
+                    };
+                }
+                catch (Exception ex)
+                {
+                    // ✅ Mesmo tratamento de falha isolada por candidato do caminho multi (não propaga
+                    // pro chamador síncrono como exceção não tratada) — mas SEM alterar a semântica de
+                    // persistência em disco de sempre: se a transformação falhar aqui (ex.: timeout do
+                    // runner), nada é persistido, exatamente como antes desta mudança (comportamento
+                    // inalterado do fire-and-forget, só passou a também ser observável por RunAsync).
+                    _logger.LogWarning(ex,
+                        "Falha na transformação low-code (candidato único) mapper={MapperGuid} ({MapperName}) para layout={LayoutName} ({LayoutGuid})",
+                        mapper.MapperGuid, mapper.Name, layoutName, layoutGuid);
+
+                    return new LowCodeAutoTransformResult
+                    {
+                        Applicable = true,
+                        MultiCandidate = false,
+                        Candidates = new List<LowCodeCandidateResult>
+                        {
+                            new LowCodeCandidateResult
+                            {
+                                MapperGuid = mapper.MapperGuid,
+                                MapperName = mapper.Name,
+                                TargetLayoutGuid = mapper.TargetLayoutGuidFromXml ?? mapper.TargetLayoutGuid,
+                                PackageGuid = mapper.PackageGuid,
+                                Success = false,
+                                ErrorMessage = ex.Message
+                            }
+                        }
+                    };
+                }
             }
 
             var topN = ranked.Take(Math.Max(1, _opt.MultiCandidateTopN)).ToList();
@@ -90,13 +140,17 @@ namespace LayoutParserApi.Services.Transformation.LowCode
                 "AutoTransform low-code: {Count} candidatos genuinamente plausíveis para layout={LayoutName} ({LayoutGuid}) — capado em top-{TopN}",
                 topN.Count, layoutName, layoutGuid, _opt.MultiCandidateTopN);
 
-            await TransformMultiCandidateAndPersistAsync(topN, layoutGuid, layoutName, txtContent, detectedType, originalFileName);
+            var candidates = await TransformMultiCandidateAndPersistAsync(topN, layoutGuid, layoutName, txtContent, detectedType, originalFileName);
+            return new LowCodeAutoTransformResult { Applicable = true, MultiCandidate = true, Candidates = candidates };
         }
 
         /// <summary>
-        /// Caminho de hoje (N==1), inalterado: 1 mapper, 1 transformação, 1 conjunto de artefatos.
+        /// Caminho de hoje (N==1), inalterado na persistência: 1 mapper, 1 transformação, 1 conjunto de
+        /// artefatos. Passou a retornar o <see cref="LowCodeCandidateResult"/> correspondente (além de
+        /// persistir) para permitir entrega síncrona via <see cref="RunAsync"/> — se a transformação
+        /// falhar, a exceção propaga (igual sempre fez) e quem persiste o tratamento é o chamador.
         /// </summary>
-        private async Task TransformSingleAndPersistAsync(Mapper mapper, string layoutGuid, string layoutName, string txtContent, string detectedType, string originalFileName)
+        private async Task<LowCodeCandidateResult> TransformSingleAndPersistAsync(Mapper mapper, string layoutGuid, string layoutName, string txtContent, string detectedType, string originalFileName)
         {
             _logger.LogInformation("AutoTransform low-code: layout={LayoutName} ({LayoutGuid}) mapper={MapperName} ({MapperGuid})",
                 layoutName, layoutGuid, mapper.Name, mapper.MapperGuid);
@@ -139,6 +193,16 @@ namespace LayoutParserApi.Services.Transformation.LowCode
             };
             var json = System.Text.Json.JsonSerializer.Serialize(meta, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
             await File.WriteAllTextAsync(metaPath, json, Encoding.UTF8);
+
+            return new LowCodeCandidateResult
+            {
+                MapperGuid = mapper.MapperGuid,
+                MapperName = mapper.Name,
+                TargetLayoutGuid = mapper.TargetLayoutGuidFromXml ?? mapper.TargetLayoutGuid,
+                PackageGuid = mapper.PackageGuid,
+                Success = true,
+                OutputXml = lowCodeXml
+            };
         }
 
         /// <summary>
@@ -146,8 +210,9 @@ namespace LayoutParserApi.Services.Transformation.LowCode
         /// low-code contra CADA candidato em paralelo (Task.WhenAll) e persiste todos os N resultados,
         /// cada um tagueado com MapperGuid/Name, TargetLayoutGuid e indicador de sucesso/erro.
         /// Resiliência: uma falha de candidato individual é capturada e não derruba os demais.
+        /// Retorna a lista de resultados (além de persistir) para permitir entrega síncrona via <see cref="RunAsync"/>.
         /// </summary>
-        private async Task TransformMultiCandidateAndPersistAsync(List<Mapper> candidates, string layoutGuid, string layoutName, string txtContent, string detectedType, string originalFileName)
+        private async Task<List<LowCodeCandidateResult>> TransformMultiCandidateAndPersistAsync(List<Mapper> candidates, string layoutGuid, string layoutName, string txtContent, string detectedType, string originalFileName)
         {
             var tasks = candidates.Select(async mapper =>
             {
@@ -248,6 +313,8 @@ namespace LayoutParserApi.Services.Transformation.LowCode
             };
             var json = System.Text.Json.JsonSerializer.Serialize(meta, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
             await File.WriteAllTextAsync(metaPath, json, Encoding.UTF8);
+
+            return results.ToList();
         }
 
         private static string SanitizeForFileName(string s)

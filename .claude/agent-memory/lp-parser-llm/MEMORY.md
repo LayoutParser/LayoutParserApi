@@ -9,3 +9,6 @@
 - [NT-pipeline P-1/P-2 rodados](nt-pipeline-p1-p2-real-run.md) — nfephp-org tem PL_009 E PL_010 (NT2025.002 real!); diff bônus achou CHAVEACESSO/CNPJ alfanumérico; cert nfe.fazenda.gov.br confirmado quebrado; PdfPig sem quebra de linha confiável.
 - [Mirrors públicos de dado fiscal](public-fiscal-data-mirrors.md) — nfephp-org/sped-nfe (XSD) e jansenfelipe/cfop (CFOP) — checar antes de propor scraping do portal oficial.
 - [Gotchas de ambiente desta sessão](session-environment-gotchas.md) — máquina começou sem nada em .claude/tmp/Documentos; sem pip/apt-root; não presumir dado de memória antiga ainda em disco.
+- [RollingFileLogger vendoring resync](rollingfilelogger-vendoring-resync.md) — drift Configure() resolvido 2026-07-28 (canônico venceu); Program.cs do Decrypt traduz args→env vars.
+- [LowCode-auto multi-candidato](lowcode-auto-multicandidate.md) — N=4, "genuinamente plausível"=MapperGuid distinto (dedup), shape do meta.json com candidates[].
+- [Timeout/concorrência + entrega síncrona](lowcode-timeout-concurrency-sync-delivery.md) — runner: timeout 15s cobre ciclo de vida inteiro (não só WaitForExitAsync) + semáforo Singleton (2) processo-wide; upload: RunAsync com teto 6s, fallback "processing", nunca 500.
