@@ -234,6 +234,21 @@ try
     builder.Services.AddScoped<XslGeneratorService>();
     builder.Services.AddScoped<AutoTransformationGeneratorService>();
 
+    // ✅ Diagnóstico de erro de validação via Ollama (LLM local) — Gap 2 do contrato
+    // docs/architecture/multi-candidato-e-diagnostico-ia-contrato.md. Não usa GeminiAIService
+    // (decomissionado, sem registro no DI — ver generation-services-unregistered-di.md).
+    builder.Services.Configure<OllamaOptions>(builder.Configuration.GetSection("Ollama"));
+    // ✅ Desliga o HttpClient.Timeout padrão (100s) do client tipado: o timeout real de
+    // diagnóstico é o nosso próprio CancellationTokenSource (Ollama:DiagnosisTimeoutSeconds,
+    // dentro de OllamaValidationDiagnosticService). Descoberto em teste manual: sem isso, o
+    // timeout de 100s do HttpClient dispara ANTES do nosso e lança TaskCanceledException/
+    // TimeoutException que o catch dedicado de timeout não reconhecia — caía no 500 genérico
+    // em vez do 504 esperado pelo contrato (Gap 2).
+    builder.Services.AddHttpClient<OllamaValidationDiagnosticService>(client =>
+    {
+        client.Timeout = Timeout.InfiniteTimeSpan;
+    });
+
     // Transformation Services (ML)
     builder.Services.AddScoped<TransformationLearningService>();
     builder.Services.AddScoped<PatternComparisonService>();
