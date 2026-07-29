@@ -46,6 +46,20 @@ public sealed class OllamaClient
     /// <summary>Gera texto (stream=false, temperature=0 p/ determinismo). "" em falha.</summary>
     public async Task<string> GenerateAsync(string prompt, CancellationToken ct = default)
     {
+        var (response, _) = await GenerateWithMetricsAsync(prompt, ct);
+        return response;
+    }
+
+    /// <summary>
+    /// Gera texto e devolve também as métricas nativas do Ollama (tokens/s, tamanho do
+    /// prompt, duração) — usado pelo job de métricas em lote (metrics-batch). Em falha
+    /// (Ollama fora do ar, timeout, etc.), devolve resposta "" e métricas zeradas — o
+    /// chamador decide como registrar o caso (nunca lança: resiliência do job em lote).
+    /// </summary>
+    public async Task<(string Response, OllamaGenerationMetrics Metrics)> GenerateWithMetricsAsync(
+        string prompt, CancellationToken ct = default)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         try
         {
             var payload = JsonSerializer.Serialize(new
@@ -61,13 +75,36 @@ public sealed class OllamaClient
             response.EnsureSuccessStatusCode();
 
             var body = await response.Content.ReadAsStringAsync(ct);
+            sw.Stop();
             using var doc = JsonDocument.Parse(body);
-            return doc.RootElement.TryGetProperty("response", out var r) ? r.GetString() ?? "" : "";
+            var texto = doc.RootElement.TryGetProperty("response", out var r) ? r.GetString() ?? "" : "";
+
+            long EvalCount() => doc.RootElement.TryGetProperty("eval_count", out var e) ? e.GetInt64() : 0;
+            long EvalDurationNs() => doc.RootElement.TryGetProperty("eval_duration", out var e) ? e.GetInt64() : 0;
+            long TotalDurationNs() => doc.RootElement.TryGetProperty("total_duration", out var e) ? e.GetInt64() : 0;
+
+            var evalCount = EvalCount();
+            var evalDurationNs = EvalDurationNs();
+            var totalDurationNs = TotalDurationNs();
+            var tokensPerSecond = evalDurationNs > 0 ? evalCount / (evalDurationNs / 1_000_000_000.0) : 0.0;
+            var durationSeconds = totalDurationNs > 0 ? totalDurationNs / 1_000_000_000.0 : sw.Elapsed.TotalSeconds;
+
+            return (texto, new OllamaGenerationMetrics(promptChars: prompt.Length, tokensPerSecond, durationSeconds,
+                Success: true));
         }
         catch (Exception ex)
         {
+            sw.Stop();
             _log($"[ollama] falha ao chamar {Url}/api/generate: {ex.Message}");
-            return "";
+            return ("", new OllamaGenerationMetrics(promptChars: prompt.Length, TokensPerSecond: 0,
+                DurationSeconds: sw.Elapsed.TotalSeconds, Success: false));
         }
     }
+}
+
+/// <summary>Métricas de UMA chamada de geração — insumo direto do log estruturado AiMetrics.</summary>
+public sealed record OllamaGenerationMetrics(
+    int promptChars, double TokensPerSecond, double DurationSeconds, bool Success)
+{
+    public int PromptChars => promptChars;
 }
