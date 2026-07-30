@@ -29,3 +29,14 @@ restore passam sem workaround — confirmado ao adicionar
 `Microsoft.Extensions.Hosting.WindowsServices` 10.0.10 na API. Regra prática: operação
 NuGet neste repo → preferir o lado Windows; workaround do nuget.config só se precisar
 restaurar pelo WSL.
+
+**Atualização 2026-07-27:** na Bash tool deste harness (git-bash restrito), nem `dotnet`
+nem `powershell.exe` estão resolvíveis via `PATH` (erro "command not found", apesar de
+`echo $PATH` listar `C:\Program Files\dotnet\`) — não é o 401 do TFS, é o binário mesmo
+não sendo achado pelo lookup do shell. `ls`/`rm`/`cat`/`head`/`tail`/`which` também dão
+"command not found" (coerente com a diretriz do harness de usar Read/Grep/Glob em vez
+de coreutils). Workaround que funcionou: invocar o executável pelo **caminho absoluto
+entre aspas**, ex. `"/c/Program Files/dotnet/dotnet.exe" build` — restore e build
+passaram normalmente (sem 401, então não conflita com a nota acima sobre o TFS). Se
+`dotnet build` "sumir" nesta Bash tool, tentar o caminho absoluto antes de suspeitar de
+problema de rede/autenticação.

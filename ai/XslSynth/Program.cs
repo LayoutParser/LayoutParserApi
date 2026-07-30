@@ -1,6 +1,7 @@
 using System.Xml.Linq;
 using XslSynth.Core;
 using XslSynth.Excel;
+using XslSynth.Metrics;
 using XslSynth.Model;
 using XslSynth.NtPipeline;
 using XslSynth.Synthesis;
@@ -21,8 +22,12 @@ using XslSynth.Synthesis;
 //                              → S1 do pipeline NT: delta de XSD por XPath (B5 P-1)
 //   dotnet run -- --pdf-smoke <nota-tecnica.pdf>
 //                              → S2 (smoke): viabilidade de extração/segmentação do PDF (B5 P-2)
+//   dotnet run -- --mode=metrics-batch [--dataset <jsonl>] [--model <nome>] [--fewshot-k <n>] [--limit <n>]
+//                              → job de métricas de IA em lote (item 1 do plano de produção):
+//                                RAG (TF-IDF) → Ollama → validação estrutural → Serilog Source=AiMetrics
 //
 // Arquitetura: docs/architecture/ia-xslt-synthesis.md · poc-excel-generator.md
+//              docs/architecture/plano-metricas-ia-servidor-producao.md (metrics-batch)
 // ─────────────────────────────────────────────────────────────────────────────
 
 void Log(string line) => Console.WriteLine(line);
@@ -31,6 +36,9 @@ Log("╔════════════════════════
 Log("║  XslSynth — síntese de XSLT guiada por verificador                 ║");
 Log("╚══════════════════════════════════════════════════════════════════╝");
 Log("");
+
+if (args.Any(a => a.StartsWith("--mode=metrics-batch", StringComparison.Ordinal)) || args.Contains("--metrics-batch"))
+    return await RunMetricsBatchAsync();
 
 if (args.Contains("--xsd-diff"))
     return RunXsdDiff();
@@ -739,6 +747,45 @@ string ResolveExportDir()
         dir = dir.Parent;
     }
     return Path.Combine(AppContext.BaseDirectory, "export");
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// Fluxo METRICS-BATCH: item 1 do plano de métricas de IA em produção
+// (docs/architecture/plano-metricas-ia-servidor-producao.md). Eleva o spike de
+// RAG de 1 caso (Python solto no scratchpad, 2026-07-29) a um job em LOTE contra
+// os 54 pares held-out reais, com métricas Serilog (Source=AiMetrics) — pensado
+// para rodar sozinho no servidor de produção por horas/dias (Task Scheduler,
+// fora do escopo desta tarefa — ver @lp-devops). Nenhuma etapa aqui é nova
+// arquitetura: reaproveita OllamaClient (estendido com métricas nativas) e o
+// mesmo princípio de resiliência do resto do projeto (1 caso falha → loga e
+// segue, nunca derruba o lote inteiro).
+// ══════════════════════════════════════════════════════════════════════════
+async Task<int> RunMetricsBatchAsync()
+{
+    var claudeTmp = Path.GetDirectoryName(ResolveExportDir())!; // …/.claude/tmp
+    var datasetPath = FindArgAfter("--dataset")
+        ?? Path.Combine(claudeTmp, "dataset-finetuning", "dataset_pairs_filtered_v2.jsonl");
+    var model = FindArgAfter("--model") ?? Environment.GetEnvironmentVariable("OLLAMA_MODEL") ?? "qwen2.5-coder:7b";
+    var fewShotK = int.TryParse(FindArgAfter("--fewshot-k"), out var k) ? k : 3;
+    var limit = int.TryParse(FindArgAfter("--limit"), out var lim) ? lim : (int?)null;
+
+    // Log compartilhado com a API quando o repo é encontrado (mesmo arquivo que o
+    // UnifiedLogReaderService já lê) — senão degrada para uma pasta Logs local ao lado do exe.
+    var repoRoot = new DirectoryInfo(claudeTmp).Parent; // …/.claude/tmp → …/.claude → raiz
+    var logDir = FindArgAfter("--log-dir")
+        ?? (repoRoot?.Parent is { } raiz && Directory.Exists(Path.Combine(raiz.FullName, "Logs"))
+            ? Path.Combine(raiz.FullName, "Logs")
+            : Path.Combine(AppContext.BaseDirectory, "Logs"));
+
+    Log("Modo      : METRICS-BATCH (RAG → Ollama → validação → Serilog Source=AiMetrics)");
+    Log($"Dataset   : {datasetPath}");
+    Log($"Modelo    : {model}");
+    Log($"Few-shot k: {fewShotK}");
+    Log($"Log dir   : {logDir}" + (limit is not null ? $"  ·  LIMITE de teste: {limit} caso(s)" : ""));
+    Log("");
+
+    var opts = new MetricsBatchOptions(datasetPath, model, fewShotK, limit, logDir, "layoutparserapi.log");
+    return await MetricsBatchRunner.RunAsync(opts, Log);
 }
 
 // ══════════════════════════════════════════════════════════════════════════

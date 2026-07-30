@@ -217,6 +217,57 @@ namespace LayoutParserApi.Services.Database
             return candidates.OrderByDescending(m => m.LastUpdateDate).FirstOrDefault();
         }
 
+        /// <summary>
+        /// Busca TODOS os mapeadores candidatos para um layoutGuid (restrito a ProjectId/PackageGuids),
+        /// ordenados pelos MESMOS critérios de prioridade de <see cref="GetBestMapperForLayoutGuidAsync"/>
+        /// (input match > target match > fallback por mais recente) — porém SEM colapsar para 1 único
+        /// resultado. Deduplica por MapperGuid (mantém a primeira ocorrência, que já é a de maior
+        /// prioridade), então "Count == 1" no retorno significa "não há candidato genuinamente
+        /// plausível além do de sempre" (ex.: múltiplas linhas do mesmo MapperGuid, só desempate de
+        /// recência) — não um novo mapper distinto.
+        /// Não introduz nenhum scoring novo: é a MESMA regra de <see cref="GetBestMapperForLayoutGuidAsync"/>,
+        /// só sem descartar os candidatos além do primeiro.
+        /// </summary>
+        public async Task<List<Mapper>> GetRankedMapperCandidatesForLayoutGuidAsync(string layoutGuid, int projectId, IReadOnlyCollection<string> allowedPackageGuids)
+        {
+            var candidates = await GetMappersByLayoutGuidForPackagesAsync(layoutGuid, projectId, allowedPackageGuids);
+            if (candidates.Count == 0)
+                return new List<Mapper>();
+
+            string Normalize(string guid)
+            {
+                if (string.IsNullOrWhiteSpace(guid)) return "";
+                var g = guid.Trim();
+                if (g.StartsWith("LAY_", StringComparison.OrdinalIgnoreCase)) g = g.Substring(4);
+                return g.Trim().ToLowerInvariant();
+            }
+
+            var wanted = Normalize(layoutGuid);
+
+            var inputMatches = candidates
+                .Where(m => Normalize(m.InputLayoutGuidFromXml ?? m.InputLayoutGuid ?? "") == wanted)
+                .OrderByDescending(m => m.LastUpdateDate);
+
+            var targetMatches = candidates
+                .Where(m => Normalize(m.TargetLayoutGuidFromXml ?? m.TargetLayoutGuid ?? "") == wanted)
+                .OrderByDescending(m => m.LastUpdateDate);
+
+            var fallback = candidates.OrderByDescending(m => m.LastUpdateDate);
+
+            // Mesma ordem de prioridade de GetBestMapperForLayoutGuidAsync: input > target > fallback.
+            // Dedup por MapperGuid mantendo a primeira ocorrência (maior prioridade).
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var ranked = new List<Mapper>();
+            foreach (var m in inputMatches.Concat(targetMatches).Concat(fallback))
+            {
+                var key = string.IsNullOrWhiteSpace(m.MapperGuid) ? $"__noguid_{m.Id}" : m.MapperGuid;
+                if (seen.Add(key))
+                    ranked.Add(m);
+            }
+
+            return ranked;
+        }
+
         private static string NormalizePackageGuid(string packageGuid)
         {
             if (string.IsNullOrWhiteSpace(packageGuid)) return "";

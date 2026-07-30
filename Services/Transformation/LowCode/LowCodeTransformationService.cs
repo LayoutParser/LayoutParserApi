@@ -14,6 +14,12 @@ namespace LayoutParserApi.Services.Transformation.LowCode
         private readonly LowCodeRunnerOptions _opt;
         private readonly IConfiguration _configuration;
 
+        // ✅ Registrado como Singleton no Program.cs → este semáforo vale para o PROCESSO INTEIRO da
+        // API, não só para as N invocações paralelas de um único documento (Task.WhenAll do
+        // multi-candidato). Se dois uploads diferentes chegarem ao mesmo tempo, ambos multi-candidato,
+        // o limite de concorrência do runner ainda é respeitado no total. Ver LowCode:MaxConcurrentRunners.
+        private readonly SemaphoreSlim _runnerSemaphore;
+
         public LowCodeTransformationService(
             ILogger<LowCodeTransformationService> logger,
             IOptions<LowCodeRunnerOptions> options,
@@ -22,6 +28,7 @@ namespace LayoutParserApi.Services.Transformation.LowCode
             _logger = logger;
             _opt = options.Value;
             _configuration = configuration;
+            _runnerSemaphore = new SemaphoreSlim(Math.Max(1, _opt.MaxConcurrentRunners));
         }
 
         public async Task<string> TransformAsync(
@@ -97,21 +104,65 @@ namespace LayoutParserApi.Services.Transformation.LowCode
             _logger.LogInformation("Executando transformação low-code: corr={CorrelationId} mapperId={MapperId}, mapperName={MapperName}, runnerLog={RunnerLogFile}",
                 correlationId, mapperId, mapperName, runnerLogFile);
 
-            using var p = Process.Start(psi);
-            if (p == null)
-                throw new Exception("Falha ao iniciar processo do runner low-code");
+            var timeoutSeconds = _opt.RunnerTimeoutSeconds > 0 ? _opt.RunnerTimeoutSeconds : 15;
 
-            var stdout = await p.StandardOutput.ReadToEndAsync();
-            var stderr = await p.StandardError.ReadToEndAsync();
-            await p.WaitForExitAsync();
+            string stdout;
+            string stderr;
+            int exitCode;
 
-            if (p.ExitCode != 0)
+            // ✅ Limite de concorrência do runner (processo inteiro da API — ver comentário no campo).
+            await _runnerSemaphore.WaitAsync();
+            try
+            {
+                using var p = Process.Start(psi);
+                if (p == null)
+                    throw new Exception("Falha ao iniciar processo do runner low-code");
+
+                var stdoutTask = p.StandardOutput.ReadToEndAsync();
+                var stderrTask = p.StandardError.ReadToEndAsync();
+                var exitTask = p.WaitForExitAsync();
+
+                // ✅ Timeout cobre o ciclo de vida INTEIRO do processo (leitura de stdout/stderr + exit),
+                // não só a chamada a WaitForExitAsync isoladamente: se só a espera de exit tivesse
+                // CancellationToken, uma leitura de stream travada (processo não fecha os handles)
+                // ainda escaparia do timeout — Task.WhenAll(stdout, stderr, exit) só resolve quando o
+                // processo de fato morre/fecha os pipes, então corremos essa combinação contra um
+                // Task.Delay simples e, se o delay vencer, matamos o processo nós mesmos.
+                var allTask = Task.WhenAll(stdoutTask, stderrTask, exitTask);
+                var winner = await Task.WhenAny(allTask, Task.Delay(TimeSpan.FromSeconds(timeoutSeconds)));
+
+                if (winner != allTask)
+                {
+                    _logger.LogError(
+                        "Runner low-code excedeu o timeout de {TimeoutSeconds}s (corr={CorrelationId}, mapperId={MapperId}, mapperName={MapperName}) — matando processo",
+                        timeoutSeconds, correlationId, mapperId, mapperName);
+                    try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch (Exception killEx) { _logger.LogWarning(killEx, "Falha ao matar processo do runner low-code após timeout (corr={CorrelationId})", correlationId); }
+
+                    // Best effort: dá uma janela curta pro kill liberar os streams antes de desistir,
+                    // só para não deixar as Tasks de leitura penduradas sem observação.
+                    try { await Task.WhenAny(allTask, Task.Delay(TimeSpan.FromSeconds(2))); } catch { }
+
+                    throw new TimeoutException($"Runner low-code excedeu o timeout de {timeoutSeconds}s (corr={correlationId}, mapperId={mapperId}, mapperName={mapperName})");
+                }
+
+                // allTask já concluída — propaga eventual exceção real de leitura/exit, se houver.
+                await allTask;
+                stdout = stdoutTask.Result;
+                stderr = stderrTask.Result;
+                exitCode = p.ExitCode;
+            }
+            finally
+            {
+                _runnerSemaphore.Release();
+            }
+
+            if (exitCode != 0)
             {
                 string runnerLog = "";
                 try { if (File.Exists(runnerLogFile)) runnerLog = await File.ReadAllTextAsync(runnerLogFile, Encoding.UTF8); } catch { }
                 _logger.LogError("Runner low-code falhou (corr={CorrelationId}, exit={ExitCode}). stderr={Stderr}\nrunnerLog:\n{RunnerLog}",
-                    correlationId, p.ExitCode, stderr, runnerLog);
-                throw new Exception($"Low-code runner falhou (exit={p.ExitCode}): {stderr}");
+                    correlationId, exitCode, stderr, runnerLog);
+                throw new Exception($"Low-code runner falhou (exit={exitCode}): {stderr}");
             }
 
             if (!File.Exists(outputPath))

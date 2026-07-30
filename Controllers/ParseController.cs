@@ -9,6 +9,7 @@ using LayoutParserApi.Services.Transformation.LowCode;
 using LayoutParserApi.Services.Database;
 
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 
 namespace LayoutParserApi.Controllers
 {
@@ -23,6 +24,7 @@ namespace LayoutParserApi.Controllers
         private readonly LayoutLearningService _learningService;
         private readonly IConfiguration _configuration;
         private readonly LowCodeAutoTransformationService _lowCodeAuto;
+        private readonly LowCodeRunnerOptions _lowCodeOpt;
 
         public ParseController(
             ILayoutParserService parserService,
@@ -31,7 +33,8 @@ namespace LayoutParserApi.Controllers
             FileStorageService fileStorage,
             LayoutLearningService learningService,
             IConfiguration configuration,
-            LowCodeAutoTransformationService lowCodeAuto)
+            LowCodeAutoTransformationService lowCodeAuto,
+            IOptions<LowCodeRunnerOptions> lowCodeOptions)
         {
             _parserService = parserService;
             _logger = logger;
@@ -40,6 +43,7 @@ namespace LayoutParserApi.Controllers
             _learningService = learningService;
             _configuration = configuration;
             _lowCodeAuto = lowCodeAuto;
+            _lowCodeOpt = lowCodeOptions.Value;
         }
 
         [ServiceFilter(typeof(AuditActionFilter))]
@@ -128,25 +132,61 @@ namespace LayoutParserApi.Controllers
                 if (expectedLineLength.HasValue)
                     lineValidations = _parserService.CalculateLineValidations(flattenedLayout, expectedLineLength.Value);
 
-                // ✅ Transformação low-code em background (aprendizado contínuo)
-                // Não bloquear a resposta do usuário.
+                // ✅ Transformação low-code: entrega SÍNCRONA no response quando possível, com teto de
+                // tempo (LowCode:SyncDeliveryTimeoutSeconds); se estourar, cai para processamento em
+                // background (o trabalho já em andamento NÃO é perdido — a persistência em disco
+                // acontece dentro da mesma chamada, independente de o controller continuar esperando).
+                // Decisão de arquitetura (Aria, 2026-07-28): o parse do documento é a resposta
+                // principal e NUNCA pode ser bloqueado além do teto nem falhar por causa deste pathway.
+                object? transformations = null;
+                var transformationsStatus = "not_applicable";
                 try
                 {
                     if (!string.IsNullOrWhiteSpace(flattenedLayout.LayoutGuid) &&
                         !string.IsNullOrWhiteSpace(result.RawText) &&
                         detectedType == "mqseries")
                     {
-                        _ = _lowCodeAuto.RunInBackgroundAsync(
+                        var syncTimeoutSeconds = _lowCodeOpt.SyncDeliveryTimeoutSeconds > 0 ? _lowCodeOpt.SyncDeliveryTimeoutSeconds : 6;
+
+                        var transformTask = _lowCodeAuto.RunAsync(
                             flattenedLayout.LayoutGuid,
                             flattenedLayout.Name,
                             result.RawText,
                             detectedType,
                             txtFile.FileName);
+
+                        var winner = await Task.WhenAny(transformTask, Task.Delay(TimeSpan.FromSeconds(syncTimeoutSeconds)));
+
+                        if (winner == transformTask)
+                        {
+                            // Já concluiu dentro do teto — observamos o resultado (RunAsync já trata
+                            // falha de candidato individual internamente, não deve lançar por isso).
+                            var autoResult = await transformTask;
+                            transformationsStatus = autoResult.Applicable ? "completed" : "not_applicable";
+                            if (autoResult.Applicable)
+                                transformations = autoResult.Candidates;
+                        }
+                        else
+                        {
+                            // Estourou o teto síncrono: resposta segue sem esperar mais, processamento
+                            // continua em background (persistência em disco já ocorre dentro de
+                            // RunAsync). Só observamos exceção aqui pra não gerar unobserved task.
+                            transformationsStatus = "processing";
+                            _ = transformTask.ContinueWith(t =>
+                            {
+                                if (t.IsFaulted)
+                                    _logger.LogError(t.Exception, "Falha no processamento low-code em background (após estouro do teto síncrono de {SyncTimeoutSeconds}s)", syncTimeoutSeconds);
+                            }, TaskScheduler.Default);
+                        }
                     }
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Falha ao iniciar transformação low-code em background");
+                    // ✅ Falha estrutural do pathway de transformação (ex.: banco fora do ar ao buscar
+                    // mapeadores) NUNCA pode derrubar o parse principal — o parse TXT->estrutura já
+                    // sucedeu e é a resposta que importa.
+                    _logger.LogWarning(ex, "Falha ao processar transformações low-code (parse principal não afetado)");
+                    transformationsStatus = "error";
                 }
 
                 return Ok(new
@@ -160,7 +200,9 @@ namespace LayoutParserApi.Controllers
                     documentStructure = documentStructure,
                     lineValidations = lineValidations, // Validações e posições calculadas (apenas para layouts configurados)
                     validationErrors = result.ValidationErrors, // ✅ Erros de validação de tamanho de linha
-                    validationWarning = !string.IsNullOrEmpty(result.ErrorMessage) ? result.ErrorMessage : null // ✅ Aviso se houver erros
+                    validationWarning = !string.IsNullOrEmpty(result.ErrorMessage) ? result.ErrorMessage : null, // ✅ Aviso se houver erros
+                    transformations, // array de candidatos low-code (mapper/target/xml/sucesso-ou-erro) quando concluído a tempo
+                    transformationsStatus // "not_applicable" | "completed" | "processing" | "error"
                 });
             }
             catch (Exception ex)
