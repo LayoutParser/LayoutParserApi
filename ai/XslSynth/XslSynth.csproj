@@ -25,6 +25,11 @@
          legado/paralelo do mesmo autor, versionamento "-custom-N" incomum); o ID canônico
          atual no NuGet é "PdfPig". -->
     <PackageReference Include="PdfPig" Version="0.1.15" />
+    <!-- metrics-batch (Serilog Source=AiMetrics, série histórica p/ o job no servidor) —
+         mesma versão major usada pela API (LayoutParserApi.csproj), sem acoplar os projetos. -->
+    <PackageReference Include="Serilog" Version="4.2.0" />
+    <PackageReference Include="Serilog.Sinks.Console" Version="6.0.0" />
+    <PackageReference Include="Serilog.Sinks.File" Version="6.0.0" />
   </ItemGroup>
 
 </Project>
