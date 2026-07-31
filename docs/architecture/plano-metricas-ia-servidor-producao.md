@@ -122,48 +122,156 @@ o log e sumariza) é suficiente — não precisa de Grafana/Kibana pra este esco
 
 ---
 
-## 6. Manual de execução (runbook para @lp-devops)
+## 6. Manual de execução (executado por @lp-devops em 2026-07-30) — ARQUITETURA FINAL
 
-### Pré-requisitos no servidor (`WINSRV2022-LIB`, Windows Server 2022)
+> **Simplificação em relação ao desenho original desta seção:** o job NÃO roda no Windows Server
+> via Task Scheduler com hop de rede até a VM. A VM Ubuntu (`172.25.32.31`, `UBU220405RUN`) roda
+> no **mesmo hardware físico** do `WINSRV2022-LIB` (sem isolamento real de CPU/RAM, só overhead de
+> virtualização) — não há ganho nenhum em cruzar essa fronteira. O job inteiro (dotnet + Ollama +
+> agendamento) roda **direto na VM Linux, via `cron`**. Já está em produção real, não é mais plano.
 
-1. Confirmar que a VM Ubuntu (`172.25.32.30:11434`) está acessível a partir do Windows Server —
-   já era pré-requisito da topologia de produção (ver `deploy-production-topology`).
-2. Puxar o modelo escolhido no Ollama da VM: `ollama pull qwen2.5-coder:7b` (e opcionalmente
-   `14b`/`32b` pro teste comparativo).
-3. Publicar/copiar o `ai/XslSynth` (com as extensões de métricas, ver seção 7) pro servidor —
-   é um projeto CLI, não precisa estar dentro do deploy da API.
+### Estado provisionado na VM (172.25.32.31)
 
-### Agendamento (Windows Task Scheduler)
+- **.NET SDK 10.0.302** em `~/dotnet` (user-space, sem sudo disponível na VM).
+- **Ollama `qwen2.5-coder:7b`** (4.7GB) — primeira tentativa de pull deixou um manifesto
+  corrompido (`ollama list`/`api/tags` vazios, `api/generate` com erro de parse JSON); corrigido
+  com `ollama rm qwen2.5-coder:7b && ollama pull qwen2.5-coder:7b` (autorizado explicitamente pelo
+  usuário, já que é ação potencialmente destrutiva em VM tratada como produção).
+- **App publicado** em `~/layoutparser-ai-metrics/` (`dotnet publish -c Release -r linux-x64
+  --self-contained false`) + dataset `dataset_pairs_filtered_v2.jsonl` (54 pares) copiado junto.
+- **Scripts** em `~/layoutparser-ai-metrics/`: `run-metrics-batch.sh` (roda o dataset **completo**,
+  sem `--limit`), `enable-metrics-job.sh`, `disable-metrics-job.sh` (idempotentes, testados em
+  ciclo disable→enable→enable sem duplicar entrada no crontab).
 
-```powershell
-# Criar tarefa agendada: só roda fins de semana (sábado 00:00 até domingo 23:59)
-$action = New-ScheduledTaskAction -Execute "dotnet" `
-  -Argument "C:\ai-metrics\XslSynth.dll --mode=metrics-batch --dataset=dataset_pairs_filtered_v2.jsonl"
-$trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Saturday -At 00:00
-Register-ScheduledTask -TaskName "LayoutParser-AiMetrics" -Action $action -Trigger $trigger `
-  -Description "Job de metricas de geracao de mapeadores via IA (roda so fins de semana)"
+### Agendamento (cron, já ativo)
 
-# Parar manualmente a qualquer momento:
-Stop-ScheduledTask -TaskName "LayoutParser-AiMetrics"
+```bash
+# Entrada ativa no crontab do usuário elson na VM (todo sábado 00:00):
+0 0 * * 6 /home/elson/layoutparser-ai-metrics/run-metrics-batch.sh # layoutparser-ai-metrics-batch
 
-# Rodar manualmente fora do horario agendado (ex. dia sem uso do servidor):
-Start-ScheduledTask -TaskName "LayoutParser-AiMetrics"
+# Desligar temporariamente (ex. servidor precisa da CPU pra outra coisa):
+ssh -i "$env:USERPROFILE\.ssh\layoutparser_automation" elson@172.25.32.31 \
+  "~/layoutparser-ai-metrics/disable-metrics-job.sh"
+
+# Religar:
+ssh -i "$env:USERPROFILE\.ssh\layoutparser_automation" elson@172.25.32.31 \
+  "~/layoutparser-ai-metrics/enable-metrics-job.sh"
+
+# Rodar manualmente fora do horário agendado (teste ad-hoc, dia sem uso do servidor):
+ssh -i "$env:USERPROFILE\.ssh\layoutparser_automation" elson@172.25.32.31 \
+  "~/layoutparser-ai-metrics/run-metrics-batch.sh"
 ```
 
-Isso dá exatamente o controle que você descreveu: liga/desliga quando quiser, roda sozinho nos
-fins de semana por padrão, sem depender de alguém lembrar de iniciar manualmente.
+### Teste real de validação (2026-07-30, `--limit 2`, 2/2 sucesso)
+
+| Caso | Tok/s | Duração | TagOverlap | TextSimilarity |
+|---|---|---|---|---|
+| `CTe200_CancCTe_NeogridToSefaz` | 3.685 | 277.8s | 1.0 | 0.8899 |
+| `CTe200_consSitCTe_NeogridToSefaz` | 3.749 | 197.5s | 0.7778 | 0.9011 |
+
+Throughput real na VM (~3.7 tok/s) é quase 3× o medido no notebook durante o spike (~1.3 tok/s) —
+projeção para o dataset completo (54 pares): **~3-4h**, cabe folgado na janela de fim de semana.
 
 ### Verificação de progresso
 
-```powershell
-# Ver se está rodando agora
-Get-ScheduledTask -TaskName "LayoutParser-AiMetrics" | Get-ScheduledTaskInfo
-
-# Ver métricas acumuladas (filtrar log unificado por Source=AiMetrics)
-# via endpoint GET /api/logs já implementado nesta sessão, ou leitura direta do arquivo
+```bash
+# Log estruturado, filtrar por Source=AiMetrics
+ssh -i "$env:USERPROFILE\.ssh\layoutparser_automation" elson@172.25.32.31 \
+  "grep 'Src:AiMetrics' ~/layoutparser-ai-metrics/Logs/layoutparserapi.log"
 ```
 
 ---
+
+## 7.5 Orquestração Job 1 → Job 2 (proposta, @lp-devops, 2026-07-30) — BLOQUEADA
+
+> Pedido: encadear **Job 1 (metrics-batch)** → **Job 2 (Cypress batch contra Pollux)** no mesmo
+> cron/janela de fim de semana, sem a API orquestrar nada (ela só expõe os endpoints do Gap 3,
+> passivamente). Investigação feita; desenho abaixo. **Não implementado ainda — ver bloqueios.**
+
+### Decisão de arquitetura: reaproveitar o cron da VM, não GitHub Actions
+
+O Job 1 já roda via `cron` **direto na VM Ubuntu `172.25.32.31`** (seção 6, já em produção) —
+não via Task Scheduler nem GitHub Actions. Não há motivo para o Job 2 usar outro orquestrador: o
+runner `dev-local` do GitHub Actions é o **Windows Server** (`WINSRV2022-LIB`, ver `ci-dev.yml`),
+que só existe para build/deploy da API — usá-lo aqui reintroduziria o hop de rede entre VM e
+Windows que a seção 6 já descartou por não ter ganho nenhum (mesmo hardware físico). O orquestrador
+continua sendo **o mesmo `cron` de usuário na VM**, com um único script "wrapper" substituindo a
+entrada atual — mantém a API 100% passiva, como exigido.
+
+### Desenho proposto: um único ponto de entrada sequencial
+
+```bash
+# run-metrics-then-cypress.sh (proposto — NÃO criado/deployado ainda)
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Job 1 — síncrono. Se falhar (dataset corrompido, Ollama fora do ar), aborta
+# ANTES do Job 2 (fail-fast: não faz sentido validar contra Pollux sem geração nova).
+~/layoutparser-ai-metrics/run-metrics-batch.sh
+
+# Job 2 — só roda se o Job 1 terminou com sucesso (set -e já garante isso acima).
+~/layoutparser-cypress/run-cypress-batch.sh   # a criar por @lp-qa (Cass)
+```
+
+A entrada única no crontab (sábado 00:00) passaria a apontar para este wrapper em vez de
+`run-metrics-batch.sh` diretamente — sequenciamento por bloqueio simples (o Job 2 só começa
+quando o processo do Job 1 termina), sem precisar de lock file/polling.
+
+### Bloqueios (por isso NÃO implementado agora)
+
+1. **Job 2 ("Cypress batch") não existe ainda.** `LayoutParserCypress` hoje
+   (`C:\Users\elson.lopes\source\repos\LayoutParserCypress`, commit `24b085c`) tem **1 spec fixa**
+   (`cypress/e2e/nfe-emissao-normal.cy.js`) contra **1 fixture fixa** (`nfe-emissao-normal.gabarito.xml`
+   / `.mq_series.txt`) — não um mecanismo que itera sobre N candidatos gerados pelo Job 1. Isso é
+   trabalho de `@lp-qa`/Cass, já mapeado na seção 7, item 3 (spec parametrizada por lista de XMLs).
+   Sem isso, não há `run-cypress-batch.sh` pra chamar.
+2. **Stack Cypress não está provisionada na VM.** O provisionamento documentado na seção 6 cobre
+   `.NET SDK` + `Ollama` — nada de Node/Cypress/Chrome-Electron/`xvfb`/`libgtk`/`libnss3`. Precisa
+   verificar se a VM (`UBU220405RUN`, mesmo host físico do `WINSRV2022-LIB`) tem essas dependências
+   de sistema antes de qualquer `npm install`.
+3. **Preciso confirmar se `run-metrics-batch.sh` é síncrono de fato.** O wrapper acima assume que
+   o script bloqueia até o dataset completo terminar (consistente com a estimativa de "~3-4h" da
+   seção 6) — não confirmei o conteúdo do script (não versionado neste repo, só existe na VM).
+   Se ele se auto-background (`nohup ... &`), o wrapper precisa de outro mecanismo (lock file/poll)
+   em vez de sequenciamento por bloqueio simples.
+4. **Sem acesso de execução à VM nesta sessão.** O deploy anterior (seção 6) foi feito via SSH
+   com a chave `layoutparser_automation` — esta sessão não tem esse acesso; qualquer aplicação do
+   wrapper/crontab exige rodar os comandos manualmente (ou em sessão com a chave disponível),
+   e é ação em produção — precisa confirmação explícita antes de tocar no crontab ativo.
+5. **`LayoutParserCypress` não tem remoto/push ainda** (ver
+   `.claude/agent-memory/lp-devops/layoutparser-cypress-bootstrap.md`) — mesmo depois do Job 2
+   existir, o deploy na VM seria via `git clone`/`scp` local, não `git pull` de um remoto público.
+
+### Próximo passo real
+
+Dispatch a `@lp-qa` (Cass, no repo `LayoutParserCypress`) para o item 3 da seção 7 primeiro
+(spec batch parametrizada). Só depois disso faz sentido eu (devops) provisionar Node/Cypress na
+VM e aplicar o wrapper acima ao crontab — nesta ordem, não em paralelo.
+
+### ⚠️ Revisão de arquitetura (@lp-architect, 2026-07-30) — 3 bloqueios NOVOS
+
+Especificação completa do Job 2 (contratos de entrada/saída, provisionamento, PASS/FAIL) foi
+consolidada em **[`handoff-job2-cypress-batch.md`](handoff-job2-cypress-batch.md)**. Ela refina esta
+seção e acrescenta bloqueios que **invalidam parte do desenho acima**:
+
+6. **O Job 1 não persiste candidato nenhum.** `MetricsBatchRunner` gera o XSLT, valida em memória e
+   **descarta** — não há run dir, manifesto nem arquivo de saída. Não existe "N candidatos gerados
+   pelo Job 1" em disco para o Job 2 consumir. → `@lp-parser-llm` (Lia).
+7. **O artefato do Job 1 é um XSLT; o Pollux consome um XML de NF-e.** Falta o elo
+   `TXT de instância → ROOT → aplicar XSLT → XML`. Só **4 dos 54** pares são elegíveis ao Pollux
+   (`NFe…EnvioNFe…`); os demais são retornos SEFAZ→ERP, consultas, CT-e/MDF-e. E o único TXT de
+   instância disponível **não casa** com os TCLs do dataset. O Job 2 nasce com N=1–4, não 54.
+8. **O painel do Gap 3 está desconectado do Job 1** (bug pré-existente, não introduzido aqui): a API
+   lê `C:\inetpub\wwwroot\layoutparser\api\logs\` (Windows) e o Job 1 escreve
+   `~/layoutparser-ai-metrics/Logs/` (VM Linux) — arquivos distintos, em máquinas distintas. As linhas
+   `Geracao concluida.` nunca chegam ao leitor, então `GET /api/ai-metrics/generations` retorna vazio e
+   o merge do `POST /cypress-result` não casa com nada. Solução recomendada: endpoint de ingestão
+   de gerações na API (simétrico ao `cypress-result`). → `@lp-backend-dev` (Dex).
+
+**Sobre o bloqueio 3 desta seção (`run-metrics-batch.sh` é síncrono?):** continua **em aberto** —
+confirmado que o script **não existe neste repositório**, só na VM (a string aparece unicamente neste
+documento). Comandos de evidência a rodar na VM em §7 do handoff. Risco correlato: os scripts de
+produção da VM não são versionados — a VM é a única cópia.
 
 ## 7. O que falta implementar (próximo passo, dispatch)
 
