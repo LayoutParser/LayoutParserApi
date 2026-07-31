@@ -5,13 +5,29 @@ using XslSynth.Synthesis;
 namespace XslSynth.Metrics;
 
 /// <summary>Opções do modo <c>--mode=metrics-batch</c> (CLI args já resolvidos pelo Program.cs).</summary>
+/// <param name="RunDirectory">Diretório do run (contrato Job 1 → Job 2). Null ⇒ não publica
+/// artefatos (modo legado: só Serilog). Ver docs/architecture/handoff-job2-cypress-batch.md §2.</param>
+/// <param name="RunId">Identificador do run; o wrapper da VM passa o dele para eliminar a
+/// corrida de "qual run é o mais recente" entre os dois jobs.</param>
+/// <param name="InstancesDirectory">Diretório com TXT de instância REAIS. Sem ele nenhum
+/// candidato submissível é produzido — e isso é registrado, não contornado com dado sintético.</param>
+/// <param name="NfeXsdPath">XSD do leiaute NF-e para preencher <c>xsdValid</c>. Null ⇒ campo null.</param>
+/// <param name="DryRun">Usa o XSLT GABARITO do próprio dataset como candidato, sem chamar o
+/// LLM. Serve para exercitar o pipeline de artefatos (run dir, manifesto, XML, elegibilidade)
+/// sem gastar horas de inferência — NUNCA para medir o modelo: o manifesto sai com
+/// <c>model=dry-run(gabarito)</c> justamente para o resultado ser inconfundível.</param>
 public sealed record MetricsBatchOptions(
-    string DatasetPath, string Model, int FewShotK, int? Limit, string LogDirectory, string LogFileName);
+    string DatasetPath, string Model, int FewShotK, int? Limit, string LogDirectory, string LogFileName,
+    string? RunDirectory = null, string? RunId = null, string? InstancesDirectory = null,
+    string? NfeXsdPath = null, bool DryRun = false);
 
 /// <summary>Um resultado individual do lote (para o resumo agregado ao final).</summary>
+/// <param name="Candidato">XSLT gerado neste caso (null quando não houve saída utilizável) —
+/// insumo do run dir do Job 2, não entra em nenhuma métrica.</param>
 internal sealed record CaseResult(
     string Layout, bool Sucesso, double TokensPerSecond, double DurationSeconds,
-    double FewShotSimilarity, double TagOverlapRatio, double TextSimilarityRatio, string? Erro);
+    double FewShotSimilarity, double TagOverlapRatio, double TextSimilarityRatio, string? Erro,
+    string? Candidato = null);
 
 /// <summary>
 /// Item 1 do plano de métricas de IA em produção (docs/architecture/plano-metricas-ia-servidor-producao.md):
@@ -24,11 +40,31 @@ internal sealed record CaseResult(
 /// <see cref="OutputValidator"/>) → loga → segue para o próximo MESMO se este caso falhar
 /// (resiliência: um timeout/erro de Ollama não pode derrubar o lote inteiro rodando sozinho
 /// no servidor por dias).
+///
+/// Ao final, quando <see cref="MetricsBatchOptions.RunDirectory"/> está configurado, publica
+/// o RUN DIR consumido pelo Job 2 (suíte Cypress em modo batch): os XMLs submissíveis em
+/// <c>candidates/</c> e o <c>manifest.json</c> por último, em commit atômico. Especificação:
+/// docs/architecture/handoff-job2-cypress-batch.md §2.
 /// </summary>
 public static class MetricsBatchRunner
 {
     public static async Task<int> RunAsync(MetricsBatchOptions opts, Action<string> log, CancellationToken ct = default)
     {
+        var iniciadoEm = DateTime.UtcNow;
+
+        // ── Guarda de ambiente: recusa rodar como root no Linux ───────────────────────
+        // Rodar como root cria logs e artefatos com dono root:root. A rodada agendada (que
+        // roda como usuário comum) then falha ao escrever — e o sink de arquivo do Serilog
+        // ENGOLE erro de escrita por padrão: a rodada gastaria ~3,6 h sem gravar uma linha e
+        // sem erro visível, detectável só dias depois pela ausência de dado no painel.
+        // Barato de checar aqui, antes de qualquer escrita (inclusive a do próprio logger).
+        if (OperatingSystem.IsLinux() && Environment.IsPrivilegedProcess)
+        {
+            log("❌ Recusando rodar como root: os artefatos nasceriam root:root e a rodada agendada "
+                + "(usuário comum) falharia em SILÊNCIO ao escrever. Rode como o mesmo usuário do cron.");
+            return 3;
+        }
+
         if (!File.Exists(opts.DatasetPath))
         {
             log($"❌ Dataset não encontrado: {opts.DatasetPath}");
@@ -65,22 +101,40 @@ public static class MetricsBatchRunner
             }
 
             var index = DatasetFewShotIndex.Build(pares);
-            var client = new OllamaClient(log) { }; // Model/Url via env; sobrescreve Model abaixo
-            var modelo = opts.Model;
+            // O modelo vai por CONSTRUTOR: OllamaClient.Model é somente-leitura e é ele que
+            // entra no payload de /api/generate. Antes o --model só chegava ao log — o Ollama
+            // gerava com o do env e a série histórica registrava um modelo que não foi usado.
+            var client = new OllamaClient(log, model: opts.Model);
+            var modelo = opts.DryRun ? "dry-run(gabarito)" : client.Model;
 
-            if (!await client.IsReachableAsync(ct))
+            if (!opts.DryRun && !await client.IsReachableAsync(ct))
             {
                 log($"❌ Ollama indisponível em {client.Url} — job de métricas não pode rodar (sem fallback: "
                     + "este modo EXISTE para medir o LLM real, um mock não produziria dado honesto).");
                 return 1;
             }
+            if (opts.DryRun)
+                log("⚠️  DRY-RUN: o candidato de cada caso é o XSLT GABARITO do dataset, não a saída do LLM. "
+                    + "Serve para exercitar o run dir/manifesto — NÃO é medição do modelo.");
 
             var casos = opts.Limit is { } lim && lim > 0 ? pares.Take(lim).ToList() : pares;
             log($"[metrics-batch] modelo={modelo} · few-shot k={opts.FewShotK} · casos nesta rodada={casos.Count}"
+                + $" · timeout/caso={client.Timeout.TotalMinutes:F0} min"
                 + (opts.Limit is not null ? $" (LIMITADO de {pares.Count} — teste/validação, não rodada completa)" : ""));
+
+            // ── Contrato Job 1 → Job 2: run dir + fábrica de XML submissível ──────────
+            var writer = opts.RunDirectory is null ? null
+                : new RunArtifactWriter(opts.RunDirectory, opts.RunId ?? RunArtifactWriter.NewRunId(iniciadoEm), log);
+            var factory = new CandidateXmlFactory(opts.InstancesDirectory, opts.NfeXsdPath, log);
+            if (writer is null)
+                log("[metrics-batch] run dir NÃO configurado (--run-dir/LP_METRICS_RUN_DIR ausente) — "
+                    + "nenhum artefato para o Job 2 será publicado nesta rodada.");
+            else
+                log($"[metrics-batch] run dir: {writer.RunDirectory} (runId={writer.RunId}) · {factory.DescribeSources()}");
             log("");
 
             var resultados = new List<CaseResult>();
+            var candidatos = new List<ManifestCandidate>();
             var n = 0;
             foreach (var caso in casos)
             {
@@ -90,9 +144,12 @@ public static class MetricsBatchRunner
 
                 // ── Resiliência: QUALQUER exceção neste caso é capturada e logada como
                 // falha DAQUELE caso — o lote inteiro continua para o próximo. ─────────
+                CaseResult resultado;
                 try
                 {
-                    var resultado = await RunCaseAsync(caso, index, client, modelo, opts.FewShotK, log, ct);
+                    resultado = opts.DryRun
+                        ? new CaseResult(caso.Id, true, 0, 0, 0, 1, 1, null, caso.OutputXslt)
+                        : await RunCaseAsync(caso, index, client, modelo, opts.FewShotK, log, ct);
                     resultados.Add(resultado);
                 }
                 catch (Exception ex)
@@ -101,10 +158,46 @@ public static class MetricsBatchRunner
                     LogCaso(caso.Id, modelo, sucesso: false, tokensPorSegundo: 0, promptChars: 0,
                         duracaoSegundos: 0, fewShotSimilarity: 0, tagOverlap: 0, textSim: 0, xsdValido: null);
                     resultados.Add(new CaseResult(caso.Id, false, 0, 0, 0, 0, 0, ex.Message));
+                    continue;
+                }
+
+                // ── Publicação do candidato (XML primeiro; manifesto só no fim) ────────
+                // Falha aqui NUNCA derruba o lote: o job de métricas continua valendo
+                // mesmo que nenhum candidato vire artefato submissível.
+                if (writer is not null && resultado.Candidato is not null)
+                {
+                    try
+                    {
+                        var c = PublicaCandidato(caso, resultado.Candidato, factory, writer, log);
+                        if (c is not null) candidatos.Add(c);
+                    }
+                    catch (Exception ex)
+                    {
+                        log($"   [run-dir] falha ao materializar candidato (lote SEGUE): {ex.Message}");
+                    }
                 }
             }
 
             LogResumo(resultados, modelo);
+
+            // ── COMMIT ATÔMICO: manifesto por último. Se o processo morrer antes daqui,
+            // o Job 2 não encontra manifesto e não roda — que é exatamente o desejado. ──
+            if (writer is not null)
+            {
+                var manifesto = new RunManifest
+                {
+                    SchemaVersion = 1,
+                    RunId = writer.RunId,
+                    StartedAt = RunArtifactWriter.Iso(iniciadoEm),
+                    FinishedAt = RunArtifactWriter.Iso(DateTime.UtcNow),
+                    Model = modelo,
+                    TotalCases = casos.Count,
+                    Candidates = candidatos
+                };
+                writer.TryCommit(manifesto);
+                LogResumoCandidatos(candidatos, casos.Count, log);
+            }
+
             return resultados.Any(r => r.Sucesso) ? 0 : 1;
         }
         finally
@@ -128,12 +221,18 @@ public static class MetricsBatchRunner
 
         if (!metrics.Success || string.IsNullOrWhiteSpace(respostaBruta))
         {
-            log("   ❌ Ollama não retornou saída utilizável para este caso.");
+            // Timeout ≠ modelo sem resposta: o primeiro diz que o teto é curto para ESTE
+            // prompt, o segundo é falha real. Confundir os dois vira "o modelo falhou" no
+            // painel e distorce a comparação entre modelos.
+            var erro = metrics.TimedOut
+                ? $"timeout ({metrics.DurationSeconds:F0}s) — caso NÃO concluiu, não é falha de qualidade do modelo"
+                : "Ollama sem resposta utilizável";
+            log($"   ❌ {erro}");
             LogCaso(caso.Id, modelo, sucesso: false, tokensPorSegundo: metrics.TokensPerSecond,
                 promptChars: metrics.PromptChars, duracaoSegundos: metrics.DurationSeconds,
                 fewShotSimilarity: similaridadeMedia, tagOverlap: 0, textSim: 0, xsdValido: null);
             return new CaseResult(caso.Id, false, metrics.TokensPerSecond, metrics.DurationSeconds,
-                similaridadeMedia, 0, 0, "Ollama sem resposta utilizável");
+                similaridadeMedia, 0, 0, erro);
         }
 
         var candidato = ExtractXml(respostaBruta);
@@ -149,7 +248,71 @@ public static class MetricsBatchRunner
             textSim: validacao.TextSimilarityRatio, xsdValido: validacao.XsdValid);
 
         return new CaseResult(caso.Id, true, metrics.TokensPerSecond, metrics.DurationSeconds,
-            similaridadeMedia, validacao.TagOverlapRatio, validacao.TextSimilarityRatio, null);
+            similaridadeMedia, validacao.TagOverlapRatio, validacao.TextSimilarityRatio, null, candidato);
+    }
+
+    /// <summary>
+    /// Materializa UM candidato no run dir: aplica o XSLT sobre uma instância real, grava o
+    /// XML e devolve a entrada do manifesto. Devolve null quando não há XML — e aí o caso
+    /// NÃO entra em <c>candidates[]</c>, garantindo a invariante do contrato de que todo
+    /// <c>xmlPath</c> aponta para um arquivo que existe.
+    /// </summary>
+    private static ManifestCandidate? PublicaCandidato(DatasetPair caso, string candidatoXslt,
+        CandidateXmlFactory factory, RunArtifactWriter writer, Action<string> log)
+    {
+        var operacao = PolluxEligibility.ClassifyOperation(caso.Id);
+        var resultado = factory.TryProduce(caso, candidatoXslt, operacao);
+        if (resultado.Xml is null)
+        {
+            log($"   [run-dir] sem XML submissível ({operacao}): {resultado.Motivo}");
+            return null;
+        }
+
+        // candidateId = layout com separadores trocados por '_'. O campo `layout`, ao
+        // contrário, é propagado SEM NENHUMA transformação — é a chave de junção com a API.
+        var candidateId = PolluxEligibility.ToCandidateId(caso.Id);
+        var xmlPath = writer.TryWriteCandidateXml(candidateId, resultado.Xml);
+        if (xmlPath is null) return null;
+
+        log($"   [run-dir] candidato publicado: {candidateId} · elegivel={resultado.Eligible} "
+            + $"· fixture={resultado.SourceFixture ?? "-"} · xsdValido={resultado.XsdValid?.ToString() ?? "null"}");
+
+        return new ManifestCandidate
+        {
+            CandidateId = candidateId,
+            Layout = caso.Id,
+            DocType = caso.DocType,
+            Operation = operacao,
+            EligibleForPollux = resultado.Eligible,
+            XmlPath = xmlPath,
+            SourceFixture = resultado.SourceFixture,
+            XsdValid = resultado.XsdValid,
+            Notes = resultado.Notes
+        };
+    }
+
+    /// <summary>Resumo honesto do que o Job 2 vai encontrar — inclusive o caso "nada elegível",
+    /// que é estado válido do contrato e precisa ficar explícito no log da rodada.</summary>
+    private static void LogResumoCandidatos(List<ManifestCandidate> candidatos, int totalCasos, Action<string> log)
+    {
+        var elegiveis = candidatos.Count(c => c.EligibleForPollux);
+        Console.WriteLine("");
+        Console.WriteLine("── Contrato Job 1 → Job 2 (run dir) ───────────────────────────────");
+        Console.WriteLine($"   Casos processados      : {totalCasos}");
+        Console.WriteLine($"   Candidatos com XML     : {candidatos.Count}");
+        Console.WriteLine($"   Elegíveis ao Pollux    : {elegiveis}");
+        if (candidatos.Count == 0)
+            Console.WriteLine("   (candidates: [] é estado VÁLIDO — o Job 2 trata como skip limpo, não como erro)");
+        foreach (var c in candidatos)
+            Console.WriteLine($"      {(c.EligibleForPollux ? "✅" : "  ")} {c.CandidateId} "
+                + $"[{c.DocType}/{c.Operation}]{(c.Notes is null ? "" : $" — {c.Notes}")}");
+
+        using (LogContext.PushProperty("Source", "AiMetrics"))
+        {
+            Serilog.Log.Information(
+                "Run dir publicado. TotalCasos={TotalCasos} Candidatos={Candidatos} Elegiveis={Elegiveis}",
+                totalCasos, candidatos.Count, elegiveis);
+        }
     }
 
     private static string BuildPrompt(DatasetPair caso, IReadOnlyList<DatasetFewShotMatch> recuperados)
