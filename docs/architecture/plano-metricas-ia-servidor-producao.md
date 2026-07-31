@@ -200,22 +200,24 @@ entrada atual — mantém a API 100% passiva, como exigido.
 
 ### Desenho proposto: um único ponto de entrada sequencial
 
-```bash
-# run-metrics-then-cypress.sh (proposto — NÃO criado/deployado ainda)
-#!/usr/bin/env bash
-set -euo pipefail
+**Implementado e versionado:** [`Scripts/vm/run-metrics-then-cypress.sh`](../../Scripts/vm/run-metrics-then-cypress.sh).
+A entrada única no crontab (sábado 00:00) passa a apontar para ele em vez de `run-metrics-batch.sh`.
 
-# Job 1 — síncrono. Se falhar (dataset corrompido, Ollama fora do ar), aborta
-# ANTES do Job 2 (fail-fast: não faz sentido validar contra Pollux sem geração nova).
-~/layoutparser-ai-metrics/run-metrics-batch.sh
+**Decisão sobre a sincronicidade (fecha o bloqueio 3):** o wrapper **não chama `run-metrics-batch.sh`** —
+chama `dotnet XslSynth.dll --mode=metrics-batch` **direto**. Como processo filho do shell, o bloqueio é
+garantido pelo `wait` implícito do bash (o .NET não se auto-daemoniza), então a pergunta "o `.sh` é
+síncrono?" deixa de existir em vez de ser contornada com polling. Ganhos colaterais: o wrapper controla
+`--run-id` (elimina a corrida "qual run é o mais recente") e o `DOTNET_ROOT` (o .NET está em `~/dotnet`,
+user-space — sem `/etc/dotnet/install_location`, o apphost pode não achar o runtime sob cron).
 
-# Job 2 — só roda se o Job 1 terminou com sucesso (set -e já garante isso acima).
-~/layoutparser-cypress/run-cypress-batch.sh   # a criar por @lp-qa (Cass)
-```
+O gate de manifesto (§2 do handoff: manifesto = sinal de run completo) fica como defesa em profundidade
+com janela curta (120 s), **não** como substituto do bloqueio.
 
-A entrada única no crontab (sábado 00:00) passaria a apontar para este wrapper em vez de
-`run-metrics-batch.sh` diretamente — sequenciamento por bloqueio simples (o Job 2 só começa
-quando o processo do Job 1 termina), sem precisar de lock file/polling.
+Demais garantias do wrapper: fail-fast (Job 2 só dispara com Job 1 exit 0), `LP_METRICS_RUN_DIR`
+exportado, `CYPRESS_CACHE_FOLDER` explícito (o cron pode ter `HOME` diferente), `PATH` sem depender de
+`.bashrc`, lockfile (`flock`, com fallback) contra runs sobrepostos, log com timestamp por run com
+retenção, e **exit code vindo do `verdict.js`** — o do `npx cypress run` é descartado de propósito
+(§5.2 do handoff: rejeição do Pollux é medição, não falha).
 
 ### Bloqueios (por isso NÃO implementado agora)
 
@@ -229,11 +231,15 @@ quando o processo do Job 1 termina), sem precisar de lock file/polling.
    `.NET SDK` + `Ollama` — nada de Node/Cypress/Chrome-Electron/`xvfb`/`libgtk`/`libnss3`. Precisa
    verificar se a VM (`UBU220405RUN`, mesmo host físico do `WINSRV2022-LIB`) tem essas dependências
    de sistema antes de qualquer `npm install`.
-3. **Preciso confirmar se `run-metrics-batch.sh` é síncrono de fato.** O wrapper acima assume que
-   o script bloqueia até o dataset completo terminar (consistente com a estimativa de "~3-4h" da
-   seção 6) — não confirmei o conteúdo do script (não versionado neste repo, só existe na VM).
-   Se ele se auto-background (`nohup ... &`), o wrapper precisa de outro mecanismo (lock file/poll)
-   em vez de sequenciamento por bloqueio simples.
+   → **Runbook completo:** [`runbook-vm-cypress-provisionamento.md`](runbook-vm-cypress-provisionamento.md)
+   (listas de pacote para 22.04 **e** 24.04, Node por NodeSource ou tarball, caminho sem `sudo`).
+   Segue **aberto**: depende de rodar os comandos na VM (versão do SO e disponibilidade de `sudo` não
+   confirmadas).
+3. ~~**Preciso confirmar se `run-metrics-batch.sh` é síncrono de fato.**~~ **RESOLVIDO por desenho**
+   (2026-07-30): o wrapper chama o binário do Job 1 diretamente, o que garante o bloqueio sem depender
+   do script não versionado. A medição empírica (`time … --limit 1`, §0/E8 do runbook) continua na lista
+   de evidências — não para destravar o wrapper, mas porque, se der assíncrono, o `run-metrics-batch.sh`
+   precisa perder o backgrounding de qualquer forma (o cron já roda em background).
 4. **Sem acesso de execução à VM nesta sessão.** O deploy anterior (seção 6) foi feito via SSH
    com a chave `layoutparser_automation` — esta sessão não tem esse acesso; qualquer aplicação do
    wrapper/crontab exige rodar os comandos manualmente (ou em sessão com a chave disponível),
@@ -244,9 +250,23 @@ quando o processo do Job 1 termina), sem precisar de lock file/polling.
 
 ### Próximo passo real
 
-Dispatch a `@lp-qa` (Cass, no repo `LayoutParserCypress`) para o item 3 da seção 7 primeiro
-(spec batch parametrizada). Só depois disso faz sentido eu (devops) provisionar Node/Cypress na
-VM e aplicar o wrapper acima ao crontab — nesta ordem, não em paralelo.
+O wrapper e o runbook estão prontos e versionados; o que resta é **execução na VM**, que depende de
+evidências que só existem lá (§0 do runbook) e de duas entregas paralelas (Lia: run dir + manifesto;
+Cass: spec batch + `verdict.js`). Ordem: evidências → provisionamento → smoke `--limit 1` → troca do
+crontab (ação em produção, sob confirmação explícita).
+
+Enquanto o Job 2 não existe, o crontab pode apontar para o wrapper com `LP_ALLOW_JOB1_ONLY=1` — assim a
+série de métricas do Job 1 continua sendo coletada sem esperar o Job 2.
+
+### Dívida de infra: scripts de produção não versionados
+
+`run-metrics-batch.sh`, `enable-metrics-job.sh` e `disable-metrics-job.sh` existem **só na VM** — foi
+exatamente isso que impediu responder "o Job 1 é síncrono?" sem SSH. O wrapper novo nasce versionado em
+[`Scripts/vm/`](../../Scripts/vm/); os três antigos devem migrar para lá na próxima janela de acesso à VM.
+
+⚠️ **Efeito colateral a tratar junto:** `enable-metrics-job.sh` reescreve a entrada do crontab pelo
+marcador `# layoutparser-ai-metrics-batch`. Se continuar apontando para `run-metrics-batch.sh`, o próximo
+`enable` **desfaz** a troca para o wrapper silenciosamente. Atualizar os dois scripts na mesma janela.
 
 ### ⚠️ Revisão de arquitetura (@lp-architect, 2026-07-30) — 3 bloqueios NOVOS
 

@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.RegularExpressions;
 
 using LayoutParserApi.Models.Logging;
 using LayoutParserApi.Services.Interfaces;
@@ -28,6 +29,18 @@ namespace LayoutParserApi.Services.Logging
         // sem isso, um client mal-intencionado ou um bug de UI pode pedir uma página gigante.
         private const int MinPageSize = 1;
         private const int MaxPageSize = 500;
+
+        // Formato gravado pelo Endpoint 3 (AiMetricsController.PostCypressResult):
+        // "Cypress validado. Layout=x CypressValidado=true CStatPollux=100 Observacao=texto livre"
+        // Ancorado nas chaves conhecidas e nesta ordem: Observacao= é o ÚLTIMO grupo e captura tudo
+        // até o fim da linha, então texto livre com "=" não consegue mais forjar campo (ver <remarks>
+        // de TryParseCypress). Os grupos finais são opcionais pra tolerar linhas sem observação.
+        private static readonly Regex CypressLinePattern = new(
+            @"^Cypress validado\.\s+Layout=(?<layout>\S*)"
+            + @"(?:\s+CypressValidado=(?<cypressValidado>\S*))?"
+            + @"(?:\s+CStatPollux=(?<cstat>\S*))?"
+            + @"(?:\s+Observacao=(?<observacao>.*))?$",
+            RegexOptions.Compiled);
 
         private readonly IUnifiedLogReaderService _unifiedLogReaderService;
         private readonly ILogger<AiMetricsReaderService> _logger;
@@ -109,7 +122,14 @@ namespace LayoutParserApi.Services.Logging
                 TextSimilarityMedia = sucesso.Count > 0 ? sucesso.Average(g => g.TextSimilarityRatio) : 0,
                 TotalXsdValidado = all.Count(g => g.XsdValido == true),
                 TotalCypressValidado = all.Count(g => g.CypressValidado == true),
-                TotalCStatAutorizado = all.Count(g => !string.IsNullOrWhiteSpace(g.CStatPollux)),
+
+                // ✅ FIX (QA/Quinn 2026-07-30): contar "cStat não-vazio" transformava REJEIÇÃO em
+                // autorização — cStat 110/225 são rejeição e entravam no card de autorizados.
+                // Decisão de arquitetura: a API NÃO re-deriva autorização a partir do código; quem
+                // sabe se o cStat significou aceite é o cliente Cypress, e ele já codifica isso em
+                // CypressValidado. Allow-list ("100") erraria o dataset atual, majoritariamente
+                // eventos (CancCTe/consSitCTe), cujos códigos de aceite são outros.
+                TotalCStatAutorizado = all.Count(g => g.CypressValidado == true),
                 PorDocType = porDocType,
                 UltimaRodada = all.Max(g => g.Timestamp)
             };
@@ -117,11 +137,18 @@ namespace LayoutParserApi.Services.Logging
 
         /// <summary>
         /// Busca TODAS as linhas AiMetrics (paginando o leitor unificado, que limita o retorno
-        /// por página) já filtradas por data e parseadas, com o MERGE do resultado do Cypress/
-        /// Pollux (linhas "Cypress validado.", gravadas pelo Endpoint 3) já aplicado por cima das
-        /// gerações originais. Falha na leitura/parse degrada pra lista vazia — nunca derruba os
-        /// endpoints acima.
+        /// por página) já parseadas, com o MERGE do resultado do Cypress/Pollux (linhas
+        /// "Cypress validado.", gravadas pelo Endpoint 3) aplicado por cima das gerações originais,
+        /// e só então recorta o período pedido. Falha na leitura/parse degrada pra lista vazia —
+        /// nunca derruba os endpoints acima.
         /// </summary>
+        /// <remarks>
+        /// ✅ FIX (QA/Quinn 2026-07-30): o filtro de data NÃO pode ir pro leitor unificado. As
+        /// linhas "Cypress validado." nascem depois da geração (o Job 2 roda no dia seguinte), então
+        /// filtrar o sábado descartava justamente o resultado postado no domingo e o merge sumia do
+        /// painel. Lê tudo → faz o merge → filtra as GERAÇÕES por De/Ate. Volume é baixo
+        /// (~54 casos/rodada) e o leitor já filtra em memória, então não há custo relevante de I/O.
+        /// </remarks>
         private async Task<List<AiMetricsGeneration>> GetAllGenerationsAsync(DateTime? de, DateTime? ate)
         {
             var result = new List<AiMetricsGeneration>();
@@ -137,13 +164,13 @@ namespace LayoutParserApi.Services.Logging
 
                 do
                 {
+                    // Sem From/To de propósito (ver <remarks> acima) — o recorte de período é
+                    // aplicado no fim, só sobre as gerações, depois do merge do Cypress.
                     var raw = await _unifiedLogReaderService.GetLogsAsync(new Models.Logging.UnifiedLogFilter
                     {
                         Source = AiMetricsSource,
                         Page = page,
-                        PageSize = FetchPageSize,
-                        From = de,
-                        To = ate
+                        PageSize = FetchPageSize
                     });
 
                     totalCount = raw.TotalCount;
@@ -176,20 +203,67 @@ namespace LayoutParserApi.Services.Logging
                 return new List<AiMetricsGeneration>();
             }
 
-            // Aplica o merge: para cada geração, se existir uma entrada de Cypress posterior com o
-            // mesmo Layout, sobrescreve CypressValidado/CStatPollux (que nasceram null no
-            // metrics-batch). Sem entrada de Cypress -> comportamento idêntico ao atual.
-            foreach (var geracao in result)
-            {
-                if (latestCypressByLayout.TryGetValue(geracao.Layout, out var cypress)
-                    && cypress.Timestamp >= geracao.Timestamp)
-                {
-                    geracao.CypressValidado = cypress.CypressValidado;
-                    geracao.CStatPollux = cypress.CStatPollux;
-                }
-            }
+            // ✅ Idempotência da ingestão (POST /api/ai-metrics/generations/ingest): o log é
+            // append-only, então reenviar o mesmo lote (retry de rede, replay de uma rodada) grava
+            // linhas duplicadas. Colapsa por (Layout, Timestamp) mantendo a ÚLTIMA lida — reenvio
+            // não infla os totais/médias do painel. Gerações legítimas de rodadas diferentes têm
+            // Timestamp diferente e são todas preservadas; mesmo layout no mesmo instante exato só
+            // acontece em duplicata real (uma geração leva segundos).
+            result = result
+                .GroupBy(g => (g.Layout, g.Timestamp))
+                .Select(grupo => grupo.Last())
+                .ToList();
 
-            return result;
+            ApplyCypressMerge(result, latestCypressByLayout);
+
+            // Recorte de período: só agora, e só sobre as gerações (o merge já foi aplicado com a
+            // linha de Cypress que estaria fora da janela).
+            IEnumerable<AiMetricsGeneration> noPeriodo = result;
+
+            if (de.HasValue)
+                noPeriodo = noPeriodo.Where(g => g.Timestamp >= de.Value);
+
+            if (ate.HasValue)
+                noPeriodo = noPeriodo.Where(g => g.Timestamp <= ate.Value);
+
+            return noPeriodo.ToList();
+        }
+
+        /// <summary>
+        /// Aplica o resultado do Cypress por cima das gerações: para cada Layout com resultado
+        /// postado, marca CypressValidado/CStatPollux (que nasceram null no metrics-batch) APENAS na
+        /// geração mais recente anterior àquele POST. Layout sem entrada de Cypress fica intacto.
+        /// </summary>
+        /// <remarks>
+        /// ✅ FIX (QA/Quinn 2026-07-30): a condição anterior era só "cypress &gt;= geracao", sem
+        /// limite inferior. Como o dataset re-roda semanalmente, o MESMO Layout aparece em várias
+        /// rodadas e um único POST marcava TODAS as rodadas históricas — 1 validação virava 2 (ou N)
+        /// no card do painel. O resultado pertence à rodada que o Job 2 acabou de validar, isto é, a
+        /// geração mais recente que já existia quando o POST chegou.
+        /// </remarks>
+        private static void ApplyCypressMerge(
+            List<AiMetricsGeneration> geracoes,
+            Dictionary<string, CypressResultEntry> latestCypressByLayout)
+        {
+            if (latestCypressByLayout.Count == 0)
+                return;
+
+            foreach (var grupo in geracoes.GroupBy(g => g.Layout, StringComparer.OrdinalIgnoreCase))
+            {
+                if (!latestCypressByLayout.TryGetValue(grupo.Key, out var cypress))
+                    continue;
+
+                var alvo = grupo
+                    .Where(g => g.Timestamp <= cypress.Timestamp)
+                    .OrderByDescending(g => g.Timestamp)
+                    .FirstOrDefault();
+
+                if (alvo is null)
+                    continue; // POST anterior a qualquer geração desse layout — nada a marcar.
+
+                alvo.CypressValidado = cypress.CypressValidado;
+                alvo.CStatPollux = cypress.CStatPollux;
+            }
         }
 
         /// <summary>Resultado já parseado de uma linha "Cypress validado.", usado só internamente pro merge.</summary>
@@ -233,7 +307,11 @@ namespace LayoutParserApi.Services.Logging
                     Layout = layout,
                     DocType = DeriveDocType(layout),
                     Modelo = fields.GetValueOrDefault("Modelo", string.Empty),
-                    Timestamp = timestamp,
+                    // ✅ Prefere o instante REAL da geração (campo Timestamp=, gravado pela ingestão
+                    // via POST generations/ingest) ao instante da linha de log — num lote postado no
+                    // fim de uma rodada de ~4h, todos os casos teriam o mesmo horário do POST.
+                    // Ausente (linhas do job local, anteriores à ingestão) = timestamp da linha.
+                    Timestamp = ParseTimestamp(fields.GetValueOrDefault("Timestamp")) ?? timestamp,
                     TokensPorSegundo = ParseDouble(fields.GetValueOrDefault("TokensPorSegundo")),
                     TamanhoPromptChars = ParseInt(fields.GetValueOrDefault("TamanhoPromptChars")),
                     DuracaoSegundos = ParseDouble(fields.GetValueOrDefault("DuracaoSegundos")),
@@ -255,10 +333,16 @@ namespace LayoutParserApi.Services.Logging
 
         /// <summary>
         /// Parseia uma linha "Cypress validado. Chave=Valor ..." (gravada pelo Endpoint 3 —
-        /// POST /api/ai-metrics/cypress-result). Reaproveita a mesma tokenização Chave=Valor de
-        /// <see cref="TryParseGeracao"/>. Retorna null pra qualquer coisa fora do formato esperado
-        /// (nunca lança, mesmo padrão do parser irmão).
+        /// POST /api/ai-metrics/cypress-result). Retorna null pra qualquer coisa fora do formato
+        /// esperado (nunca lança, mesmo padrão do parser irmão).
         /// </summary>
+        /// <remarks>
+        /// ✅ FIX (QA/Quinn 2026-07-30): NÃO usa a tokenização por espaço do <see cref="TryParseGeracao"/>.
+        /// Esta linha carrega um campo de TEXTO LIVRE (Observacao), e com split(' ') + last-wins uma
+        /// observação honesta como "Rejeitado: esperava CStatPollux=100 e veio 110" forjava o campo
+        /// real e o painel exibia cStat 100 pra uma REJEIÇÃO. O regex é ancorado nas chaves conhecidas
+        /// e Observacao= captura greedy até o fim da linha, então nada depois dela vira campo.
+        /// </remarks>
         private CypressResultEntry? TryParseCypress(string message, DateTime timestamp)
         {
             if (string.IsNullOrWhiteSpace(message) || !message.StartsWith(CypressPrefix, StringComparison.Ordinal))
@@ -266,28 +350,18 @@ namespace LayoutParserApi.Services.Logging
 
             try
             {
-                var tokens = message.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                var fields = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                var match = CypressLinePattern.Match(message);
+                if (!match.Success)
+                    return null;
 
-                foreach (var token in tokens)
-                {
-                    var separatorIndex = token.IndexOf('=');
-                    if (separatorIndex <= 0)
-                        continue;
-
-                    var key = token[..separatorIndex];
-                    var value = token[(separatorIndex + 1)..];
-                    fields[key] = value;
-                }
-
-                var layout = fields.GetValueOrDefault("Layout", string.Empty);
+                var layout = match.Groups["layout"].Value;
                 if (string.IsNullOrWhiteSpace(layout))
                     return null;
 
                 return new CypressResultEntry(
                     layout,
-                    ParseNullableBool(fields.GetValueOrDefault("CypressValidado")),
-                    ParseNullableString(fields.GetValueOrDefault("CStatPollux")),
+                    ParseNullableBool(GroupValueOrNull(match, "cypressValidado")),
+                    ParseNullableString(GroupValueOrNull(match, "cstat")),
                     timestamp);
             }
             catch (Exception ex)
@@ -324,6 +398,14 @@ namespace LayoutParserApi.Services.Logging
         private static int ParseInt(string? raw)
             => int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) ? value : 0;
 
+        // Grupo opcional do regex ausente na linha != grupo presente e vazio: devolve null pros dois
+        // (os ParseNullable* já tratam null/"null"/vazio como "não informado").
+        private static string? GroupValueOrNull(Match match, string groupName)
+        {
+            var group = match.Groups[groupName];
+            return group.Success ? group.Value : null;
+        }
+
         private static bool ParseBool(string? raw)
             => bool.TryParse(raw, out var value) && value;
 
@@ -335,6 +417,23 @@ namespace LayoutParserApi.Services.Logging
                 return null;
 
             return bool.TryParse(raw, out var value) ? value : null;
+        }
+
+        /// <summary>
+        /// Parseia o campo opcional <c>Timestamp=</c> (instante real da geração). O arquivo de log
+        /// grava a hora LOCAL do servidor sem fuso, então um valor explicitamente UTC é convertido —
+        /// misturar bases faria o merge do Cypress (<c>cypress &gt;= geracao</c>) falhar em silêncio.
+        /// Valor ausente/ilegível retorna null, e o chamador cai no timestamp da linha.
+        /// </summary>
+        private static DateTime? ParseTimestamp(string? raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw) || string.Equals(raw, "null", StringComparison.OrdinalIgnoreCase))
+                return null;
+
+            if (!DateTime.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var value))
+                return null;
+
+            return value.Kind == DateTimeKind.Utc ? value.ToLocalTime() : value;
         }
 
         private static string? ParseNullableString(string? raw)

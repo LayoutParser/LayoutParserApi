@@ -1,5 +1,6 @@
 using LayoutParserApi.Models.Logging;
 using LayoutParserApi.Services.Interfaces;
+using LayoutParserApi.Services.Logging;
 
 using Microsoft.AspNetCore.Mvc;
 
@@ -19,12 +20,23 @@ namespace LayoutParserApi.Controllers
     [Route("api/ai-metrics")]
     public class AiMetricsController : ControllerBase
     {
+        // Tetos de tamanho dos campos que viram texto de log (ver LogMessageSanitizer). Layout e
+        // cStat são curtos por natureza; a observação é texto livre e precisa de um limite explícito.
+        private const int MaxLayoutLength = 500;
+        private const int MaxCStatLength = 20;
+        private const int MaxObservacaoLength = 1000;
+
         private readonly IAiMetricsReaderService _aiMetricsReaderService;
+        private readonly IAiMetricsIngestService _aiMetricsIngestService;
         private readonly ILogger<AiMetricsController> _logger;
 
-        public AiMetricsController(IAiMetricsReaderService aiMetricsReaderService, ILogger<AiMetricsController> logger)
+        public AiMetricsController(
+            IAiMetricsReaderService aiMetricsReaderService,
+            IAiMetricsIngestService aiMetricsIngestService,
+            ILogger<AiMetricsController> logger)
         {
             _aiMetricsReaderService = aiMetricsReaderService;
+            _aiMetricsIngestService = aiMetricsIngestService;
             _logger = logger;
         }
 
@@ -89,6 +101,16 @@ namespace LayoutParserApi.Controllers
             if (request is null || string.IsNullOrWhiteSpace(request.Layout))
                 return BadRequest(new { success = false, error = "Campo 'layout' é obrigatório." });
 
+            // ✅ FIX (QA/Quinn 2026-07-30): TODO campo vindo do cliente é higienizado ANTES de virar
+            // linha de log — o log é relido como fonte de dados do painel, então uma quebra de linha
+            // crua na observação (um stack trace colado basta) injetava uma GERAÇÃO FANTASMA inteira
+            // no gráfico, com métricas arbitrárias. Mesma proteção que o LogsController já aplicava
+            // na ingestão de log do front-end. O outro vetor — texto com "=" forjando campo — é
+            // tratado no parser (regex ancorado, ver AiMetricsReaderService.TryParseCypress).
+            var layout = LogMessageSanitizer.Sanitize(request.Layout, MaxLayoutLength);
+            var cStatPollux = LogMessageSanitizer.SanitizeOptional(request.CStatPollux, MaxCStatLength);
+            var observacao = LogMessageSanitizer.SanitizeOptional(request.Observacao, MaxObservacaoLength);
+
             // ✅ Idempotente por natureza (merge lógico na leitura, ver AiMetricsReaderService) —
             // não valida se o layout já existe no histórico; se não existir, o merge simplesmente
             // não casa com nada, sem erro (ver dotnet-standards.md — resiliência).
@@ -98,16 +120,57 @@ namespace LayoutParserApi.Controllers
                 {
                     _logger.LogInformation(
                         "Cypress validado. Layout={Layout} CypressValidado={CypressValidado} CStatPollux={CStatPollux} Observacao={Observacao}",
-                        request.Layout, request.CypressValidado, request.CStatPollux, request.Observacao);
+                        layout, request.CypressValidado, cStatPollux, observacao);
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Erro ao gravar resultado do Cypress para o layout {Layout}", request.Layout);
+                _logger.LogError(ex, "Erro ao gravar resultado do Cypress para o layout {Layout}", layout);
                 return StatusCode(500, new { success = false, error = "Erro ao gravar resultado do Cypress." });
             }
 
             return Ok(new { success = true });
+        }
+
+        /// <summary>
+        /// Ingestão de um LOTE de gerações produzidas pelo job ai/XslSynth --mode=metrics-batch, que
+        /// roda numa VM Linux separada (172.25.32.31) e grava o log dele lá, não no diretório de log
+        /// que esta API lê (Windows). Sem este endpoint, as linhas "Geracao concluida." nunca chegam
+        /// ao <see cref="IAiMetricsReaderService"/>: GET /generations vem vazio e o merge do
+        /// POST /cypress-result não encontra geração alguma pra casar (§A4 de
+        /// docs/architecture/handoff-job2-cypress-batch.md). A VM passa a EMPURRAR o resultado por
+        /// HTTP; a API segue passiva.
+        /// Cada item vira uma linha Serilog "Geracao concluida." (Source=AiMetrics) no mesmo log já
+        /// lido pelo painel — nenhuma fonte da verdade nova. Item inválido é ignorado sozinho, sem
+        /// derrubar o lote (a resposta diz quantos e por quê).
+        /// Reenviar o mesmo lote é seguro: a leitura colapsa duplicatas por (Layout, Timestamp).
+        /// </summary>
+        /// <param name="request">Array de gerações — as mesmas chaves da linha "Geracao concluida.".</param>
+        /// <returns>Contagem de recebidos/ingeridos/ignorados (<see cref="AiMetricsIngestResult"/>).</returns>
+        [HttpPost("generations/ingest")]
+        public IActionResult PostGenerationsIngest([FromBody] List<AiMetricsGenerationIngestRequest>? request)
+        {
+            if (request is null || request.Count == 0)
+                return BadRequest(new { success = false, error = "Corpo deve ser um array com ao menos uma geração." });
+
+            if (request.Count > _aiMetricsIngestService.TamanhoMaximoLote)
+                return BadRequest(new { success = false, error = $"Lote excede o máximo de {_aiMetricsIngestService.TamanhoMaximoLote} gerações por requisição." });
+
+            try
+            {
+                var result = _aiMetricsIngestService.IngestGenerations(request);
+
+                _logger.LogInformation(
+                    "Ingestão de métricas de IA concluída. Recebidos={Recebidos} Ingeridos={Ingeridos} Ignorados={Ignorados}",
+                    result.Recebidos, result.Ingeridos, result.Ignorados);
+
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Erro ao ingerir lote de gerações de métricas de IA ({Total} item(ns))", request.Count);
+                return StatusCode(500, new { success = false, error = "Erro ao ingerir gerações de métricas de IA." });
+            }
         }
     }
 }

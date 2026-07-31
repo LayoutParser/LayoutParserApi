@@ -337,6 +337,11 @@ try
     // (Source=AiMetrics), sem leitura/rotação de arquivo própria.
     builder.Services.AddScoped<IAiMetricsReaderService, AiMetricsReaderService>();
 
+    // ✅ Contraparte de escrita do leitor acima: recebe as gerações do job que roda na VM Linux
+    // (POST api/ai-metrics/generations/ingest) e as grava no MESMO log que o leitor consome —
+    // sem isso o painel lê um diretório que nunca recebe geração nenhuma.
+    builder.Services.AddScoped<IAiMetricsIngestService, AiMetricsIngestService>();
+
     var app = builder.Build();
 
     Log.Information("Application built successfully. Environment: {Environment}", app.Environment.EnvironmentName);

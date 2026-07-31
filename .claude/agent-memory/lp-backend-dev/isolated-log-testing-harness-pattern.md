@@ -42,3 +42,13 @@ nesta ordem:
 3. Antes de subir a API real e bater em qualquer endpoint que leia
    `Logging:File:Directory`, checar se esse diretório já tem dados reais
    acumulados — se tiver, tratar como produção, não como sandbox.
+
+**Variação validada (2026-07-30, re-gate do Gap 3):** pra testar serviços que
+leem log *através* do `IUnifiedLogReaderService` (ex.: `AiMetricsReaderService`),
+não precisa de arquivo nenhum — basta um **fake da interface** no mesmo harness
+console, devolvendo `UnifiedLogEntry` sintéticos. Isso exercita os parsers
+privados (`TryParseGeracao`/`TryParseCypress`) e as regras de merge ponta a ponta
+pelos métodos públicos, e deixa cada defeito do QA reproduzível como um check
+isolado (merge retroativo, forja de campo por `=`, filtro de período). Combinar
+os dois: fake da interface pras regras, diretório temp com linhas REAIS copiadas
+do log pro regex de linha.
