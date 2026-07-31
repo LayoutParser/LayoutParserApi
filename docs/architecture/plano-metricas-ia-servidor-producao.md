@@ -248,6 +248,31 @@ Dispatch a `@lp-qa` (Cass, no repo `LayoutParserCypress`) para o item 3 da seç�
 (spec batch parametrizada). Só depois disso faz sentido eu (devops) provisionar Node/Cypress na
 VM e aplicar o wrapper acima ao crontab — nesta ordem, não em paralelo.
 
+### ⚠️ Revisão de arquitetura (@lp-architect, 2026-07-30) — 3 bloqueios NOVOS
+
+Especificação completa do Job 2 (contratos de entrada/saída, provisionamento, PASS/FAIL) foi
+consolidada em **[`handoff-job2-cypress-batch.md`](handoff-job2-cypress-batch.md)**. Ela refina esta
+seção e acrescenta bloqueios que **invalidam parte do desenho acima**:
+
+6. **O Job 1 não persiste candidato nenhum.** `MetricsBatchRunner` gera o XSLT, valida em memória e
+   **descarta** — não há run dir, manifesto nem arquivo de saída. Não existe "N candidatos gerados
+   pelo Job 1" em disco para o Job 2 consumir. → `@lp-parser-llm` (Lia).
+7. **O artefato do Job 1 é um XSLT; o Pollux consome um XML de NF-e.** Falta o elo
+   `TXT de instância → ROOT → aplicar XSLT → XML`. Só **4 dos 54** pares são elegíveis ao Pollux
+   (`NFe…EnvioNFe…`); os demais são retornos SEFAZ→ERP, consultas, CT-e/MDF-e. E o único TXT de
+   instância disponível **não casa** com os TCLs do dataset. O Job 2 nasce com N=1–4, não 54.
+8. **O painel do Gap 3 está desconectado do Job 1** (bug pré-existente, não introduzido aqui): a API
+   lê `C:\inetpub\wwwroot\layoutparser\api\logs\` (Windows) e o Job 1 escreve
+   `~/layoutparser-ai-metrics/Logs/` (VM Linux) — arquivos distintos, em máquinas distintas. As linhas
+   `Geracao concluida.` nunca chegam ao leitor, então `GET /api/ai-metrics/generations` retorna vazio e
+   o merge do `POST /cypress-result` não casa com nada. Solução recomendada: endpoint de ingestão
+   de gerações na API (simétrico ao `cypress-result`). → `@lp-backend-dev` (Dex).
+
+**Sobre o bloqueio 3 desta seção (`run-metrics-batch.sh` é síncrono?):** continua **em aberto** —
+confirmado que o script **não existe neste repositório**, só na VM (a string aparece unicamente neste
+documento). Comandos de evidência a rodar na VM em §7 do handoff. Risco correlato: os scripts de
+produção da VM não são versionados — a VM é a única cópia.
+
 ## 7. O que falta implementar (próximo passo, dispatch)
 
 1. **`@lp-parser-llm` (Lia):** estender `ai/XslSynth` com um modo `--mode=metrics-batch` que roda
