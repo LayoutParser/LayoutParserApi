@@ -3,6 +3,8 @@ using LayoutParserApi.Services.Interfaces;
 
 using Microsoft.AspNetCore.Mvc;
 
+using Serilog.Context;
+
 namespace LayoutParserApi.Controllers
 {
     /// <summary>
@@ -69,6 +71,43 @@ namespace LayoutParserApi.Controllers
                 _logger.LogError(ex, "Erro ao consultar resumo de métricas de IA");
                 return StatusCode(500, new { success = false, error = "Erro ao consultar resumo de métricas de IA." });
             }
+        }
+
+        /// <summary>
+        /// Ingestão do resultado de uma rodada do Cypress em modo batch (fora do processo da API,
+        /// na mesma VM do job de métricas) validando um candidato gerado pela IA contra o
+        /// Pollux/SEFAZ-fake. Não reescreve o log físico (append-only): grava uma NOVA entrada
+        /// Serilog "Cypress validado." (Source=AiMetrics), que o <see cref="IAiMetricsReaderService"/>
+        /// faz merge por cima da geração original (que nasceu com CypressValidado/CStatPollux nulos)
+        /// ao montar a resposta de GET /api/ai-metrics/generations. Ver adendo (2026-07-30) em
+        /// docs/architecture/handoff-frontend-gap-3-painel-ia-metrics.md.
+        /// </summary>
+        /// <param name="request">Layout identificando a geração, resultado da validação e cStat retornado pelo Pollux.</param>
+        [HttpPost("cypress-result")]
+        public IActionResult PostCypressResult([FromBody] AiMetricsCypressResultRequest? request)
+        {
+            if (request is null || string.IsNullOrWhiteSpace(request.Layout))
+                return BadRequest(new { success = false, error = "Campo 'layout' é obrigatório." });
+
+            // ✅ Idempotente por natureza (merge lógico na leitura, ver AiMetricsReaderService) —
+            // não valida se o layout já existe no histórico; se não existir, o merge simplesmente
+            // não casa com nada, sem erro (ver dotnet-standards.md — resiliência).
+            try
+            {
+                using (LogContext.PushProperty("Source", "AiMetrics"))
+                {
+                    _logger.LogInformation(
+                        "Cypress validado. Layout={Layout} CypressValidado={CypressValidado} CStatPollux={CStatPollux} Observacao={Observacao}",
+                        request.Layout, request.CypressValidado, request.CStatPollux, request.Observacao);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Erro ao gravar resultado do Cypress para o layout {Layout}", request.Layout);
+                return StatusCode(500, new { success = false, error = "Erro ao gravar resultado do Cypress." });
+            }
+
+            return Ok(new { success = true });
         }
     }
 }

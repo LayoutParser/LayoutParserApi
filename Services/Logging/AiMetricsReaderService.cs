@@ -18,6 +18,7 @@ namespace LayoutParserApi.Services.Logging
     {
         private const string AiMetricsSource = "AiMetrics";
         private const string GeracaoPrefix = "Geracao concluida.";
+        private const string CypressPrefix = "Cypress validado.";
 
         // Página grande o suficiente pra volume real (~54 casos/rodada), evitando ida-e-volta
         // extra na maioria dos casos; o loop de paginação abaixo cobre o crescimento no tempo.
@@ -116,12 +117,18 @@ namespace LayoutParserApi.Services.Logging
 
         /// <summary>
         /// Busca TODAS as linhas AiMetrics (paginando o leitor unificado, que limita o retorno
-        /// por página) já filtradas por data e parseadas. Falha na leitura/parse degrada pra
-        /// lista vazia — nunca derruba os endpoints acima.
+        /// por página) já filtradas por data e parseadas, com o MERGE do resultado do Cypress/
+        /// Pollux (linhas "Cypress validado.", gravadas pelo Endpoint 3) já aplicado por cima das
+        /// gerações originais. Falha na leitura/parse degrada pra lista vazia — nunca derruba os
+        /// endpoints acima.
         /// </summary>
         private async Task<List<AiMetricsGeneration>> GetAllGenerationsAsync(DateTime? de, DateTime? ate)
         {
             var result = new List<AiMetricsGeneration>();
+
+            // Última atualização de Cypress por Layout — usada pro merge lógico (não físico, ver
+            // adendo do Gap 3): a leitura, não o arquivo, reflete o resultado mais recente.
+            var latestCypressByLayout = new Dictionary<string, CypressResultEntry>(StringComparer.OrdinalIgnoreCase);
 
             try
             {
@@ -143,9 +150,20 @@ namespace LayoutParserApi.Services.Logging
 
                     foreach (var entry in raw.Items)
                     {
-                        var parsed = TryParseGeracao(entry.Message, entry.Timestamp);
-                        if (parsed != null)
-                            result.Add(parsed);
+                        var parsedGeracao = TryParseGeracao(entry.Message, entry.Timestamp);
+                        if (parsedGeracao != null)
+                        {
+                            result.Add(parsedGeracao);
+                            continue;
+                        }
+
+                        var parsedCypress = TryParseCypress(entry.Message, entry.Timestamp);
+                        if (parsedCypress != null
+                            && (!latestCypressByLayout.TryGetValue(parsedCypress.Layout, out var existing)
+                                || parsedCypress.Timestamp >= existing.Timestamp))
+                        {
+                            latestCypressByLayout[parsedCypress.Layout] = parsedCypress;
+                        }
                     }
 
                     page++;
@@ -158,8 +176,24 @@ namespace LayoutParserApi.Services.Logging
                 return new List<AiMetricsGeneration>();
             }
 
+            // Aplica o merge: para cada geração, se existir uma entrada de Cypress posterior com o
+            // mesmo Layout, sobrescreve CypressValidado/CStatPollux (que nasceram null no
+            // metrics-batch). Sem entrada de Cypress -> comportamento idêntico ao atual.
+            foreach (var geracao in result)
+            {
+                if (latestCypressByLayout.TryGetValue(geracao.Layout, out var cypress)
+                    && cypress.Timestamp >= geracao.Timestamp)
+                {
+                    geracao.CypressValidado = cypress.CypressValidado;
+                    geracao.CStatPollux = cypress.CStatPollux;
+                }
+            }
+
             return result;
         }
+
+        /// <summary>Resultado já parseado de uma linha "Cypress validado.", usado só internamente pro merge.</summary>
+        private sealed record CypressResultEntry(string Layout, bool? CypressValidado, string? CStatPollux, DateTime Timestamp);
 
         /// <summary>
         /// Parseia uma linha "Geracao concluida. Chave=Valor ...". Linhas "Resumo do lote." e
@@ -215,6 +249,50 @@ namespace LayoutParserApi.Services.Logging
             catch (Exception ex)
             {
                 _logger.LogDebug(ex, "Falha ao parsear linha AiMetrics, ignorada: {Message}", message);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Parseia uma linha "Cypress validado. Chave=Valor ..." (gravada pelo Endpoint 3 —
+        /// POST /api/ai-metrics/cypress-result). Reaproveita a mesma tokenização Chave=Valor de
+        /// <see cref="TryParseGeracao"/>. Retorna null pra qualquer coisa fora do formato esperado
+        /// (nunca lança, mesmo padrão do parser irmão).
+        /// </summary>
+        private CypressResultEntry? TryParseCypress(string message, DateTime timestamp)
+        {
+            if (string.IsNullOrWhiteSpace(message) || !message.StartsWith(CypressPrefix, StringComparison.Ordinal))
+                return null;
+
+            try
+            {
+                var tokens = message.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                var fields = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+                foreach (var token in tokens)
+                {
+                    var separatorIndex = token.IndexOf('=');
+                    if (separatorIndex <= 0)
+                        continue;
+
+                    var key = token[..separatorIndex];
+                    var value = token[(separatorIndex + 1)..];
+                    fields[key] = value;
+                }
+
+                var layout = fields.GetValueOrDefault("Layout", string.Empty);
+                if (string.IsNullOrWhiteSpace(layout))
+                    return null;
+
+                return new CypressResultEntry(
+                    layout,
+                    ParseNullableBool(fields.GetValueOrDefault("CypressValidado")),
+                    ParseNullableString(fields.GetValueOrDefault("CStatPollux")),
+                    timestamp);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Falha ao parsear linha de resultado do Cypress, ignorada: {Message}", message);
                 return null;
             }
         }
