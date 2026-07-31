@@ -212,6 +212,7 @@ LayoutParserDecrypt.exe  (descriptografia Sysmiddle)
 | **IA/ML** | `Learning`, `RAG`, `DataGeneration` | Aprende padrões; RAG; gera dados sintéticos. |
 | **Qualidade / Quality** | `Test`, `Testing` | Testes automatizados de transformação. |
 | **Observabilidade / Observability** | `Metrics`, `Monitoring` | Métricas e healthchecks. |
+| **Métricas de IA / AI metrics** | `AiMetrics` | `GET /api/ai-metrics/generations` e `GET /api/ai-metrics/summary` — expõem em JSON tipado as gerações do job `ai/XslSynth --mode=metrics-batch` (rodando via cron em produção), sem exigir parsing de log no cliente. Contrato completo em [`docs/architecture/handoff-frontend-gap-3-painel-ia-metrics.md`](docs/architecture/handoff-frontend-gap-3-painel-ia-metrics.md). |
 
 > Detalhe completo de rotas em runtime via Swagger. / Full route detail at runtime via Swagger.
 
