@@ -156,6 +156,11 @@ try
             options.JsonSerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
             options.JsonSerializerOptions.PropertyNameCaseInsensitive = true;
             options.JsonSerializerOptions.WriteIndented = false;
+            // ✅ Defesa em profundidade (QA/Quinn, Gap 3 — métricas de IA): normalmente NaN/Infinity
+            // já são saneados na origem (AiMetricsReaderService.ParseDouble), mas caso algum outro
+            // endpoint futuro exponha um double não-saneado, isso evita o 500 cru de
+            // System.Text.Json ao serializar (em vez disso escreve o literal "NaN"/"Infinity").
+            options.JsonSerializerOptions.NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals;
         });
     builder.Services.AddEndpointsApiExplorer();
     builder.Services.AddSwaggerGen();
@@ -327,6 +332,10 @@ try
     // ✅ Leitura unificada dos 3 arquivos de log do ecossistema (Api/Lib/Decrypt) para
     // GET api/logs (LogsController) — desenho de logging unificado fechado pela arquiteta.
     builder.Services.AddScoped<IUnifiedLogReaderService, UnifiedLogReaderService>();
+
+    // ✅ Gap 3 (painel de métricas de IA): parseia por cima do mesmo log unificado acima
+    // (Source=AiMetrics), sem leitura/rotação de arquivo própria.
+    builder.Services.AddScoped<IAiMetricsReaderService, AiMetricsReaderService>();
 
     var app = builder.Build();
 
