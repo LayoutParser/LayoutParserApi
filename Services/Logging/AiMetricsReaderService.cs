@@ -23,6 +23,11 @@ namespace LayoutParserApi.Services.Logging
         // extra na maioria dos casos; o loop de paginação abaixo cobre o crescimento no tempo.
         private const int FetchPageSize = 500;
 
+        // ✅ FIX (QA/Quinn): mesmo teto do UnifiedLogFilter irmão (UnifiedLogReaderService.cs) —
+        // sem isso, um client mal-intencionado ou um bug de UI pode pedir uma página gigante.
+        private const int MinPageSize = 1;
+        private const int MaxPageSize = 500;
+
         private readonly IUnifiedLogReaderService _unifiedLogReaderService;
         private readonly ILogger<AiMetricsReaderService> _logger;
 
@@ -36,7 +41,7 @@ namespace LayoutParserApi.Services.Logging
         {
             filter ??= new AiMetricsGenerationFilter();
             var page = filter.Page < 1 ? 1 : filter.Page;
-            var pageSize = filter.PageSize < 1 ? 20 : filter.PageSize;
+            var pageSize = filter.PageSize < MinPageSize ? MinPageSize : Math.Min(filter.PageSize, MaxPageSize);
 
             var all = await GetAllGenerationsAsync(filter.De, filter.Ate);
 
@@ -168,6 +173,11 @@ namespace LayoutParserApi.Services.Logging
 
             try
             {
+                // ⚠️ Limitação conhecida (QA/Quinn): a tokenização assume que nenhum valor
+                // (em especial "Layout=...") contém espaço — hoje válido pros paths reais do
+                // dataset (backslash, sem espaço), mas se algum dia um layout com espaço no nome
+                // passar a ser logado, ele seria truncado silenciosamente no primeiro espaço.
+                // Baixa prioridade: não corrigido agora, documentado para revisão futura.
                 var tokens = message.Split(' ', StringSplitOptions.RemoveEmptyEntries);
                 var fields = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
@@ -218,8 +228,20 @@ namespace LayoutParserApi.Services.Logging
             return separatorIndex > 0 ? layout[..separatorIndex] : layout;
         }
 
+        // ✅ FIX (QA/Quinn): NumberStyles.Float aceita os literais "NaN"/"Infinity"/"-Infinity"
+        // (independe do NumberStyles, é o NumberFormatInfo invariante) — plausível em produção
+        // quando DuracaoSegundos ~0 (timeout instantâneo do Ollama), gerando TokensPorSegundo=NaN
+        // no log real. System.Text.Json lança ArgumentException ao serializar NaN/Infinity, e
+        // isso acontece DEPOIS do controller já ter retornado Ok(result) — fora do try/catch,
+        // derrubando a resposta inteira com 500 cru. Normaliza pra 0: não há leitura útil de
+        // NaN/Infinity num painel de métricas.
         private static double ParseDouble(string? raw)
-            => double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var value) ? value : 0;
+        {
+            if (!double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
+                return 0;
+
+            return double.IsNaN(value) || double.IsInfinity(value) ? 0 : value;
+        }
 
         private static int ParseInt(string? raw)
             => int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) ? value : 0;
