@@ -328,6 +328,10 @@ try
     // GET api/logs (LogsController) — desenho de logging unificado fechado pela arquiteta.
     builder.Services.AddScoped<IUnifiedLogReaderService, UnifiedLogReaderService>();
 
+    // ✅ Gap 3 (painel de métricas de IA): parseia por cima do mesmo log unificado acima
+    // (Source=AiMetrics), sem leitura/rotação de arquivo própria.
+    builder.Services.AddScoped<IAiMetricsReaderService, AiMetricsReaderService>();
+
     var app = builder.Build();
 
     Log.Information("Application built successfully. Environment: {Environment}", app.Environment.EnvironmentName);
