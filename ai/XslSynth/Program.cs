@@ -23,8 +23,12 @@ using XslSynth.Synthesis;
 //   dotnet run -- --pdf-smoke <nota-tecnica.pdf>
 //                              → S2 (smoke): viabilidade de extração/segmentação do PDF (B5 P-2)
 //   dotnet run -- --mode=metrics-batch [--dataset <jsonl>] [--model <nome>] [--fewshot-k <n>] [--limit <n>]
+//                                      [--run-dir <dir>] [--run-id <id>] [--instances <dir>]
+//                                      [--nfe-xsd <xsd>] [--dry-run]
 //                              → job de métricas de IA em lote (item 1 do plano de produção):
 //                                RAG (TF-IDF) → Ollama → validação estrutural → Serilog Source=AiMetrics
+//                                + publica o RUN DIR do Job 2 (manifest.json + candidates/*.xml)
+//                                quando --run-dir / LP_METRICS_RUN_DIR / METRICS_HOME é dado.
 //
 // Arquitetura: docs/architecture/ia-xslt-synthesis.md · poc-excel-generator.md
 //              docs/architecture/plano-metricas-ia-servidor-producao.md (metrics-batch)
@@ -769,6 +773,31 @@ async Task<int> RunMetricsBatchAsync()
     var fewShotK = int.TryParse(FindArgAfter("--fewshot-k"), out var k) ? k : 3;
     var limit = int.TryParse(FindArgAfter("--limit"), out var lim) ? lim : (int?)null;
 
+    // ── Contrato Job 1 → Job 2 (handoff-job2-cypress-batch.md §2) ────────────────────
+    // O run dir NUNCA é hardcoded: vem do wrapper da VM (LP_METRICS_RUN_DIR) ou de
+    // $METRICS_HOME/runs/<runId>. Sem nenhum dos dois, o job roda em modo legado
+    // (só Serilog) — nada quebra, mas o Job 2 não terá o que consumir.
+    var runId = FindArgAfter("--run-id") ?? Environment.GetEnvironmentVariable("LP_METRICS_RUN_ID");
+    var runDir = FindArgAfter("--run-dir") ?? Environment.GetEnvironmentVariable("LP_METRICS_RUN_DIR");
+    var metricsHome = Environment.GetEnvironmentVariable("METRICS_HOME");
+    if (runDir is null && metricsHome is not null)
+    {
+        runId ??= XslSynth.Metrics.RunArtifactWriter.NewRunId(DateTime.UtcNow);
+        runDir = Path.Combine(metricsHome, "runs", runId);
+    }
+    // O diretório do run é a fonte mais confiável do id (o contrato define runs/<runId>).
+    if (runDir is not null)
+        runId ??= new DirectoryInfo(runDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)).Name;
+
+    var instancesDir = FindArgAfter("--instances")
+        ?? Environment.GetEnvironmentVariable("LP_METRICS_INSTANCES_DIR")
+        ?? (Directory.Exists(Path.Combine(claudeTmp, "metrics-instances"))
+            ? Path.Combine(claudeTmp, "metrics-instances")
+            : null);
+    var nfeXsd = FindArgAfter("--nfe-xsd") ?? Path.Combine(claudeTmp, "servidor", "layoutparser",
+        "xsd", "PL_010b_NT2025_002_v1.30", "nfe_v4.00.xsd");
+    var dryRun = args.Contains("--dry-run");
+
     // Log compartilhado com a API quando o repo é encontrado (mesmo arquivo que o
     // UnifiedLogReaderService já lê) — senão degrada para uma pasta Logs local ao lado do exe.
     var repoRoot = new DirectoryInfo(claudeTmp).Parent; // …/.claude/tmp → …/.claude → raiz
@@ -779,12 +808,15 @@ async Task<int> RunMetricsBatchAsync()
 
     Log("Modo      : METRICS-BATCH (RAG → Ollama → validação → Serilog Source=AiMetrics)");
     Log($"Dataset   : {datasetPath}");
-    Log($"Modelo    : {model}");
+    Log($"Modelo    : {model}" + (dryRun ? "  ·  DRY-RUN (candidato = gabarito, NÃO mede o LLM)" : ""));
     Log($"Few-shot k: {fewShotK}");
     Log($"Log dir   : {logDir}" + (limit is not null ? $"  ·  LIMITE de teste: {limit} caso(s)" : ""));
+    Log($"Run dir   : {runDir ?? "(não configurado — sem artefatos para o Job 2)"}");
     Log("");
 
-    var opts = new MetricsBatchOptions(datasetPath, model, fewShotK, limit, logDir, "layoutparserapi.log");
+    var opts = new MetricsBatchOptions(datasetPath, model, fewShotK, limit, logDir, "layoutparserapi.log",
+        RunDirectory: runDir, RunId: runId, InstancesDirectory: instancesDir,
+        NfeXsdPath: File.Exists(nfeXsd) ? nfeXsd : null, DryRun: dryRun);
     return await MetricsBatchRunner.RunAsync(opts, Log);
 }
 

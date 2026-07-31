@@ -8,8 +8,9 @@ using LayoutParserApi.Services.Interfaces;
 namespace LayoutParserApi.Services.Logging
 {
     /// <summary>
-    /// Implementação de leitura unificada dos 3 arquivos de log (Api/Lib/Decrypt).
-    /// Desenho fechado pela arquiteta (logging unificado): os 3 arquivos já compartilham
+    /// Implementação de leitura unificada dos 4 arquivos de log (Api/Lib/Decrypt + a cópia do
+    /// log do job de métricas de IA que roda na VM Linux — ver handoff-ponte-log-aimetrics.md).
+    /// Desenho fechado pela arquiteta (logging unificado): os arquivos já compartilham
     /// diretório e um formato de linha compatível; este serviço só parseia e normaliza.
     /// Resiliência: falha em um arquivo/fonte nunca derruba as demais (try/catch por fonte
     /// e por linha), e falta de arquivo (ex.: Lib/Decrypt ainda não gerados nesta máquina)
@@ -27,8 +28,15 @@ namespace LayoutParserApi.Services.Logging
         // [yyyy-MM-dd HH:mm:ss.fff] [LVL] [Corr:xxx] [Src:xxx] mensagem
         // O grupo [Src:...] é opcional para não quebrar o parse de linhas gravadas ANTES
         // desta mudança (sem o campo Source no outputTemplate).
+        // ✅ FIX (QA/Quinn 2026-07-30): [Corr:...] também é OPCIONAL. O job de métricas
+        // (ai/XslSynth --mode=metrics-batch, MetricsBatchRunner.cs) configura um Serilog próprio
+        // cujo outputTemplate NÃO tem [Corr:...] — com o grupo obrigatório, 100% das linhas
+        // "Geracao concluida." eram descartadas (viravam continuação da entrada anterior) e os 3
+        // endpoints do Gap 3 respondiam vazio. Relaxar o regex (em vez de alinhar o template do
+        // job) recupera também o histórico JÁ gravado, sem re-rodar lote nem redeployar o CLI.
         private static readonly Regex ApiLinePattern = new(
-            @"^\[(?<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\]\s\[(?<level>[A-Za-z]+)\]\s\[Corr:(?<corr>[^\]]*)\](?:\s\[Src:(?<source>[^\]]*)\])?\s(?<message>.*)$",
+            @"^\[(?<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\]\s\[(?<level>[A-Za-z]+)\]"
+            + @"(?:\s\[Corr:(?<corr>[^\]]*)\])?(?:\s\[Src:(?<source>[^\]]*)\])?\s(?<message>.*)$",
             RegexOptions.Compiled);
 
         // Formato do RollingFileLogger usado por LayoutParserLib/LayoutParserDecrypt
@@ -86,9 +94,21 @@ namespace LayoutParserApi.Services.Logging
                 var libTask = ReadSourceAsync(logDirectory, "layoutparserlib.log", fixedSource: "Lib", SimpleLinePattern);
                 var decryptTask = ReadSourceAsync(logDirectory, "layoutparserdecrypt.log", fixedSource: "Decrypt", SimpleLinePattern);
 
-                await Task.WhenAll(apiTask, libTask, decryptTask);
+                // ✅ 4ª fonte (ponte de log AiMetrics, docs/architecture/handoff-ponte-log-aimetrics.md):
+                // cópia do log do job de métricas que roda na VM Linux, trazida de hora em hora pro
+                // diretório de logs da API com nome PRÓPRIO (nunca sobrescrevendo o log ativo).
+                // fixedSource: null de propósito — o Source vem do [Src:...] da própria linha, senão
+                // o resumo de lote e linhas de outros Sources seriam mascarados como "AiMetrics".
+                // Nome hardcoded como os outros 3: chave nova no appsettings.json não chegaria ao
+                // servidor (o ci-dev.yml preserva o appsettings do destino).
+                var aiTask = ReadSourceAsync(logDirectory, "layoutparserai.log", fixedSource: null, ApiLinePattern);
 
-                IEnumerable<UnifiedLogEntry> all = apiTask.Result.Concat(libTask.Result).Concat(decryptTask.Result);
+                await Task.WhenAll(apiTask, libTask, decryptTask, aiTask);
+
+                IEnumerable<UnifiedLogEntry> all = apiTask.Result
+                    .Concat(libTask.Result)
+                    .Concat(decryptTask.Result)
+                    .Concat(aiTask.Result);
 
                 all = ApplyFilters(all, filter);
 

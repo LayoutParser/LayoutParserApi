@@ -98,11 +98,25 @@ Tarefa agendada no `WINSRV2022-LIB` (de hora em hora, arquivo de poucos KB):
 ```powershell
 # Cópia atômica: baixa em .tmp e só então substitui — evita a API ler arquivo pela metade.
 scp -i "$env:USERPROFILE\.ssh\layoutparser_automation" `
-    elson@172.25.32.31:~/layoutparser-ai-metrics/Logs/layoutparserapi.log `
+    elson@172.25.32.31:~/layoutparser-ai-metrics/logs/layoutparserapi.log `
     "C:\inetpub\wwwroot\layoutparser\api\logs\layoutparserai.log.tmp"
 Move-Item -Force "C:\inetpub\wwwroot\layoutparser\api\logs\layoutparserai.log.tmp" `
                  "C:\inetpub\wwwroot\layoutparser\api\logs\layoutparserai.log"
 ```
+
+> ⚠️ **`logs/` minúsculo — não `Logs/`.** Achado do `@lp-devops` ao inspecionar a VM: o
+> `run-metrics-batch.sh` **instalado no cron** passa `--log-dir "$APP_DIR/logs"`, e esse diretório
+> está vazio hoje. O único log existente está em `Logs/` (maiúsculo) porque veio do teste `--limit 2`,
+> que rodou sem `--log-dir` e caiu no default (`AppContext.BaseDirectory\Logs`,
+> [ai/XslSynth/Program.cs:804-807](../../ai/XslSynth/Program.cs:804)). Em Linux os dois são
+> diretórios distintos: apontar o `scp` para `Logs/` copiaria para sempre o arquivo velho de 3
+> linhas, e o painel exibiria dado de teste como se fosse a rodada de sábado. Confirmar o destino
+> real logo após o início da rodada, antes de confiar no número.
+
+**Dívida associada:** o `run-metrics-batch.sh` **não é versionado** — só existe na VM, e diverge do
+wrapper versionado [Scripts/vm/run-metrics-then-cypress.sh](../../Scripts/vm/run-metrics-then-cypress.sh)
+(que usa `Logs/`). Normalizar o case e versionar o script é follow-up pós-sábado; mexer no cron ativo
+véspera de rodada é risco desnecessário.
 
 > ⚠️ **O risco desta tarefa é o nome de destino.** O arquivo na VM se chama `layoutparserapi.log`
 > — idêntico ao log ativo da API. Copiar sem renomear **destrói o log da API em produção**. O

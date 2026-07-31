@@ -2,6 +2,7 @@ using System.Text.Json;
 
 using LayoutParserApi.Models.Logging;
 using LayoutParserApi.Services.Interfaces;
+using LayoutParserApi.Services.Logging;
 
 using Microsoft.AspNetCore.Mvc;
 
@@ -56,7 +57,7 @@ namespace LayoutParserApi.Controllers
             // NUNCA propagada como erro pro front-end (o request sempre responde rápido).
             try
             {
-                var sanitizedMessage = SanitizeMessage(request.Message);
+                var sanitizedMessage = LogMessageSanitizer.Sanitize(request.Message, MaxMessageLength);
                 var contextText = SerializeContext(request.Context);
                 var logMessage = contextText is null ? sanitizedMessage : $"{sanitizedMessage} | context: {contextText}";
 
@@ -105,16 +106,6 @@ namespace LayoutParserApi.Controllers
             }
         }
 
-        /// <summary>
-        /// Neutraliza quebra de linha bruta (evita que uma única mensagem vire várias entradas
-        /// falsas no parser de GET api/logs) e limita o tamanho.
-        /// </summary>
-        private static string SanitizeMessage(string message)
-        {
-            var flattened = message.Replace("\r\n", " ").Replace('\n', ' ').Replace('\r', ' ');
-            return flattened.Length > MaxMessageLength ? flattened[..MaxMessageLength] : flattened;
-        }
-
         private string? SerializeContext(object? context)
         {
             if (context is null)
@@ -122,9 +113,10 @@ namespace LayoutParserApi.Controllers
 
             try
             {
+                // Mesma neutralização de quebra de linha da mensagem — o JSON serializado também
+                // vira texto de log e passaria pelo mesmo vetor de "entrada falsa" no leitor.
                 var json = JsonSerializer.Serialize(context);
-                var flattened = json.Replace("\r\n", " ").Replace('\n', ' ').Replace('\r', ' ');
-                return flattened.Length > MaxContextLength ? flattened[..MaxContextLength] : flattened;
+                return LogMessageSanitizer.Sanitize(json, MaxContextLength);
             }
             catch (Exception ex)
             {
