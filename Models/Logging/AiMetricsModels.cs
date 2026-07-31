@@ -116,6 +116,26 @@ namespace LayoutParserApi.Models.Logging
     }
 
     /// <summary>
+    /// Request do Endpoint 3 (POST /api/ai-metrics/cypress-result) — resultado de uma rodada do
+    /// Cypress em modo batch validando um candidato gerado pela IA contra o Pollux/SEFAZ-fake.
+    /// Ver adendo (2026-07-30) em docs/architecture/handoff-frontend-gap-3-painel-ia-metrics.md.
+    /// </summary>
+    public class AiMetricsCypressResultRequest
+    {
+        /// <summary>Identifica de forma inequívoca a geração sendo atualizada — deve casar exatamente com <see cref="AiMetricsGeneration.Layout"/>.</summary>
+        public string Layout { get; set; } = string.Empty;
+
+        /// <summary><c>true</c> = Pollux aceitou (cStat de autorização); <c>false</c> = rejeitado.</summary>
+        public bool? CypressValidado { get; set; }
+
+        /// <summary>Código <c>cStat</c> retornado pela SEFAZ-fake/Pollux, como string (ex. "100", "110").</summary>
+        public string? CStatPollux { get; set; }
+
+        /// <summary>Texto livre opcional, ex. motivo de rejeição — útil pro painel mostrar contexto.</summary>
+        public string? Observacao { get; set; }
+    }
+
+    /// <summary>
     /// Resumo agregado (Endpoint 2 — GET /api/ai-metrics/summary).
     /// </summary>
     public class AiMetricsSummary
