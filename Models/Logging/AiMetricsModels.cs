@@ -18,7 +18,10 @@ namespace LayoutParserApi.Models.Logging
         /// <summary>Modelo Ollama usado na geração, ex. <c>qwen2.5-coder:7b</c>.</summary>
         public string Modelo { get; set; } = string.Empty;
 
-        /// <summary>Instante em que a geração foi concluída (UTC).</summary>
+        /// <summary>
+        /// Instante em que a geração foi concluída, na <b>hora local do servidor</b> (o log grava
+        /// sem fuso, então o valor sai como <c>Kind=Unspecified</c>, sem o sufixo <c>Z</c>) — não é UTC.
+        /// </summary>
         public DateTime Timestamp { get; set; }
 
         /// <summary>Vazão de tokens/segundo reportada pelo Ollama para esta geração.</summary>
@@ -136,6 +139,91 @@ namespace LayoutParserApi.Models.Logging
     }
 
     /// <summary>
+    /// Item do Endpoint 4 (POST /api/ai-metrics/generations/ingest) — uma geração concluída pelo
+    /// job ai/XslSynth --mode=metrics-batch, empurrada pela VM Linux (172.25.32.31) para a API.
+    /// Espelha 1:1 os campos da linha Serilog "Geracao concluida." que o job já grava no log LOCAL
+    /// dele; como esse arquivo vive noutra máquina, o painel do Gap 3 nunca o enxergava
+    /// (ver §A4 de docs/architecture/handoff-job2-cypress-batch.md).
+    /// </summary>
+    public class AiMetricsGenerationIngestRequest
+    {
+        /// <summary>
+        /// Chave de junção com o resultado do Cypress (<see cref="AiMetricsCypressResultRequest.Layout"/>)
+        /// e identificador do caso — é o <c>DatasetPair.Id</c>, COM barras invertidas
+        /// (ex. <c>NFe\4.00\NFe009_4.00_EnvioNFe_NeoGridToSefaz</c>; em JSON, <c>\\</c>).
+        /// Gravado byte-a-byte como veio: a API não normaliza barra, caixa nem prefixo — normalizar
+        /// de um lado só faz o merge falhar em silêncio. Obrigatório e sem espaços em branco.
+        /// </summary>
+        public string Layout { get; set; } = string.Empty;
+
+        /// <summary>Modelo Ollama usado na geração, ex. <c>qwen2.5-coder:7b</c>.</summary>
+        public string? Modelo { get; set; }
+
+        /// <summary>
+        /// Instante REAL em que a geração terminou na VM, de preferência em UTC com sufixo <c>Z</c>
+        /// (ex. <c>2026-08-01T03:41:12Z</c>). Ausente/omitido = instante da ingestão. Importante num
+        /// lote postado no fim de uma rodada de ~4h: sem isso, as N gerações ficariam todas com o
+        /// mesmo horário (o do POST), achatando a ordenação do painel e o <c>UltimaRodada</c>.
+        /// </summary>
+        public DateTime? Timestamp { get; set; }
+
+        /// <summary>Vazão de tokens/segundo reportada pelo Ollama para esta geração.</summary>
+        public double TokensPorSegundo { get; set; }
+
+        /// <summary>Tamanho do prompt (em caracteres) enviado ao modelo.</summary>
+        public int TamanhoPromptChars { get; set; }
+
+        /// <summary>Duração total da geração, em segundos.</summary>
+        public double DuracaoSegundos { get; set; }
+
+        /// <summary>Similaridade do caso com o exemplo few-shot mais próximo usado no prompt (0–1).</summary>
+        public double SimilaridadeFewShot { get; set; }
+
+        /// <summary>Sobreposição de tags estruturais entre saída gerada e gabarito (0–1).</summary>
+        public double TagOverlapRatio { get; set; }
+
+        /// <summary>Similaridade textual entre saída gerada e gabarito (0–1).</summary>
+        public double TextSimilarityRatio { get; set; }
+
+        /// <summary>Resultado da validação XSD, quando o job já a executar. <c>null</c> = não avaliado.</summary>
+        public bool? XsdValido { get; set; }
+
+        /// <summary>
+        /// Normalmente <c>null</c> aqui — quem preenche isso é o Job 2 via
+        /// POST /api/ai-metrics/cypress-result, cujo merge sobrescreve este campo na leitura.
+        /// </summary>
+        public bool? CypressValidado { get; set; }
+
+        /// <summary>Idem <see cref="CypressValidado"/>: normalmente <c>null</c> na ingestão da geração.</summary>
+        public string? CStatPollux { get; set; }
+
+        /// <summary><c>true</c> se o Ollama retornou saída utilizável para o caso (não mede qualidade).</summary>
+        public bool Sucesso { get; set; }
+    }
+
+    /// <summary>
+    /// Resposta do Endpoint 4 (POST /api/ai-metrics/generations/ingest). Itens inválidos são
+    /// ignorados individualmente (o lote não é rejeitado inteiro por causa de um caso ruim) —
+    /// <see cref="Motivos"/> diz o que foi descartado e por quê.
+    /// </summary>
+    public class AiMetricsIngestResult
+    {
+        public bool Success { get; set; } = true;
+
+        /// <summary>Quantidade de itens recebidos no lote.</summary>
+        public int Recebidos { get; set; }
+
+        /// <summary>Quantidade efetivamente gravada como linha "Geracao concluida.".</summary>
+        public int Ingeridos { get; set; }
+
+        /// <summary>Quantidade descartada por validação ou falha de gravação.</summary>
+        public int Ignorados { get; set; }
+
+        /// <summary>Motivos dos itens ignorados (truncado — não devolve um motivo por item num lote grande).</summary>
+        public List<string> Motivos { get; set; } = new();
+    }
+
+    /// <summary>
     /// Resumo agregado (Endpoint 2 — GET /api/ai-metrics/summary).
     /// </summary>
     public class AiMetricsSummary
@@ -156,7 +244,13 @@ namespace LayoutParserApi.Models.Logging
         /// <summary>Total de gerações com <see cref="AiMetricsGeneration.CypressValidado"/> = true. Fica em 0 até a spec Cypress em modo batch existir.</summary>
         public int TotalCypressValidado { get; set; }
 
-        /// <summary>Total de gerações cujo <see cref="AiMetricsGeneration.CStatPollux"/> indica autorização pela SEFAZ-fake/Pollux. Fica em 0 pelo mesmo motivo acima.</summary>
+        /// <summary>
+        /// Total de gerações aceitas pela SEFAZ-fake/Pollux. A autorização é lida de
+        /// <see cref="AiMetricsGeneration.CypressValidado"/>, <b>não</b> derivada do código
+        /// <see cref="AiMetricsGeneration.CStatPollux"/>: quem sabe se aquele cStat significou
+        /// aceite é o cliente Cypress (cStat 110/225, por exemplo, são rejeição, e os códigos de
+        /// aceite variam por tipo de evento). Fica em 0 até o Job 2 postar resultados.
+        /// </summary>
         public int TotalCStatAutorizado { get; set; }
 
         /// <summary>Quebra do resumo por tipo de documento (NFe/CTe/MDFe).</summary>
