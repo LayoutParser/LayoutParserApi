@@ -27,8 +27,12 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
-        /// Lista paginada de gerações individuais, mais recente primeiro.
+        /// Lista paginada de gerações individuais do job de métricas de IA (uma linha
+        /// "Geracao concluida." por item), mais recente primeiro. Todos os filtros são opcionais —
+        /// sem filtro, retorna a página mais recente.
         /// </summary>
+        /// <param name="filter">Filtros de página/tamanho, layout, modelo, sucesso e período (de/ate).</param>
+        /// <returns>Página de gerações (<see cref="PagedAiMetricsGenerationsResult"/>).</returns>
         [HttpGet("generations")]
         public async Task<IActionResult> GetGenerations([FromQuery] AiMetricsGenerationFilter filter)
         {
@@ -45,8 +49,13 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
-        /// Resumo agregado para os cards do topo do painel.
+        /// Resumo agregado das gerações do job de métricas de IA, para os cards do topo do
+        /// painel (totais, médias e quebra por tipo de documento). Sem filtro, agrega tudo que
+        /// existir no log.
         /// </summary>
+        /// <param name="de">Início do período (opcional, inclusivo).</param>
+        /// <param name="ate">Fim do período (opcional, inclusivo).</param>
+        /// <returns>Resumo agregado (<see cref="AiMetricsSummary"/>).</returns>
         [HttpGet("summary")]
         public async Task<IActionResult> GetSummary([FromQuery] DateTime? de, [FromQuery] DateTime? ate)
         {
