@@ -134,13 +134,22 @@ namespace LayoutParserApi.Models.Logging
         /// <summary>Código <c>cStat</c> retornado pela SEFAZ-fake/Pollux, como string (ex. "100", "110").</summary>
         public string? CStatPollux { get; set; }
 
-        /// <summary>Texto livre opcional, ex. motivo de rejeição — útil pro painel mostrar contexto.</summary>
+        /// <summary>
+        /// Texto livre opcional, ex. motivo de rejeição do Pollux. <b>Write-only hoje:</b> é
+        /// higienizado e persistido na linha de log, mas ainda NÃO é devolvido por nenhum contrato
+        /// de leitura — não aparece em <see cref="AiMetricsGeneration"/> nem em GET
+        /// /api/ai-metrics/generations. Mantido gravando de propósito: quando o Job 2 (Cypress ×
+        /// Pollux) estiver produzindo observações reais, este é o dado diagnóstico mais útil que
+        /// existe, e jogá-lo fora agora significaria perdê-lo justamente das rodadas iniciais.
+        /// Expor no contrato de leitura é follow-up, coordenado com o front-end.
+        /// </summary>
         public string? Observacao { get; set; }
     }
 
     /// <summary>
     /// Item do Endpoint 4 (POST /api/ai-metrics/generations/ingest) — uma geração concluída pelo
-    /// job ai/XslSynth --mode=metrics-batch, empurrada pela VM Linux (172.25.32.31) para a API.
+    /// job ai/XslSynth --mode=metrics-batch, empurrada para a API pela VM Linux de métricas de IA
+    /// (o IP dela muda por DHCP — confirme o atual no runbook operacional).
     /// Espelha 1:1 os campos da linha Serilog "Geracao concluida." que o job já grava no log LOCAL
     /// dele; como esse arquivo vive noutra máquina, o painel do Gap 3 nunca o enxergava
     /// (ver §A4 de docs/architecture/handoff-job2-cypress-batch.md).

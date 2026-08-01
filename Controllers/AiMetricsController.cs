@@ -140,7 +140,8 @@ namespace LayoutParserApi.Controllers
 
         /// <summary>
         /// Ingestão de um LOTE de gerações produzidas pelo job ai/XslSynth --mode=metrics-batch, que
-        /// roda numa VM Linux separada (172.25.32.31) e grava o log dele lá, não no diretório de log
+        /// roda numa VM Linux separada (o IP dela muda por DHCP — confirme o atual no runbook
+        /// operacional, não presuma o que estiver escrito aqui) e grava o log dele lá, não no diretório de log
         /// que esta API lê (Windows). Sem este endpoint, as linhas "Geracao concluida." nunca chegam
         /// ao <see cref="IAiMetricsReaderService"/>: GET /generations vem vazio e o merge do
         /// POST /cypress-result não encontra geração alguma pra casar (§A4 de
