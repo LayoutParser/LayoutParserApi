@@ -1,4 +1,5 @@
 using LayoutParserApi.Models.Logging;
+using LayoutParserApi.Services.Filters;
 using LayoutParserApi.Services.Interfaces;
 using LayoutParserApi.Services.Logging;
 
@@ -95,7 +96,12 @@ namespace LayoutParserApi.Controllers
         /// docs/architecture/handoff-frontend-gap-3-painel-ia-metrics.md.
         /// </summary>
         /// <param name="request">Layout identificando a geração, resultado da validação e cStat retornado pelo Pollux.</param>
+        /// <remarks>
+        /// Exige o header <c>X-AiMetrics-Key</c> (ver <see cref="AiMetricsIngestKeyFilter"/>): é
+        /// escrita que vira número no painel da diretoria, e a app não tem pipeline de autenticação.
+        /// </remarks>
         [HttpPost("cypress-result")]
+        [ServiceFilter(typeof(AiMetricsIngestKeyFilter))]
         public IActionResult PostCypressResult([FromBody] AiMetricsCypressResultRequest? request)
         {
             if (request is null || string.IsNullOrWhiteSpace(request.Layout))
@@ -134,7 +140,8 @@ namespace LayoutParserApi.Controllers
 
         /// <summary>
         /// Ingestão de um LOTE de gerações produzidas pelo job ai/XslSynth --mode=metrics-batch, que
-        /// roda numa VM Linux separada (172.25.32.31) e grava o log dele lá, não no diretório de log
+        /// roda numa VM Linux separada (o IP dela muda por DHCP — confirme o atual no runbook
+        /// operacional, não presuma o que estiver escrito aqui) e grava o log dele lá, não no diretório de log
         /// que esta API lê (Windows). Sem este endpoint, as linhas "Geracao concluida." nunca chegam
         /// ao <see cref="IAiMetricsReaderService"/>: GET /generations vem vazio e o merge do
         /// POST /cypress-result não encontra geração alguma pra casar (§A4 de
@@ -143,11 +150,19 @@ namespace LayoutParserApi.Controllers
         /// Cada item vira uma linha Serilog "Geracao concluida." (Source=AiMetrics) no mesmo log já
         /// lido pelo painel — nenhuma fonte da verdade nova. Item inválido é ignorado sozinho, sem
         /// derrubar o lote (a resposta diz quantos e por quê).
-        /// Reenviar o mesmo lote é seguro: a leitura colapsa duplicatas por (Layout, Timestamp).
+        /// Reenviar o mesmo lote é seguro <b>desde que cada item traga seu <c>Timestamp</c></b>: a
+        /// leitura colapsa duplicatas por (Layout, Timestamp). Por isso o campo é OBRIGATÓRIO — item
+        /// sem ele faz o lote INTEIRO ser recusado com 400 (antes, a ingestão caía em
+        /// <c>DateTime.Now</c> e o reenvio duplicava a geração no painel em silêncio).
         /// </summary>
         /// <param name="request">Array de gerações — as mesmas chaves da linha "Geracao concluida.".</param>
         /// <returns>Contagem de recebidos/ingeridos/ignorados (<see cref="AiMetricsIngestResult"/>).</returns>
+        /// <remarks>
+        /// Exige o header <c>X-AiMetrics-Key</c> (ver <see cref="AiMetricsIngestKeyFilter"/>): é
+        /// escrita que vira número no painel da diretoria, e a app não tem pipeline de autenticação.
+        /// </remarks>
         [HttpPost("generations/ingest")]
+        [ServiceFilter(typeof(AiMetricsIngestKeyFilter))]
         public IActionResult PostGenerationsIngest([FromBody] List<AiMetricsGenerationIngestRequest>? request)
         {
             if (request is null || request.Count == 0)
@@ -155,6 +170,13 @@ namespace LayoutParserApi.Controllers
 
             if (request.Count > _aiMetricsIngestService.TamanhoMaximoLote)
                 return BadRequest(new { success = false, error = $"Lote excede o máximo de {_aiMetricsIngestService.TamanhoMaximoLote} gerações por requisição." });
+
+            // ✅ Contrato do LOTE (≠ validação de item, que só ignora o caso ruim): sem Timestamp
+            // explícito não há chave estável de dedup e o reenvio duplica as gerações no painel.
+            // Quem omite o campo é o produtor inteiro, não um caso — falha alto, não em silêncio.
+            var erroDeContrato = _aiMetricsIngestService.ValidarContratoDoLote(request);
+            if (erroDeContrato != null)
+                return BadRequest(new { success = false, error = erroDeContrato });
 
             try
             {

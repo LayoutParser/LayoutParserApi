@@ -371,3 +371,5 @@ appsettings.*.local.json
 appsettings.Local.json
 secrets.json
 *.secrets.json
+
+.codex

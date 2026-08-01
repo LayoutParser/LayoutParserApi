@@ -32,4 +32,11 @@ produção (não mexer sem confirmação). Dois detalhes que só se descobrem po
    usa `Logs/`. Em Linux são diretórios distintos — antes de montar o `scp` da ponte, conferir para
    qual dos dois o cron realmente escreveu, senão a tarefa agendada copia um arquivo velho.
 
-Ver [[runner-isolation-rollout]].
+3. **A VM é ponto único de falha e já foi vista fora do ar:** em 2026-07-31 (véspera da rodada de
+   sábado) ela ficou **totalmente inacessível** — sem ICMP, sem 22, sem 11434, e o `tracert` morre
+   depois do gateway que responde normalmente pelo `.42`. Ou seja: VPN/rota OK, host fora. Se a VM
+   não voltar antes de sábado 00:00, **não há rodada** — nenhuma ponte de log compensa isso.
+   Consequência de desenho já aplicada: a tarefa de cópia no `.42` trata origem ausente como
+   WARN + exit 0, nunca como erro permanente.
+
+Ver [[runner-isolation-rollout]] e [[prod-42-acesso-bloqueado]].

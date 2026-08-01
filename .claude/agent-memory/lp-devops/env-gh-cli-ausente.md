@@ -28,3 +28,18 @@ GitHub API:
 Para runs de **produção** (runner no `WINSRV2022-LIB`) esse atalho não existe — aí é browser
 (github.com/LayoutParser/LayoutParserApi/actions). `git ls-remote origin refs/heads/master` é
 read-only e mostra se a master avançou sem precisar de fetch. Ver [[runner-isolation-rollout]].
+
+**Como datar um deploy de produção sem `gh` e sem acesso ao filesystem do servidor**
+(descoberto em 2026-07-31; o `.42` não é administrável daqui — ver [[prod-42-acesso-bloqueado]]):
+a própria API entrega a evidência pelo endpoint de logs unificados.
+
+1. Escolha uma string que **só existe no código novo** (ex.: uma mensagem de log introduzida
+   pelo commit em questão).
+2. `GET http://172.25.32.42:5000/api/logs?search=<string>&pageSize=1` → `totalCount` = nº de
+   ocorrências; `items[0].timestamp` = a mais recente.
+3. `GET ...&page=<totalCount>` → a ocorrência **mais antiga** = limite superior para o instante
+   em que o binário novo entrou no ar.
+
+Casa `git log -S'<string>'` (qual commit introduziu) com `git ls-remote origin refs/heads/master`
+e você data o deploy sem tocar no servidor. Serve também para provar o contrário: ausência total
+da string = binário velho ainda rodando.
