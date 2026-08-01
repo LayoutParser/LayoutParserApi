@@ -1,4 +1,5 @@
 using LayoutParserApi.Models.Logging;
+using LayoutParserApi.Services.Filters;
 using LayoutParserApi.Services.Interfaces;
 using LayoutParserApi.Services.Logging;
 
@@ -95,7 +96,12 @@ namespace LayoutParserApi.Controllers
         /// docs/architecture/handoff-frontend-gap-3-painel-ia-metrics.md.
         /// </summary>
         /// <param name="request">Layout identificando a geração, resultado da validação e cStat retornado pelo Pollux.</param>
+        /// <remarks>
+        /// Exige o header <c>X-AiMetrics-Key</c> (ver <see cref="AiMetricsIngestKeyFilter"/>): é
+        /// escrita que vira número no painel da diretoria, e a app não tem pipeline de autenticação.
+        /// </remarks>
         [HttpPost("cypress-result")]
+        [ServiceFilter(typeof(AiMetricsIngestKeyFilter))]
         public IActionResult PostCypressResult([FromBody] AiMetricsCypressResultRequest? request)
         {
             if (request is null || string.IsNullOrWhiteSpace(request.Layout))
@@ -147,7 +153,12 @@ namespace LayoutParserApi.Controllers
         /// </summary>
         /// <param name="request">Array de gerações — as mesmas chaves da linha "Geracao concluida.".</param>
         /// <returns>Contagem de recebidos/ingeridos/ignorados (<see cref="AiMetricsIngestResult"/>).</returns>
+        /// <remarks>
+        /// Exige o header <c>X-AiMetrics-Key</c> (ver <see cref="AiMetricsIngestKeyFilter"/>): é
+        /// escrita que vira número no painel da diretoria, e a app não tem pipeline de autenticação.
+        /// </remarks>
         [HttpPost("generations/ingest")]
+        [ServiceFilter(typeof(AiMetricsIngestKeyFilter))]
         public IActionResult PostGenerationsIngest([FromBody] List<AiMetricsGenerationIngestRequest>? request)
         {
             if (request is null || request.Count == 0)
