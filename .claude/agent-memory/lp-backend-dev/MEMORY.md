@@ -10,4 +10,7 @@
 - [Harness isolado pra testar leitura de log](isolated-log-testing-harness-pattern.md) — nunca testar contra `Logging:File:Directory` de produção; padrão validado com console+FrameworkReference.
 - [XmlAnalysisController DI fix (2026-07-29)](xmlanalysiscontroller-di-fix-2026-07-29.md) — GeminiAIService no construtor derrubava o controller inteiro; endpoint analyze-xsd-error-with-ai removido (substituto Ollama já existe).
 - [Duas rotas VM→painel de métricas de IA](ai-metrics-duas-rotas-vm-para-painel.md) — POST ingest e ponte de cópia de log resolvem o MESMO bug; ativar as duas duplica cada geração e o dedup não colapsa (fusos diferentes).
+- [Topologia de build: .sln vs .csproj](build-topology-sln-vs-csproj.md) — `dotnet build` na raiz resolve pela SOLUTION e é o que o deploy.yml roda; por isso `tests/LayoutParserApi.Tests` ficou fora da .sln.
+- [Chave de ingestão de métricas de IA é fail-closed](aimetrics-ingest-key-fail-closed.md) — sem `AiMetrics__IngestApiKey` como env var, os POSTs de escrita respondem 403; appsettings do destino é preservado pelo CI.
+- [Sessões concorrentes: commit por item](sessoes-concorrentes-commit-por-item.md) — outras sessões editam a mesma árvore; `git add` com caminho explícito, nunca `-A`/`commit -a`.
 - [Endpoint execute-candidates (Gap 1, 2026-07-28)](execute-candidates-endpoint-2026-07-28.md) — decisões de design não fechadas no contrato: 400 via consulta DB, timeout do conjunto = RunnerTimeoutSeconds*MaxConcurrentRunners, CandidateId/Score/Validation por pathway.
