@@ -149,7 +149,10 @@ namespace LayoutParserApi.Controllers
         /// Cada item vira uma linha Serilog "Geracao concluida." (Source=AiMetrics) no mesmo log já
         /// lido pelo painel — nenhuma fonte da verdade nova. Item inválido é ignorado sozinho, sem
         /// derrubar o lote (a resposta diz quantos e por quê).
-        /// Reenviar o mesmo lote é seguro: a leitura colapsa duplicatas por (Layout, Timestamp).
+        /// Reenviar o mesmo lote é seguro <b>desde que cada item traga seu <c>Timestamp</c></b>: a
+        /// leitura colapsa duplicatas por (Layout, Timestamp). Por isso o campo é OBRIGATÓRIO — item
+        /// sem ele faz o lote INTEIRO ser recusado com 400 (antes, a ingestão caía em
+        /// <c>DateTime.Now</c> e o reenvio duplicava a geração no painel em silêncio).
         /// </summary>
         /// <param name="request">Array de gerações — as mesmas chaves da linha "Geracao concluida.".</param>
         /// <returns>Contagem de recebidos/ingeridos/ignorados (<see cref="AiMetricsIngestResult"/>).</returns>
@@ -166,6 +169,13 @@ namespace LayoutParserApi.Controllers
 
             if (request.Count > _aiMetricsIngestService.TamanhoMaximoLote)
                 return BadRequest(new { success = false, error = $"Lote excede o máximo de {_aiMetricsIngestService.TamanhoMaximoLote} gerações por requisição." });
+
+            // ✅ Contrato do LOTE (≠ validação de item, que só ignora o caso ruim): sem Timestamp
+            // explícito não há chave estável de dedup e o reenvio duplica as gerações no painel.
+            // Quem omite o campo é o produtor inteiro, não um caso — falha alto, não em silêncio.
+            var erroDeContrato = _aiMetricsIngestService.ValidarContratoDoLote(request);
+            if (erroDeContrato != null)
+                return BadRequest(new { success = false, error = erroDeContrato });
 
             try
             {

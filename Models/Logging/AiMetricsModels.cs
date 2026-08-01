@@ -161,9 +161,11 @@ namespace LayoutParserApi.Models.Logging
 
         /// <summary>
         /// Instante REAL em que a geração terminou na VM, de preferência em UTC com sufixo <c>Z</c>
-        /// (ex. <c>2026-08-01T03:41:12Z</c>). Ausente/omitido = instante da ingestão. Importante num
-        /// lote postado no fim de uma rodada de ~4h: sem isso, as N gerações ficariam todas com o
-        /// mesmo horário (o do POST), achatando a ordenação do painel e o <c>UltimaRodada</c>.
+        /// (ex. <c>2026-08-01T03:41:12Z</c>). <b>Obrigatório</b> (nullable só pra distinguir
+        /// "omitido" de zero): item sem ele faz o lote inteiro receber 400. Importante num lote
+        /// postado no fim de uma rodada de ~4h — sem isso, as N gerações ficariam todas com o mesmo
+        /// horário (o do POST), achatando a ordenação do painel e o <c>UltimaRodada</c> — e é
+        /// também metade da chave de dedup (Layout, Timestamp) que torna o reenvio idempotente.
         /// </summary>
         public DateTime? Timestamp { get; set; }
 
