@@ -342,6 +342,11 @@ try
     // sem isso o painel lê um diretório que nunca recebe geração nenhuma.
     builder.Services.AddScoped<IAiMetricsIngestService, AiMetricsIngestService>();
 
+    // ✅ Chave compartilhada dos DOIS endpoints de escrita de métricas de IA (mesmo padrão de
+    // registro do AuditActionFilter acima, aplicado via [ServiceFilter] no controller). Fail-closed:
+    // sem AiMetrics__IngestApiKey no ambiente, a escrita é recusada — ver AiMetricsIngestKeyFilter.
+    builder.Services.AddScoped<AiMetricsIngestKeyFilter>();
+
     var app = builder.Build();
 
     Log.Information("Application built successfully. Environment: {Environment}", app.Environment.EnvironmentName);
