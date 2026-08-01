@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Como rodar:  dotnet test tests\LayoutParserApi.Tests\LayoutParserApi.Tests.csproj
+
+       Este projeto NÃO está em LayoutParserApi.sln de propósito. Na raiz do repo há um .sln e um
+       .csproj, e o MSBuild resolve `dotnet build` sem argumento pela SOLUTION — o deploy.yml roda
+       exatamente isso. Incluir os testes na .sln faria o deploy de produção passar a restaurar
+       xUnit e compilar testes, e uma falha de restore ali quebraria o deploy. Entrar na .sln e
+       adicionar `dotnet test` ao CI é decisão de @lp-devops. -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>preview</LangVersion>
+    <IsPackable>false</IsPackable>
+    <!-- Sem apphost: evita o erro de CreateAppHost em diretório temporário/máquina de build
+         (armadilha conhecida desta máquina, ver harness de QA). O runner do xUnit não precisa
+         do executável nativo. -->
+    <UseAppHost>false</UseAppHost>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- A API é um projeto Web (Microsoft.NET.Sdk.Web); o FrameworkReference do
+         Microsoft.AspNetCore.App flui por aqui, então os testes enxergam ILogger/IConfiguration
+         sem PackageReference extra. -->
+    <ProjectReference Include="..\..\LayoutParserApi.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+</Project>

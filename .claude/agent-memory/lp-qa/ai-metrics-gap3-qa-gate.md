@@ -1,46 +1,72 @@
 ---
 name: ai-metrics-gap3-qa-gate
-description: QA gate do painel de métricas de IA (Gap 3). Endpoint 3 (cypress-result) reprovado em 2026-07-30 com 6 defeitos reproduzidos em harness; lições estruturais sobre "log como banco de dados" e sobre dois Serilog independentes escrevendo no MESMO arquivo.
+description: QA gate do painel de métricas de IA (Gap 3). Endpoint 3 reprovado 2026-07-30 (6 defeitos); RE-GATE 2026-07-31 (commit 9e48650) fechou os 6 por execução. Achado decisivo em aberto: as duas pontes de ingestão ativas juntas contam cada geração DUAS vezes.
 metadata:
   type: project
 ---
 
 Painel de métricas de IA (Gap 3, `docs/architecture/handoff-frontend-gap-3-painel-ia-metrics.md`)
-foi apresentado ao coordenador/diretoria a partir da rodada de **sábado 2026-08-01**. Gate do
-Endpoint 3 (`POST /api/ai-metrics/cypress-result`, commit `a1df178`) deu **FAIL** em 2026-07-30.
+apresentado à diretoria a partir da rodada de sábado **2026-08-01**.
 
-**Why:** número errado exibido em apresentação de diretoria é severidade máxima — e três dos
-defeitos faziam justamente isso (rejeição contada como autorização, geração fantasma no gráfico,
-cStat forjado por texto livre honesto).
+### RE-GATE 2026-07-31 (commit `9e48650`, mergeado em master via PR #13) — 49 PASS / 1 FAIL
 
-**How to apply:** ao revisar qualquer coisa nesta área, atacar primeiro as três fragilidades
-ESTRUTURAIS abaixo — os defeitos pontuais são sintomas delas e voltam em cada feature nova.
+Os **6 bloqueios** do gate anterior estão **fechados**, verificados por execução em harness isolado
+(nunca apontando pro diretório de log de produção): B1 `[Corr:]` opcional (validado com as linhas
+REAIS do job), 4ª fonte `layoutparserai.log`, B3 sanitização de CR/LF, B2 regex ancorado pro
+`Observacao` com `=`, B4 `TotalCStatAutorizado` por `CypressValidado`, B6 merge só na geração mais
+recente anterior ao POST, B5 merge sobrevive ao recorte de período. Build: 0 erros / 543 warnings
+(passivo pré-existente).
 
-### 1. Dois Serilog independentes escrevem no MESMO arquivo, com templates divergentes
-`ai/XslSynth` (job `metrics-batch`) e a API configuram loggers separados apontando para
-`layoutparserapi.log`. Os `outputTemplate` divergiram (o do job não tem `[Corr:...]`), e o regex
-do leitor exigia o campo → 100% das linhas de geração viraram "continuação" e o painel ficava
-vazio. **Nenhuma revisão só-de-código pega isso**: os dois lados parecem certos isoladamente.
-Sempre que alguém tocar em template de log ou no regex do leitor, rodar o parser contra linhas
-reais dos DOIS produtores. Mesma classe do bug de `DateTimeStyles` em
-[[unified-logging-parse-bug-and-log-dir-incident]].
+### 🔴 Achado estrutural em aberto — contagem em dobro pelas duas pontes
 
-### 2. Arquivo de log rotativo usado como banco de dados
-O merge do Cypress é lógico, na leitura: o resultado da validação só existe como linha de log.
-Mas o Serilog rotaciona (`fileSizeLimitKB`/`retainedFileCountLimit`) e o leitor só abre os 3
-arquivos mais recentes por fonte — ou seja, **estado de negócio guardado num buffer circular**,
-que some sozinho sem erro nenhum. Aceitável como atalho de prazo; não aceitar como permanente.
+Existem DOIS caminhos para a mesma geração chegar ao painel: (a) `POST /api/ai-metrics/generations/ingest`
+(Endpoint 4, grava em `layoutparserapi.log` COM campo `Timestamp=`) e (b) cópia do arquivo da VM
+lida como 4ª fonte (`layoutparserai.log`, SEM campo `Timestamp=` — `MetricsBatchRunner.LogCaso` não
+o emite). A dedup é `GroupBy((Layout, Timestamp))` em `AiMetricsReaderService`, e o `Timestamp` de
+(b) é o instante em que a LINHA foi escrita, enquanto o de (a) é o instante enviado no payload.
 
-### 3. Campo de texto livre logado em mensagem tokenizada por espaço
-O parser faz `split(' ')` + `fields[key] = value` (último vence). Qualquer campo livre no fim da
-mensagem (`Observacao`) sobrescreve os campos reais — inclusive sem má-fé: a observação natural
-"Rejeitado: esperava CStatPollux=100 e veio 110" faz o painel exibir cStat 100. Com `\n` no
-texto, forja uma LINHA inteira (geração fantasma com métricas arbitrárias). O irmão
-`LogsController.PostClientLog` já sanitiza (achata `\r\n`, trunca) — este endpoint não seguiu.
+**Só colapsa se os dois baterem ao milissegundo E na mesma base de fuso.** Medido: iguais → 1;
+1,3s de diferença → 2; VM em UTC com API em UTC-3 → 2; rodada real de 54 casos → **108**. Pior
+efeito: com o Cypress aprovando os 54, o painel exibe `54/108 = 50%` de aprovação quando o real é
+100% — **número errado em apresentação de diretoria**, que é a severidade máxima deste projeto.
+**Why:** a dedup foi desenhada para reenvio do MESMO produtor (retry/replay), não para dois
+produtores com relógios independentes. **How to apply:** ativar **uma** ponte só; se as duas
+forem necessárias, a chave de dedup precisa ser um id de geração estável (ou o `Timestamp` da VM
+propagado idêntico nos dois caminhos), não o instante da linha.
+
+### Achados menores do Endpoint 4 (revisado pela 1ª vez neste gate)
+
+- Idempotência **só vale com `Timestamp` explícito**; sem ele a ingestão usa `DateTime.Now` e o
+  reenvio duplica (medido: 1 geração enviada 2x → 2 itens). O XML doc do controller promete
+  idempotência sem essa ressalva.
+- **Sem teto de tamanho de campo** (`Layout`/`Modelo`): um `Layout` de 200.000 chars foi aceito e
+  gravou 200 KB numa linha só. O endpoint irmão (`cypress-result`) capa em 500/20/1000 chars.
+  Agrava a fragilidade nº 2 abaixo (retenção ~20 MB, e o leitor só abre os 3 arquivos mais recentes).
+- Endpoint de **escrita sem autenticação** (a app não tem `UseAuthorization`), alimentando o painel
+  mostrado à diretoria.
+
+### As 3 fragilidades ESTRUTURAIS (atacar primeiro — defeitos pontuais são sintomas delas)
+
+1. **Dois Serilog independentes escrevem no MESMO arquivo, com templates divergentes.** Foi o que
+   zerou o painel (regex exigia `[Corr:]`, template do job não tem). Nenhuma revisão só-de-código
+   pega isso: os dois lados parecem certos isoladamente. Sempre rodar o parser contra linhas reais
+   dos DOIS produtores. Mesma classe do bug de `DateTimeStyles` em
+   [[unified-logging-parse-bug-and-log-dir-incident]].
+2. **Arquivo de log rotativo usado como banco de dados.** Estado de negócio (resultado do Cypress,
+   histórico de gerações) só existe como linha de log, num buffer circular
+   (`fileSizeLimitKB` 2049 × `retainedFileCountLimit` 10 ≈ 20 MB) — e o leitor abre só os **3**
+   arquivos mais recentes por fonte. Some sozinho, sem erro. Aceitável como atalho de prazo; não
+   como permanente.
+3. **Campo de texto livre logado em mensagem tokenizada por espaço.** Corrigido no `Cypress validado.`
+   (regex ancorado + sanitização), mas `TryParseGeracao` **ainda** usa `split(' ')` + last-wins — a
+   proteção hoje é o Endpoint 4 recusar espaço no `Layout`. Qualquer campo livre novo na linha de
+   geração reabre o vetor.
 
 ### Lição de processo (minha)
-Aprovei os Endpoints 1 e 2 deste mesmo Gap sem executar o parser contra as linhas reais do
-`Logs/layoutparserapi.log`, e por isso deixei passar o defeito nº 1, que zerava o painel inteiro.
-Para feature de parsing/log, **revisão de código não substitui execução contra dado real** —
-harness console com `ProjectReference` pro `.csproj` da API resolve em minutos (receita em
-[[unified-logging-parse-bug-and-log-dir-incident]]).
+
+Aprovei os Endpoints 1 e 2 sem executar o parser contra linhas reais e por isso deixei passar o
+defeito que zerava o painel. Para feature de parsing/log, **revisão de código não substitui execução
+contra dado real**. Receita do harness isolado em [[unified-logging-parse-bug-and-log-dir-incident]].
+Detalhe operacional desta máquina: o Defender bloqueia o build de assembly chamado `qagate`
+(`Access to the path ... denied` no copy obj→bin) — renomear o `AssemblyName` resolve; e usar
+`<UseAppHost>false</UseAppHost>` evita o erro `CreateAppHost` em diretório temporário.
