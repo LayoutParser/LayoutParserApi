@@ -8,7 +8,8 @@ using Serilog.Context;
 namespace LayoutParserApi.Services.Logging
 {
     /// <summary>
-    /// Ingestão de gerações de IA vindas de fora do processo da API (VM Linux 172.25.32.31).
+    /// Ingestão de gerações de IA vindas de fora do processo da API (a VM Linux de métricas de IA —
+    /// o IP dela muda por DHCP, confirme o atual no runbook operacional).
     /// Grava exatamente a MESMA linha Serilog que o job ai/XslSynth --mode=metrics-batch grava no
     /// log local dele (<c>MetricsBatchRunner.LogCaso</c>) — mesmo prefixo, mesmos pares Chave=Valor,
     /// mesmo Source=AiMetrics — de modo que o <see cref="AiMetricsReaderService"/> a enxergue sem

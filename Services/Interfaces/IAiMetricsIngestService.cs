@@ -4,7 +4,8 @@ namespace LayoutParserApi.Services.Interfaces
 {
     /// <summary>
     /// Contraparte de ESCRITA do <see cref="IAiMetricsReaderService"/>: recebe gerações vindas do
-    /// job ai/XslSynth --mode=metrics-batch (que roda noutra máquina — VM Linux 172.25.32.31) e as
+    /// job ai/XslSynth --mode=metrics-batch (que roda noutra máquina — a VM Linux de métricas de
+    /// IA, cujo IP muda por DHCP: confirme o atual no runbook operacional) e as
     /// grava no MESMO log que o leitor já consome, como linhas "Geracao concluida." com
     /// Source=AiMetrics. Assim o painel do Gap 3 continua tendo uma única fonte da verdade
     /// (o log unificado), sem banco/arquivo paralelo.
