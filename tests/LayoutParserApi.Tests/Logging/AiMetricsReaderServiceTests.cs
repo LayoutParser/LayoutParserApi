@@ -110,6 +110,38 @@ namespace LayoutParserApi.Tests.Logging
         }
 
         /// <summary>
+        /// A outra metade da janela do merge: o LIMITE SUPERIOR. O resultado do Cypress só pode
+        /// marcar geração que JÁ EXISTIA quando o POST chegou — senão o resultado da rodada N
+        /// marcaria como validada uma geração da rodada N+1, que ninguém validou, e o card de
+        /// aprovação da diretoria contaria uma validação que não aconteceu.
+        /// </summary>
+        /// <remarks>
+        /// Não é hipótese: o cenário apareceu ao vivo no gate de QA (2026-07-31) — geração em
+        /// 2026-08-01 00:41 contra linha de Cypress escrita às 23:15 de 31/07. E a invariante era
+        /// LOAD-BEARING sem teste: apagar o <c>.Where(g => g.Timestamp &lt;= cypress.Timestamp)</c>
+        /// de <c>ApplyCypressMerge</c> deixava todos os outros testes verdes, porque em todos eles
+        /// a geração é anterior ao POST e o limite nunca chega a ser exercido.
+        /// </remarks>
+        [Fact]
+        public async Task Merge_nao_marca_geracao_posterior_ao_post_do_cypress()
+        {
+            var cypressEm = new DateTime(2026, 7, 31, 23, 15, 0);
+            var geracaoEm = new DateTime(2026, 8, 1, 0, 41, 0);   // rodada seguinte: ninguém validou
+
+            var fake = new FakeUnifiedLogReaderService(
+                FakeUnifiedLogReaderService.Entrada(LinhaGeracao(LayoutCTe, geracaoEm), geracaoEm),
+                FakeUnifiedLogReaderService.Entrada(
+                    $"Cypress validado. Layout={LayoutCTe} CypressValidado=true CStatPollux=135 Observacao=ok",
+                    cypressEm));
+
+            var page = await CriarReader(fake).GetGenerationsAsync(new AiMetricsGenerationFilter());
+
+            var geracao = Assert.Single(page.Items);
+            Assert.Null(geracao.CypressValidado);
+            Assert.Null(geracao.CStatPollux);
+        }
+
+        /// <summary>
         /// Cenário 5 — o Job 2 posta o resultado no dia SEGUINTE ao da geração. Se o recorte de
         /// período fosse empurrado pro leitor de log, filtrar o sábado descartaria a linha de
         /// domingo e o merge sumiria do painel. Lê tudo → faz o merge → só então recorta.

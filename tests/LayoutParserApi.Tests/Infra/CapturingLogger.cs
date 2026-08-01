@@ -7,10 +7,21 @@ namespace LayoutParserApi.Tests.Infra
     /// inspecionar o texto que viraria linha de log (é o texto, não o objeto, que o painel relê).
     /// </summary>
     /// <remarks>
-    /// Usa o renderizador do Microsoft.Extensions.Logging, não o do Serilog. Os dois coincidem
-    /// pros valores usados aqui (strings/números/bools já formatados pelo serviço), mas divergem
-    /// em <c>null</c> — MEL escreve "(null)" e o Serilog escreve "null". Onde essa diferença
-    /// importa, o teste é feito contra o arquivo real (ver <c>AiMetricsRoundTripTests</c>).
+    /// Usa o renderizador do Microsoft.Extensions.Logging, não o do Serilog (que é quem escreve a
+    /// linha em produção). Os dois coincidem pros valores que o serviço já formata como string
+    /// (layout, números, timestamp), mas divergem em DOIS pontos — medido gravando a MESMA geração
+    /// pelos dois caminhos:
+    /// <list type="bullet">
+    ///   <item><description><c>null</c>: MEL escreve <c>(null)</c>, Serilog escreve <c>null</c>.
+    ///   Esta divergência é PERIGOSA — o leitor só mapeia o literal <c>null</c> de volta pra nulo
+    ///   (<c>ParseNullableString</c>/<c>ParseNullableBool</c>), então <c>(null)</c> chegaria ao
+    ///   painel como valor de verdade (um cStat literal "(null)").</description></item>
+    ///   <item><description><c>bool</c>: MEL escreve <c>True</c>, Serilog escreve <c>true</c>.
+    ///   Inofensiva na prática — <c>bool.TryParse</c> aceita as duas caixas.</description></item>
+    /// </list>
+    /// Conclusão prática: este logger serve pra inspecionar o TEXTO (sanitização, truncamento,
+    /// determinismo do reenvio). Toda asserção sobre campo NULO tem que ser feita contra o arquivo
+    /// real, escrito por um Serilog de verdade — ver <c>AiMetricsRoundTripTests</c>.
     /// </remarks>
     internal sealed class CapturingLogger<T> : ILogger<T>
     {
