@@ -7,10 +7,11 @@
     <UserSecretsId>2aefc4e0-99bb-4143-b95b-5a01bf22d27a</UserSecretsId>
     <DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
     <DockerfileContext>.</DockerfileContext>
-    <!-- O MCP (mcp/LayoutParserMcp) e o projeto de síntese de IA (ai/XslSynth) são
-         projetos separados aninhados nesta árvore. Exclui seus arquivos do glob padrão
-         da API para não colidir no build (Program.cs duplicado + tipos de outros pacotes). -->
-    <DefaultItemExcludes>$(DefaultItemExcludes);mcp\**;ai\**;.claude\**;tools\**</DefaultItemExcludes>
+    <!-- O MCP (mcp/LayoutParserMcp), o projeto de síntese de IA (ai/XslSynth) e o projeto de
+         testes (tests/LayoutParserApi.Tests) são projetos separados aninhados nesta árvore.
+         Exclui seus arquivos do glob padrão da API para não colidir no build (Program.cs
+         duplicado + tipos de outros pacotes). -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);mcp\**;ai\**;.claude\**;tools\**;tests\**</DefaultItemExcludes>
     <LangVersion>preview</LangVersion>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
 	<GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
