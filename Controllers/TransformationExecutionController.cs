@@ -240,8 +240,7 @@ namespace LayoutParserApi.Controllers
         {
             var result = new List<TransformationCandidate>();
 
-            // Sysmiddle/low-code espera texto posicional (TXT), não XML — mesma premissa do
-            // ParseController.Upload (gate por detectedType != "xml").
+            // Sysmiddle/low-code espera texto posicional (TXT), não XML.
             if (isXmlInput)
                 return result;
 
@@ -254,12 +253,16 @@ namespace LayoutParserApi.Controllers
                     return result;
                 }
 
+                // Este endpoint só possui o registro resumido do catálogo, não o LayoutVO completo.
+                // Portanto não inventa MQSeries: persiste unknown/default e põe a amostra em quarentena.
+                var positionalMetadata = LowCodePositionalMetadata.CreateDefault();
                 var autoResult = await _lowCodeAuto.RunAsync(
                     resolvedLayoutGuid,
                     request.LayoutName,
                     request.InputContent,
-                    detectedType: "mqseries",
-                    originalFileName: "execute-candidates");
+                    detectedType: "unknown",
+                    originalFileName: "execute-candidates",
+                    positionalMetadata: positionalMetadata);
 
                 if (!autoResult.Applicable)
                 {
