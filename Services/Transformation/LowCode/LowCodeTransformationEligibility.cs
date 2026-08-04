@@ -1,12 +1,21 @@
 namespace LayoutParserApi.Services.Transformation.LowCode
 {
     /// <summary>
-    /// Centraliza o gate do pathway low-code disparado após o parse. O tipo detectado do
-    /// documento é apenas metadado da execução: qualquer entrada não XML que tenha sido
-    /// parseada com sucesso pode ser transformada.
+    /// Centraliza o gate do pathway low-code disparado após o parse. Somente tipos posicionais
+    /// explicitamente conhecidos entram; tipos futuros permanecem bloqueados até decisão consciente.
     /// </summary>
     public static class LowCodeTransformationEligibility
     {
+        // Allowlist deliberadamente fechada: tipos futuros não entram no Sysmiddle por omissão.
+        // Ver spec-fase3-fase4-gate-transformacao-e-dataset.md §1.2.
+        private static readonly HashSet<string> PositionalTypes = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "mqseries",
+            "idoc",
+            "unknown",
+            "txt"
+        };
+
         public const string NoMapperReason = "no_mapper";
         public const string TypeNotPositionalReason = "type_not_positional";
         public const string EmptyInputReason = "empty_input";
@@ -17,6 +26,7 @@ namespace LayoutParserApi.Services.Transformation.LowCode
             bool parseSucceeded,
             string? layoutGuid,
             string? rawText,
+            string? detectedType,
             bool isXmlInput)
         {
             if (isXmlInput)
@@ -30,6 +40,9 @@ namespace LayoutParserApi.Services.Transformation.LowCode
 
             if (string.IsNullOrWhiteSpace(layoutGuid))
                 return LowCodeTransformationEligibilityResult.NotEligible(NoMapperReason);
+
+            if (string.IsNullOrWhiteSpace(detectedType) || !PositionalTypes.Contains(detectedType))
+                return LowCodeTransformationEligibilityResult.NotEligible(TypeNotPositionalReason);
 
             return LowCodeTransformationEligibilityResult.Eligible();
         }

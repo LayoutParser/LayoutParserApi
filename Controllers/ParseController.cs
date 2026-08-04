@@ -157,6 +157,10 @@ namespace LayoutParserApi.Controllers
                 // ✅ Resolução mesclada: LimitOfCaracters > 0 → allowlist manual → null (sem validação)
                 List<LineValidationInfo>? lineValidations = null;
                 var expectedLineLength = LineLengthResolver.Resolve(flattenedLayout);
+                var positionalMetadata = LowCodePositionalMetadata.Resolve(
+                    result.Layout,
+                    result.RawText,
+                    expectedLineLength ?? LineLengthResolver.LegacyDefaultLineLength);
                 
                 if (expectedLineLength.HasValue)
                     lineValidations = _parserService.CalculateLineValidations(flattenedLayout, expectedLineLength.Value);
@@ -173,6 +177,7 @@ namespace LayoutParserApi.Controllers
                     result.Success,
                     flattenedLayout.LayoutGuid,
                     result.RawText,
+                    detectedType,
                     isXmlInput);
                 string? transformationsReason = eligibility.Reason;
                 try
@@ -186,7 +191,8 @@ namespace LayoutParserApi.Controllers
                             flattenedLayout.Name,
                             result.RawText,
                             detectedType,
-                            txtFile.FileName);
+                            txtFile.FileName,
+                            positionalMetadata);
 
                         var winner = await Task.WhenAny(transformTask, Task.Delay(TimeSpan.FromSeconds(syncTimeoutSeconds)));
 
