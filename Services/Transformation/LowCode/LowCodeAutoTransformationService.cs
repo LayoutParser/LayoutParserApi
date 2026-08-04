@@ -37,14 +37,20 @@ namespace LayoutParserApi.Services.Transformation.LowCode
             Directory.CreateDirectory(_storePath);
         }
 
-        public Task RunInBackgroundAsync(string layoutGuid, string layoutName, string txtContent, string detectedType, string originalFileName)
+        public Task RunInBackgroundAsync(
+            string layoutGuid,
+            string layoutName,
+            string txtContent,
+            string detectedType,
+            string originalFileName,
+            LowCodePositionalMetadata? positionalMetadata = null)
         {
             // fire-and-forget (chamador não quer/precisa do resultado — usar RunAsync quando precisar)
             return Task.Run(async () =>
             {
                 try
                 {
-                    await TransformAndPersistAsync(layoutGuid, layoutName, txtContent, detectedType, originalFileName);
+                    await TransformAndPersistAsync(layoutGuid, layoutName, txtContent, detectedType, originalFileName, positionalMetadata);
                 }
                 catch (Exception ex)
                 {
@@ -62,10 +68,22 @@ namespace LayoutParserApi.Services.Transformation.LowCode
         /// Falhas estruturais (ex.: banco fora do ar ao buscar candidatos) propagam como exceção — cabe ao
         /// chamador decidir como degradar (nunca deve virar 500 do endpoint principal de parse).
         /// </summary>
-        public Task<LowCodeAutoTransformResult> RunAsync(string layoutGuid, string layoutName, string txtContent, string detectedType, string originalFileName)
-            => TransformAndPersistAsync(layoutGuid, layoutName, txtContent, detectedType, originalFileName);
+        public Task<LowCodeAutoTransformResult> RunAsync(
+            string layoutGuid,
+            string layoutName,
+            string txtContent,
+            string detectedType,
+            string originalFileName,
+            LowCodePositionalMetadata? positionalMetadata = null)
+            => TransformAndPersistAsync(layoutGuid, layoutName, txtContent, detectedType, originalFileName, positionalMetadata);
 
-        private async Task<LowCodeAutoTransformResult> TransformAndPersistAsync(string layoutGuid, string layoutName, string txtContent, string detectedType, string originalFileName)
+        private async Task<LowCodeAutoTransformResult> TransformAndPersistAsync(
+            string layoutGuid,
+            string layoutName,
+            string txtContent,
+            string detectedType,
+            string originalFileName,
+            LowCodePositionalMetadata? positionalMetadata)
         {
             if (string.IsNullOrWhiteSpace(layoutGuid) || string.IsNullOrWhiteSpace(txtContent))
                 return new LowCodeAutoTransformResult { Applicable = false };
@@ -96,7 +114,8 @@ namespace LayoutParserApi.Services.Transformation.LowCode
                 var mapper = ranked[0];
                 try
                 {
-                    var single = await TransformSingleAndPersistAsync(mapper, layoutGuid, layoutName, txtContent, detectedType, originalFileName);
+                    var single = await TransformSingleAndPersistAsync(
+                        mapper, layoutGuid, layoutName, txtContent, detectedType, originalFileName, positionalMetadata);
                     return new LowCodeAutoTransformResult
                     {
                         Applicable = true,
@@ -140,7 +159,8 @@ namespace LayoutParserApi.Services.Transformation.LowCode
                 "AutoTransform low-code: {Count} candidatos genuinamente plausíveis para layout={LayoutName} ({LayoutGuid}) — capado em top-{TopN}",
                 topN.Count, layoutName, layoutGuid, _opt.MultiCandidateTopN);
 
-            var candidates = await TransformMultiCandidateAndPersistAsync(topN, layoutGuid, layoutName, txtContent, detectedType, originalFileName);
+            var candidates = await TransformMultiCandidateAndPersistAsync(
+                topN, layoutGuid, layoutName, txtContent, detectedType, originalFileName, positionalMetadata);
             return new LowCodeAutoTransformResult { Applicable = true, MultiCandidate = true, Candidates = candidates };
         }
 
@@ -150,7 +170,14 @@ namespace LayoutParserApi.Services.Transformation.LowCode
         /// persistir) para permitir entrega síncrona via <see cref="RunAsync"/> — se a transformação
         /// falhar, a exceção propaga (igual sempre fez) e quem persiste o tratamento é o chamador.
         /// </summary>
-        private async Task<LowCodeCandidateResult> TransformSingleAndPersistAsync(Mapper mapper, string layoutGuid, string layoutName, string txtContent, string detectedType, string originalFileName)
+        private async Task<LowCodeCandidateResult> TransformSingleAndPersistAsync(
+            Mapper mapper,
+            string layoutGuid,
+            string layoutName,
+            string txtContent,
+            string detectedType,
+            string originalFileName,
+            LowCodePositionalMetadata? positionalMetadata)
         {
             _logger.LogInformation("AutoTransform low-code: layout={LayoutName} ({LayoutGuid}) mapper={MapperName} ({MapperGuid})",
                 layoutName, layoutGuid, mapper.Name, mapper.MapperGuid);
@@ -176,21 +203,21 @@ namespace LayoutParserApi.Services.Transformation.LowCode
             await File.WriteAllTextAsync(inPath, txtContent, Encoding.UTF8);
             await File.WriteAllTextAsync(outPath, lowCodeXml ?? "", Encoding.UTF8);
 
-            var meta = new
+            var meta = LowCodeDatasetMetaBuilder.AddPositionalMetadata(new Dictionary<string, object?>
             {
-                createdAtUtc = DateTime.UtcNow,
-                layoutGuid,
-                layoutName,
-                detectedType,
-                originalFileName,
-                mapperGuid = mapper.MapperGuid,
-                mapperName = mapper.Name,
-                packageGuid = mapper.PackageGuid,
-                projectId = mapper.ProjectId,
-                sha256 = sha,
-                inputLength = txtContent.Length,
-                outputLength = (lowCodeXml ?? "").Length
-            };
+                ["createdAtUtc"] = DateTime.UtcNow,
+                ["layoutGuid"] = layoutGuid,
+                ["layoutName"] = layoutName,
+                ["detectedType"] = detectedType,
+                ["originalFileName"] = originalFileName,
+                ["mapperGuid"] = mapper.MapperGuid,
+                ["mapperName"] = mapper.Name,
+                ["packageGuid"] = mapper.PackageGuid,
+                ["projectId"] = mapper.ProjectId,
+                ["sha256"] = sha,
+                ["inputLength"] = txtContent.Length,
+                ["outputLength"] = (lowCodeXml ?? "").Length
+            }, positionalMetadata);
             var json = System.Text.Json.JsonSerializer.Serialize(meta, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
             await File.WriteAllTextAsync(metaPath, json, Encoding.UTF8);
 
@@ -212,7 +239,14 @@ namespace LayoutParserApi.Services.Transformation.LowCode
         /// Resiliência: uma falha de candidato individual é capturada e não derruba os demais.
         /// Retorna a lista de resultados (além de persistir) para permitir entrega síncrona via <see cref="RunAsync"/>.
         /// </summary>
-        private async Task<List<LowCodeCandidateResult>> TransformMultiCandidateAndPersistAsync(List<Mapper> candidates, string layoutGuid, string layoutName, string txtContent, string detectedType, string originalFileName)
+        private async Task<List<LowCodeCandidateResult>> TransformMultiCandidateAndPersistAsync(
+            List<Mapper> candidates,
+            string layoutGuid,
+            string layoutName,
+            string txtContent,
+            string detectedType,
+            string originalFileName,
+            LowCodePositionalMetadata? positionalMetadata)
         {
             var tasks = candidates.Select(async mapper =>
             {
@@ -297,20 +331,20 @@ namespace LayoutParserApi.Services.Transformation.LowCode
                 });
             }
 
-            var meta = new
+            var meta = LowCodeDatasetMetaBuilder.AddPositionalMetadata(new Dictionary<string, object?>
             {
-                createdAtUtc = DateTime.UtcNow,
-                layoutGuid,
-                layoutName,
-                detectedType,
-                originalFileName,
-                sha256 = sha,
-                inputLength = txtContent.Length,
-                multiCandidate = true,
-                candidateCount = results.Length,
-                successCount = results.Count(r => r.Success),
-                candidates = candidateMeta
-            };
+                ["createdAtUtc"] = DateTime.UtcNow,
+                ["layoutGuid"] = layoutGuid,
+                ["layoutName"] = layoutName,
+                ["detectedType"] = detectedType,
+                ["originalFileName"] = originalFileName,
+                ["sha256"] = sha,
+                ["inputLength"] = txtContent.Length,
+                ["multiCandidate"] = true,
+                ["candidateCount"] = results.Length,
+                ["successCount"] = results.Count(r => r.Success),
+                ["candidates"] = candidateMeta
+            }, positionalMetadata);
             var json = System.Text.Json.JsonSerializer.Serialize(meta, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
             await File.WriteAllTextAsync(metaPath, json, Encoding.UTF8);
 
