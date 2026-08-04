@@ -139,6 +139,10 @@ namespace LayoutParserApi.Controllers
                     Name = layoutReordenado.Name,
                     Description = layoutReordenado.Description,
                     LimitOfCaracters = layoutReordenado.LimitOfCaracters,
+                    // ✅ Discriminador canônico de formato físico (ADR-001). Achatar o layout não pode
+                    // apagar o campo: quem consumir este objeto adiante precisa saber se é IDOC
+                    // (registro por linha) ou MQSeries (stream contínuo) — LayoutType não distingue.
+                    WithBreakLines = layoutReordenado.WithBreakLines,
                     Elements = layoutReordenado.Elements
                 };
 

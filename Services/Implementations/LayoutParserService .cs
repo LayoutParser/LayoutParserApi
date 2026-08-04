@@ -183,21 +183,16 @@ namespace LayoutParserApi.Services.Implementations
             if (string.IsNullOrEmpty(text) || layout?.Elements == null)
                 return parsedFields;
 
-            // Para IDOC, usar quebras de linha ao invés de tamanho fixo
-            // Verificar se o texto parece ser IDOC (começa com EDI_DC40 ou ZRSDM_NFE)
-            var detectedType = "TextPositional"; // Padrão
-            if (!string.IsNullOrEmpty(text))
-            {
-                var trimmedText = text.TrimStart();
-                if (trimmedText.StartsWith("EDI_DC40", StringComparison.OrdinalIgnoreCase) || trimmedText.StartsWith("ZRSDM_NFE", StringComparison.OrdinalIgnoreCase))
-                    detectedType = "idoc";   
-            }
-
-            // Usar detectedType para IDOC, senão usar layoutType do banco
             // ✅ Tamanho de linha resolvido uma única vez para todo o parse (fonte: resolver mesclado)
             int layoutLineLength = LineLengthResolver.ResolveOrDefault(layout);
-            var splitType = detectedType == "idoc" ? "idoc" : layout.LayoutType;
-            var lines = _lineSplitter.SplitTextIntoLines(text, splitType, layoutLineLength);
+
+            // ✅ Formato FÍSICO resolvido do layout (ADR-001), não de heurística de conteúdo.
+            // É o que separa MQSeries (stream contínuo, com Sequencia de 6 chars) de IDOC
+            // (registro por linha, sem Sequencia) dentro do mesmo LayoutType "TextPositional".
+            var formatoResolvido = PositionalFormatResolver.Resolve(layout, text, layoutLineLength);
+            LogResolucaoDeFormato(formatoResolvido);
+
+            var lines = _lineSplitter.SplitTextIntoLines(text, formatoResolvido.Format, layoutLineLength);
 
             _techLogger.LogTechnical(new TechLogEntry
             {
@@ -234,13 +229,15 @@ namespace LayoutParserApi.Services.Implementations
                         Name = layout.Name,
                         Description = layout.Description,
                         LimitOfCaracters = layout.LimitOfCaracters,
+                        // ✅ Não perder o discriminador de formato ao remontar o layout (ADR-001)
+                        WithBreakLines = layout.WithBreakLines,
                         Elements = allLineElements
                     };
 
                     matchingLineConfig = FindMatchingLineConfigRecursive(lines[lineIndex], layout.Elements);
                     if (matchingLineConfig != null)
                     {
-                        expectedLength = SumLengthFieldFromFieldElements(matchingLineConfig, layoutLineLength);
+                        expectedLength = SumLengthFieldFromFieldElements(matchingLineConfig, formatoResolvido.Format, layoutLineLength);
                         if (expectedLength <= 0)
                             expectedLength = layoutLineLength;
                     }
@@ -277,7 +274,7 @@ namespace LayoutParserApi.Services.Implementations
 
                     if (currentOccurrence < maxOccurrences)
                         // Chamar ParseLineFields com a próxima ocorrência (currentOccurrence já é o máximo atual, então usamos ele)
-                        ParseLineFields(currentLine, matchingLineConfig, parsedFields, currentOccurrence, layoutLineLength);
+                        ParseLineFields(currentLine, matchingLineConfig, parsedFields, currentOccurrence, formatoResolvido.Format, layoutLineLength);
                     else
                     {
                         _techLogger.LogTechnical(new TechLogEntry
@@ -321,6 +318,37 @@ namespace LayoutParserApi.Services.Implementations
             ValidateLineOccurrences(layout, parsedFields);
 
             return parsedFields;
+        }
+
+        /// <summary>
+        /// Loga a resolução de formato posicional (ADR-001). Este log é o INSTRUMENTO DE MEDIÇÃO da
+        /// migração dos layouts legados: enquanto houver Warning de fallback, há layout cadastrado
+        /// sem <c>&lt;WithBreakLines&gt;</c> no XML.
+        /// </summary>
+        private void LogResolucaoDeFormato(PositionalFormatResolution resolucao)
+        {
+            if (resolucao.RequiresLayoutMigration)
+            {
+                _logger.LogWarning(
+                    "Formato posicional resolvido por FALLBACK deprecado ({Source}) para {Format}. " +
+                    "Layout {LayoutName} ({LayoutGuid}) não declara <WithBreakLines> — cadastrar o campo no layout.",
+                    resolucao.Source, resolucao.Format, resolucao.LayoutName ?? "(sem nome)", resolucao.LayoutGuid ?? "(sem guid)");
+            }
+            else
+            {
+                _logger.LogInformation(
+                    "Formato posicional {Format} resolvido do layout {LayoutName} ({LayoutGuid})",
+                    resolucao.Format, resolucao.LayoutName ?? "(sem nome)", resolucao.LayoutGuid ?? "(sem guid)");
+            }
+
+            // Divergência contrato x conteúdo: sinaliza, mas NÃO corrige (ADR-001 §5.3).
+            if (resolucao.DivergesFromContent)
+            {
+                _logger.LogWarning(
+                    "Divergência entre layout e documento no layout {LayoutName} ({LayoutGuid}): {Motivo}. " +
+                    "O formato declarado foi mantido — verificar <WithBreakLines> na origem do layout.",
+                    resolucao.LayoutName ?? "(sem nome)", resolucao.LayoutGuid ?? "(sem guid)", resolucao.ContentDivergenceReason);
+            }
         }
 
         /// <summary>
@@ -707,7 +735,7 @@ namespace LayoutParserApi.Services.Implementations
             return sequence.Length == 6 && sequence.All(char.IsDigit) && int.TryParse(sequence, out _);
         }
 
-        private void ParseLineFields(string line, LineElement lineConfig, List<ParsedField> parsedFields, int occurrenceIndex, int expectedLineLength = LineLengthResolver.LegacyDefaultLineLength)
+        private void ParseLineFields(string line, LineElement lineConfig, List<ParsedField> parsedFields, int occurrenceIndex, PositionalFormat format, int expectedLineLength = LineLengthResolver.LegacyDefaultLineLength)
         {
             _techLogger.LogTechnical(new TechLogEntry
             {
@@ -751,7 +779,7 @@ namespace LayoutParserApi.Services.Implementations
                 Message = $"Campos a processar: {fieldsToProcess.Count}"
             });
 
-            int currentPosition = CalculateLineOffset(lineConfig, paddedLine);
+            int currentPosition = CalculateLineOffset(lineConfig, paddedLine, format);
 
             _techLogger.LogTechnical(new TechLogEntry
             {
@@ -858,8 +886,27 @@ namespace LayoutParserApi.Services.Implementations
             }
         }
 
-        private int CalculateLineOffset(LineElement lineConfig, string paddedLine)
+        private int CalculateLineOffset(LineElement lineConfig, string paddedLine, PositionalFormat format)
         {
+            // ✅ ADR-001: o salto de 6 chars é o campo Sequencia do MQSeries. O IDOC NÃO tem esse
+            // campo — cada linha física começa no próprio InitialValue (SEGNAM do header EDI_DD40),
+            // e os campos declarados no layout começam logo depois dele. Aplicar os 6 chars aqui era
+            // a causa raiz da corrupção silenciosa de 2026-08-03 (todos os campos deslocados).
+            if (format == PositionalFormat.RecordPerLine)
+            {
+                int offsetIdoc = lineConfig.InitialValue?.Length ?? 0;
+
+                _techLogger.LogTechnical(new TechLogEntry
+                {
+                    RequestId = Guid.NewGuid().ToString(),
+                    Endpoint = "CalculateLineOffset",
+                    Level = "Info",
+                    Message = $"Linha {lineConfig.Name} (RecordPerLine): Offset = {offsetIdoc} (InitialValue '{lineConfig.InitialValue}', SEM Sequencia)"
+                });
+
+                return offsetIdoc;
+            }
+
             if (lineConfig.Name == "HEADER")
                 // HEADER: campos começam APÓS "HEADER" (6 caracteres)
                 // Estrutura: HEADER + campos (sem Sequencia própria)
@@ -1006,6 +1053,9 @@ namespace LayoutParserApi.Services.Implementations
                 Name = GetElementValue(root, "Name"),
                 Description = GetElementValue(root, "Description"),
                 LimitOfCaracters = GetElementIntValue(root, "LimitOfCaracters"),
+                // ✅ Discriminador canônico de formato físico (ADR-001). Tri-estado: ausente = null
+                // (layout legado → fallback com Warning), não false.
+                WithBreakLines = GetElementNullableBoolValue(root, "WithBreakLines"),
                 Elements = new List<LineElement>()
             };
 
@@ -1163,6 +1213,16 @@ namespace LayoutParserApi.Services.Implementations
         {
             var value = parent.Element(elementName)?.Value;
             return bool.TryParse(value, out bool result) ? result : defaultValue;
+        }
+
+        /// <summary>
+        /// Versão tri-estado: <c>null</c> quando o elemento está ausente ou com valor malformado.
+        /// Usada por <c>WithBreakLines</c>, onde "ausente" ≠ "false" (ver ADR-001).
+        /// </summary>
+        private bool? GetElementNullableBoolValue(XElement parent, string elementName)
+        {
+            var value = parent.Element(elementName)?.Value;
+            return bool.TryParse(value, out bool result) ? result : null;
         }
 
         private async Task<string> ReadTextFileWithEncoding(Stream txtStream)
@@ -2060,7 +2120,7 @@ namespace LayoutParserApi.Services.Implementations
         }
 
         // Método para somar o comprimento total dos campos de um LineElement (incluindo aninhados)
-        private int SumLengthFieldFromFieldElements(LineElement lineElement, int expectedLineLength = LineLengthResolver.LegacyDefaultLineLength)
+        private int SumLengthFieldFromFieldElements(LineElement lineElement, PositionalFormat format, int expectedLineLength = LineLengthResolver.LegacyDefaultLineLength)
         {
             if (lineElement == null || lineElement.Elements == null)
                 return 0;
@@ -2101,8 +2161,13 @@ namespace LayoutParserApi.Services.Implementations
             // 1. InitialValue (HEADER, "000", "001", etc.)
             int initialValueLength = !string.IsNullOrEmpty(lineElement.InitialValue) ? lineElement.InitialValue.Length : 0;
 
-            // 2. Sequencia da linha ANTERIOR (6 chars), exceto para HEADER
-            int sequenceFromPreviousLine = (lineElement.Name?.Equals("HEADER", StringComparison.OrdinalIgnoreCase) == true) ? 0 : 6;
+            // 2. Sequencia da linha ANTERIOR (6 chars), exceto para HEADER.
+            //    ✅ ADR-001: no IDOC (RecordPerLine) esse campo não existe — somá-lo inflaria o
+            //    tamanho esperado da linha e deslocaria o truncamento/padding.
+            int sequenceFromPreviousLine = format == PositionalFormat.RecordPerLine
+                || lineElement.Name?.Equals("HEADER", StringComparison.OrdinalIgnoreCase) == true
+                ? 0
+                : 6;
 
             // 3. Total = InitialValue + campos (sem Sequencia) + Sequencia da linha anterior
             int totalLength = initialValueLength + fieldsLength + sequenceFromPreviousLine;
