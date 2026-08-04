@@ -49,6 +49,7 @@ namespace LayoutParserApi.Tests.Parsing
             var resultado = await ParseAsync(layoutPath, txtPath);
 
             Assert.True(resultado.Success, resultado.ErrorMessage);
+            Assert.Equal(702, resultado.ParsedFields.Count);
 
             string dump = DumpCampos(resultado.ParsedFields);
             string hash = Sha256(dump);
@@ -68,10 +69,11 @@ namespace LayoutParserApi.Tests.Parsing
         }
 
         /// <summary>
-        /// Baseline do MQSeries de controle — SHA-256 do dump dos campos parseados.
-        /// Capturado em 2026-08-03 no código legado (antes do PositionalFormat).
+        /// Baseline do MQSeries de controle — SHA-256 do dump dos 702 campos parseados.
+        /// Recapturado por execução do commit legado <c>de92c9f</c> (pai de <c>5123e5c</c>,
+        /// antes do PositionalFormat) contra exatamente a mesma amostra usada por este teste.
         /// </summary>
-        private const string MqBaselineSha256 = "40fe56cc89aa829a710d9a022464d75376dde96d941f5c7e33dc1942ae2da69a";
+        private const string MqBaselineSha256 = "eea774e6409e10a9806015b49816b98a1fbb487550aa309469d9dc49dd1e2375";
 
         /// <summary>
         /// O defeito real: no IDOC da Marelli o offset do sequencial MQ (6 chars) era aplicado a um
