@@ -106,6 +106,29 @@ namespace LayoutParserApi.Controllers
 
                 var result = await _parserService.ParseAsync(layoutStream, txtStream);
 
+                // ✅ Gate de falha de parse: ParseAsync captura a exceção internamente e devolve
+                // Success=false / Layout=null, com a causa real em ErrorMessage. Sem este gate,
+                // ReestruturarLayout(null) devolve null em silêncio e o NullReference só estoura
+                // adiante (ao ler LayoutGuid), virando um 500 "Object reference not set..." que
+                // apaga a mensagem que diria a causa real. Retornamos 422 para o front distinguir
+                // "layout não parseável / erro de parse" de "ainda não processei nada".
+                if (!result.Success || result.Layout == null)
+                {
+                    var parseErrorMessage = !string.IsNullOrWhiteSpace(result.ErrorMessage)
+                        ? result.ErrorMessage
+                        : "Não foi possível parsear o documento com o layout informado.";
+
+                    _logger.LogError("Falha no parse do documento. Layout={LayoutFile}, Arquivo={DocumentFile}, Tipo={DetectedType}, Motivo={ErrorMessage}",
+                        layoutFile.FileName, txtFile.FileName, detectedType, parseErrorMessage);
+
+                    return UnprocessableEntity(new
+                    {
+                        success = false,
+                        detectedType,
+                        message = parseErrorMessage
+                    });
+                }
+
                 var layoutReestruturado = _parserService.ReestruturarLayout(result.Layout);
                 var layoutReordenado = _parserService.ReordenarSequences(layoutReestruturado);
 
