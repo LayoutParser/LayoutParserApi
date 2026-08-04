@@ -35,6 +35,19 @@ diagnóstico Ollama. Pathway 1 (`TransformationController`/`MapperTransformation
 investimento — candidato a deprecação/remoção, decisão final de remover é do dono do projeto/`@lp-devops`,
 não decidida aqui.
 
+**Terceiro caminho, descoberto em 2026-08-03 (o mais enganoso):** o `ParseController` também dispara
+transformação low-code embutida no próprio parse (`LowCodeAutoTransformationService`) e devolve um
+array `transformations` no payload. **O front NUNCA lê esse array** — `ParseResponse` em
+`LayoutParserReact/src/types/api.ts` sequer declara o campo; só `transformationsStatus` é usado, e
+apenas para rótulo de aba e banner de erro. O XML que aparece na aba vem de um botão que chama
+`execute-candidates` (Pathway 2) sob demanda. Consequência prática: **mexer no gate/pathway do
+`ParseController` não muda nada na tela** — muda o payload e o dataset de aprendizado. Não prometa
+efeito visual a partir dali sem trabalho de front junto.
+
+Ainda no mesmo achado: quando o low-code estoura o teto síncrono, o resultado vai para
+`ML:LowCodeTransformationsPath`, que é **write-only** — nenhum controller lê o store, e não há
+polling/SSE no front. `transformationsStatus='processing'` nunca resolve.
+
 **How to apply:** ao implementar a validação XSD em Pathway 2, colocá-la dentro de
 `TransformationPipelineService`/`TransformationValidatorService` (camada de serviço), **não** replicar o
 padrão do Pathway 1 de chamar `XsdValidationService` direto do controller — isso já viola a regra do projeto

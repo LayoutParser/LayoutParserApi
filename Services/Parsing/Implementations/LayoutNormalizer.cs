@@ -19,6 +19,13 @@ namespace LayoutParserApi.Services.Parsing.Implementations
                 Name = layoutOriginal.Name,
                 Description = layoutOriginal.Description,
                 LimitOfCaracters = layoutOriginal.LimitOfCaracters,
+                // ✅ Discriminador de formato físico (ADR-001): reestruturar a hierarquia não pode
+                // apagar o campo, senão quem consome o layout normalizado perde o formato.
+                WithBreakLines = layoutOriginal.WithBreakLines,
+                Delimiter = layoutOriginal.Delimiter,
+                Escape = layoutOriginal.Escape,
+                InitializerLine = layoutOriginal.InitializerLine,
+                FinisherLine = layoutOriginal.FinisherLine,
                 Elements = new List<LineElement>()
             };
 

@@ -6,7 +6,7 @@
 - [Hábito de auditoria de branch](branch-audit-habit.md) — sempre `git diff` completo, não `--stat`, antes de confiar que uma branch tem código.
 - [Spec A2-A5 da Trilha A](track-a2-a5-spec.md) — contrato consolidado em §8 do plano multi-sessão, escrito pós-A1 pronto.
 - [Incidente TLS no runner GitHub Actions (2026-07-20)](runner-tls-cert-incident.md) — cert expirado do lado do GitHub (`pipelines*.actions.githubusercontent.com`), não é a máquina; checar isso primeiro antes de investigar local.
-- [Duplicação de pathway de transformação (2026-07-21)](transformation-pathway-duplication.md) — Pathway 1 (TransformationController, tem XSD, sem caller no front) vs Pathway 2 (TransformationExecutionController, sem XSD, é o que o front chama).
+- [Duplicação de pathway de transformação (2026-07-21, +2026-08-03)](transformation-pathway-duplication.md) — Pathway 1 (sem caller no front) vs 2 (canônico) + 3º caminho: `transformations` do ParseController que o front nunca lê.
 - [Aba XML Transformação Final já existe (2026-07-21)](frontend-transformation-tab-built.md) — AnalysisModeTabs+Tabs+XmlTransformationDisplay já implementados e wired no l-bottom-right; não é decisão em aberto.
 - [ai/XslSynth isolado + overlap com Trilha A (2026-07-21)](xslsynth-trilha-a-overlap.md) — projeto standalone deliberado (doc de arquitetura confirma); é o alvo ativo da Trilha A (Lia) — sequenciar, não tratar como território livre.
 - [Gap de segurança: subsistema Gemini/OpenAI (2026-07-21)](gemini-cloud-xsd-diagnosis-gap.md) — 4 call-sites + escopo de remoção (Tier 1/2) + achado incidental do RAGController; DI quebrado hoje, nada vaza na prática, é landmine.
@@ -17,3 +17,4 @@
 - [Specs reais do servidor de produção (2026-07-21)](production-server-hardware.md) — `BRNDDAPPBLD01`, i7-4790 Haswell 2014, sem GPU, sem upgrade previsto; recomendação de modelo revisada pra 1-2B + medir de verdade.
 - [Gaps do pipeline Job1→Job2 de métricas de IA (2026-07-30)](ai-metrics-job1-job2-gaps.md) — painel do Gap 3 lê log no Windows e o job escreve na VM (nunca casou); Job 1 não persiste candidato; escopo real é 4/54 pares.
 - [SEFAZ: PL_009 já espelhado no GitHub (2026-07-21)](sefaz-xsd-schema-source.md) — `nfephp-org/sped-nfe` resolve o bloqueio do XSD antigo sem scraping; WebFetch na SEFAZ falhou (TLS, causa não confirmada).
+- [TextPositional é sobrecarregado: MQ vs IDOC (2026-08-03)](idoc-textpositional-overload.md) — `WithBreakLines` é o discriminador real e o parser nunca o lê; IDOC parseia "com sucesso" e 100% dos campos saem errados.
