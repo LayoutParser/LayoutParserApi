@@ -13,31 +13,49 @@ namespace LayoutParserApi.Models.Parsing
         public int StartPosition { get; set; }
         public int EndPosition { get; set; }
 
-        // ── Identidade de campo (spec-taxonomia-de-falha-do-parse.md §2.1, item 3) ───────────────
+        // ── Identidade no erro (spec-taxonomia-de-falha-do-parse.md §2.1 e §5.1) ────────────────
         //
         // POR QUE ISSO EXISTE: os campos acima descrevem um INTERVALO DE BYTES ("linha 37, colunas
         // 100-140 está errada"). Um dataset rotulado assim não generaliza — noutro documento a
-        // mesma tag está em outra posição, e o modelo aprenderia endereço, não semântica. Com
-        // identidade de campo, cada documento processado vira par rotulado (campo, correto/incorreto).
+        // mesma tag está em outra posição, e o modelo aprenderia endereço, não semântica.
         //
-        // POR QUE ESTÃO NULOS HOJE: quem produz estes erros é DocumentValidationService, que recebe
-        // APENAS (texto, tamanho-de-linha-esperado) — nunca vê o Layout. Todos os erros que ele
-        // emite são de ENQUADRAMENTO DE LINHA (linha incompleta, linha excede N chars, sequência
-        // inválida, HEADER fora da primeira linha), não de campo. Não existe, no dado de hoje, a
-        // que elemento do layout o erro pertence. Preencher isso com um palpite ensinaria à IA uma
-        // atribuição que o dado não sustenta — pior que deixar nulo.
-        //
-        // Ver o relatório de diagnóstico do item 3 para o caminho de habilitação.
+        // DUAS GRANULARIDADES, e só uma existe hoje. Quem produz estes erros é o
+        // DocumentValidationService, que recebe APENAS (texto, tamanho-de-linha-esperado) — nunca
+        // vê o Layout. Todos os erros que ele emite são de ENQUADRAMENTO DE LINHA (linha
+        // incompleta, linha excede N chars, sequência inválida, HEADER fora da primeira linha),
+        // nenhum é escopado a campo. Logo: identidade de REGISTRO é resolvível, identidade de
+        // CAMPO não é.
 
         /// <summary>
-        /// Nome do elemento do layout a que o erro pertence. <c>null</c> enquanto o validador
-        /// não souber resolver o elemento (ver bloco acima).
+        /// Nome do registro/segmento do layout (<c>LineElement.Name</c>) a que o erro pertence.
+        /// <c>null</c> quando a linha não casa com nenhum registro do layout — identidade ausente
+        /// é preferível a identidade errada.
+        /// </summary>
+        public string? RecordName { get; set; }
+
+        /// <summary>
+        /// Identidade ESTÁVEL do registro (<c>LineElement.ElementGuid</c>, vindo do XML do layout).
+        ///
+        /// <para>É o que dá à IA um rótulo que <b>generaliza entre documentos</b>: o segmento é
+        /// estável, enquanto <see cref="StartPosition"/>/<see cref="EndPosition"/> não generalizam
+        /// nada. Sinal grosso (registro, não campo), mas estritamente mais do que tínhamos.</para>
+        /// </summary>
+        public string? RecordGuid { get; set; }
+
+        /// <summary>
+        /// Nome do CAMPO a que o erro pertence. <c>null</c> — e continua nulo por decisão, não por
+        /// esquecimento: não existe validação escopada a campo (ver bloco acima).
         /// </summary>
         public string? FieldName { get; set; }
 
         /// <summary>
-        /// Identidade estável do campo (<c>ElementGuid</c> do layout) — é o rótulo que serve de
-        /// chave para a IA aprender atribuição por tag. <c>null</c> enquanto não resolvível.
+        /// Identidade estável do CAMPO. <c>null</c> até existir validação escopada a campo.
+        ///
+        /// <para><b>Não preencha isto com o GUID do registro</b> — a tentação óbvia, e uma
+        /// armadilha: o campo diria "campo" e o conteúdo seria "registro". Um dataset assim ensina
+        /// à IA que a granularidade da atribuição é o segmento, e quem consumir depois não tem como
+        /// saber que o rótulo mente. Use <see cref="RecordGuid"/> para identidade de registro.
+        /// Nulo é honesto; mal rotulado é armadilha (spec §5.1).</para>
         /// </summary>
         public string? FieldGuid { get; set; }
 

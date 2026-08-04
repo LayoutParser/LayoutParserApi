@@ -144,12 +144,12 @@ namespace LayoutParserApi.Tests.Controllers
         public async Task Layout_ilegivel_responde_422_com_causa_e_motivo_real()
         {
             const string motivo = "Erro no parsing: 'x' é um caractere inesperado na linha 3.";
-            var parse = ParseQueFalhou(ParseFailureCause.LayoutMismatch, motivo);
+            var parse = ParseQueFalhou(ParseFailureCause.LayoutInvalid, motivo);
 
             var erro = Assert.IsType<ObjectResult>(await ExecutarUpload(parse));
 
             Assert.Equal(422, erro.StatusCode);
-            Assert.Equal("layout_mismatch", Ler<string>(erro.Value, "failureCause"));
+            Assert.Equal("layout_invalid", Ler<string>(erro.Value, "failureCause"));
             Assert.Equal(motivo, Ler<string>(erro.Value, "message"));
             Assert.Equal("mqseries", Ler<string>(erro.Value, "detectedType"));
         }

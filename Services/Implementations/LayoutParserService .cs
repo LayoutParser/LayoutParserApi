@@ -105,16 +105,32 @@ namespace LayoutParserApi.Services.Implementations
                 {
                     _logger.LogWarning("Documento MQSeries possui linhas com tamanho incorreto: {ErrorMessage}. {ErrorCount} erro(s) encontrado(s).",documentValidation.ErrorMessage, documentValidation.LineErrors.Count);
 
+                    // ✅ Identidade de REGISTRO no erro (spec §5.1). O validador de tamanho de linha
+                    // não conhece o layout — recebe só (texto, tamanho) e devolve intervalo de
+                    // bytes. AQUI, onde Layout e LineErrors coexistem, reconstituímos o trecho da
+                    // linha pela posição do erro e o casamos com o MESMO matcher que o parser usa,
+                    // para que a identidade do erro nunca divirja da identidade do campo parseado.
+                    var textoContinuo = (result.RawText ?? string.Empty).Replace("\r", "").Replace("\n", "");
+
                     // Adicionar informações de validação ao resultado para o front-end
-                    result.ValidationErrors = documentValidation.LineErrors.Select(e => new DocumentValidationErrorInfo
+                    result.ValidationErrors = documentValidation.LineErrors.Select(e =>
                     {
-                        LineIndex = e.LineIndex,
-                        Sequence = e.Sequence,
-                        ExpectedLength = e.ExpectedLength,
-                        ActualLength = e.ActualLength,
-                        ErrorMessage = e.ErrorMessage,
-                        StartPosition = e.StartPosition,
-                        EndPosition = e.EndPosition
+                        var registro = ResolverRegistroDoErro(e, textoContinuo, result.Layout);
+
+                        return new DocumentValidationErrorInfo
+                        {
+                            LineIndex = e.LineIndex,
+                            Sequence = e.Sequence,
+                            ExpectedLength = e.ExpectedLength,
+                            ActualLength = e.ActualLength,
+                            ErrorMessage = e.ErrorMessage,
+                            StartPosition = e.StartPosition,
+                            EndPosition = e.EndPosition,
+                            RecordName = registro?.Name,
+                            RecordGuid = registro?.ElementGuid
+                            // FieldName/FieldGuid/TargetXPath ficam NULOS por decisão — não há
+                            // validação escopada a campo. Ver DocumentValidationErrorInfo.
+                        };
                     }).ToList();
 
                     // Adicionar warning message (não error, pois ainda processamos)
@@ -184,6 +200,48 @@ namespace LayoutParserApi.Services.Implementations
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// Resolve o registro/segmento do layout (<see cref="LineElement"/>) a que um erro de
+        /// enquadramento de linha pertence, reconstituindo o trecho da linha a partir do intervalo
+        /// de bytes do erro e reusando o matcher do próprio parser.
+        ///
+        /// <para>Devolve <c>null</c> quando não há match — por exemplo, no erro de "sequência
+        /// inválida", em que o prefixo da linha nem é uma sequência. <b>Identidade ausente é
+        /// preferível a identidade errada:</b> um rótulo chutado contamina o dataset de
+        /// aprendizado, que é justamente o consumidor deste campo.</para>
+        /// </summary>
+        private LineElement? ResolverRegistroDoErro(DocumentLineError erro, string textoContinuo, Layout? layout)
+        {
+            if (layout?.Elements == null || layout.Elements.Count == 0 || string.IsNullOrEmpty(textoContinuo))
+                return null;
+
+            if (erro.StartPosition < 0 || erro.StartPosition >= textoContinuo.Length)
+                return null;
+
+            try
+            {
+                int fim = Math.Min(erro.EndPosition, textoContinuo.Length - 1);
+                int comprimento = fim - erro.StartPosition + 1;
+
+                if (comprimento <= 0)
+                    return null;
+
+                string trecho = textoContinuo.Substring(erro.StartPosition, comprimento);
+
+                return FindMatchingLineConfigRecursive(trecho, layout.Elements);
+            }
+            catch (Exception ex)
+            {
+                // Enriquecimento é ACESSÓRIO: o parse já sucedeu e a resposta principal não pode
+                // cair por causa da identidade do erro. Degrada para nulo e registra.
+                _logger.LogWarning(ex,
+                    "Falha ao resolver identidade de registro do erro de validação (linha {LineIndex}, posição {StartPosition})",
+                    erro.LineIndex, erro.StartPosition);
+
+                return null;
+            }
         }
 
         private List<ParsedField> ParseTextWithSequenceValidation(string text, Layout layout)
