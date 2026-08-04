@@ -68,7 +68,14 @@ set to an instance of an object."`) — mensagem inútil, porque a mensagem real
 
 ### 3.1 Onde está hoje
 
-`UploadSection.tsx:131-134`:
+> ⚠️ **CORREÇÃO (Aria, após execução — verificado por `routes.tsx` + grep de imports):** este trecho
+> aponta para **código morto**. `UploadSection.tsx` e `AnalysisSection.tsx` **não são alcançáveis** a
+> partir de `src/routes.tsx`, que só chega em `MainLayout`, `LayoutParserPage` e `AdminPage` —
+> nenhum arquivo os importa além do próprio `.css`. O componente **vivo** é
+> `src/components/layout/LayoutParserPage.tsx`, e foi lá que a correção foi implementada.
+> O bloco abaixo continua válido como *descrição do padrão de erro achatado*, mas não como endereço.
+
+`UploadSection.tsx:131-134` (código morto — padrão equivalente vive em `LayoutParserPage.tsx`):
 
 ```tsx
 } catch (error) {
@@ -300,10 +307,10 @@ disco no servidor.
 
 | # | Item | Estado |
 |---|---|---|
-| F1 | Payload real de um 422 capturado em execução | 🔴 **não temos** — o contrato de §2 é o **declarado** pelo Dex. Antes de codar o parser do erro, disparar um upload com XML corrompido contra a API de dev e **conferir o shape real** (principalmente se `data` chega como objeto, não string) |
+| F1 | Payload real de um 422 capturado em execução | ✅ **FECHADO** (2026-08-03, `@lp-front-dev` contra a API real em `localhost:5100`, upload de XML malformado): resposta `422` com `Content-Type: application/json`, corpo `{"success":false,"detectedType":"unknown","message":"Erro no parsing: ..."}` e header `X-Correlation-ID` presente. `data` chega como **objeto**, como o §2 declarava. **Achado extra:** o `400` (validação de request) vem como `application/problem+json` e **sem** campo `message` — o fallback do front precisa ser consciente do status, não só do corpo |
 | F2 | Repo do front está limpo | 🔴 **não** — `feat/design-tokens-padronizacao-visual` com `.env.*`, `ci-dev.yml`, `README.md` e memórias não commitados. **Commitar ou stashar antes de começar**, senão o diff desta tarefa fica ilegível |
 | F3 | Backend com Fase 3 mergeada | ⚠️ ainda não — §4.3 (`transformationsReason`) pode ser implementado antes, com o campo opcional; só não dá para testar de ponta a ponta |
-| F4 | Confirmação de que o 422 mantém `Content-Type: application/json` | ⚠️ presumido pelo uso de `Ok`/`UnprocessableEntity` com objeto anônimo. Verificar junto com F1 — se vier string, o `data?.message` de `api.ts:102` não pega nada |
+| F4 | Confirmação de que o 422 mantém `Content-Type: application/json` | ✅ **FECHADO** junto com F1 — confirmado `application/json` em execução real. Cuidado remanescente: isso vale para o **422**; o `400` usa `application/problem+json` (shape diferente, sem `message`) |
 | F5 | Frequência real de estouro do teto de 6s com IDOC | 🔴 **não medido** — determina a urgência da Opção B de §5.4. Medição é da @lp-qa (item 7.1 do checklist na spec das Fases 3/4) |
 
 ---

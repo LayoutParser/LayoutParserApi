@@ -163,8 +163,10 @@ namespace LayoutParserApi.Controllers
             _logger.LogInformation("Executando transformação multi-candidato para layout: {LayoutName}", request.LayoutName);
 
             // Resolver o layout no banco: serve tanto para validar existência (400 se não encontrado)
-            // quanto para obter o LayoutGuid necessário ao pathway sysmiddle. Exceção aqui = falha de
-            // infra que impede sequer listar candidatos → 500 (linha "Falha total de infraestrutura"
+            // e oferecer fallback de LayoutGuid ao pathway sysmiddle. O LayoutGuid enviado no request,
+            // quando válido, tem precedência porque o catálogo legado pode retornar Guid.Empty.
+            // Exceção aqui = falha de infra que impede sequer listar candidatos → 500 (linha
+            // "Falha total de infraestrutura"
             // da tabela de decisão do contrato).
             LayoutRecord? layoutRecord;
             try
@@ -238,25 +240,29 @@ namespace LayoutParserApi.Controllers
         {
             var result = new List<TransformationCandidate>();
 
-            // Sysmiddle/low-code espera texto posicional (TXT), não XML — mesma premissa do
-            // ParseController.Upload (gate por detectedType != "xml").
+            // Sysmiddle/low-code espera texto posicional (TXT), não XML.
             if (isXmlInput)
                 return result;
 
             try
             {
-                if (layoutRecord.LayoutGuid == Guid.Empty)
+                var resolvedLayoutGuid = LowCodeLayoutGuidResolver.Resolve(request.LayoutGuid, layoutRecord.LayoutGuid);
+                if (resolvedLayoutGuid == null)
                 {
-                    warnings.Add($"Layout {request.LayoutName} sem LayoutGuid válido — pathway sysmiddle não aplicável");
+                    warnings.Add($"Layout {request.LayoutName} sem LayoutGuid válido no request ou no catálogo — pathway sysmiddle não aplicável");
                     return result;
                 }
 
+                // Este endpoint só possui o registro resumido do catálogo, não o LayoutVO completo.
+                // Portanto não inventa MQSeries: persiste unknown/default e põe a amostra em quarentena.
+                var positionalMetadata = LowCodePositionalMetadata.CreateDefault();
                 var autoResult = await _lowCodeAuto.RunAsync(
-                    layoutRecord.LayoutGuid.ToString(),
+                    resolvedLayoutGuid,
                     request.LayoutName,
                     request.InputContent,
-                    detectedType: "mqseries",
-                    originalFileName: "execute-candidates");
+                    detectedType: "unknown",
+                    originalFileName: "execute-candidates",
+                    positionalMetadata: positionalMetadata);
 
                 if (!autoResult.Applicable)
                 {
