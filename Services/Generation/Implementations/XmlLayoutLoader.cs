@@ -44,7 +44,8 @@ namespace LayoutParserApi.Services.Generation.Implementations
                     layout.Escape = GetNodeValue(layoutNode, "Escape");
                     layout.InitializerLine = GetNodeValue(layoutNode, "InitializerLine");
                     layout.FinisherLine = GetNodeValue(layoutNode, "FinisherLine");
-                    layout.WithBreakLines = GetNodeBoolValue(layoutNode, "WithBreakLines");
+                    // ✅ Tri-estado: ausente vira null (layout legado), não false
+                    layout.WithBreakLines = GetNodeNullableBoolValue(layoutNode, "WithBreakLines");
 
                     // Processar elementos
                     layout.Elements = ProcessElements(layoutNode.SelectNodes("Elements/Element"));
@@ -170,6 +171,16 @@ namespace LayoutParserApi.Services.Generation.Implementations
         {
             var value = GetNodeValue(parentNode, nodeName);
             return bool.TryParse(value, out bool result) && result;
+        }
+
+        /// <summary>
+        /// Versão tri-estado: devolve <c>null</c> quando o elemento está ausente ou malformado.
+        /// Necessária para <c>WithBreakLines</c> — ver <c>Layout.WithBreakLines</c> e ADR-001.
+        /// </summary>
+        private static bool? GetNodeNullableBoolValue(XmlNode parentNode, string nodeName)
+        {
+            var value = GetNodeValue(parentNode, nodeName);
+            return bool.TryParse(value, out bool result) ? result : null;
         }
 
         private static AlignmentType GetAlignmentType(string value)

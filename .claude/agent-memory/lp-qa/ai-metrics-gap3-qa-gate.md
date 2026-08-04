@@ -1,6 +1,6 @@
 ---
 name: ai-metrics-gap3-qa-gate
-description: QA gate do painel de métricas de IA (Gap 3). Endpoint 3 reprovado 2026-07-30 (6 defeitos); RE-GATE 2026-07-31 (commit 9e48650) fechou os 6 por execução. Achado decisivo em aberto: as duas pontes de ingestão ativas juntas contam cada geração DUAS vezes.
+description: QA gate do painel de métricas de IA (Gap 3). 6 defeitos fechados em 9e48650; Handoff 1 (hardening, e6df0b7) aprovado CONCERNS por matriz de mutação. Achado decisivo em aberto: as duas pontes de ingestão ativas juntas contam cada geração DUAS vezes.
 metadata:
   type: project
 ---
@@ -34,16 +34,31 @@ produtores com relógios independentes. **How to apply:** ativar **uma** ponte s
 forem necessárias, a chave de dedup precisa ser um id de geração estável (ou o `Timestamp` da VM
 propagado idêntico nos dois caminhos), não o instante da linha.
 
-### Achados menores do Endpoint 4 (revisado pela 1ª vez neste gate)
+### GATE do Handoff 1 — hardening (commits 946d24b..e6df0b7), 2026-07-31 — CONCERNS
 
-- Idempotência **só vale com `Timestamp` explícito**; sem ele a ingestão usa `DateTime.Now` e o
-  reenvio duplica (medido: 1 geração enviada 2x → 2 itens). O XML doc do controller promete
-  idempotência sem essa ressalva.
-- **Sem teto de tamanho de campo** (`Layout`/`Modelo`): um `Layout` de 200.000 chars foi aceito e
-  gravou 200 KB numa linha só. O endpoint irmão (`cypress-result`) capa em 500/20/1000 chars.
-  Agrava a fragilidade nº 2 abaixo (retenção ~20 MB, e o leitor só abre os 3 arquivos mais recentes).
-- Endpoint de **escrita sem autenticação** (a app não tem `UseAuthorization`), alimentando o painel
-  mostrado à diretoria.
+Os 3 achados menores do Endpoint 4 (idempotência sem `Timestamp`, sem teto de campo, escrita sem
+auth) foram **fechados** e verificados por execução. Suíte nova `tests/LayoutParserApi.Tests`
+(29 testes) validada por **matriz de mutação**: 13 de 15 bugs reintroduzidos foram pegos.
+
+**Os 2 buracos que a mutação revelou** (ambos com correção de 1 linha já validada por mim):
+1. `AiMetricsReaderService.ApplyCypressMerge` — remover `.Where(g => g.Timestamp <= cypress.Timestamp)`
+   **não quebra nenhum teste**. Esse limite superior impede que o resultado da rodada N marque a
+   geração da rodada N+1 (que ninguém validou). Todos os cenários da suíte têm a geração ANTERIOR
+   ao POST.
+2. `AiMetricsRoundTripTests` não asserta `CStatPollux` — gravar `(null)` em vez de `null` passa
+   despercebido, e o painel exibiria a string `(null)` como código cStat (`ParseNullableString` só
+   mapeia o literal `"null"`).
+
+**Divergência MEL × Serilog é DUPLA** (o `CapturingLogger` documenta só metade): MEL renderiza
+`XsdValido=(null) ... Sucesso=True`; o Serilog real grava `XsdValido=null ... Sucesso=true`.
+Nenhuma asserção atual depende disso, mas quem escrever teste novo contra o texto da mensagem
+usando `CapturingLogger` codifica expectativa errada. **How to apply:** teste sensível a FORMATO
+de linha vai no `AiMetricsRoundTripTests` (Serilog real), nunca no `CapturingLogger`.
+
+**Fail-closed × painel React:** confirmado por execução nas duas configurações (com e sem chave)
+que `GET generations` e `GET summary` continuam 200 sem header — o filtro está só nos 2 POSTs via
+`[ServiceFilter]`, sem registro global. Mas `ci-dev.yml` **não provisiona** `AiMetrics__IngestApiKey`:
+quem for chamar os endpoints de escrita toma 403 até o operador criar a env var.
 
 ### As 3 fragilidades ESTRUTURAIS (atacar primeiro — defeitos pontuais são sintomas delas)
 

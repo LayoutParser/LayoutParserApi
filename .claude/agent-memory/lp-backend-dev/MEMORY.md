@@ -12,5 +12,7 @@
 - [Duas rotas VM→painel de métricas de IA](ai-metrics-duas-rotas-vm-para-painel.md) — POST ingest e ponte de cópia de log resolvem o MESMO bug; ativar as duas duplica cada geração e o dedup não colapsa (fusos diferentes).
 - [Topologia de build: .sln vs .csproj](build-topology-sln-vs-csproj.md) — `dotnet build` na raiz resolve pela SOLUTION e é o que o deploy.yml roda; por isso `tests/LayoutParserApi.Tests` ficou fora da .sln.
 - [Chave de ingestão de métricas de IA é fail-closed](aimetrics-ingest-key-fail-closed.md) — sem `AiMetrics__IngestApiKey` como env var, os POSTs de escrita respondem 403; appsettings do destino é preservado pelo CI.
+- [Validar suíte nova por mutação](validar-suite-nova-por-mutacao.md) — suíte verde não prova invariante coberta; 2 dos meus 29 testes passavam à toa (limite superior do merge, cStat nulo no round-trip).
 - [Sessões concorrentes: commit por item](sessoes-concorrentes-commit-por-item.md) — outras sessões editam a mesma árvore; `git add` com caminho explícito, nunca `-A`/`commit -a`.
+- [422 do parse e gate mqseries](parse-upload-422-e-gate-mqseries.md) — o gate `detectedType=="mqseries"` está fechado DE PROPÓSITO (corrompe dado fiscal se aberto cedo); 422 é o 1º do repo e o front ainda não trata.
 - [Endpoint execute-candidates (Gap 1, 2026-07-28)](execute-candidates-endpoint-2026-07-28.md) — decisões de design não fechadas no contrato: 400 via consulta DB, timeout do conjunto = RunnerTimeoutSeconds*MaxConcurrentRunners, CandidateId/Score/Validation por pathway.

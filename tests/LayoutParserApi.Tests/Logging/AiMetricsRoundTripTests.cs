@@ -47,6 +47,11 @@ namespace LayoutParserApi.Tests.Logging
             Assert.True(item.Sucesso);
             Assert.Null(item.XsdValido);
             Assert.Null(item.CypressValidado);
+            // ✅ Este é o único campo do round-trip que passa por AiMetricsIngestService.Nulavel, e
+            // é onde a divergência de renderização de null BATE de verdade: gravar "(null)" em vez
+            // de "null" faz o ParseNullableString devolver a string literal, e o painel exibiria
+            // "(null)" como código cStat. Sem esta asserção a mutação passava com 29/29 verdes.
+            Assert.Null(item.CStatPollux);
         }
 
         /// <summary>
