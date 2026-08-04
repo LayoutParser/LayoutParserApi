@@ -121,7 +121,8 @@ namespace LayoutParserApi.Services.Generation.Implementations
                 ["hasEscape"] = !string.IsNullOrEmpty(layout.Escape),
                 ["hasInitializerLine"] = !string.IsNullOrEmpty(layout.InitializerLine),
                 ["hasFinisherLine"] = !string.IsNullOrEmpty(layout.FinisherLine),
-                ["withBreakLines"] = layout.WithBreakLines
+                // Metadado mantém o contrato bool (ausente ≡ false para efeito de análise)
+                ["withBreakLines"] = layout.WithBreakLines ?? false
             };
 
             return metadata;
