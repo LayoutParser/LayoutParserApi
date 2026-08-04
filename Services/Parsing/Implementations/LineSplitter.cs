@@ -1,4 +1,5 @@
 using LayoutParserApi.Models.Configuration;
+using LayoutParserApi.Models.Enums;
 using LayoutParserApi.Models.Logging;
 using LayoutParserApi.Services.Interfaces;
 using LayoutParserApi.Services.Parsing.Interfaces;
@@ -14,6 +15,43 @@ namespace LayoutParserApi.Services.Parsing.Implementations
             _techLogger = techLogger;
         }
 
+        /// <summary>
+        /// Split canônico: decide pelo FORMATO FÍSICO resolvido do layout (ADR-001), não por
+        /// <c>LayoutType</c> nem por heurística de conteúdo.
+        /// </summary>
+        public string[] SplitTextIntoLines(string text, PositionalFormat format, int lineLength = LineLengthResolver.LegacyDefaultLineLength)
+        {
+            if (string.IsNullOrEmpty(text))
+                return new string[0];
+
+            if (format == PositionalFormat.ContinuousStream)
+            {
+                // MQSeries: stream contínuo fatiado a cada N chars
+                _techLogger.LogTechnical(new TechLogEntry
+                {
+                    RequestId = Guid.NewGuid().ToString(),
+                    Endpoint = "SplitTextIntoLines",
+                    Level = "Info",
+                    Message = $"Usando split de stream contínuo ({lineLength} chars) - formato: {format}"
+                });
+                return SplitTextIntoFixedLengthLines(text, lineLength);
+            }
+
+            // IDOC: um registro por linha física
+            _techLogger.LogTechnical(new TechLogEntry
+            {
+                RequestId = Guid.NewGuid().ToString(),
+                Endpoint = "SplitTextIntoLines",
+                Level = "Info",
+                Message = $"Usando split por quebras de linha - formato: {format}"
+            });
+            return text.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+        }
+
+        /// <summary>
+        /// Sobrecarga LEGADA por string de tipo (ver <see cref="ILineSplitter"/>). Traduz a string
+        /// para <see cref="PositionalFormat"/> preservando o comportamento histórico e delega.
+        /// </summary>
         public string[] SplitTextIntoLines(string text, string layoutType, int lineLength = LineLengthResolver.LegacyDefaultLineLength)
         {
             if (string.IsNullOrEmpty(text))
@@ -21,28 +59,9 @@ namespace LayoutParserApi.Services.Parsing.Implementations
 
             // Layout posicional de largura fixa (TextPositional ou mqseries)
             if (layoutType == "mqseries" || layoutType == "TextPositional")
-            {
-                _techLogger.LogTechnical(new TechLogEntry
-                {
-                    RequestId = Guid.NewGuid().ToString(),
-                    Endpoint = "SplitTextIntoLines",
-                    Level = "Info",
-                    Message = $"Usando split de layout posicional ({lineLength} chars) para tipo: {layoutType}"
-                });
-                return SplitTextIntoFixedLengthLines(text, lineLength);
-            }
-            else if (layoutType == "idoc")
-            {
-                _techLogger.LogTechnical(new TechLogEntry
-                {
-                    RequestId = Guid.NewGuid().ToString(),
-                    Endpoint = "SplitTextIntoLines",
-                    Level = "Info",
-                    Message = $"Usando split por quebras de linha para tipo: {layoutType}"
-                });
-                return text.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
-            }
-            else
+                return SplitTextIntoLines(text, PositionalFormat.ContinuousStream, lineLength);
+
+            if (layoutType != "idoc")
             {
                 _techLogger.LogTechnical(new TechLogEntry
                 {
@@ -51,8 +70,9 @@ namespace LayoutParserApi.Services.Parsing.Implementations
                     Level = "Warn",
                     Message = $"Tipo de layout desconhecido: {layoutType}. Usando split por quebras de linha."
                 });
-                return text.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
             }
+
+            return SplitTextIntoLines(text, PositionalFormat.RecordPerLine, lineLength);
         }
 
         private string[] SplitTextIntoFixedLengthLines(string text, int lineLength)

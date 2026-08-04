@@ -389,6 +389,9 @@ namespace LayoutParserApi.Services.Validation
                     // ✅ 0 = não-informado (cai para a allowlist na resolução mesclada).
                     // Um 600 fabricado aqui venceria a allowlist e quebraria os layouts de 2500 chars.
                     LimitOfCaracters = int.TryParse(root.Element("LimitOfCaracters")?.Value, out var limit) ? limit : 0,
+                    // ✅ Discriminador canônico de formato físico (ADR-001). Tri-estado: ausente/
+                    // malformado = null (layout legado), nunca false fabricado.
+                    WithBreakLines = bool.TryParse(root.Element("WithBreakLines")?.Value, out var withBreakLines) ? withBreakLines : null,
                     Elements = new List<LineElement>()
                 };
 
