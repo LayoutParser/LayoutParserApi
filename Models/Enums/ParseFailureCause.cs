@@ -22,10 +22,17 @@ namespace LayoutParserApi.Models.Enums
         DocumentMalformed,
 
         /// <summary>
-        /// Problema do lado do LAYOUT: o XML do layout não pôde sequer ser lido, ou não descreve o
-        /// documento enviado. O front aponta o usuário para o layout selecionado. HTTP 422.
+        /// Problema do lado do LAYOUT: o XML do layout não pôde sequer ser lido. O front aponta o
+        /// usuário para o layout selecionado. HTTP 422.
+        ///
+        /// <para><b>Não confundir com "mismatch".</b> Isto é propriedade de UM artefato (o layout
+        /// está inválido). O nome <c>layout_mismatch</c> está RESERVADO para a RELAÇÃO entre dois
+        /// artefatos — XML bem-formado que não é um layout, ou layout que não descreve o documento
+        /// enviado. Esse caso ainda não é detectado: hoje vira um layout sem elementos e o parse
+        /// "sucede" com zero campos (caracterizado em
+        /// <c>ParseAsyncFailureCauseTests</c>). Ver spec §2.2.</para>
         /// </summary>
-        LayoutMismatch,
+        LayoutInvalid,
 
         /// <summary>
         /// Defeito NOSSO: exceção não catalogada como entrada ruim (<c>NullReferenceException</c>,

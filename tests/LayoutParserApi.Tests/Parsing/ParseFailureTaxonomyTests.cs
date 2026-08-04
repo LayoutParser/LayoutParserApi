@@ -28,7 +28,7 @@ namespace LayoutParserApi.Tests.Parsing
         {
             var causa = ParseFailure.Classify(new XmlException("'<' inesperado na linha 3"));
 
-            Assert.Equal(ParseFailureCause.LayoutMismatch, causa);
+            Assert.Equal(ParseFailureCause.LayoutInvalid, causa);
             Assert.Equal(422, ParseFailure.ToHttpStatusCode(causa));
         }
 
@@ -37,7 +37,7 @@ namespace LayoutParserApi.Tests.Parsing
         [Fact]
         public void Subtipo_de_XmlException_ainda_e_falha_de_layout()
         {
-            Assert.Equal(ParseFailureCause.LayoutMismatch, ParseFailure.Classify(new XmlExceptionDerivada()));
+            Assert.Equal(ParseFailureCause.LayoutInvalid, ParseFailure.Classify(new XmlExceptionDerivada()));
         }
 
         [Fact]
@@ -87,7 +87,7 @@ namespace LayoutParserApi.Tests.Parsing
 
         [Theory]
         [InlineData(ParseFailureCause.DocumentMalformed, "document_malformed", 422)]
-        [InlineData(ParseFailureCause.LayoutMismatch, "layout_mismatch", 422)]
+        [InlineData(ParseFailureCause.LayoutInvalid, "layout_invalid", 422)]
         [InlineData(ParseFailureCause.ParserDefect, "parser_defect", 500)]
         public void Codigo_de_wire_e_status_sao_os_do_contrato(ParseFailureCause causa, string codigoEsperado, int statusEsperado)
         {
@@ -125,7 +125,7 @@ namespace LayoutParserApi.Tests.Parsing
         {
             const string motivo = "Erro no parsing: 'x' é um caractere inesperado na linha 3.";
 
-            Assert.Equal(motivo, ParseFailure.ResolveClientMessage(ParseFailureCause.LayoutMismatch, motivo));
+            Assert.Equal(motivo, ParseFailure.ResolveClientMessage(ParseFailureCause.LayoutInvalid, motivo));
             Assert.Equal(motivo, ParseFailure.ResolveClientMessage(ParseFailureCause.DocumentMalformed, motivo));
         }
 
@@ -137,7 +137,7 @@ namespace LayoutParserApi.Tests.Parsing
         {
             Assert.Equal(
                 ParseFailure.GenericClientMessage,
-                ParseFailure.ResolveClientMessage(ParseFailureCause.LayoutMismatch, motivo));
+                ParseFailure.ResolveClientMessage(ParseFailureCause.LayoutInvalid, motivo));
         }
 
         private sealed class XmlExceptionDerivada : XmlException

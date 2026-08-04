@@ -18,7 +18,7 @@ namespace LayoutParserApi.Models.Parsing
     {
         // ── Códigos de wire (contrato com o front — não renomear sem avisar o outro lado) ────────
         public const string DocumentMalformedCode = "document_malformed";
-        public const string LayoutMismatchCode = "layout_mismatch";
+        public const string LayoutInvalidCode = "layout_invalid";
         public const string ParserDefectCode = "parser_defect";
 
         /// <summary>
@@ -43,8 +43,8 @@ namespace LayoutParserApi.Models.Parsing
         /// <para><b>Divisão por ARTEFATO,</b> que é o que o usuário consegue agir sobre:
         /// <list type="bullet">
         /// <item><see cref="XmlException"/> — o único XML lido neste fluxo é o do LAYOUT
-        /// (o documento posicional é texto puro). Layout ilegível ⇒ o layout não serve para este
-        /// documento ⇒ <see cref="ParseFailureCause.LayoutMismatch"/>, e o front aponta o layout.</item>
+        /// (o documento posicional é texto puro). Layout ilegível ⇒
+        /// <see cref="ParseFailureCause.LayoutInvalid"/>, e o front aponta o layout.</item>
         /// <item><see cref="DecoderFallbackException"/> — encoding do DOCUMENTO ⇒
         /// <see cref="ParseFailureCause.DocumentMalformed"/>, e o front aponta o arquivo de dados.</item>
         /// <item><b>Qualquer outra</b> ⇒ <see cref="ParseFailureCause.ParserDefect"/>. Inclusive
@@ -56,7 +56,7 @@ namespace LayoutParserApi.Models.Parsing
         /// catalogada, que também é defeito nosso.</param>
         public static ParseFailureCause Classify(Exception? excecao) => excecao switch
         {
-            XmlException => ParseFailureCause.LayoutMismatch,
+            XmlException => ParseFailureCause.LayoutInvalid,
             DecoderFallbackException => ParseFailureCause.DocumentMalformed,
             _ => ParseFailureCause.ParserDefect
         };
@@ -65,7 +65,7 @@ namespace LayoutParserApi.Models.Parsing
         public static string ToWireCode(ParseFailureCause causa) => causa switch
         {
             ParseFailureCause.DocumentMalformed => DocumentMalformedCode,
-            ParseFailureCause.LayoutMismatch => LayoutMismatchCode,
+            ParseFailureCause.LayoutInvalid => LayoutInvalidCode,
             _ => ParserDefectCode
         };
 

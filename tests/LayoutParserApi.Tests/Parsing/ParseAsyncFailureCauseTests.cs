@@ -29,14 +29,14 @@ namespace LayoutParserApi.Tests.Parsing
         private const string DeclaracaoXml = "<?xml version=\"1.0\" encoding=\"utf-8\"?>";
 
         [Fact]
-        public async Task Layout_xml_malformado_classifica_como_layout_mismatch()
+        public async Task Layout_xml_malformado_classifica_como_layout_invalid()
         {
             var resultado = await ParseAsync(
                 layoutXml: DeclaracaoXml + "<LayoutVO><Name>LAY_QUEBRADO</Name>",   // sem fechar a raiz
                 documento: "000001CONTEUDO");
 
             Assert.False(resultado.Success);
-            Assert.Equal(ParseFailureCause.LayoutMismatch, resultado.FailureCause);
+            Assert.Equal(ParseFailureCause.LayoutInvalid, resultado.FailureCause);
         }
 
         [Fact]
@@ -54,11 +54,13 @@ namespace LayoutParserApi.Tests.Parsing
         /// <summary>
         /// LIMITE CONHECIDO, deliberadamente não atravessado nesta entrega: um XML bem-formado que
         /// NÃO é um layout (o usuário subiu o arquivo errado) não lança exceção — vira um Layout
-        /// sem elementos e o parse "sucede" com zero campos. É o candidato natural a
-        /// <see cref="ParseFailureCause.LayoutMismatch"/> em produção, mas transformá-lo em 422
-        /// cria uma falha nova onde hoje há um 200, e isso é decisão de produto, não de
-        /// implementação. Este teste documenta o comportamento atual para que a mudança, quando
-        /// vier, seja consciente.
+        /// sem elementos e o parse "sucede" com zero campos.
+        ///
+        /// <para>Este é exatamente o caso para o qual o código de wire <c>layout_mismatch</c> ficou
+        /// RESERVADO (spec §2.2): uma RELAÇÃO entre dois artefatos, não a invalidez de um
+        /// (<see cref="ParseFailureCause.LayoutInvalid"/>). Transformá-lo em 422 cria uma falha
+        /// nova onde hoje há um 200 — decisão de produto, não de implementação. Este teste trava o
+        /// comportamento atual para que a mudança, quando vier, seja consciente.</para>
         /// </summary>
         [Fact]
         public async Task Xml_bem_formado_que_nao_e_layout_ainda_nao_e_classificado_como_mismatch()
