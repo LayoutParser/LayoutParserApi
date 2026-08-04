@@ -16,7 +16,15 @@ Hoje o `ParseController` tem dois desfechos e três realidades:
 |---|---|---|
 | Nosso parser quebrou (bug nosso) | `422` + `message` string | Indistinguível da linha abaixo |
 | Arquivo tão quebrado que lança exceção | `422` + `message` string | Indistinguível da linha acima |
-| Arquivo parseável, com defeito localizável | `200` + `validationErrors` | Estruturado, mas só sobre **tamanho de linha** |
+| Arquivo parseável, com defeito localizável | `200` + `validationErrors` | Estruturado, mas **sem identidade de campo** |
+
+> **CORREÇÃO (Aria, 2026-08-04).** A versão original desta linha dizia que `validationErrors` era
+> "só sobre tamanho de linha". **Está errado**, e o erro foi meu. Medido pelo `@lp-front-dev` contra
+> um documento real: dos 47 erros retornados, todos eram *"Sequência inválida"* com
+> **`expectedLength == actualLength`** — comprimento correto, conteúdo da sequência errado. O
+> validador emite pelo menos duas classes distintas (enquadramento **e** sequência), e a distinção
+> importa: **erro de sequência não dessincroniza offset**, erro de comprimento pode. Isso governa
+> tanto a classificação no back-end quanto a decisão do front de truncar ou não a exibição.
 
 Duas consequências: (a) o `422` culpa o arquivo do usuário mesmo quando a culpa é nossa; (b) o erro
 não tem **identidade de campo**, então não serve de rótulo para a IA aprender atribuição por tag.
@@ -102,7 +110,10 @@ O `ParseAsync` captura exceção internamente e devolve `Success=false` + `Error
 classificação sai do **tipo da exceção**:
 
 - Exceções conhecidas de entrada ruim (XML do layout malformado, encoding inválido, layout que não
-  casa com o documento) → `document_malformed` / `layout_mismatch` → **422**.
+  casa com o documento) → `document_malformed` / `layout_invalid` → **422**.
+  A divisão entre os dois é **por artefato — qual arquivo o usuário deve abrir**: `layout_invalid`
+  quando o XML do layout está ilegível, `document_malformed` quando o problema é do TXT (encoding,
+  vazio). Ver a DECISÃO no §2.2; `layout_mismatch` **não é emitido**, está reservado.
 - **Qualquer outra** (`NullReferenceException`, `IndexOutOfRangeException`, etc.) → `parser_defect`
   → **500**.
 
