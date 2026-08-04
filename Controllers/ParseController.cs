@@ -81,8 +81,10 @@ namespace LayoutParserApi.Controllers
                     detectedType = "idoc";
                 }
 
+                var isXmlInput = isXmlFile || detectedType == "xml";
+
                 // Se for arquivo XML, retornar indicando que deve ser processado no front-end
-                if (isXmlFile || detectedType == "xml")
+                if (isXmlInput)
                 {
                     _logger.LogInformation("Arquivo XML detectado, deve ser processado no front-end");
                     return Ok(new
@@ -167,11 +169,15 @@ namespace LayoutParserApi.Controllers
                 // principal e NUNCA pode ser bloqueado além do teto nem falhar por causa deste pathway.
                 object? transformations = null;
                 var transformationsStatus = "not_applicable";
+                var eligibility = LowCodeTransformationEligibility.Evaluate(
+                    result.Success,
+                    flattenedLayout.LayoutGuid,
+                    result.RawText,
+                    isXmlInput);
+                string? transformationsReason = eligibility.Reason;
                 try
                 {
-                    if (!string.IsNullOrWhiteSpace(flattenedLayout.LayoutGuid) &&
-                        !string.IsNullOrWhiteSpace(result.RawText) &&
-                        detectedType == "mqseries")
+                    if (eligibility.IsEligible)
                     {
                         var syncTimeoutSeconds = _lowCodeOpt.SyncDeliveryTimeoutSeconds > 0 ? _lowCodeOpt.SyncDeliveryTimeoutSeconds : 6;
 
@@ -191,7 +197,14 @@ namespace LayoutParserApi.Controllers
                             var autoResult = await transformTask;
                             transformationsStatus = autoResult.Applicable ? "completed" : "not_applicable";
                             if (autoResult.Applicable)
+                            {
                                 transformations = autoResult.Candidates;
+                                transformationsReason = null;
+                            }
+                            else
+                            {
+                                transformationsReason = LowCodeTransformationEligibility.NoMapperReason;
+                            }
                         }
                         else
                         {
@@ -199,6 +212,7 @@ namespace LayoutParserApi.Controllers
                             // continua em background (persistência em disco já ocorre dentro de
                             // RunAsync). Só observamos exceção aqui pra não gerar unobserved task.
                             transformationsStatus = "processing";
+                            transformationsReason = LowCodeTransformationEligibility.TimeoutSyncReason;
                             _ = transformTask.ContinueWith(t =>
                             {
                                 if (t.IsFaulted)
@@ -214,6 +228,7 @@ namespace LayoutParserApi.Controllers
                     // sucedeu e é a resposta que importa.
                     _logger.LogWarning(ex, "Falha ao processar transformações low-code (parse principal não afetado)");
                     transformationsStatus = "error";
+                    transformationsReason = LowCodeTransformationEligibility.StructuralErrorReason;
                 }
 
                 return Ok(new
@@ -229,7 +244,8 @@ namespace LayoutParserApi.Controllers
                     validationErrors = result.ValidationErrors, // ✅ Erros de validação de tamanho de linha
                     validationWarning = !string.IsNullOrEmpty(result.ErrorMessage) ? result.ErrorMessage : null, // ✅ Aviso se houver erros
                     transformations, // array de candidatos low-code (mapper/target/xml/sucesso-ou-erro) quando concluído a tempo
-                    transformationsStatus // "not_applicable" | "completed" | "processing" | "error"
+                    transformationsStatus, // "not_applicable" | "completed" | "processing" | "error"
+                    transformationsReason // opcional: no_mapper | type_not_positional | empty_input | timeout_sync | structural_error
                 });
             }
             catch (Exception ex)
