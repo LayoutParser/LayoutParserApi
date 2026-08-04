@@ -169,6 +169,18 @@ namespace LayoutParserApi.Services.Implementations
 
                 result.Success = false;
                 result.ErrorMessage = $"Erro no parsing: {ex.Message}";
+
+                // ✅ Taxonomia de falha (spec-taxonomia-de-falha-do-parse.md §3): a culpa sai do
+                // TIPO da exceção, e este é o único ponto onde o tipo ainda existe — daqui pra
+                // frente só sobrevive a string. Sem isso o controller não tem como distinguir
+                // "arquivo ruim" de "bug nosso", e os dois viram o mesmo 422.
+                result.FailureCause = ParseFailure.Classify(ex);
+
+                // A exceção completa (com stack) fica AQUI, no log estruturado. Ela não entra no
+                // ParsingResult de propósito: esse objeto atravessa a borda HTTP.
+                _logger.LogError(ex,
+                    "Falha no parse do documento. Causa={FailureCause}, TipoExcecao={ExceptionType}, Layout={LayoutName}",
+                    result.FailureCause, ex.GetType().FullName, result.Layout?.Name ?? "(layout não carregado)");
             }
 
             return result;

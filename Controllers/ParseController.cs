@@ -1,10 +1,13 @@
 ﻿using LayoutParserApi.Models.Entities;
+using LayoutParserApi.Models.Enums;
+using LayoutParserApi.Models.Parsing;
 using LayoutParserApi.Models.Responses;
 using LayoutParserApi.Models.Configuration;
 using LayoutParserApi.Services.Filters;
 using LayoutParserApi.Services.Parsing.Interfaces;
 using LayoutParserApi.Services.Interfaces;
 using LayoutParserApi.Services.Learning;
+using LayoutParserApi.Services.Logging;
 using LayoutParserApi.Services.Transformation.LowCode;
 using LayoutParserApi.Services.Database;
 
@@ -97,10 +100,24 @@ namespace LayoutParserApi.Controllers
                     });
                 }
 
+                // ✅ Documento sem conteúdo: irrecuperável, não há o que renderizar (spec §2.2).
+                // Sem este gate o parse "sucede" com zero campos e o payload sairia com
+                // documentHealth="clean" — uma mentira: documento vazio não é documento limpo.
+                // Fica ANTES do aprendizado de máquina de propósito: arquivo vazio não é amostra.
+                if (string.IsNullOrEmpty(sample))
+                {
+                    return ParseFailureResult(
+                        ParseFailureCause.DocumentMalformed,
+                        ParseFailure.EmptyDocumentMessage,
+                        detectedType,
+                        layoutFile.FileName,
+                        txtFile.FileName);
+                }
+
                 // Salvar arquivo para aprendizado de máquina ANTES de processar
-                if (!string.IsNullOrEmpty(layoutName))                
+                if (!string.IsNullOrEmpty(layoutName))
                     await SaveFileForLearningAsync(layoutName, txtFile, detectedType);
-                
+
 
                 // Processar arquivo
                 using var layoutStream = layoutFile.OpenReadStream();
@@ -112,23 +129,24 @@ namespace LayoutParserApi.Controllers
                 // Success=false / Layout=null, com a causa real em ErrorMessage. Sem este gate,
                 // ReestruturarLayout(null) devolve null em silêncio e o NullReference só estoura
                 // adiante (ao ler LayoutGuid), virando um 500 "Object reference not set..." que
-                // apaga a mensagem que diria a causa real. Retornamos 422 para o front distinguir
-                // "layout não parseável / erro de parse" de "ainda não processei nada".
+                // apaga a mensagem que diria a causa real.
+                //
+                // O gate não sumiu — foi RECLASSIFICADO (spec-taxonomia-de-falha-do-parse.md §3).
+                // Antes toda falha virava 422, o que culpa o arquivo do usuário até quando a culpa
+                // é nossa. Agora a causa sai do tipo da exceção: entrada ruim → 422; qualquer outra
+                // → 500, porque exceção não catalogada é defeito nosso até prova em contrário.
                 if (!result.Success || result.Layout == null)
                 {
-                    var parseErrorMessage = !string.IsNullOrWhiteSpace(result.ErrorMessage)
-                        ? result.ErrorMessage
-                        : "Não foi possível parsear o documento com o layout informado.";
+                    // FailureCause nulo aqui = falhou sem exceção catalogada (ex.: Layout nulo com
+                    // Success=true). O default culpa a NÓS, não o usuário.
+                    var causa = result.FailureCause ?? ParseFailureCause.ParserDefect;
 
-                    _logger.LogError("Falha no parse do documento. Layout={LayoutFile}, Arquivo={DocumentFile}, Tipo={DetectedType}, Motivo={ErrorMessage}",
-                        layoutFile.FileName, txtFile.FileName, detectedType, parseErrorMessage);
-
-                    return UnprocessableEntity(new
-                    {
-                        success = false,
+                    return ParseFailureResult(
+                        causa,
+                        result.ErrorMessage,
                         detectedType,
-                        message = parseErrorMessage
-                    });
+                        layoutFile.FileName,
+                        txtFile.FileName);
                 }
 
                 var layoutReestruturado = _parserService.ReestruturarLayout(result.Layout);
@@ -241,6 +259,9 @@ namespace LayoutParserApi.Controllers
                 {
                     success = true,
                     detectedType,
+                    // ✅ Defeito localizável NÃO é 422: o documento parseou e é renderizável, só
+                    // vai anotado. A UI decide o modo de exibição por este campo (spec §2.1).
+                    documentHealth = DocumentHealth.Resolve(result.ValidationErrors),
                     layout = flattenedLayout,
                     fields = result.ParsedFields,
                     text = result.RawText,
@@ -256,9 +277,53 @@ namespace LayoutParserApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Erro durante o parsing do XML");
-                return StatusCode(500, $"Erro interno: {ex.Message}");
+                // Exceção fora do ParseAsync (montagem da resposta, detecção, I/O do upload).
+                // Mesma taxonomia: exceção não catalogada é defeito NOSSO → 500 com mensagem
+                // segura. Antes daqui saía `"Erro interno: {ex.Message}"` — uma string crua, sem
+                // failureCause nem correlationId, vazando texto de exceção pro cliente.
+                _logger.LogError(ex, "Erro durante o parsing do XML. TipoExcecao={ExceptionType}", ex.GetType().FullName);
+
+                return ParseFailureResult(
+                    ParseFailure.Classify(ex),
+                    ex.Message,
+                    "unknown",
+                    layoutFile.FileName,
+                    txtFile.FileName);
             }
+        }
+
+        /// <summary>
+        /// Monta a resposta de falha do parse conforme a taxonomia (spec §2.2 e §2.3): 422 quando
+        /// a entrada é ruim, 500 quando o defeito é nosso.
+        ///
+        /// <para><b>Nunca vaze detalhe interno no 500.</b> O <c>message</c> do <c>parser_defect</c>
+        /// é um literal fixo; o motivo real (que carrega texto de exceção) fica só no log
+        /// estruturado, alcançável pelo <c>correlationId</c> que devolvemos ao cliente.</para>
+        /// </summary>
+        private IActionResult ParseFailureResult(
+            ParseFailureCause causa,
+            string? motivoInterno,
+            string detectedType,
+            string layoutFileName,
+            string documentFileName)
+        {
+            var statusCode = ParseFailure.ToHttpStatusCode(causa);
+            var failureCause = ParseFailure.ToWireCode(causa);
+            var correlationId = CorrelationContext.CurrentId ?? HttpContext.TraceIdentifier;
+
+            _logger.LogError(
+                "Falha no parse do documento. Causa={FailureCause}, Status={StatusCode}, Layout={LayoutFile}, Arquivo={DocumentFile}, Tipo={DetectedType}, Motivo={ErrorMessage}",
+                failureCause, statusCode, layoutFileName, documentFileName, detectedType,
+                string.IsNullOrWhiteSpace(motivoInterno) ? "(sem motivo registrado)" : motivoInterno);
+
+            return StatusCode(statusCode, new
+            {
+                success = false,
+                failureCause,
+                detectedType = string.IsNullOrWhiteSpace(detectedType) ? "unknown" : detectedType,
+                message = ParseFailure.ResolveClientMessage(causa, motivoInterno),
+                correlationId
+            });
         }
 
         /// <summary>
