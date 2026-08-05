@@ -238,7 +238,14 @@ namespace LayoutParserApi.Controllers
                         // isso — a resposta principal é o documento parseado.
                         var winner = await Task.WhenAny(transformTask, Task.Delay(TimeSpan.FromSeconds(syncTimeoutSeconds)));
 
-                        if (winner == transformTask)
+                        // ⚠️ Vencer a corrida não basta: o cancelamento faz a task terminar QUASE no
+                        // mesmo instante do Task.Delay (ela devolve os candidatos já marcados como
+                        // falha por cancelamento). Sem checar o token, essa corrida sairia às vezes
+                        // como "completed" com tudo falhando — que é pior que "processing": diria ao
+                        // usuário "terminou e deu erro" quando a verdade é "não deu tempo".
+                        var concluiuDentroDoTeto = winner == transformTask && !syncCts.IsCancellationRequested;
+
+                        if (concluiuDentroDoTeto)
                         {
                             // Já concluiu dentro do teto — observamos o resultado (RunAsync já trata
                             // falha de candidato individual internamente, não deve lançar por isso).
