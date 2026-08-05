@@ -18,6 +18,15 @@ era exercido — uma invariante load-bearing sem teste, apesar da suíte "cobrir
 campo que passa pelo método onde a mutação batia. Cobertura de linha estava lá; cobertura de
 comportamento, não.
 
+**Também vale para teste que PENDURA em vez de falhar.** Em 2026-08-05, mutar "token não chega ao
+processo do runner" fez `Assert.ThrowsAnyAsync<OperationCanceledException>` esperar para sempre (sob
+o defeito, a task nunca completa) — a suíte inteira travou sem diagnóstico e foi preciso
+`taskkill /F /IM testhost.exe`. xUnit não tem timeout por teste por default. Em teste de
+concorrência/cancelamento, **toda espera precisa de teto explícito**
+(`Task.WhenAny(tarefa, Task.Delay(n))` + `Assert.Fail`). Consequência prática: rode a bateria de
+mutação em background e cheque o progresso por `git status`, senão uma mutação que trava consome a
+janela inteira.
+
 **How to apply:** o padrão barato é `git archive HEAD` pro scratchpad, mutar lá e rodar a suíte —
 nunca mutar a árvore de trabalho e torcer pra lembrar de reverter (se precisar mutar in-place,
 confirme depois com `git diff --stat` no código de produção antes de commitar). Priorize mutar:
