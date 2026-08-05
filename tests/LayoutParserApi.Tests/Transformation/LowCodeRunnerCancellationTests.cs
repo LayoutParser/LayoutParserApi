@@ -43,13 +43,13 @@ namespace LayoutParserApi.Tests.Transformation
 
             // Teto síncrono estourou:
             ctsPrimeiro.Cancel();
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => primeiro);
+            await DeveCancelarAsync(primeiro, "o primeiro nao observou o cancelamento");
 
             // ...e o slot volta para a fila.
             await EsperarAsync(() => runner.Entradas >= 2, "o slot nao foi liberado apos o cancelamento");
 
             ctsSegundo.Cancel();
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => segundo);
+            await DeveCancelarAsync(segundo, "o segundo nao observou o cancelamento");
         }
 
         [Fact]
@@ -69,15 +69,13 @@ namespace LayoutParserApi.Tests.Transformation
             // isso, ele acordaria depois e tomaria um slot para produzir trabalho que ninguém quer.
             ctsSegundo.Cancel();
 
-            var terminouRapido = await Task.WhenAny(segundo, Task.Delay(TimeSpan.FromSeconds(3))) == segundo;
-            Assert.True(terminouRapido, "o cancelamento na fila do semaforo nao foi observado");
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => segundo);
+            await DeveCancelarAsync(segundo, "o cancelamento na fila do semaforo nao foi observado", segundos: 3);
 
             // E nunca chegou a entrar no runner.
             Assert.Equal(1, runner.Entradas);
 
             ctsPrimeiro.Cancel();
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => primeiro);
+            await DeveCancelarAsync(primeiro, "o primeiro nao observou o cancelamento");
         }
 
         // ─────────────────────────────── infraestrutura ───────────────────────────────
@@ -105,6 +103,19 @@ namespace LayoutParserApi.Tests.Transformation
             });
 
             return new RunnerBloqueado(opcoes, config);
+        }
+
+        /// <summary>
+        /// Espera o cancelamento com teto. O teto não é decoração: sob o defeito que este arquivo
+        /// vigia (token que não chega ao runner), a task NUNCA completa — e um teste que trava é
+        /// pior que um teste que falha, porque a suíte inteira fica pendurada sem diagnóstico.
+        /// </summary>
+        private static async Task DeveCancelarAsync(Task tarefa, string mensagemDeFalha, int segundos = 5)
+        {
+            if (await Task.WhenAny(tarefa, Task.Delay(TimeSpan.FromSeconds(segundos))) != tarefa)
+                Assert.Fail(mensagemDeFalha);
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => tarefa);
         }
 
         private static async Task EsperarAsync(Func<bool> condicao, string mensagemDeFalha)
