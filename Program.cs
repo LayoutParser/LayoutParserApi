@@ -21,6 +21,8 @@ using Serilog.Events;
 using Serilog.Context;
 using LayoutParserApi.Services.Logging;
 
+using Microsoft.Extensions.Options;
+
 using StackExchange.Redis;
 
 using System.Text.Encodings.Web;
@@ -319,6 +321,14 @@ try
     builder.Services.AddScoped<CfopOperationCatalogService>();
     builder.Services.Configure<LowCodeRunnerOptions>(builder.Configuration.GetSection("LowCode"));
     builder.Services.AddSingleton<LowCodeTransformationService>();
+    // ✅ Store/índice das transformações low-code: Singleton porque é consumido pelos Singletons do
+    // pathway (auto-transform) e não guarda estado por request. Redis é OPCIONAL — resolvido por
+    // GetService (nullable), mesmo padrão dos caches de catálogo: sem Redis, tudo funciona por disco.
+    builder.Services.AddSingleton<LowCodeTransformationStore>(sp => new LowCodeTransformationStore(
+        sp.GetRequiredService<ILogger<LowCodeTransformationStore>>(),
+        sp.GetRequiredService<IConfiguration>(),
+        sp.GetRequiredService<IOptions<LowCodeRunnerOptions>>(),
+        sp.GetService<IConnectionMultiplexer>()));
     builder.Services.AddSingleton<LowCodeAutoTransformationService>();
     builder.Services.AddHostedService<LayoutValidationBackgroundService>();
 

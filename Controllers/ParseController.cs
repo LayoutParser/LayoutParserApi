@@ -3,6 +3,7 @@ using LayoutParserApi.Models.Enums;
 using LayoutParserApi.Models.Parsing;
 using LayoutParserApi.Models.Responses;
 using LayoutParserApi.Models.Configuration;
+using LayoutParserApi.Models.Transformation;
 using LayoutParserApi.Services.Filters;
 using LayoutParserApi.Services.Parsing.Interfaces;
 using LayoutParserApi.Services.Interfaces;
@@ -28,6 +29,7 @@ namespace LayoutParserApi.Controllers
         private readonly IConfiguration _configuration;
         private readonly LowCodeAutoTransformationService _lowCodeAuto;
         private readonly LowCodeRunnerOptions _lowCodeOpt;
+        private readonly LowCodeTransformationStore _transformationStore;
 
         public ParseController(
             ILayoutParserService parserService,
@@ -37,7 +39,8 @@ namespace LayoutParserApi.Controllers
             LayoutLearningService learningService,
             IConfiguration configuration,
             LowCodeAutoTransformationService lowCodeAuto,
-            IOptions<LowCodeRunnerOptions> lowCodeOptions)
+            IOptions<LowCodeRunnerOptions> lowCodeOptions,
+            LowCodeTransformationStore transformationStore)
         {
             _parserService = parserService;
             _logger = logger;
@@ -47,6 +50,7 @@ namespace LayoutParserApi.Controllers
             _configuration = configuration;
             _lowCodeAuto = lowCodeAuto;
             _lowCodeOpt = lowCodeOptions.Value;
+            _transformationStore = transformationStore;
         }
 
         [ServiceFilter(typeof(AuditActionFilter))]
@@ -198,11 +202,27 @@ namespace LayoutParserApi.Controllers
                     detectedType,
                     isXmlInput);
                 string? transformationsReason = eligibility.Reason;
+
+                // ✅ Ticket de consulta das transformações (spec §2.6): emitido sempre que o pathway
+                // é elegível — INCLUSIVE quando a entrega síncrona não deu tempo ("processing"). É o
+                // que mata o rótulo "(processando...)" eterno: antes o front não tinha a quem
+                // perguntar se terminou, porque o store era escrito e nunca lido.
+                string? transformationsTicket = eligibility.IsEligible
+                    ? LowCodeTransformationStore.BuildTicketFromContent(result.RawText, flattenedLayout.LayoutGuid)
+                    : null;
+
                 try
                 {
                     if (eligibility.IsEligible)
                     {
                         var syncTimeoutSeconds = _lowCodeOpt.SyncDeliveryTimeoutSeconds > 0 ? _lowCodeOpt.SyncDeliveryTimeoutSeconds : 6;
+
+                        // ✅ O teto agora CANCELA o trabalho, não só a espera (spec §1.1). Antes, o
+                        // trabalho abandonado seguia vivo segurando um dos MaxConcurrentRunners e
+                        // atrasando o próximo upload — e não chegava a lugar nenhum, porque ninguém
+                        // conseguia ler o store. Com o índice consultável, cancelar deixa de ser
+                        // perda: o que ficou pronto é gravado e responde pelo ticket.
+                        var syncCts = new CancellationTokenSource(TimeSpan.FromSeconds(syncTimeoutSeconds));
 
                         var transformTask = _lowCodeAuto.RunAsync(
                             flattenedLayout.LayoutGuid,
@@ -210,8 +230,12 @@ namespace LayoutParserApi.Controllers
                             result.RawText,
                             detectedType,
                             txtFile.FileName,
-                            positionalMetadata);
+                            positionalMetadata,
+                            syncCts.Token);
 
+                        // A corrida contra o Task.Delay continua: o cancelamento é cooperativo (o
+                        // kill do processo tem sua própria janela), e o parse não pode esperar nem
+                        // isso — a resposta principal é o documento parseado.
                         var winner = await Task.WhenAny(transformTask, Task.Delay(TimeSpan.FromSeconds(syncTimeoutSeconds)));
 
                         if (winner == transformTask)
@@ -219,10 +243,12 @@ namespace LayoutParserApi.Controllers
                             // Já concluiu dentro do teto — observamos o resultado (RunAsync já trata
                             // falha de candidato individual internamente, não deve lançar por isso).
                             var autoResult = await transformTask;
+                            syncCts.Dispose();
+
                             transformationsStatus = autoResult.Applicable ? "completed" : "not_applicable";
                             if (autoResult.Applicable)
                             {
-                                transformations = autoResult.Candidates;
+                                transformations = AplicarTetoDeXmlInline(autoResult.Candidates);
                                 transformationsReason = null;
                             }
                             else
@@ -232,15 +258,16 @@ namespace LayoutParserApi.Controllers
                         }
                         else
                         {
-                            // Estourou o teto síncrono: resposta segue sem esperar mais, processamento
-                            // continua em background (persistência em disco já ocorre dentro de
-                            // RunAsync). Só observamos exceção aqui pra não gerar unobserved task.
+                            // Estourou o teto síncrono: a resposta segue sem esperar mais e o trabalho
+                            // é interrompido (o slot do runner volta para a fila). O que já tiver
+                            // ficado pronto fica no índice, consultável por transformationsTicket.
                             transformationsStatus = "processing";
                             transformationsReason = LowCodeTransformationEligibility.TimeoutSyncReason;
                             _ = transformTask.ContinueWith(t =>
                             {
                                 if (t.IsFaulted)
                                     _logger.LogError(t.Exception, "Falha no processamento low-code em background (após estouro do teto síncrono de {SyncTimeoutSeconds}s)", syncTimeoutSeconds);
+                                syncCts.Dispose();
                             }, TaskScheduler.Default);
                         }
                     }
@@ -272,7 +299,8 @@ namespace LayoutParserApi.Controllers
                     validationWarning = !string.IsNullOrEmpty(result.ErrorMessage) ? result.ErrorMessage : null, // ✅ Aviso se houver erros
                     transformations, // array de candidatos low-code (mapper/target/xml/sucesso-ou-erro) quando concluído a tempo
                     transformationsStatus, // "not_applicable" | "completed" | "processing" | "error"
-                    transformationsReason // opcional: no_mapper | type_not_positional | empty_input | timeout_sync | structural_error
+                    transformationsReason, // opcional: no_mapper | type_not_positional | empty_input | timeout_sync | structural_error
+                    transformationsTicket // consulta do resultado: GET /api/parse/transformations/{ticket}
                 });
             }
             catch (Exception ex)
@@ -290,6 +318,122 @@ namespace LayoutParserApi.Controllers
                     layoutFile.FileName,
                     txtFile.FileName);
             }
+        }
+
+        /// <summary>
+        /// Manifesto das transformações de um documento já parseado — status + descritores dos
+        /// candidatos, <b>sem o XML</b> (é o lado "consultado sempre" do split da spec §2.4).
+        ///
+        /// <para>Vocabulário deliberadamente compatível com o <c>execute-candidates</c>
+        /// (<c>candidateId</c>/<c>pathway</c>/<c>failureReason</c> de <c>TransformationCandidate</c>)
+        /// somado aos descritores de domínio do candidato low-code (<c>mapperGuid</c>,
+        /// <c>success</c>, <c>outputLength</c>): é um superconjunto dos dois shapes que o front já
+        /// consome, para não criar um terceiro dialeto (spec §3.3).</para>
+        /// </summary>
+        /// <param name="ticket">"{sha256}.{layoutGuid}" — devolvido pelo upload em <c>transformationsTicket</c>.</param>
+        /// <response code="200">Manifesto encontrado (status "processing" ou "completed").</response>
+        /// <response code="400">Ticket fora do formato.</response>
+        /// <response code="404">Nenhuma execução registrada para este ticket.</response>
+        [HttpGet("transformations/{ticket}")]
+        public async Task<IActionResult> GetTransformations(string ticket)
+        {
+            // ✅ VALIDAÇÃO por charset fixo, nunca sanitização por remoção de caracteres: o ticket
+            // vem do cliente e vira nome de arquivo. Sanitizar aceitaria entrada hostil e tentaria
+            // consertá-la; validar recusa. Path traversal ("..", separador) morre aqui (spec §2.5).
+            if (!LowCodeTransformationStore.TryParseTicket(ticket, out var sha256, out var layoutGuid))
+                return BadRequest(new { success = false, error = "Ticket de transformação inválido." });
+
+            var entrada = await _transformationStore.ReadEntryAsync(sha256, layoutGuid);
+            if (entrada == null)
+                return NotFound(new { success = false, error = "Nenhuma transformação registrada para este ticket." });
+
+            return Ok(new
+            {
+                success = true,
+                ticket,
+                status = entrada.Status, // "processing" | "completed"
+                partial = entrada.Partial, // true = execução interrompida no teto síncrono; pode faltar candidato
+                candidates = entrada.Candidates.Select(c => new
+                {
+                    candidateId = $"sysmiddle-{c.MapperGuid}",
+                    pathway = "sysmiddle",
+                    mapperGuid = c.MapperGuid,
+                    mapperName = c.MapperName,
+                    targetLayoutGuid = c.TargetLayoutGuid,
+                    success = c.Success,
+                    outputLength = c.OutputLength,
+                    // Já saneado na escrita; saneado de novo na leitura porque o índice é um arquivo
+                    // em disco — nada que venha de arquivo entra no wire sem passar pelo filtro.
+                    errorMessage = LowCodeErrorSanitizer.ForWire(c.ErrorMessage),
+                    failureReason = LowCodeErrorSanitizer.ForWire(c.ErrorMessage)
+                }).ToList()
+            });
+        }
+
+        /// <summary>
+        /// Corpo (XML) de UM candidato — o lado "consultado às vezes" do split (spec §2.4). É o que
+        /// o front busca quando o <c>outputXml</c> foi omitido do payload do parse por exceder
+        /// <c>LowCode:InlineXmlMaxChars</c>.
+        /// </summary>
+        /// <response code="200">XML do candidato.</response>
+        /// <response code="400">Ticket ou mapperGuid fora do formato.</response>
+        /// <response code="404">Ticket, candidato ou artefato inexistente.</response>
+        [HttpGet("transformations/{ticket}/candidates/{mapperGuid}")]
+        public async Task<IActionResult> GetTransformationCandidate(string ticket, string mapperGuid)
+        {
+            if (!LowCodeTransformationStore.TryParseTicket(ticket, out var sha256, out var layoutGuid))
+                return BadRequest(new { success = false, error = "Ticket de transformação inválido." });
+
+            if (string.IsNullOrWhiteSpace(mapperGuid))
+                return BadRequest(new { success = false, error = "mapperGuid é obrigatório." });
+
+            var entrada = await _transformationStore.ReadEntryAsync(sha256, layoutGuid);
+            if (entrada == null)
+                return NotFound(new { success = false, error = "Nenhuma transformação registrada para este ticket." });
+
+            // O caminho do artefato vem do índice (nosso), não do cliente — o mapperGuid só é usado
+            // para CASAR com um candidato registrado. Não casou, não existe.
+            var candidato = entrada.Candidates
+                .FirstOrDefault(c => string.Equals(c.MapperGuid, mapperGuid, StringComparison.OrdinalIgnoreCase));
+
+            if (candidato == null || !candidato.Success)
+                return NotFound(new { success = false, error = "Candidato não encontrado ou sem XML de saída." });
+
+            var xml = await _transformationStore.ReadCandidateXmlAsync(entrada, sha256, layoutGuid, candidato);
+            if (xml == null)
+                return NotFound(new { success = false, error = "Artefato do candidato indisponível." });
+
+            return Ok(new
+            {
+                success = true,
+                candidateId = $"sysmiddle-{candidato.MapperGuid}",
+                mapperGuid = candidato.MapperGuid,
+                outputLength = xml.Length,
+                outputXml = xml // mesmo nome do campo no payload do parse: o front faz uma ramificação só
+            });
+        }
+
+        /// <summary>
+        /// Aplica o teto de entrega inline (spec §2.4): acima de <c>LowCode:InlineXmlMaxChars</c> o
+        /// <c>outputXml</c> é omitido do payload (o serializador ignora nulos) e o front busca o
+        /// corpo pelo endpoint dedicado. <c>outputLength</c> vai sempre — sem ele, "campo ausente"
+        /// seria indistinguível de "candidato sem saída".
+        /// </summary>
+        private List<LowCodeCandidateResult> AplicarTetoDeXmlInline(List<LowCodeCandidateResult> candidatos)
+        {
+            var teto = _lowCodeOpt.InlineXmlMaxChars > 0 ? _lowCodeOpt.InlineXmlMaxChars : 262144;
+
+            foreach (var candidato in candidatos)
+            {
+                if (candidato.OutputXml == null)
+                    continue;
+
+                candidato.OutputLength = candidato.OutputXml.Length;
+                if (candidato.OutputLength > teto)
+                    candidato.OutputXml = null;
+            }
+
+            return candidatos;
         }
 
         /// <summary>

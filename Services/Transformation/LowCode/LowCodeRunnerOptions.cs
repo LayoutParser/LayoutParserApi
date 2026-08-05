@@ -35,6 +35,25 @@ namespace LayoutParserApi.Services.Transformation.LowCode
         // rodam em paralelo (Task.WhenAll), o caso comum (poucas variantes, runner saudável) completa
         // bem antes disso; se estourar, cai para processamento em background sem bloquear o parse.
         public int SyncDeliveryTimeoutSeconds { get; set; } = 6;
+
+        // ✅ Teto para entregar o XML da transformação INLINE no payload do parse. Acima disso o
+        // campo outputXml é omitido e o front busca pelo endpoint de corpo
+        // (GET /api/parse/transformations/{ticket}/candidates/{mapperGuid}).
+        // Default 262144 (256 KB): medido em material real, input de 35 KB gera saída de ~4,2 KB —
+        // o caso comum cabe inline com folga enorme e o teto só protege do outlier.
+        //
+        // ⚠️ O deploy PRESERVA o appsettings.json do destino (ci-dev.yml/deploy.yml), então config
+        // nova adicionada ao repo NÃO chega ao servidor: este default precisa ser seguro sozinho.
+        // Override em produção só por variável de ambiente LowCode__InlineXmlMaxChars.
+        public int InlineXmlMaxChars { get; set; } = 262144;
+
+        // ✅ Janela de frescor do cache-first de transformações (mesmo documento + mesmo layout
+        // não roda o runner de novo). Vale para o Redis (TTL da chave) e para a decisão de PULAR o
+        // runner com base no índice em disco — os artefatos em disco não expiram (corpus de treino).
+        // Default 2h: cobre com folga o fluxo real (parse → clique em "Gerar Transformação XML",
+        // segundos depois) sem congelar para sempre um resultado de um mapper que pode ter mudado.
+        // Mesmo aviso do campo acima: override só por LowCode__TransformationCacheTtlHours.
+        public int TransformationCacheTtlHours { get; set; } = 2;
     }
 }
 
