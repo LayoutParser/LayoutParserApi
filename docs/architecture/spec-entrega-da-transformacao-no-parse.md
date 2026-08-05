@@ -33,10 +33,19 @@ Agora junte com `ParseController.cs:215`: passado `SyncDeliveryTimeoutSeconds` (
 segurando um dos 2 slots** (`MaxConcurrentRunners = 2`).
 
 **Consequência prática:** um documento grande que estourou o teto deixa de entregar ao usuário *e*
-ainda bloqueia o próximo upload. Com 4 candidatos (`MultiCandidateTopN`) disputando 2 slots, uma
-rajada de uploads produz uma fila que ninguém observa e que não encolhe. É o oposto direto de *"o
-mais rápido possível"* — e nenhuma quantidade de cache resolve, porque o gargalo é o slot, não a
-computação repetida.
+continua segurando o slot que o próximo upload precisa.
+
+> **CORREÇÃO (Aria, 2026-08-05, após implementação).** A versão original deste parágrafo dizia que
+> isso produzia *"uma fila que não encolhe"*. **Está errado, e o erro foi meu.** O `@lp-backend-dev`
+> apontou e verifiquei no código anterior: já havia um `Task.Delay(RunnerTimeoutSeconds)` correndo
+> contra o processo, com `Kill(entireProcessTree)` e `Release()` num `finally`
+> (`LowCodeTransformationService.cs:132,156` na versão pré-mudança). **A fila encolhia** — em até 15s
+> por slot.
+>
+> O que o cancelamento entrega, então, é a janela **6s → 15s**: até 9s de ocupação indevida por
+> candidato abandonado, sobre um recurso de 2 slots com `TopN = 4`. Continua valendo a pena e
+> continua sendo P0, mas é recuperação de janela, não conserto de deadlock. Dimensionar certo importa
+> porque muda o que se espera medir depois.
 
 **Correção:** propagar `CancellationToken` por `TransformAsync` até o `WaitAsync(token)` e até o
 `Process`; o `ParseController` passa um token que dispara no teto síncrono. Abandonar a espera tem
@@ -158,7 +167,30 @@ GET /api/parse/transformations/{ticket}/candidates/{mapperGuid}
    entrada hostil e tenta consertá-la; validar recusa. `^[a-f0-9]{64}\.[A-Za-z0-9_\-]{1,64}$`.
 2. Canonicalizar (`Path.GetFullPath`) e conferir contra o prefixo de `_storePath` antes de abrir.
 3. **Nunca** devolver caminho absoluto de disco no payload (ver §3.1 — hoje isso já vaza).
-4. TTL do Redis: `LowCode:TransformationCacheTtlHours` (default **2**). O disco não expira.
+4. TTL do Redis: `LowCode:TransformationCacheTtlHours` (default **2**).
+
+> **CORREÇÃO (Aria, 2026-08-05).** A versão original dizia apenas *"o disco não expira"*, e isso
+> confundia duas operações distintas. O `@lp-backend-dev` separou corretamente:
+>
+> - **Leitura por ticket** — o endpoint serve o artefato de **qualquer idade**. Aqui o disco de fato
+>   não expira.
+> - **Pular o runner** (o *short-circuit* do cache-first) — decisão diferente, e **precisa** de teto.
+>   Se o mapper mudar no catálogo, um índice antigo faria a API servir XML obsoleto **para sempre**.
+>   O short-circuit fica limitado a `TransformationCacheTtlHours` (2h cobre parse→clique com folga).
+>
+> Um cache de leitura e um cache que suprime recomputação têm regras de invalidação diferentes;
+> tratá-los como um só era erro meu.
+
+### 2.5.1 O acoplamento entre cancelar (§1.1) e o ticket (§2.6)
+
+O `@lp-backend-dev` achou uma contradição entre duas seções minhas, e ele está certo: **se o teto de
+6s mata o trabalho, um ticket em `processing` responderia 404 para sempre** — eu teria trocado um
+rótulo eterno por um 404 eterno, que é pior, porque parece falha de sistema.
+
+**Resolução aceita:** ao cancelar, o índice é **fechado mesmo assim**, com `partial: true`. Fica
+legível pelo endpoint (o usuário vê o que houve e o que já saiu pronto) e **nunca** serve como hit de
+cache — trabalho parcial não pode virar resposta definitiva. Por isso o índice carrega também
+`status` e `createdAtUtc`, além do que o §2.3 listava.
 
 ### 2.6 O que muda no payload do parse (aditivo, nada removido)
 
@@ -203,6 +235,15 @@ O parse emite `LowCodeCandidateResult` (`mapperGuid`/`outputXml`/…) e o `execu
 `TransformationCandidate` (`candidateId`/`pathway`/`transformedXml`/…). Mesmo conceito, campos
 disjuntos — o front precisaria de dois parsers para a mesma coisa. **O manifesto do §2.5 deve adotar
 o vocabulário do `execute-candidates`** (é o que o front já tipa), não inventar um terceiro.
+
+> **CORREÇÃO (Aria, 2026-08-05).** Este parágrafo conflitava com o §2.5, que listava
+> `errorMessage`/`outputXml`. Resolução aceita, proposta pelo `@lp-backend-dev`: o **manifesto** emite
+> superconjunto (`candidateId`, `pathway`, `mapperGuid`, `success`, `outputLength`, e `errorMessage`
+> **e** `failureReason` com o mesmo texto) — barato, porque manifesto não carrega XML. O **endpoint de
+> corpo** mantém `outputXml`, porque o §2.4 define a ramificação do front como
+> `candidate.outputXml ?? fetchBody(...)`; duplicar um XML de MB só para satisfazer dois nomes seria
+> caro. Emitir dois nomes para o mesmo dado é dívida consciente — cabe ao `@lp-front-dev` escolher um
+> e ao `@lp-doc` documentar qual.
 
 ### 3.4 🟡 Drift entre ADR e código na proveniência do dataset
 
@@ -293,7 +334,8 @@ tempo pedido. O item 10 não bloqueia nada: os campos são aditivos e opcionais.
 
 ## 6. Erros da primeira versão desta spec (registro)
 
-Três afirmações minhas caíram na verificação. Ficam registradas para que ninguém as ressuscite:
+Sete afirmações minhas caíram — três na varredura adversarial (1-3), quatro na implementação (4-7),
+levantadas pelo `@lp-backend-dev`. Ficam registradas para que ninguém as ressuscite:
 
 1. **"O botão Gerar Transformação XML responde 404 em produção."** **Falso.** Eu li a constante
    `api.ts:52` (`/api/transformation-execution/...`, hifenizada) e supus ser o ponto de chamada. O
@@ -310,6 +352,16 @@ Três afirmações minhas caíram na verificação. Ficam registradas para que n
    marcam a amostra do `execute-candidates` como `suspect=true`, e a política da ADR já a exclui do
    few-shot. É desperdício de CPU e higiene de corpus, **não** envenenamento — e some sozinho quando
    o item 2 do §5 eliminar a segunda execução.
+4. **"Uma rajada produz fila que não encolhe."** **Falso** — já havia timeout de 15s com kill e
+   `Release()` no `finally`. O ganho do cancelamento é a janela 6s→15s. Detalhe no §1.1.
+5. **"O disco não expira"**, dito sem distinguir leitura de *short-circuit* de cache. Corrigido no
+   §2.5 item 4.
+6. **§2.5 e §3.3 mandavam vocabulários diferentes** para o mesmo objeto. Corrigido no §3.3.
+7. **§1.1 e §2.6 se contradiziam:** cancelar no teto mataria justamente o trabalho que o ticket
+   promete deixar consultar. Corrigido no §2.5.1.
+
+**Padrão que vale registrar:** nenhum dos sete foi pego por revisão de texto — todos caíram quando
+alguém confrontou a spec com o código. Contrato só vale depois de bater no compilador.
 
 ---
 
