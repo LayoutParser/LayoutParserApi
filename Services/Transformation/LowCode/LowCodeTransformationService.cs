@@ -117,7 +117,11 @@ namespace LayoutParserApi.Services.Transformation.LowCode
             _logger.LogInformation("Executando transformação low-code: corr={CorrelationId} mapperId={MapperId}, mapperName={MapperName}, runnerLog={RunnerLogFile}",
                 correlationId, mapperId, mapperName, runnerLogFile);
 
-            var timeoutSeconds = _opt.RunnerTimeoutSeconds > 0 ? _opt.RunnerTimeoutSeconds : 15;
+            // ✅ O literal aqui só cobre config explicitamente inválida (0 ou negativa) — casada com o
+            // default de LowCodeRunnerOptions.RunnerTimeoutSeconds de propósito: as duas eram 15s e as
+            // duas eram inviáveis (a transformação real leva 48-137s medidos). Se divergirem, um
+            // `RunnerTimeoutSeconds: 0` no appsettings volta a matar toda transformação no meio.
+            var timeoutSeconds = _opt.RunnerTimeoutSeconds > 0 ? _opt.RunnerTimeoutSeconds : 180;
 
             LowCodeRunnerExecution execucao;
 
