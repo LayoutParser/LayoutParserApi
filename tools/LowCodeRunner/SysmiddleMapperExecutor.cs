@@ -152,9 +152,13 @@ namespace LayoutParserLowCodeRunner
         }
     }
 
+    /// <summary>
+    /// Fachada histórica deste arquivo — delega ao RunnerLog para que TODA linha do runner saia no
+    /// mesmo formato correlacionado ({DateTime:O} [LVL] [Corr:xxx] msg), venha de onde vier.
+    /// </summary>
     internal static class Log
     {
-        public static void Info(string f, params object[] a)  => Console.Error.WriteLine("[INFO] "  + string.Format(f, a));
-        public static void Error(string f, params object[] a) => Console.Error.WriteLine("[ERROR] " + string.Format(f, a));
+        public static void Info(string f, params object[] a)  => RunnerLog.Info(f, a);
+        public static void Error(string f, params object[] a) => RunnerLog.Error(f, a);
     }
 }

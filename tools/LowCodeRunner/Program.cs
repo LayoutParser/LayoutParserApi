@@ -29,34 +29,35 @@ namespace LayoutParserLowCodeRunner
     ///   - pastaExamples: pasta com os arquivos-exemplo (ex.: Examples/LAY_CNHI_..., recursivo, .json ignorado).
     ///   - pastaSaida: gravada dentro/relativa a .claude/tmp/gabaritos/ (gitignored) — cria se não existir.
     /// (rode DE DENTRO da Bin da instância; globalFolder = pasta com o global.config de paths locais).
+    ///
+    /// Uso (nomeado, 2026-08-10): é a forma que a API fala (LowCodeTransformationService) —
+    ///   --globalFolder &lt;dir&gt; --package &lt;pkg&gt; --inputFile &lt;arq&gt; --outputFile &lt;arq&gt;
+    ///   (--mapperId &lt;guid&gt; | --mapperName &lt;nome&gt;) [--fileName &lt;nome&gt;] [--correlationId &lt;id&gt;]
+    ///   [--runnerLogFile &lt;arq&gt;] [--sysmiddleDir &lt;dir&gt;]
+    /// Até então o runner só entendia a forma posicional, então a chamada da API caía nela e
+    /// deslocava tudo: "--sysmiddleDir" virava globalFolder e o VALOR de --globalFolder virava o
+    /// input (exit=4, "Input nao encontrado: ...\globalfolder"). Ver RunnerArgsParser.
     /// </summary>
     internal static class Program
     {
         private static int Main(string[] args)
         {
-            bool isSweep = args.Length > 0 && string.Equals(args[0], "SWEEP", StringComparison.OrdinalIgnoreCase);
+            var parse = RunnerArgsParser.Parse(args);
+            if (!parse.Success)
+            {
+                // Antes do Configure: sem correlationId ainda, mas o formato de linha já é o mesmo.
+                foreach (var mensagem in parse.Messages)
+                    RunnerLog.Error("{0}", mensagem);
 
-            if (isSweep && args.Length < 6)
-            {
-                Console.Error.WriteLine("Uso: LayoutParserLowCodeRunner SWEEP <globalFolder> <package> <mapperGuid> <pastaExamples> <pastaSaida>");
-                return 2;
-            }
-            if (!isSweep && args.Length < 5)
-            {
-                Console.Error.WriteLine("Uso: LayoutParserLowCodeRunner <globalFolder> <package> <mapperGuid|LIST> <input> <output>");
-                Console.Error.WriteLine("Uso (lote): LayoutParserLowCodeRunner SWEEP <globalFolder> <package> <mapperGuid> <pastaExamples> <pastaSaida>");
-                return 2;
+                Console.Error.Flush();
+                return parse.ExitCode;
             }
 
-            string globalFolder, package, mapperGuid, arg4, arg5;
-            if (isSweep)
-            {
-                globalFolder = args[1]; package = args[2]; mapperGuid = args[3]; arg4 = args[4]; arg5 = args[5];
-            }
-            else
-            {
-                globalFolder = args[0]; package = args[1]; mapperGuid = args[2]; arg4 = args[3]; arg5 = args[4];
-            }
+            var cli = parse.Args;
+
+            // Liga o log ao contexto ANTES do bootstrap: falha de licença/config também precisa sair
+            // correlacionada, senão o log da API não fecha com o do runner.
+            RunnerLog.Configure(cli.CorrelationId, cli.RunnerLogFile);
 
             int exitCode;
             try
@@ -65,22 +66,23 @@ namespace LayoutParserLowCodeRunner
                 // sem VPN — é esperado; capturamos e seguimos, pois só precisamos do SetConfiguration.
                 if (!Bootstrap(TimeSpan.FromSeconds(90)))
                 {
-                    Console.Error.WriteLine("[FATAL] Bootstrap nao populou ConnectorApplicationManager._configuration.");
-                    exitCode = 3;
+                    RunnerLog.Fatal("Bootstrap nao populou ConnectorApplicationManager._configuration.");
+                    exitCode = RunnerExitCodes.BootstrapFailed;
                 }
-                else if (isSweep)
+                else if (cli.Mode == RunnerMode.Sweep)
                 {
-                    exitCode = Sweep(globalFolder, package, mapperGuid, examplesFolder: arg4, outputFolder: arg5);
+                    exitCode = Sweep(cli.GlobalFolder, cli.Package, cli.MapperGuid,
+                        examplesFolder: cli.ExamplesFolder, outputFolder: cli.OutputFolder);
                 }
                 else
                 {
-                    exitCode = Run(globalFolder, package, mapperGuid, inputPath: arg4, outputPath: arg5);
+                    exitCode = Run(cli);
                 }
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine("[FATAL] " + ex);
-                exitCode = 1;
+                RunnerLog.Fatal("{0}", ex);
+                exitCode = RunnerExitCodes.Fatal;
             }
 
             // Força a saída: o bootstrap deixou threads de transporte/falha vivas em background (fire-and-forget).
@@ -97,7 +99,7 @@ namespace LayoutParserLowCodeRunner
         /// </summary>
         private static bool Bootstrap(TimeSpan timeout)
         {
-            Console.Error.WriteLine("[BOOT] Iniciando bootstrap (EDocsClientConnectorManager.Start)...");
+            RunnerLog.Info("[BOOT] Iniciando bootstrap (EDocsClientConnectorManager.Start)...");
             var manager = new EDocsClientConnectorManager();
 
             var bootThread = new Thread(() =>
@@ -105,12 +107,12 @@ namespace LayoutParserLowCodeRunner
                 try
                 {
                     manager.Start();
-                    Console.Error.WriteLine("[BOOT] manager.Start() retornou.");
+                    RunnerLog.Info("[BOOT] manager.Start() retornou.");
                 }
                 catch (Exception ex)
                 {
                     // Transportes (MQ/DB) inacessiveis sem VPN caem aqui — esperado.
-                    Console.Error.WriteLine("[BOOT-WARN] Start() lancou (esperado sem VPN): {0}", ex.Message);
+                    RunnerLog.Warn("[BOOT-WARN] Start() lancou (esperado sem VPN): {0}", ex.Message);
                 }
             })
             {
@@ -126,14 +128,14 @@ namespace LayoutParserLowCodeRunner
             {
                 if (ConnectorApplicationManager.Instance.GetConfiguration() != null)
                 {
-                    Console.Error.WriteLine("[BOOT] Config carregada em {0:n1}s. ServerPackage='{1}'.",
+                    RunnerLog.Info("[BOOT] Config carregada em {0:n1}s. ServerPackage='{1}'.",
                         sw.Elapsed.TotalSeconds, SafeServerPackage());
                     return true;
                 }
                 Thread.Sleep(200);
             }
 
-            Console.Error.WriteLine("[BOOT] Timeout ({0:n0}s) aguardando a config.", timeout.TotalSeconds);
+            RunnerLog.Warn("[BOOT] Timeout ({0:n0}s) aguardando a config.", timeout.TotalSeconds);
             return ConnectorApplicationManager.Instance.GetConfiguration() != null;
         }
 
@@ -166,38 +168,89 @@ namespace LayoutParserLowCodeRunner
             return MappersHelper.Instance;
         }
 
-        private static int Run(string globalFolder, string package, string mapperGuid, string inputPath, string outputPath)
+        private static int Run(RunnerArgs cli)
         {
-            var helper = GateLicenseAndGetHelper(globalFolder);
+            var helper = GateLicenseAndGetHelper(cli.GlobalFolder);
 
             // ── LIST: imprime os mapeadores do package (descoberta) ──
-            if (string.Equals(mapperGuid, "LIST", StringComparison.OrdinalIgnoreCase))
+            if (cli.Mode == RunnerMode.List)
             {
-                Console.Error.WriteLine("[LIST] globalFolder={0} package='{1}'", globalFolder, package);
-                var mappers = helper.GetMappers(package, globalFolder);
-                Console.Error.WriteLine("Mapeadores encontrados: {0}", mappers != null ? mappers.Count : 0);
+                RunnerLog.Info("[LIST] globalFolder={0} package='{1}'", cli.GlobalFolder, cli.Package);
+                var mappers = helper.GetMappers(cli.Package, cli.GlobalFolder);
+                RunnerLog.Info("Mapeadores encontrados: {0}", mappers != null ? mappers.Count : 0);
                 if (mappers != null)
                     foreach (var kv in mappers)
                         Console.Out.WriteLine("{0}\t{1}", kv.Value.IdentifierGuid, kv.Value.Name);
-                return 0;
+                return RunnerExitCodes.Ok;
+            }
+
+            // ── Resolução de --mapperName ── a API aceita mapperId OU mapperName
+            // (TransformationExecutionController), então o runner precisa fechar os dois lados do
+            // contrato. Reaproveita o MESMO GetMappers do LIST — nada de caminho novo de descoberta.
+            string mapperGuid = cli.MapperGuid;
+            if (string.IsNullOrEmpty(mapperGuid))
+            {
+                mapperGuid = ResolverMapperPorNome(helper, cli.Package, cli.GlobalFolder, cli.MapperName);
+                if (string.IsNullOrEmpty(mapperGuid))
+                    return RunnerExitCodes.MapperNameUnresolved;
             }
 
             // ── EXEC: executa um mapeador sobre o input e grava o XML gabarito ──
-            if (!File.Exists(inputPath)) { Console.Error.WriteLine("Input nao encontrado: " + inputPath); return 4; }
-            string document = File.ReadAllText(inputPath);
+            if (!File.Exists(cli.InputPath))
+            {
+                RunnerLog.Error("Input nao encontrado: {0}", cli.InputPath);
+                return RunnerExitCodes.InputNotFound;
+            }
+            string document = File.ReadAllText(cli.InputPath);
 
-            Console.Error.WriteLine("[EXEC] globalFolder={0} mapper={1} input={2}", globalFolder, mapperGuid, Path.GetFileName(inputPath));
-            string result = helper.ExecuteMappingDocumentById(mapperGuid, document, globalFolder, Path.GetFileName(inputPath));
+            // ✅ --fileName é o nome LÓGICO do documento. A API grava a entrada num temporário
+            // (in_<guid>.txt), então derivar de Path.GetFileName(inputPath) perdia o nome real do
+            // arquivo do usuário — e esse nome pode influenciar a seleção de parser no Sysmiddle.
+            // A regra (incluindo o fallback) vive em RunnerArgs porque lá ela é testável.
+            string documentName = cli.ResolveDocumentName();
 
-            File.WriteAllText(outputPath, result ?? string.Empty, new UTF8Encoding(false));
+            RunnerLog.Info("[EXEC] globalFolder={0} mapper={1} input={2} fileName={3}",
+                cli.GlobalFolder, mapperGuid, Path.GetFileName(cli.InputPath), documentName);
+            string result = helper.ExecuteMappingDocumentById(mapperGuid, document, cli.GlobalFolder, documentName);
+
+            File.WriteAllText(cli.OutputPath, result ?? string.Empty, new UTF8Encoding(false));
             int len = (result ?? string.Empty).Length;
-            Console.Error.WriteLine("[OK] {0} chars -> {1}", len, outputPath);
+            RunnerLog.Info("[OK] {0} chars -> {1}", len, cli.OutputPath);
             if (len == 0)
             {
-                Console.Error.WriteLine("[WARN] Mapeador retornou vazio (mapperGuid errado, licenca invalida ou parser sem match).");
-                return 5;
+                RunnerLog.Warn("[WARN] Mapeador retornou vazio (mapperGuid errado, licenca invalida ou parser sem match).");
+                return RunnerExitCodes.EmptyResult;
             }
-            return 0;
+            return RunnerExitCodes.Ok;
+        }
+
+        /// <summary>
+        /// Traduz --mapperName para o GUID do mapeador dentro do package. Devolve null (e loga o
+        /// motivo) quando não há match — o chamador converte isso em
+        /// <see cref="RunnerExitCodes.MapperNameUnresolved"/>, para o log da API distinguir
+        /// "nome errado" de "mapeador rodou e voltou vazio".
+        /// </summary>
+        private static string ResolverMapperPorNome(MappersHelper helper, string package, string globalFolder, string mapperName)
+        {
+            var mappers = helper.GetMappers(package, globalFolder);
+            if (mappers == null || mappers.Count == 0)
+            {
+                RunnerLog.Error("Nenhum mapeador no package '{0}' para resolver --mapperName '{1}'.", package, mapperName);
+                return null;
+            }
+
+            foreach (var kv in mappers)
+            {
+                if (kv.Value != null && string.Equals(kv.Value.Name, mapperName, StringComparison.OrdinalIgnoreCase))
+                {
+                    RunnerLog.Info("[MAPPER] --mapperName '{0}' resolvido para {1}.", mapperName, kv.Value.IdentifierGuid);
+                    return kv.Value.IdentifierGuid;
+                }
+            }
+
+            RunnerLog.Error("--mapperName '{0}' nao encontrado entre os {1} mapeador(es) do package '{2}'.",
+                mapperName, mappers.Count, package);
+            return null;
         }
 
         /// <summary>
@@ -211,8 +264,8 @@ namespace LayoutParserLowCodeRunner
         {
             if (!Directory.Exists(examplesFolder))
             {
-                Console.Error.WriteLine("[SWEEP] Pasta de exemplos nao encontrada: " + examplesFolder);
-                return 4;
+                RunnerLog.Error("[SWEEP] Pasta de exemplos nao encontrada: {0}", examplesFolder);
+                return RunnerExitCodes.InputNotFound;
             }
 
             Directory.CreateDirectory(outputFolder);
@@ -225,7 +278,7 @@ namespace LayoutParserLowCodeRunner
                 .OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
-            Console.Error.WriteLine("[SWEEP] globalFolder={0} mapper={1} examples={2} ({3} arquivo(s)) -> {4}",
+            RunnerLog.Info("[SWEEP] globalFolder={0} mapper={1} examples={2} ({3} arquivo(s)) -> {4}",
                 globalFolder, mapperGuid, examplesFolder, files.Count, outputFolder);
 
             var manifestPath = Path.Combine(outputFolder, "_manifest.tsv");
@@ -251,13 +304,13 @@ namespace LayoutParserLowCodeRunner
                     if (len == 0)
                     {
                         empty++;
-                        Console.Error.WriteLine("[SWEEP-WARN] {0}: mapeador retornou vazio.", relInput);
+                        RunnerLog.Warn("[SWEEP-WARN] {0}: mapeador retornou vazio.", relInput);
                         manifestLines.Add(string.Join("\t", seqName, relInput, "EMPTY", "0", seqName));
                     }
                     else
                     {
                         ok++;
-                        Console.Error.WriteLine("[SWEEP-OK] {0} -> {1} ({2} chars)", relInput, seqName, len);
+                        RunnerLog.Info("[SWEEP-OK] {0} -> {1} ({2} chars)", relInput, seqName, len);
                         manifestLines.Add(string.Join("\t", seqName, relInput, "OK", len.ToString(CultureInfo.InvariantCulture), seqName));
                     }
                 }
@@ -266,17 +319,17 @@ namespace LayoutParserLowCodeRunner
                     // Degrade gracioso: um arquivo ruim (encoding invalido, parser sem match, etc.) nao pode
                     // interromper a varredura dos demais 169 restantes.
                     fail++;
-                    Console.Error.WriteLine("[SWEEP-FAIL] {0}: {1}", relInput, ex.Message);
+                    RunnerLog.Error("[SWEEP-FAIL] {0}: {1}", relInput, ex.Message);
                     manifestLines.Add(string.Join("\t", seqName, relInput, "FAIL", "0", string.Empty));
                 }
             }
 
             File.WriteAllLines(manifestPath, manifestLines, new UTF8Encoding(false));
-            Console.Error.WriteLine("[SWEEP] Concluido: {0} ok, {1} vazios, {2} falhas (de {3}). Manifesto: {4}",
+            RunnerLog.Info("[SWEEP] Concluido: {0} ok, {1} vazios, {2} falhas (de {3}). Manifesto: {4}",
                 ok, empty, fail, files.Count, manifestPath);
 
             // Exit code != 0 somente se NADA saiu com sucesso (sinaliza problema sistemico, ex.: mapperGuid errado).
-            return ok > 0 ? 0 : 6;
+            return ok > 0 ? RunnerExitCodes.Ok : RunnerExitCodes.SweepAllFailed;
         }
 
         /// <summary>
