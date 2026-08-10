@@ -312,6 +312,73 @@ jobs:
     #   - LowCode__RunnerTimeoutSeconds: o default de 15s mata o runner no meio, sempre.
     #   - ML__LowCodeTransformationsPath: tira o store de dentro da pasta que o deploy sobrescreve.
     #   - AiMetrics__IngestApiKey: sem ela a ingestão de métricas de IA é recusada.
+    #   - LowCode__RunnerPath: resolvido pelo step de publicação do runner, logo abaixo.
+
+    # ── Publicação do runner low-code ───────────────────────────────────────────────
+    #
+    # O `LowCode:RunnerPath` do appsettings aponta para `<deploy>\api\LayoutParserLowCodeRunner.exe`
+    # e NENHUM workflow colocava esse arquivo lá — toda a configuração low-code ficava correta e
+    # inerte. Este step fecha isso, mas NÃO copiando para `<deploy>\api`: não adiantaria.
+    #
+    # O runner é net481/x86 e resolve dependências pelo diretório do PRÓPRIO .exe. Ele só executa de
+    # dentro de uma Bin do Sysmiddle completa — e "completa" tem um discriminador binário, a versão
+    # do log4net (verificado 2026-08-10 na máquina de dev):
+    #   C:\appconnector\App\Bin        log4net 2.0.17.0  -> APTA (580 arquivos)
+    #   <deploy>\api\Functions         log4net 1.2.13.0  -> estoura em InstanceFactory.Initialize()
+    #
+    # Por isso a detecção é por CONTEÚDO e não por nome de pasta: procurar por 'AppConnector.DIR'
+    # (a convenção de nome do ambiente de referência) dá falso negativo aqui, onde a instância se
+    # chama C:\appconnector\App.
+    #
+    # Não é fatal: sem Bin apta, o deploy segue e a API sobe — só o pathway low-code fica indisponível,
+    # e o diagnóstico do fim do workflow explica por quê.
+    - name: Publicar runner low-code na Bin do Sysmiddle
+      continue-on-error: true
+      run: |
+        $ErrorActionPreference = "Continue"
+        $runnerSrc = Join-Path $PWD.Path "LayoutParserApi\tools\LowCodeRunner\Functions"
+        $runnerExe = Join-Path $runnerSrc "LayoutParserLowCodeRunner.exe"
+
+        if (-not (Test-Path $runnerExe)) {
+          Write-Warning "Runner nao encontrado no checkout: $runnerExe — pathway low-code seguira indisponivel."
+          exit 0
+        }
+
+        # Bin apta = tem SysMiddle.Base.dll E log4net 2.x ao lado.
+        $aptas = New-Object System.Collections.Generic.List[string]
+        $raizes = Get-ChildItem -Path 'C:\' -Directory -Force -ErrorAction SilentlyContinue |
+                  Where-Object { $_.Name -notin @('Windows','Users','ProgramData','$Recycle.Bin','System Volume Information','Recovery') }
+        foreach ($r in $raizes) {
+          Get-ChildItem -Path $r.FullName -File -Recurse -Depth 4 -Filter 'SysMiddle.Base.dll' -ErrorAction SilentlyContinue |
+            ForEach-Object {
+              $l4n = Join-Path $_.DirectoryName 'log4net.dll'
+              if ((Test-Path $l4n) -and ((Get-Item $l4n).VersionInfo.FileVersion -like '2.*')) {
+                $aptas.Add($_.DirectoryName)
+              }
+            }
+        }
+
+        $destino = ($aptas | Sort-Object -Unique | Select-Object -First 1)
+        if (-not $destino) {
+          Write-Warning "Nenhuma Bin do Sysmiddle APTA neste host (SysMiddle.Base.dll + log4net 2.x)."
+          Write-Warning "O pathway low-code seguira indisponivel. Ver diagnostico no fim do workflow."
+          exit 0
+        }
+
+        Copy-Item $runnerExe $destino -Force
+        $cfg = Join-Path $runnerSrc "LayoutParserLowCodeRunner.exe.config"
+        if (Test-Path $cfg) { Copy-Item $cfg $destino -Force }
+
+        $publicado = Join-Path $destino "LayoutParserLowCodeRunner.exe"
+        Write-Host "Runner publicado em: $publicado"
+        if ($aptas.Count -gt 1) {
+          Write-Host "  (havia $(($aptas | Sort-Object -Unique).Count) Bins aptas; escolhida a primeira em ordem alfabetica)"
+        }
+
+        # Consumido pelo step de Environment logo abaixo — o appsettings do destino e preservado,
+        # entao este caminho SO chega a API por variavel de ambiente.
+        Add-Content -Path $env:GITHUB_ENV -Value "LOWCODE_RUNNER_PATH_RESOLVED=$publicado"
+
     - name: Criar/configurar servico Windows nativo
       env:
         DB_PASSWORD_DEV: ${{ secrets.DB_PASSWORD_DEV }}
@@ -370,11 +437,21 @@ jobs:
         # 180s = ~30% de folga sobre os 137s do pior caso medido, que ja e o pior de uma faixa
         # com variacao de 3x na MESMA build. Nao ha valor "justo": subdimensionar mata trabalho
         # bom; superdimensionar so atrasa a deteccao de travamento, que e o erro barato.
-        # ⚠️ Efeito de segunda ordem: TransformationExecutionController.cs:200 calcula o budget
-        # do multi-candidato como RunnerTimeoutSeconds * MaxConcurrentRunners => 180*2 = 360s.
-        # A correcao dessa formula esta mapeada como item 7 do @lp-backend-dev; ate la, o
-        # endpoint de candidatos pode segurar o cliente por ate 6 min em vez de 30s.
+        # O efeito de segunda ordem que este valor teria no budget do multi-candidato
+        # (RunnerTimeoutSeconds * MaxConcurrentRunners => 360s segurando o cliente) JA FOI
+        # CORRIGIDO no codigo: a formula virou min(ondas x timeout, CandidatesRequestTimeoutSeconds)
+        # em LowCodeCandidatesBudget.cs. Nada a configurar aqui — o default de 90s ja e seguro.
         $envList += "LowCode__RunnerTimeoutSeconds=180"
+
+        # LowCode__RunnerPath — resolvido pelo step de publicacao acima. So e definido quando o
+        # runner foi realmente publicado numa Bin apta; do contrario a chave nao entra e a API
+        # segue com o caminho do appsettings (que aponta para um .exe inexistente e falha de forma
+        # explicita no diagnostico de arranque, em vez de fingir que esta configurada).
+        if (-not [string]::IsNullOrWhiteSpace($env:LOWCODE_RUNNER_PATH_RESOLVED)) {
+          $envList += "LowCode__RunnerPath=$($env:LOWCODE_RUNNER_PATH_RESOLVED)"
+        } else {
+          Write-Warning "Runner low-code nao publicado neste host — LowCode__RunnerPath nao sera definido."
+        }
 
         # ML__LowCodeTransformationsPath — o default e AppContext.BaseDirectory\MLData\...,
         # ou seja, DENTRO de <deploy>\api, a pasta que o deploy reescreve a cada release.
@@ -482,32 +559,37 @@ jobs:
             Write-Host "     .claude/tmp/ e e IGNORADA pelo git — o CI nao teria como compilar."
           }
 
-          Write-Host "=== 2) Instancia FiatMQ (AppConnector.DIR\Bin) neste host ==="
-          $achados = New-Object System.Collections.Generic.List[string]
+          Write-Host "=== 2) Bin do Sysmiddle apta a hospedar o runner ==="
+          # ⚠️ Detecta pela DLL, NAO pelo nome da pasta. A versao anterior deste step procurava
+          # literalmente por um diretorio 'AppConnector.DIR' e dava FALSO NEGATIVO: nesta maquina de
+          # dev a instancia se chama C:\appconnector\App\Bin. O nome nao qualifica nada — o que
+          # qualifica e ter SysMiddle.Base.dll com o log4net CERTO ao lado.
+          #
+          # O discriminador e a versao do log4net, e a diferenca e binaria (verificado 2026-08-10):
+          #   C:\appconnector\App\Bin                     log4net 2.0.17.0  -> APTA (580 arquivos)
+          #   <deploy>\api\Functions                      log4net 1.2.13.0  -> INVIAVEL
+          # De Functions/ o runner estoura em InstanceFactory.Initialize() por divergencia de
+          # assembly. Publicar o .exe na pasta errada produz falha em runtime, nao erro de deploy.
+          $candidatas = New-Object System.Collections.Generic.List[string]
           $raizes = Get-ChildItem -Path 'C:\' -Directory -Force -ErrorAction SilentlyContinue |
                     Where-Object { $_.Name -notin @('Windows','Users','ProgramData','$Recycle.Bin','System Volume Information','Recovery') }
           foreach ($r in $raizes) {
-            Get-ChildItem -Path $r.FullName -Directory -Recurse -Depth 3 -Filter 'AppConnector.DIR' -ErrorAction SilentlyContinue |
-              ForEach-Object { $achados.Add($_.FullName) }
+            Get-ChildItem -Path $r.FullName -File -Recurse -Depth 4 -Filter 'SysMiddle.Base.dll' -ErrorAction SilentlyContinue |
+              ForEach-Object { $candidatas.Add($_.DirectoryName) }
           }
-          if (Test-Path 'C:\AppConnector.DIR') { $achados.Add('C:\AppConnector.DIR') }
 
-          if ($achados.Count -eq 0) {
-            Write-Host "  NENHUMA instancia encontrada (varredura ate profundidade 3 nas raizes de C:\)."
-            Write-Host "  -> Sem instancia, publicar o runner aqui NAO o faz executar: ele e net481/x86 e"
-            Write-Host "     resolve dependencias pelo diretorio do proprio .exe."
+          if ($candidatas.Count -eq 0) {
+            Write-Host "  NENHUM SysMiddle.Base.dll encontrado (profundidade 4 nas raizes de C:\)."
+            Write-Host "  -> Sem Bin do Sysmiddle, publicar o runner aqui NAO o faz executar: ele e"
+            Write-Host "     net481/x86 e resolve dependencias pelo diretorio do proprio .exe."
           } else {
-            foreach ($a in ($achados | Sort-Object -Unique)) {
-              $bin = Join-Path $a 'Bin'
-              $temSysmiddle = Test-Path (Join-Path $bin 'SysMiddle.Base.dll')
-              Write-Host "  $a"
-              Write-Host "     Bin\SysMiddle.Base.dll: $temSysmiddle"
-              Write-Host "     Conf\config.xml presente: $(Test-Path (Join-Path $a 'Conf\config.xml'))"
-              if ($temSysmiddle) {
-                $qtd = (Get-ChildItem -Path $bin -File -ErrorAction SilentlyContinue | Measure-Object).Count
-                Write-Host "     arquivos na Bin: $qtd"
-                Write-Host "     -> CANDIDATA a hospedar o LayoutParserLowCodeRunner.exe."
-              }
+            foreach ($d in ($candidatas | Sort-Object -Unique)) {
+              $l4n = Join-Path $d 'log4net.dll'
+              $ver = if (Test-Path $l4n) { (Get-Item $l4n).VersionInfo.FileVersion } else { '(ausente)' }
+              $qtd = (Get-ChildItem -Path $d -File -ErrorAction SilentlyContinue | Measure-Object).Count
+              $apta = ($ver -like '2.*')
+              Write-Host "  $d"
+              Write-Host "     log4net: $ver | arquivos: $qtd | APTA: $apta"
             }
           }
 
