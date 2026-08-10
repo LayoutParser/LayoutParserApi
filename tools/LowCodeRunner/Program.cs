@@ -4,39 +4,35 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
-using System.Threading;
-using appConnector.Client.Core;              // ConnectorApplicationManager (config do host: _configuration)
-using appConnector.Client.Core.Controller;   // EDocsClientConnectorManager (o manager do Service1.OnStart)
-using appConnector.Client.Core.Util;         // MappersHelper (executa o mapeador)
+using SysMiddle.Base.Model.API;      // MapperBasicVO
 
 namespace LayoutParserLowCodeRunner
 {
     /// <summary>
-    /// CLI que replica o bootstrap do host FiatMQ (Service1.OnStart) para destravar o SDK Sysmiddle
-    /// e então executa um mapeador (gera o XML gabarito) ou LISTa os mapeadores do package.
+    /// CLI que executa um mapeador do SDK Sysmiddle (gera o XML gabarito) ou LISTa os mapeadores do
+    /// package.
     ///
-    /// Descoberta (descompilação da Bin da instância):
-    ///  - Service1.OnStart faz apenas: new EDocsClientConnectorManager().Start();
-    ///  - Start() -> LoadConfigurationXml() -> ConnectorApplicationManager.Instance.SetConfiguration(connector).
-    ///    É ESSA chamada que popula ConnectorApplicationManager._configuration. Sem ela, GetServerPackage()
-    ///    (usado por ExecuteMappingDocumentById) estoura NullReference e o MappersHelper entra em loop infinito.
-    ///  - A licença NÃO é machine-bound: LicenseController lê o global.config (LicenseCode com checksum + data de
-    ///    expiração embutida) e valida offline. Os projetos/mapeadores carregam de arquivo local (DbProviderType=File,
-    ///    ConnectionString=exportContext.data) — não do SQL Server do cliente. Logo, roda sem VPN.
+    /// <para><b>2026-08-10 — o runner deixou de depender do <c>appConnector</c>.</b> Antes ele
+    /// replicava o <c>Service1.OnStart</c> do host FiatMQ
+    /// (<c>new EDocsClientConnectorManager().Start()</c>) só para popular
+    /// <c>ConnectorApplicationManager._configuration</c> e daí ler <c>GetServerPackage()</c> — que
+    /// devolve <b>uma string</b>: o identificador do projeto Sysmiddle. Essa string agora chega por
+    /// <c>--package</c> (<c>LowCode:Package</c>), e com ela saem o bootstrap, as
+    /// <c>appConnector.Client.Core*</c> e o custo/instabilidade que vinham junto (init do host,
+    /// threads de transporte, e um <c>TH_FAI</c> que podia derrubar o processo com
+    /// <c>ArgumentNullException</c> antes mesmo de transformar).</para>
     ///
-    /// Uso (single-shot): LayoutParserLowCodeRunner &lt;globalFolder&gt; &lt;package&gt; &lt;mapperGuid|LIST&gt; &lt;input&gt; &lt;output&gt;
-    /// Uso (lote/A1):      LayoutParserLowCodeRunner SWEEP &lt;globalFolder&gt; &lt;package&gt; &lt;mapperGuid&gt; &lt;pastaExamples&gt; &lt;pastaSaida&gt;
-    ///   - pastaExamples: pasta com os arquivos-exemplo (ex.: Examples/LAY_CNHI_..., recursivo, .json ignorado).
-    ///   - pastaSaida: gravada dentro/relativa a .claude/tmp/gabaritos/ (gitignored) — cria se não existir.
-    /// (rode DE DENTRO da Bin da instância; globalFolder = pasta com o global.config de paths locais).
+    /// <para>O que fica do SDK: <c>SysMiddle.Base</c> (APIManager/APIExecutor) e
+    /// <c>SysMiddle.ConnectUs.Core</c> (LicenseController concreto). O gate de licença — as DUAS
+    /// partes — mora em <see cref="SysmiddleRuntime.Create"/>.</para>
     ///
-    /// Uso (nomeado, 2026-08-10): é a forma que a API fala (LowCodeTransformationService) —
+    /// <para>Uso (single-shot): LayoutParserLowCodeRunner &lt;globalFolder&gt; &lt;package&gt; &lt;mapperGuid|LIST&gt; &lt;input&gt; &lt;output&gt;</para>
+    /// <para>Uso (lote/A1):      LayoutParserLowCodeRunner SWEEP &lt;globalFolder&gt; &lt;package&gt; &lt;mapperGuid&gt; &lt;pastaExamples&gt; &lt;pastaSaida&gt;</para>
+    /// <para>Uso (nomeado):      é a forma que a API fala (LowCodeTransformationService) —
     ///   --globalFolder &lt;dir&gt; --package &lt;pkg&gt; --inputFile &lt;arq&gt; --outputFile &lt;arq&gt;
     ///   (--mapperId &lt;guid&gt; | --mapperName &lt;nome&gt;) [--fileName &lt;nome&gt;] [--correlationId &lt;id&gt;]
-    ///   [--runnerLogFile &lt;arq&gt;] [--sysmiddleDir &lt;dir&gt;]
-    /// Até então o runner só entendia a forma posicional, então a chamada da API caía nela e
-    /// deslocava tudo: "--sysmiddleDir" virava globalFolder e o VALOR de --globalFolder virava o
-    /// input (exit=4, "Input nao encontrado: ...\globalfolder"). Ver RunnerArgsParser.
+    ///   [--runnerLogFile &lt;arq&gt;] [--sysmiddleDir &lt;dir&gt;] [--nfePostProcessing true|false]</para>
+    /// <para>(rode DE DENTRO da Bin da instância; globalFolder = pasta com o global.config de paths locais).</para>
     /// </summary>
     internal static class Program
     {
@@ -55,29 +51,30 @@ namespace LayoutParserLowCodeRunner
 
             var cli = parse.Args;
 
-            // Liga o log ao contexto ANTES do bootstrap: falha de licença/config também precisa sair
-            // correlacionada, senão o log da API não fecha com o do runner.
+            // Liga o log ao contexto ANTES de qualquer trabalho: falha de licença/config também
+            // precisa sair correlacionada, senão o log da API não fecha com o do runner.
             RunnerLog.Configure(cli.CorrelationId, cli.RunnerLogFile);
+
+            // O package virou obrigatório quando o fallback do host (GetServerPackage) saiu. Vazio é
+            // erro EXPLÍCITO com exit code próprio — nunca silêncio que degrada em "mapeador não
+            // encontrado" lá na frente. Ver RunnerArgs.ValidarPackage.
+            var erroPackage = cli.ValidarPackage();
+            if (erroPackage != null)
+            {
+                RunnerLog.Fatal("{0}", erroPackage);
+                Console.Error.Flush();
+                return RunnerExitCodes.PackageNotConfigured;
+            }
 
             int exitCode;
             try
             {
-                // ── P2: Bootstrap ── replica Service1.OnStart. Os transportes (MQ/DB) tentam subir e FALHAM
-                // sem VPN — é esperado; capturamos e seguimos, pois só precisamos do SetConfiguration.
-                if (!Bootstrap(TimeSpan.FromSeconds(90)))
-                {
-                    RunnerLog.Fatal("Bootstrap nao populou ConnectorApplicationManager._configuration.");
-                    exitCode = RunnerExitCodes.BootstrapFailed;
-                }
-                else if (cli.Mode == RunnerMode.Sweep)
-                {
-                    exitCode = Sweep(cli.GlobalFolder, cli.Package, cli.MapperGuid,
-                        examplesFolder: cli.ExamplesFolder, outputFolder: cli.OutputFolder);
-                }
-                else
-                {
-                    exitCode = Run(cli);
-                }
+                exitCode = cli.Mode == RunnerMode.Sweep ? Sweep(cli) : Run(cli);
+            }
+            catch (SysmiddlePackageNotFoundException ex)
+            {
+                RunnerLog.Fatal("{0}", ex.Message);
+                exitCode = RunnerExitCodes.PackageNotFound;
             }
             catch (Exception ex)
             {
@@ -85,98 +82,39 @@ namespace LayoutParserLowCodeRunner
                 exitCode = RunnerExitCodes.Fatal;
             }
 
-            // Força a saída: o bootstrap deixou threads de transporte/falha vivas em background (fire-and-forget).
             Console.Out.Flush();
             Console.Error.Flush();
+
+            // Environment.Exit continua aqui, mas por um motivo MENOR do que antes: o bootstrap do
+            // host (que deixava threads de transporte e uma TH_FAI de primeiro plano vivas) não
+            // existe mais. O que sobra é do próprio SDK — o APIManager registra um FileSystemWatcher
+            // sobre o exportContext.data (LoadExportContextWatcher) e o APIExecutor pode agendar uma
+            // Task de licença temporária. Nada disso é thread de primeiro plano, então em tese o
+            // processo sairia sozinho; manter o Exit é barato e evita depender dessa suposição num
+            // processo que a API mata por timeout. Ver o relatório de medição desta mudança.
             Environment.Exit(exitCode);
             return exitCode; // inalcançável
         }
 
         /// <summary>
-        /// Replica o OnStart do host: instancia o EDocsClientConnectorManager e chama Start() numa thread de
-        /// fundo (as threads de transporte podem bloquear/loopar sem VPN). Aguarda até que o SetConfiguration
-        /// tenha rodado (config != null) ou o timeout. Degrade gracioso: qualquer erro do Start é logado, não fatal.
+        /// Sobe o SDK (gate de licença + APIExecutor do package) e devolve o executor já configurado.
+        /// Pré-requisito comum ao modo single-shot (EXEC/LIST) e ao SWEEP.
         /// </summary>
-        private static bool Bootstrap(TimeSpan timeout)
+        private static SysmiddleMapperExecutor CriarExecutor(RunnerArgs cli)
         {
-            RunnerLog.Info("[BOOT] Iniciando bootstrap (EDocsClientConnectorManager.Start)...");
-            var manager = new EDocsClientConnectorManager();
-
-            var bootThread = new Thread(() =>
-            {
-                try
-                {
-                    manager.Start();
-                    RunnerLog.Info("[BOOT] manager.Start() retornou.");
-                }
-                catch (Exception ex)
-                {
-                    // Transportes (MQ/DB) inacessiveis sem VPN caem aqui — esperado.
-                    RunnerLog.Warn("[BOOT-WARN] Start() lancou (esperado sem VPN): {0}", ex.Message);
-                }
-            })
-            {
-                IsBackground = true,
-                Name = "LowCodeRunner-Bootstrap"
-            };
-            bootThread.Start();
-
-            // O SetConfiguration roda no INICIO do Start() (LoadConfigurationXml), antes dos ActionManagers.
-            // Basta esperar _configuration ser populado — não precisamos que o Start() inteiro conclua.
-            var sw = System.Diagnostics.Stopwatch.StartNew();
-            while (sw.Elapsed < timeout)
-            {
-                if (ConnectorApplicationManager.Instance.GetConfiguration() != null)
-                {
-                    RunnerLog.Info("[BOOT] Config carregada em {0:n1}s. ServerPackage='{1}'.",
-                        sw.Elapsed.TotalSeconds, SafeServerPackage());
-                    return true;
-                }
-                Thread.Sleep(200);
-            }
-
-            RunnerLog.Warn("[BOOT] Timeout ({0:n0}s) aguardando a config.", timeout.TotalSeconds);
-            return ConnectorApplicationManager.Instance.GetConfiguration() != null;
-        }
-
-        private static string SafeServerPackage()
-        {
-            try { return ConnectorApplicationManager.Instance.GetServerPackage(); }
-            catch { return "(indisponivel)"; }
-        }
-
-        /// <summary>
-        /// Registra o LicenseController e aponta o global.config — pré-requisito comum ao modo
-        /// single-shot (EXEC/LIST) e ao SWEEP. Idempotente (CreateType pode ser chamado de novo sem efeito colateral).
-        /// </summary>
-        private static MappersHelper GateLicenseAndGetHelper(string globalFolder)
-        {
-            // ── Gate de licença do APIManager (SEPARADO do ConnectorApplicationManager) ──
-            // Descoberta por decompilação (SysMiddle.Base.InstanceFactory + SysMiddle.API.APIManager):
-            //  1) O ctor do APIManager pega o ILicenseController de InstanceFactory.GetInstance<ILicenseController>();
-            //     se a InstanceFactory NÃO tem o mapeamento interface→concreto, GetInstance retorna null (IsInterface)
-            //     e o ctor lança "Controle de licença ... não encontrado" → MappersHelper em retry infinito.
-            //  2) Neste ambiente o Initialize() da InstanceFactory NÃO escaneou SysMiddle.ConnectUs.Core.dll,
-            //     então ILicenseController ficou sem concreto. Registramos o mapeamento EXPLICITAMENTE.
-            //  3) Depois, SETAR GlobalConfigurationFileName instancia o LicenseController(configLocation) com o
-            //     global.config (que tem o LicenseCode) → licença validada offline.
-            SysMiddle.Base.InstanceFactory.Instance.CreateType(
-                typeof(SysMiddle.Base.Interface.ILicenseController),
-                typeof(SysMiddle.ConnectUs.Core.Helper.General.LicenseController));
-            SysMiddle.API.APIManager.GlobalConfigurationFileName = Path.Combine(globalFolder, "global.config");
-
-            return MappersHelper.Instance;
+            var apiExecutor = SysmiddleRuntime.Create(cli.GlobalFolder, cli.Package);
+            return new SysmiddleMapperExecutor(apiExecutor, cli.NfePostProcessing);
         }
 
         private static int Run(RunnerArgs cli)
         {
-            var helper = GateLicenseAndGetHelper(cli.GlobalFolder);
+            var executor = CriarExecutor(cli);
 
             // ── LIST: imprime os mapeadores do package (descoberta) ──
             if (cli.Mode == RunnerMode.List)
             {
                 RunnerLog.Info("[LIST] globalFolder={0} package='{1}'", cli.GlobalFolder, cli.Package);
-                var mappers = helper.GetMappers(cli.Package, cli.GlobalFolder);
+                var mappers = executor.GetMappers();
                 RunnerLog.Info("Mapeadores encontrados: {0}", mappers != null ? mappers.Count : 0);
                 if (mappers != null)
                     foreach (var kv in mappers)
@@ -184,16 +122,12 @@ namespace LayoutParserLowCodeRunner
                 return RunnerExitCodes.Ok;
             }
 
-            // ── Resolução de --mapperName ── a API aceita mapperId OU mapperName
+            // ── Resolução do mapeador ── a API aceita mapperId OU mapperName
             // (TransformationExecutionController), então o runner precisa fechar os dois lados do
-            // contrato. Reaproveita o MESMO GetMappers do LIST — nada de caminho novo de descoberta.
-            string mapperGuid = cli.MapperGuid;
-            if (string.IsNullOrEmpty(mapperGuid))
-            {
-                mapperGuid = ResolverMapperPorNome(helper, cli.Package, cli.GlobalFolder, cli.MapperName);
-                if (string.IsNullOrEmpty(mapperGuid))
-                    return RunnerExitCodes.MapperNameUnresolved;
-            }
+            // contrato. Ambos passam pelo APIExecutor (item 2 da decisão) — nada de MappersHelper.
+            var mapper = ResolverMapper(executor, cli);
+            if (mapper == null)
+                return RunnerExitCodes.MapperNameUnresolved;
 
             // ── EXEC: executa um mapeador sobre o input e grava o XML gabarito ──
             if (!File.Exists(cli.InputPath))
@@ -209,9 +143,11 @@ namespace LayoutParserLowCodeRunner
             // A regra (incluindo o fallback) vive em RunnerArgs porque lá ela é testável.
             string documentName = cli.ResolveDocumentName();
 
-            RunnerLog.Info("[EXEC] globalFolder={0} mapper={1} input={2} fileName={3}",
-                cli.GlobalFolder, mapperGuid, Path.GetFileName(cli.InputPath), documentName);
-            string result = helper.ExecuteMappingDocumentById(mapperGuid, document, cli.GlobalFolder, documentName);
+            RunnerLog.Info("[EXEC] globalFolder={0} package={1} mapper={2} input={3} fileName={4} nfePostProcessing={5}",
+                cli.GlobalFolder, cli.Package, mapper.IdentifierGuid, Path.GetFileName(cli.InputPath),
+                documentName, cli.NfePostProcessing);
+
+            string result = executor.ExecuteMappingDocumentById(mapper, document, documentName);
 
             File.WriteAllText(cli.OutputPath, result ?? string.Empty, new UTF8Encoding(false));
             int len = (result ?? string.Empty).Length;
@@ -225,63 +161,65 @@ namespace LayoutParserLowCodeRunner
         }
 
         /// <summary>
-        /// Traduz --mapperName para o GUID do mapeador dentro do package. Devolve null (e loga o
-        /// motivo) quando não há match — o chamador converte isso em
+        /// Traduz <c>--mapperId</c>/<c>--mapperName</c> no <c>MapperBasicVO</c>. Devolve null (e loga
+        /// o motivo) quando não há match — o chamador converte isso em
         /// <see cref="RunnerExitCodes.MapperNameUnresolved"/>, para o log da API distinguir
-        /// "nome errado" de "mapeador rodou e voltou vazio".
+        /// "identificador errado" de "mapeador rodou e voltou vazio".
         /// </summary>
-        private static string ResolverMapperPorNome(MappersHelper helper, string package, string globalFolder, string mapperName)
+        private static MapperBasicVO ResolverMapper(SysmiddleMapperExecutor executor, RunnerArgs cli)
         {
-            var mappers = helper.GetMappers(package, globalFolder);
-            if (mappers == null || mappers.Count == 0)
+            if (!string.IsNullOrEmpty(cli.MapperGuid))
             {
-                RunnerLog.Error("Nenhum mapeador no package '{0}' para resolver --mapperName '{1}'.", package, mapperName);
-                return null;
+                var porId = executor.GetMapperById(cli.MapperGuid);
+                if (porId == null)
+                    RunnerLog.Error("--mapperId '{0}' nao encontrado no package '{1}'.", cli.MapperGuid, cli.Package);
+
+                return porId;
             }
 
-            foreach (var kv in mappers)
-            {
-                if (kv.Value != null && string.Equals(kv.Value.Name, mapperName, StringComparison.OrdinalIgnoreCase))
-                {
-                    RunnerLog.Info("[MAPPER] --mapperName '{0}' resolvido para {1}.", mapperName, kv.Value.IdentifierGuid);
-                    return kv.Value.IdentifierGuid;
-                }
-            }
+            var porNome = executor.GetMapperByName(cli.MapperName);
+            if (porNome == null)
+                RunnerLog.Error("--mapperName '{0}' nao encontrado no package '{1}'.", cli.MapperName, cli.Package);
+            else
+                RunnerLog.Info("[MAPPER] --mapperName '{0}' resolvido para {1}.", cli.MapperName, porNome.IdentifierGuid);
 
-            RunnerLog.Error("--mapperName '{0}' nao encontrado entre os {1} mapeador(es) do package '{2}'.",
-                mapperName, mappers.Count, package);
-            return null;
+            return porNome;
         }
 
         /// <summary>
-        /// Modo SWEEP (A1): varre recursivamente <paramref name="examplesFolder"/> (ex.: Examples/LAY_CNHI_...),
-        /// executa o mapeador informado para CADA arquivo-exemplo encontrado e grava o par input→XML resultante
-        /// em <paramref name="outputFolder"/> (numerado 0001.xml, 0002.xml, ... — convenção já usada em
-        /// .claude/tmp/gabaritos/fiat-sweep). Falha em UM arquivo não aborta a varredura: logamos e seguimos
-        /// (degradação graciosa — princípio central do projeto, ver .claude/rules/dotnet-standards.md).
+        /// Modo SWEEP (A1): varre recursivamente a pasta de exemplos (ex.: Examples/LAY_CNHI_...),
+        /// executa o mapeador informado para CADA arquivo-exemplo encontrado e grava o par input→XML
+        /// resultante na pasta de saída (numerado 0001.xml, 0002.xml, ... — convenção já usada em
+        /// .claude/tmp/gabaritos/fiat-sweep). Falha em UM arquivo não aborta a varredura: logamos e
+        /// seguimos (degradação graciosa — princípio central do projeto, ver
+        /// .claude/rules/dotnet-standards.md).
         /// </summary>
-        private static int Sweep(string globalFolder, string package, string mapperGuid, string examplesFolder, string outputFolder)
+        private static int Sweep(RunnerArgs cli)
         {
-            if (!Directory.Exists(examplesFolder))
+            if (!Directory.Exists(cli.ExamplesFolder))
             {
-                RunnerLog.Error("[SWEEP] Pasta de exemplos nao encontrada: {0}", examplesFolder);
+                RunnerLog.Error("[SWEEP] Pasta de exemplos nao encontrada: {0}", cli.ExamplesFolder);
                 return RunnerExitCodes.InputNotFound;
             }
 
-            Directory.CreateDirectory(outputFolder);
-            var helper = GateLicenseAndGetHelper(globalFolder);
+            Directory.CreateDirectory(cli.OutputFolder);
+            var executor = CriarExecutor(cli);
+
+            var mapper = ResolverMapper(executor, cli);
+            if (mapper == null)
+                return RunnerExitCodes.MapperNameUnresolved;
 
             // Ignora artefatos que não são documentos de entrada (ex.: layout_learned.json, ocultos, o próprio manifesto).
-            var files = Directory.EnumerateFiles(examplesFolder, "*", SearchOption.AllDirectories)
+            var files = Directory.EnumerateFiles(cli.ExamplesFolder, "*", SearchOption.AllDirectories)
                 .Where(f => !string.Equals(Path.GetExtension(f), ".json", StringComparison.OrdinalIgnoreCase))
                 .Where(f => !Path.GetFileName(f).StartsWith("_", StringComparison.Ordinal))
                 .OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
             RunnerLog.Info("[SWEEP] globalFolder={0} mapper={1} examples={2} ({3} arquivo(s)) -> {4}",
-                globalFolder, mapperGuid, examplesFolder, files.Count, outputFolder);
+                cli.GlobalFolder, mapper.IdentifierGuid, cli.ExamplesFolder, files.Count, cli.OutputFolder);
 
-            var manifestPath = Path.Combine(outputFolder, "_manifest.tsv");
+            var manifestPath = Path.Combine(cli.OutputFolder, "_manifest.tsv");
             var manifestLines = new List<string> { "seq\tinput\tstatus\tout_chars\toutput" };
 
             int ok = 0, empty = 0, fail = 0, seq = 0;
@@ -289,13 +227,13 @@ namespace LayoutParserLowCodeRunner
             {
                 seq++;
                 string seqName = seq.ToString("D4", CultureInfo.InvariantCulture) + ".xml";
-                string outputPath = Path.Combine(outputFolder, seqName);
-                string relInput = MakeRelativePath(examplesFolder, inputPath);
+                string outputPath = Path.Combine(cli.OutputFolder, seqName);
+                string relInput = MakeRelativePath(cli.ExamplesFolder, inputPath);
 
                 try
                 {
                     string document = File.ReadAllText(inputPath);
-                    string result = helper.ExecuteMappingDocumentById(mapperGuid, document, globalFolder, Path.GetFileName(inputPath));
+                    string result = executor.ExecuteMappingDocumentById(mapper, document, Path.GetFileName(inputPath));
                     string safeResult = result ?? string.Empty;
 
                     File.WriteAllText(outputPath, safeResult, new UTF8Encoding(false));
