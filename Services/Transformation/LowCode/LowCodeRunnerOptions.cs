@@ -5,6 +5,16 @@ namespace LayoutParserApi.Services.Transformation.LowCode
         public string RunnerPath { get; set; } = "";
         public string SysmiddleDir { get; set; } = "";
         public string GlobalFolder { get; set; } = "";
+        // ✅ Identificador do PROJETO Sysmiddle (o mesmo <PackageMappers> do config.xml da instância).
+        // Passou a ser OBRIGATÓRIO em 2026-08-10: o runner low-code deixou de depender do
+        // appConnector.Client.Core e, com ele, do fallback
+        // ConnectorApplicationManager.Instance.GetServerPackage(). Vazio agora faz o runner sair com
+        // exit=9 (RunnerExitCodes.PackageNotConfigured) e mensagem explícita — de propósito, para
+        // não degradar em "mapeador não encontrado" longe da causa.
+        //
+        // ⚠️ Mesmo aviso dos campos abaixo: o deploy PRESERVA o appsettings.json do destino
+        // (ci-dev.yml/deploy.yml), então este valor NÃO chega sozinho ao servidor. Em produção,
+        // configure a variável de ambiente LowCode__Package (ação de @lp-devops).
         public string Package { get; set; } = "";
         public string? DefaultMapperName { get; set; }
 
@@ -19,10 +29,25 @@ namespace LayoutParserApi.Services.Transformation.LowCode
 
         // ✅ Timeout por invocação do runner (processo externo x86). Cobre o ciclo de vida inteiro
         // do processo (start + leitura de stdout/stderr + exit) — não só a espera de exit — porque
-        // uma leitura de stream travada também precisa disparar o kill. Default 15s: bootstrap do
-        // runner observado em ~0.5-1s, então 15s já é folga generosa antes de considerar o host
-        // FiatMQ travado (sensível a disputa de licença/estado, ver docs de runtime do Sysmiddle).
-        public int RunnerTimeoutSeconds { get; set; } = 15;
+        // uma leitura de stream travada também precisa disparar o kill.
+        //
+        // ⚠️ Default corrigido de 15s para 180s em 2026-08-10. O 15s vinha de uma premissa FALSA
+        // ("bootstrap ~0,5-1s, logo 15s é folga generosa"): media-se o bootstrap, não a transformação.
+        // A medição A/B por fase (@lp-backend-dev, mesma Bin, commit-base vs. novo) desmentiu:
+        //     Bootstrap()                          0,7-1,5s   (removido)
+        //     init InstanceFactory/APIManager      12-38s     (permanece — dispara no 1º APIManager.Instance)
+        //     ExecuteMapper                        38-73s     (permanece — é o motor)
+        //     transformação completa               48-137s
+        // Com 15s o processo era morto no meio SEMPRE: nenhuma transformação chegava ao fim.
+        // 180s = ~30% de folga sobre os 137s do pior caso medido, numa faixa que já varia 3x na
+        // MESMA build. Não existe valor "justo" aqui: subdimensionar mata trabalho bom (caro e
+        // silencioso); superdimensionar só atrasa a detecção de travamento (barato e visível).
+        //
+        // ⚠️ Este default é a ÚLTIMA LINHA DE DEFESA, não o canal principal. O deploy PRESERVA o
+        // appsettings.json do destino, então o valor efetivo em produção vem da variável de ambiente
+        // LowCode__RunnerTimeoutSeconds (ci-dev.yml/deploy.yml). O default só vale quando a chave
+        // não existe em lugar nenhum — e é justamente aí que ele precisava parar de ser inviável.
+        public int RunnerTimeoutSeconds { get; set; } = 180;
 
         // ✅ Limite de concorrência do runner NO PROCESSO INTEIRO da API (não por request/documento):
         // se dois uploads multi-candidato chegarem juntos, o total de processos do runner rodando ao
@@ -35,6 +60,22 @@ namespace LayoutParserApi.Services.Transformation.LowCode
         // rodam em paralelo (Task.WhenAll), o caso comum (poucas variantes, runner saudável) completa
         // bem antes disso; se estourar, cai para processamento em background sem bloquear o parse.
         public int SyncDeliveryTimeoutSeconds { get; set; } = 6;
+
+        // ✅ Teto ABSOLUTO da request HTTP de POST /api/transformation-execution/execute-candidates.
+        // Existe porque "quanto o trabalho pode demorar" e "quanto o cliente HTTP espera" são duas
+        // perguntas diferentes, e o endpoint respondia as duas com a mesma resposta: o budget era
+        // RunnerTimeoutSeconds * MaxConcurrentRunners, que com o timeout corrigido (180s) virou 360s
+        // — seis minutos segurando o cliente. Pior: a fórmula CRESCIA com MaxConcurrentRunners, ou
+        // seja, aumentar a concorrência aumentava a espera máxima, exatamente ao contrário do efeito
+        // real de ter mais slots.
+        //
+        // O budget efetivo é min(ondas de fila, este teto) — ver ExecuteTransformationCandidates.
+        // Default 90s: acomoda UMA transformação típica inteira (48-137s medidos, mediana bem abaixo
+        // do topo) sem prometer o pior caso ao cliente. Estourar não perde trabalho: o pathway
+        // sysmiddle persiste em disco dentro da própria chamada e responde depois pelo ticket.
+        // Mesmo padrão de SyncDeliveryTimeoutSeconds no ParseController — teto de entrega bem menor
+        // que o teto do motor. Override em produção só por LowCode__CandidatesRequestTimeoutSeconds.
+        public int CandidatesRequestTimeoutSeconds { get; set; } = 90;
 
         // ✅ Teto para entregar o XML da transformação INLINE no payload do parse. Acima disso o
         // campo outputXml é omitido e o front busca pelo endpoint de corpo

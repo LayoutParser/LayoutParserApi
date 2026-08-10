@@ -190,20 +190,49 @@ namespace LayoutParserApi.Controllers
             var warnings = new List<string>();
             var isXmlInput = request.InputContent.TrimStart().StartsWith("<");
 
-            var sysmiddleTask = ExecuteSysmiddleCandidatesAsync(request, layoutRecord, isXmlInput, warnings);
+            // Timeout do CONJUNTO (decisão de design, não 100% especificada no contrato). São dois
+            // limites diferentes e o código antes confundia os dois num número só:
+            //
+            //   (a) quanto o TRABALHO pode plausivelmente demorar. Os candidatos sysmiddle competem
+            //       pelo mesmo semáforo do runner, então rodam em ondas de MaxConcurrentRunners; o
+            //       pior caso é ceil(N / MaxConcurrentRunners) ondas de RunnerTimeoutSeconds. N é
+            //       capado por MultiCandidateTopN, que é o teto real de candidatos disparados.
+            //   (b) quanto o CLIENTE HTTP pode esperar — CandidatesRequestTimeoutSeconds.
+            //
+            // A fórmula anterior (RunnerTimeoutSeconds * MaxConcurrentRunners) errava as duas: com o
+            // timeout do runner corrigido para 180s ela dava 360s de espera, e CRESCIA ao se aumentar
+            // MaxConcurrentRunners — mais slots deveriam reduzir a fila, não aumentar o teto.
+            var budget = LowCodeCandidatesBudget.Calculate(
+                _lowCodeOpt.MultiCandidateTopN,
+                _lowCodeOpt.MaxConcurrentRunners,
+                _lowCodeOpt.RunnerTimeoutSeconds,
+                _lowCodeOpt.CandidatesRequestTimeoutSeconds);
+            var overallTimeoutSeconds = budget.EffectiveSeconds;
+
+            // ✅ O teto CANCELA o trabalho, não só a espera. Sem isso, o 504 abaixo devolvia a resposta
+            // e deixava até MaxConcurrentRunners processos x86 vivos segurando os slots do semáforo —
+            // que é do PROCESSO INTEIRO da API (singleton), então travaria também os uploads de outros
+            // usuários por até RunnerTimeoutSeconds. Mesmo defeito já corrigido no ParseController
+            // (spec §1.1); este endpoint tinha ficado para trás, e o timeout de 180s o tornou caro.
+            // Cancelar não perde trabalho: o pathway sysmiddle persiste em disco dentro da própria
+            // chamada e o resultado fica consultável pelo ticket.
+            using var candidatesCts = new CancellationTokenSource(TimeSpan.FromSeconds(overallTimeoutSeconds));
+
+            var sysmiddleTask = ExecuteSysmiddleCandidatesAsync(request, layoutRecord, isXmlInput, warnings, candidatesCts.Token);
             var tclXslTask = ExecuteTclXslCandidatesAsync(request, isXmlInput, warnings);
 
-            // Timeout do CONJUNTO: decisão de design (não 100% especificada no contrato) — como os
-            // candidatos sysmiddle competem pelo mesmo semáforo do runner (LowCode:MaxConcurrentRunners),
-            // o pior caso plausível para o conjunto inteiro é esperar por um slot livre e então rodar;
-            // daí o budget derivado de RunnerTimeoutSeconds * MaxConcurrentRunners.
-            var overallTimeoutSeconds = Math.Max(1, _lowCodeOpt.RunnerTimeoutSeconds) * Math.Max(1, _lowCodeOpt.MaxConcurrentRunners);
             var allTask = Task.WhenAll(sysmiddleTask, tclXslTask);
             var winner = await Task.WhenAny(allTask, Task.Delay(TimeSpan.FromSeconds(overallTimeoutSeconds)));
 
-            if (winner != allTask)
+            // ⚠️ Vencer a corrida não basta: o cancelamento é cooperativo e faz a task terminar QUASE
+            // no mesmo instante do Task.Delay, devolvendo os candidatos já marcados como falha. Sem
+            // checar o token, o resultado sairia às vezes como 200 com tudo falhando — que mente pior
+            // que o 504, porque diz "terminou e não deu certo" quando a verdade é "não deu tempo".
+            if (winner != allTask || candidatesCts.IsCancellationRequested)
             {
-                _logger.LogWarning("Timeout do conjunto de candidatos (>{TimeoutSeconds}s) para layout {LayoutName}", overallTimeoutSeconds, request.LayoutName);
+                _logger.LogWarning(
+                    "Timeout do conjunto de candidatos (>{TimeoutSeconds}s, budget de trabalho {BudgetTrabalho}s em {Ondas} onda(s), teto de request {TetoRequest}s) para layout {LayoutName}",
+                    overallTimeoutSeconds, budget.BudgetTrabalhoSeconds, budget.Ondas, budget.TetoRequestSeconds, request.LayoutName);
                 return StatusCode(504, new { success = false, error = "Tempo limite excedido ao gerar candidatos de transformação" });
             }
 
@@ -234,9 +263,15 @@ namespace LayoutParserApi.Controllers
         /// Pathway sysmiddle (low-code multi-candidato): reaproveita <see cref="LowCodeAutoTransformationService"/>
         /// (mesma infraestrutura usada por <c>ParseController.Upload</c>). Isolamento total: qualquer falha
         /// aqui (estrutural ou por candidato individual) vira warning, nunca deriuba o pathway tcl-xsl.
+        ///
+        /// <para><paramref name="cancellationToken"/> é o teto da request. Este é o único dos dois
+        /// pathways que precisa dele: aqui cada candidato ocupa um slot de <c>MaxConcurrentRunners</c>
+        /// e um processo x86 externo, ambos compartilhados por toda a API. Desistir sem cancelar
+        /// deixaria esses recursos presos depois de a resposta já ter ido embora.</para>
         /// </summary>
         private async Task<List<TransformationCandidate>> ExecuteSysmiddleCandidatesAsync(
-            TransformationRequest request, LayoutRecord layoutRecord, bool isXmlInput, List<string> warnings)
+            TransformationRequest request, LayoutRecord layoutRecord, bool isXmlInput, List<string> warnings,
+            CancellationToken cancellationToken)
         {
             var result = new List<TransformationCandidate>();
 
@@ -262,7 +297,8 @@ namespace LayoutParserApi.Controllers
                     request.InputContent,
                     detectedType: "unknown",
                     originalFileName: "execute-candidates",
-                    positionalMetadata: positionalMetadata);
+                    positionalMetadata: positionalMetadata,
+                    cancellationToken: cancellationToken);
 
                 if (!autoResult.Applicable)
                 {

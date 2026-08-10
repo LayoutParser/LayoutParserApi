@@ -52,11 +52,31 @@ Configurando esse GUID explicitamente, `appConnector` sai inteiro do runner.
 
 O pedido era remover um acoplamento. O efeito colateral é maior que o pedido:
 
-- **Custo de execução.** Medido pelo `@lp-backend-dev`: ~58s por transformação, dos quais ~9s são o
-  init da `InstanceFactory` e 0,6s o bootstrap. Sai boa parte disso.
+- ~~**Custo de execução.** Sai boa parte dos ~58s.~~ ❌ **ERRADO — ver correção abaixo.**
 - **Threads penduradas.** O `Main` chama `Environment.Exit` **porque** o bootstrap deixa threads de
   transporte vivas. Sem bootstrap, provavelmente não precisa — e isso **remove o risco de travar o
   host de teste**, que era a objeção que eu tinha levantado contra o projeto de teste in-process.
+
+> **CORREÇÃO (Aria, 2026-08-10, após implementação e medição A/B).** Eu atribuí ~9s de init da
+> `InstanceFactory` ao bootstrap. **Está errado.** O `@lp-backend-dev` compilou o commit-base e o novo
+> lado a lado na mesma Bin e mediu por fase:
+>
+> | Fase | Custo | Saiu com a remoção? |
+> |---|---|---|
+> | `Bootstrap()` | **0,7–1,5s** | **sim** |
+> | Init `InstanceFactory`/`APIManager` (licença) | 12–38s | **não** — dispara no 1º acesso a `APIManager.Instance` |
+> | `ExecuteMapper` | 38–73s | **não** |
+>
+> O bootstrap era **1–2% do total**. E a variação da máquina (mesma build, 48s a 137s) é maior que o
+> ganho, então qualquer conclusão de performance a partir de execução única é ruído. **`RunnerTimeoutSeconds = 15`
+> continua inviável — este trabalho não resolveu isso.**
+>
+> **O ganho real foi outro, e é melhor que o previsto:** o bootstrap subia uma thread de *primeiro
+> plano* `TH_FAI` (`DirectoryFailureManager.DirectoryFailureProcess`) que estourava
+> `ArgumentNullException` não tratada e **matava o processo antes de transformar** — ocorreu em 1 de 3
+> execuções da linha de base. Removê-lo eliminou uma **falha intermitente**, não segundos. E o processo
+> passou a encerrar sozinho (verificado com build sem `Environment.Exit`), o que **destrava o projeto
+> de teste in-process**.
 - **Debugabilidade.** Sem o bootstrap, `SysmiddleRuntime.Create` + executor viram um caminho reto,
   com breakpoint em tudo que não é o motor.
 
@@ -102,6 +122,29 @@ contra o gabarito real. Concretamente:
 | 4 | Remover `using appConnector.Client.Core.*` e as referências do `.csproj` |
 | 5 | Remover `Bootstrap()` e avaliar se `Environment.Exit` ainda é necessário |
 | 6 | Preservar as **duas** partes do gate de licença: registro do `ILicenseController` no `InstanceFactory` **e** `APIManager.GlobalConfigurationFileName` |
+
+### RESULTADO (2026-08-10) — gate PASSA, `Bootstrap()` não volta
+
+Verificado por mim, de forma independente, com o mapper correto
+**`MAP_f31a6758-69c9-4cf6-92d2-24f0e27a1ab5`** (`MAP_MQSERIES_SEND_ENV_TXT_XML_NFE` — **sem** o
+prefixo `MARELLI_`; existe um `MAP_MARELLI_MQSERIES_SEND_ENV_TXT_XML_NFE` de nome quase idêntico que
+produz outro documento):
+
+| Modo | exit | bytes | `cmp` contra o gabarito |
+|---|---|---|---|
+| default | 0 | 4246 | difere no char 7 (espaço duplo em `<?xml  version=`) |
+| `--nfePostProcessing true` | 0 | **4245** | **idêntico byte a byte, zero tolerância** |
+
+Somando com as execuções do `@lp-backend-dev`: **11/11 equivalentes**.
+
+> **Decisão pendente do dono do projeto — o default de `--nfePostProcessing`.** Com a flag ligada a
+> saída bate **exatamente**, sem a tolerância do espaço duplo. Tentador inverter o default; **não
+> inverti**, por duas razões: (a) o gabarito foi produzido pelo pipeline do connector (a nomenclatura
+> `...-11072026094950273-env.xml` é dele), então a normalização do espaço pode vir de lá e não do
+> pós-processamento; (b) neste documento os três escapes não mudam nada, mas num documento com
+> `infCpl`/`infAdFisco`/`infAdProd` preenchidos **mudam conteúdo de verdade**. Inverter com base num
+> único caso onde a diferença é cosmética seria generalizar de uma amostra. Precisa de um gabarito com
+> esses campos populados para decidir.
 
 ### Critério de aceite — não é "compila e roda"
 

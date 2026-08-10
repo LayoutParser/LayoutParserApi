@@ -1,12 +1,18 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Como rodar:  dotnet test tests\LayoutParserApi.Tests\LayoutParserApi.Tests.csproj
+  <!-- Como rodar:  dotnet test                  (pela solution — roda esta suíte)
+                    dotnet test tests\LayoutParserApi.Tests\LayoutParserApi.Tests.csproj
 
-       Este projeto NÃO está em LayoutParserApi.sln de propósito. Na raiz do repo há um .sln e um
-       .csproj, e o MSBuild resolve `dotnet build` sem argumento pela SOLUTION — o deploy.yml roda
-       exatamente isso. Incluir os testes na .sln faria o deploy de produção passar a restaurar
-       xUnit e compilar testes, e uma falha de restore ali quebraria o deploy. Entrar na .sln e
-       adicionar `dotnet test` ao CI é decisão de @lp-devops. -->
+       Este projeto ESTÁ na LayoutParserApi.sln desde 2026-08-10 (@lp-devops). Antes ficava de
+       fora, e o efeito era um quality gate que mentia: `dotnet test` na solution reportava
+       SUCESSO tendo executado ZERO testes.
+
+       O risco que justificava ficar fora era real e foi neutralizado, não ignorado: na raiz do
+       repo há um .sln e um .csproj, e o dotnet CLI resolve o comando sem argumento pela SOLUTION
+       — o deploy.yml rodava exatamente isso, então entrar na .sln faria o deploy de PRODUÇÃO
+       restaurar xUnit e compilar testes. O deploy.yml passou a buildar o .csproj da API
+       EXPLICITAMENTE (ver o comentário no step "Build LayoutParserApi"), e o `dotnet test` virou
+       step próprio no ci-dev.yml. Produção compila só o que publica; o gate roda no CI de dev. -->
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -44,6 +50,14 @@
          exatamente o código que roda no .exe — não uma cópia que pode divergir. -->
     <Compile Include="..\..\tools\LowCodeRunner\RunnerArgs.cs"
              Link="Transformation\RunnerArgs.cs" />
+
+    <!-- Mesmo raciocínio: as regras de documento portadas do MappersHelper (declaração XML e
+         pós-processamento NF-e) são puras (System.Xml apenas), então o que a suíte exercita é
+         exatamente o que roda no .exe. É aqui que a divergência entre ExecuteMappingDocumentById e
+         ExecuteMappingDocument (docs/architecture/decisao-remover-dependencia-appconnector.md §3)
+         deixa de ser comentário e vira invariante travada. -->
+    <Compile Include="..\..\tools\LowCodeRunner\SysmiddleDocumentRules.cs"
+             Link="Transformation\SysmiddleDocumentRules.cs" />
   </ItemGroup>
 
   <ItemGroup>
