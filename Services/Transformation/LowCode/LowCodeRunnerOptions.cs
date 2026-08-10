@@ -5,6 +5,16 @@ namespace LayoutParserApi.Services.Transformation.LowCode
         public string RunnerPath { get; set; } = "";
         public string SysmiddleDir { get; set; } = "";
         public string GlobalFolder { get; set; } = "";
+        // ✅ Identificador do PROJETO Sysmiddle (o mesmo <PackageMappers> do config.xml da instância).
+        // Passou a ser OBRIGATÓRIO em 2026-08-10: o runner low-code deixou de depender do
+        // appConnector.Client.Core e, com ele, do fallback
+        // ConnectorApplicationManager.Instance.GetServerPackage(). Vazio agora faz o runner sair com
+        // exit=9 (RunnerExitCodes.PackageNotConfigured) e mensagem explícita — de propósito, para
+        // não degradar em "mapeador não encontrado" longe da causa.
+        //
+        // ⚠️ Mesmo aviso dos campos abaixo: o deploy PRESERVA o appsettings.json do destino
+        // (ci-dev.yml/deploy.yml), então este valor NÃO chega sozinho ao servidor. Em produção,
+        // configure a variável de ambiente LowCode__Package (ação de @lp-devops).
         public string Package { get; set; } = "";
         public string? DefaultMapperName { get; set; }
 
