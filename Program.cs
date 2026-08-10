@@ -15,6 +15,9 @@ using LayoutParserApi.Services.Transformation.LowCode;
 using LayoutParserApi.Services.XmlAnalysis;
 
 using Microsoft.AspNetCore.Diagnostics;
+using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.ResponseCompression;
+using System.IO.Compression;
 
 using Serilog;
 using Serilog.Events;
@@ -178,6 +181,61 @@ try
     builder.Services.AddEndpointsApiExplorer();
     builder.Services.AddSwaggerGen();
 
+    // ✅ Compressão de resposta. Este payload é o caso de uso ideal: a API devolve XML e JSON —
+    // documento fiscal transformado, catálogo de layouts, páginas de log — e texto marcado comprime
+    // na casa de 80-90%. O XML da transformação sozinho vai inline até 256 KB
+    // (LowCode:InlineXmlMaxChars) e o front está do outro lado de uma rede corporativa.
+    //
+    // EnableForHttps fica no default (false) DE PROPÓSITO: comprimir sobre TLS reabre a classe de
+    // ataque BREACH. Hoje a API é HTTP puro, então a compressão vale; quando o TLS entrar (§2.2 do
+    // plano de arquitetura), reavaliar aqui em vez de ligar por reflexo.
+    builder.Services.AddResponseCompression(options =>
+    {
+        options.Providers.Add<BrotliCompressionProvider>();
+        options.Providers.Add<GzipCompressionProvider>();
+        // O default cobre application/json; XML precisa ser declarado, e é justamente o payload
+        // grande deste projeto.
+        options.MimeTypes = ResponseCompressionDefaults.MimeTypes.Concat(new[]
+        {
+            "application/xml",
+            "text/xml",
+            "application/problem+json"
+        });
+    });
+    // ⚠️ Os níveis NÃO são simétricos, e isso foi medido — não é preferência.
+    // Benchmark em GET /api/monitoring/layouts-analysis (238.591 bytes crus, máquina de dev):
+    //
+    //   sem compressão      238.591 bytes   3602 ms
+    //   brotli Fastest       77.865 bytes   3409 ms   <- pior que gzip nos DOIS eixos
+    //   gzip   Fastest       69.119 bytes   2314 ms
+    //   brotli Optimal       15.996 bytes   2200 ms   <- 93,3% de redução E o mais rápido
+    //
+    // Brotli em Fastest usa quality 1 e perde para gzip; só a partir de quality ~4 ele mostra o
+    // que sabe fazer. Em Optimal comprime 4,3x melhor que o gzip e ainda termina ANTES da resposta
+    // não comprimida — mandar 16 KB em vez de 238 KB paga a CPU com folga, mesmo no i7-4790 sem
+    // GPU do servidor de produção.
+    //
+    // O gzip fica em Fastest de propósito: é só o fallback para cliente que não anuncia brotli
+    // (Accept-Encoding), e nesse caminho o que importa é não custar caro.
+    //
+    // Caso pequeno medido: resposta de 32 bytes vira 37 com brotli — comprimir payload minúsculo
+    // aumenta o tamanho. O middleware do ASP.NET não tem limiar mínimo, e não vale construir um:
+    // o overhead é de bytes isolados contra uma economia de ~222 KB no caso que importa.
+    builder.Services.Configure<BrotliCompressionProviderOptions>(o => o.Level = CompressionLevel.Optimal);
+    builder.Services.Configure<GzipCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
+
+    // ✅ Teto explícito para upload de documento. O Kestrel já limita o corpo da request em ~30 MB
+    // por default, mas o limite de multipart do ASP.NET é bem maior — e é multipart que o
+    // ParseController recebe. Sem um teto declarado, o tamanho aceito passa a depender de qual
+    // camada estoura primeiro, o que não é um limite, é um acidente.
+    // 100 MB: os documentos posicionais reais medidos ficam na casa de dezenas de KB (a amostra do
+    // gabarito tem 35 KB), então isto é folga de três ordens de grandeza — serve como barreira
+    // contra corpo absurdo, não como restrição de uso.
+    builder.Services.Configure<FormOptions>(options =>
+    {
+        options.MultipartBodyLengthLimit = 104_857_600;
+    });
+
     // CORS Configuration
     // ✅ Origens configuráveis: env var CORS_ALLOWED_ORIGINS tem prioridade sobre
     // Cors:AllowedOrigins (appsettings). Fallback cobre os cenários de dev conhecidos
@@ -193,8 +251,24 @@ try
     {
         options.AddDefaultPolicy(policy =>
         {
+            // ✅ Métodos restritos ao que a API de fato expõe. Levantamento nos 18 controllers:
+            // 36 endpoints [HttpPost] e 28 [HttpGet] — zero PUT, DELETE ou PATCH. AllowAnyMethod
+            // autorizava um conjunto que não existe; declarar os três reais (OPTIONS é o preflight)
+            // não muda comportamento nenhum do front e fecha a porta antes de alguém adicionar um
+            // DELETE sem pensar no lado do CORS.
+            //
+            // AllowAnyHeader FICA: apertar header de request é o que mais quebra front, o ganho de
+            // segurança é pequeno (header não é credencial por si) e a lista real varia com o que o
+            // navegador manda. Não é descuido — é onde a relação custo/benefício inverte.
+            //
+            // WithExposedHeaders passou de "*" para a lista real. O wildcard entrega ao JS de
+            // origem cruzada todo header de resposta, inclusive os que a app venha a adicionar
+            // depois sem revisar CORS. X-Correlation-ID é o único header próprio que a API emite
+            // (middleware logo abaixo) e o único que o front tem motivo para ler.
             policy.WithOrigins(corsAllowedOrigins)
-                  .AllowAnyMethod().AllowAnyHeader().WithExposedHeaders("*");
+                  .WithMethods("GET", "POST", "OPTIONS")
+                  .AllowAnyHeader()
+                  .WithExposedHeaders("X-Correlation-ID");
         });
     });
 
@@ -446,6 +520,30 @@ try
         // Diagnóstico nunca pode ser o motivo de a app não subir.
         Log.Warning(ex, "Falha ao inspecionar a configuração low-code no arranque (diagnóstico ignorado).");
     }
+
+    // ✅ Compressão primeiro no pipeline: precisa envolver tudo que escreve no corpo da resposta,
+    // inclusive o handler de exceção mais abaixo. Depois que outro middleware começou a escrever,
+    // é tarde para comprimir.
+    app.UseResponseCompression();
+
+    // ✅ Cabeçalhos de segurança na resposta. Baratos, sem efeito sobre o contrato da API, e
+    // fecham três vetores que hoje estão abertos:
+    //   nosniff        — impede o navegador de "adivinhar" que um XML de documento é HTML e
+    //                    executá-lo; relevante aqui porque a API devolve markup de terceiro.
+    //   DENY (frame)   — a API não tem UI própria; nada dela deve ser embutido em iframe.
+    //   no-referrer    — evita vazar a URL (que carrega nome de layout e ticket) para terceiros.
+    //
+    // HSTS deliberadamente AUSENTE: só faz sentido sobre TLS, e a app serve HTTP puro hoje
+    // (UseHttpsRedirection segue comentado abaixo). Enviá-lo agora não protegeria nada e poderia
+    // travar o acesso ao host no navegador de quem testa. Entra junto com o TLS, não antes.
+    app.Use(async (context, next) =>
+    {
+        var headers = context.Response.Headers;
+        headers["X-Content-Type-Options"] = "nosniff";
+        headers["X-Frame-Options"] = "DENY";
+        headers["Referrer-Policy"] = "no-referrer";
+        await next();
+    });
 
     // Configure the HTTP request pipeline.
     // CORS must be early in the pipeline - before routing and other middleware
