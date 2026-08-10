@@ -50,6 +50,27 @@ namespace LayoutParserLowCodeRunner
 
         /// <summary>--mapperName informado, mas nenhum mapeador do package casa com esse nome.</summary>
         public const int MapperNameUnresolved = 8;
+
+        /// <summary>
+        /// <c>--package</c> ausente/vazio. Código PRÓPRIO e não reaproveitado do 7
+        /// (protocolo malformado) nem do 3 (bootstrap): aqui o protocolo está correto e o runner
+        /// está saudável — o que falta é CONFIGURAÇÃO (<c>LowCode:Package</c>).
+        ///
+        /// <para>Passou a existir em 2026-08-10, quando o runner deixou de depender do
+        /// <c>appConnector.Client.Core</c>: antes o package vinha do
+        /// <c>ConnectorApplicationManager.GetServerPackage()</c> (populado pelo bootstrap) e o
+        /// <c>--package</c> vazio era irrelevante. Agora ele é a ÚNICA fonte do identificador do
+        /// projeto — vazio não pode degradar em silêncio, porque o sintoma seria
+        /// "mapeador não encontrado" ou saída vazia, longe da causa real.</para>
+        /// </summary>
+        public const int PackageNotConfigured = 9;
+
+        /// <summary>
+        /// O package informado não corresponde a nenhum projeto carregado do
+        /// <c>exportContext.data</c> (ou a licença não validou). Separado do 9 porque a ação do
+        /// operador é outra: lá falta configurar, aqui está configurado ERRADO.
+        /// </summary>
+        public const int PackageNotFound = 10;
     }
 
     /// <summary>
@@ -108,6 +129,14 @@ namespace LayoutParserLowCodeRunner
         public string SysmiddleDir { get; set; }
 
         /// <summary>
+        /// Liga o pós-processamento NF-e (<c>--nfePostProcessing true</c>). <b>Desligado por padrão.</b>
+        /// Ver <see cref="SysmiddleDocumentRules.AplicarPosProcessamentoNFe"/>: o caminho que produziu
+        /// o gabarito (<c>ExecuteMappingDocumentById</c>) NÃO aplica os três escapes, e ligá-los
+        /// reserializa o XML inteiro — quebra a equivalência byte a byte.
+        /// </summary>
+        public bool NfePostProcessing { get; set; }
+
+        /// <summary>
         /// Nome do documento a passar ao Sysmiddle: <see cref="FileName"/> quando veio, senão o nome
         /// do arquivo em disco (comportamento histórico, preservado para a forma posicional).
         ///
@@ -125,6 +154,33 @@ namespace LayoutParserLowCodeRunner
                 return FileName;
 
             return string.IsNullOrEmpty(InputPath) ? null : System.IO.Path.GetFileName(InputPath);
+        }
+
+        /// <summary>
+        /// Mensagem de erro quando o <c>--package</c> não veio (null/vazio/whitespace); <c>null</c>
+        /// quando está tudo certo.
+        ///
+        /// <para>Validado no MOMENTO DA EXECUÇÃO e não no parse de propósito: para o parser, um
+        /// <c>--package ""</c> é um valor bem-formado (a API já mandava exatamente isso quando
+        /// <c>LowCode:Package</c> não estava configurado, e há teste travando esse aceite). O que
+        /// mudou em 2026-08-10 foi a SEMÂNTICA: sem o <c>appConnector</c>, o package deixou de ter
+        /// fallback via <c>ConnectorApplicationManager.GetServerPackage()</c> e virou obrigatório.
+        /// Manter a separação preserva a distinção entre "a API falou um protocolo que não entendo"
+        /// (exit 7) e "o protocolo está certo, falta configurar" (exit 9).</para>
+        ///
+        /// <para>Mora aqui, e não inline no Program, pelo mesmo motivo do
+        /// <see cref="ResolveDocumentName"/>: o Program depende das DLLs x86 do Sysmiddle e não é
+        /// testável; este arquivo é puro e roda na suíte.</para>
+        /// </summary>
+        public string ValidarPackage()
+        {
+            if (!string.IsNullOrWhiteSpace(Package))
+                return null;
+
+            return "--package (LowCode:Package) é obrigatório e veio vazio. "
+                 + "O runner não tem mais fallback para o package do host (ConnectorApplicationManager): "
+                 + "configure LowCode:Package no appsettings.json ou a variável de ambiente LowCode__Package "
+                 + "com o identificador do projeto Sysmiddle (o mesmo <PackageMappers> do config.xml da instância).";
         }
     }
 
@@ -167,28 +223,57 @@ namespace LayoutParserLowCodeRunner
 
         public const string UsoNomeado =
             "Uso (nomeado): LayoutParserLowCodeRunner --globalFolder <dir> --package <pkg> --inputFile <arq> --outputFile <arq> "
-            + "(--mapperId <guid> | --mapperName <nome>) [--fileName <nome>] [--correlationId <id>] [--runnerLogFile <arq>] [--sysmiddleDir <dir>]";
+            + "(--mapperId <guid> | --mapperName <nome>) [--fileName <nome>] [--correlationId <id>] [--runnerLogFile <arq>] [--sysmiddleDir <dir>] "
+            + "[--nfePostProcessing true|false]";
 
         /// <summary>
         /// Fonte ÚNICA das flags conhecidas: quem não está aqui é argumento desconhecido e derruba o
         /// parse com <see cref="RunnerExitCodes.InvalidNamedArgument"/>. Um dicionário (em vez de um
         /// switch + HashSet paralelo) evita a divergência silenciosa entre "conheço a flag" e
         /// "sei atribuir a flag" — divergência que reintroduziria justamente o deslocamento.
+        ///
+        /// <para>O delegate devolve <c>null</c> quando atribuiu, ou a MENSAGEM DE ERRO quando o valor
+        /// é inválido para aquela flag. Assumir que todo valor serve funciona para as flags de string,
+        /// mas não para <c>--nfePostProcessing</c>: um <c>--nfePostProcessing yes</c> seria ignorado
+        /// e a flag ficaria desligada — quem pediu para ligar não saberia. É o mesmo padrão de falha
+        /// silenciosa que este parser existe para eliminar.</para>
         /// </summary>
-        private static readonly Dictionary<string, Action<RunnerArgs, string>> Setters =
-            new Dictionary<string, Action<RunnerArgs, string>>(StringComparer.OrdinalIgnoreCase)
+        private static readonly Dictionary<string, Func<RunnerArgs, string, string>> Setters =
+            new Dictionary<string, Func<RunnerArgs, string, string>>(StringComparer.OrdinalIgnoreCase)
             {
-                { "globalFolder",  (a, v) => a.GlobalFolder = v },
-                { "package",       (a, v) => a.Package = v },
-                { "mapperId",      (a, v) => a.MapperGuid = v },
-                { "mapperName",    (a, v) => a.MapperName = v },
-                { "inputFile",     (a, v) => a.InputPath = v },
-                { "outputFile",    (a, v) => a.OutputPath = v },
-                { "fileName",      (a, v) => a.FileName = v },
-                { "correlationId", (a, v) => a.CorrelationId = v },
-                { "runnerLogFile", (a, v) => a.RunnerLogFile = v },
-                { "sysmiddleDir",  (a, v) => a.SysmiddleDir = v }, // ver RunnerArgs.SysmiddleDir: aceito e ignorado
+                { "globalFolder",       (a, v) => { a.GlobalFolder = v; return null; } },
+                { "package",            (a, v) => { a.Package = v; return null; } },
+                { "mapperId",           (a, v) => { a.MapperGuid = v; return null; } },
+                { "mapperName",         (a, v) => { a.MapperName = v; return null; } },
+                { "inputFile",          (a, v) => { a.InputPath = v; return null; } },
+                { "outputFile",         (a, v) => { a.OutputPath = v; return null; } },
+                { "fileName",           (a, v) => { a.FileName = v; return null; } },
+                { "correlationId",      (a, v) => { a.CorrelationId = v; return null; } },
+                { "runnerLogFile",      (a, v) => { a.RunnerLogFile = v; return null; } },
+                { "sysmiddleDir",       (a, v) => { a.SysmiddleDir = v; return null; } }, // ver RunnerArgs.SysmiddleDir: aceito e ignorado
+                { "nfePostProcessing",  AtribuirNfePostProcessing },
             };
+
+        /// <summary>
+        /// Aceita apenas <c>true</c>/<c>false</c>/<c>1</c>/<c>0</c> (case-insensitive). Qualquer outra
+        /// coisa é erro explícito — ver o comentário de <see cref="Setters"/>.
+        /// </summary>
+        private static string AtribuirNfePostProcessing(RunnerArgs args, string valor)
+        {
+            if (string.Equals(valor, "true", StringComparison.OrdinalIgnoreCase) || valor == "1")
+            {
+                args.NfePostProcessing = true;
+                return null;
+            }
+
+            if (string.Equals(valor, "false", StringComparison.OrdinalIgnoreCase) || valor == "0")
+            {
+                args.NfePostProcessing = false;
+                return null;
+            }
+
+            return "Valor invalido para --nfePostProcessing: '" + valor + "' (use true|false|1|0).";
+        }
 
         public static RunnerArgsParseResult Parse(string[] args)
         {
@@ -266,7 +351,7 @@ namespace LayoutParserLowCodeRunner
                 }
 
                 string nome = token.Substring(2);
-                Action<RunnerArgs, string> setter;
+                Func<RunnerArgs, string, string> setter;
 
                 if (!Setters.TryGetValue(nome, out setter))
                 {
@@ -290,7 +375,9 @@ namespace LayoutParserLowCodeRunner
                     continue;
                 }
 
-                setter(resultado, args[++i]);
+                string erroDeValor = setter(resultado, args[++i]);
+                if (erroDeValor != null)
+                    erros.Add(erroDeValor);
             }
 
             if (string.IsNullOrEmpty(resultado.GlobalFolder))
