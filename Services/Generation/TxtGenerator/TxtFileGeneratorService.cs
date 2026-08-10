@@ -46,10 +46,6 @@ namespace LayoutParserApi.Services.Generation.TxtGenerator
                     _generator = serviceProvider.GetService<RandomGenerator>();
                     _asyncGenerator = null;
                     break;
-                case GenerationMode.SemanticAI:
-                    _asyncGenerator = serviceProvider.GetService<SemanticAIGenerator>();
-                    _generator = _asyncGenerator;
-                    break;
                 default:
                     _generator = serviceProvider.GetService<RandomGenerator>();
                     _asyncGenerator = null;

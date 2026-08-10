@@ -1,21 +1,18 @@
-using LayoutParserApi.Models.Entities;
+﻿using LayoutParserApi.Models.Entities;
 using LayoutParserApi.Models.Generation;
 using LayoutParserApi.Services.Generation.Interfaces;
 
 using System.Text;
-using System.Xml.Serialization;
 
 namespace LayoutParserApi.Services.Generation.Implementations
 {
     public class SyntheticDataGeneratorService : ISyntheticDataGeneratorService
     {
-        private readonly GeminiAIService _geminiService;
         private readonly ILogger<SyntheticDataGeneratorService> _logger;
         private readonly Random _random = new();
 
-        public SyntheticDataGeneratorService(GeminiAIService geminiService, ILogger<SyntheticDataGeneratorService> logger)
+        public SyntheticDataGeneratorService(ILogger<SyntheticDataGeneratorService> logger)
         {
-            _geminiService = geminiService;
             _logger = logger;
         }
 
@@ -33,23 +30,19 @@ namespace LayoutParserApi.Services.Generation.Implementations
             {
                 _logger.LogInformation("Iniciando geração de {Count} registros sintéticos", request.NumberOfRecords);
 
-                // Tentar IA primeiro, mas com fallback para regras
-                if (request.UseAI && _geminiService != null)
-                {
-                    try
-                    {
-                        result = await GenerateWithGeminiAsync(request);
-                        _logger.LogInformation("Geração com Gemini concluída com sucesso");
-                    }
-                    catch (Exception geminiEx)
-                    {
-                        _logger.LogWarning(geminiEx, "Falha na geração com Gemini, usando fallback para regras");
-                        result = await GenerateWithRulesAsync(request);
-                        result.GenerationMetadata["fallbackReason"] = $"Gemini failed: {geminiEx.Message}";
-                    }
-                }
-                else
-                    result = await GenerateWithRulesAsync(request);
+                // ✅ Geração por REGRAS, sempre. O caminho de IA saiu em 2026-08-10 com o
+                // decommission de Gemini/OpenAI: era o único que mandava layout e amostras de
+                // documento para fora. O fallback por regras já existia e cobria a falha do
+                // Gemini — agora é o caminho único, não o plano B.
+                //
+                // `request.UseAI` permanece no contrato e é deliberadamente IGNORADO aqui: remover
+                // o campo quebraria o payload de quem já chama o endpoint, e responder 400 a um
+                // request que antes funcionava seria pior que atendê-lo por regras. Quando a
+                // geração semântica voltar sobre Ollama local, é este flag que a religa.
+                if (request.UseAI)
+                    _logger.LogInformation("UseAI ignorado: geração por IA em nuvem foi decomissionada; usando regras.");
+
+                result = await GenerateWithRulesAsync(request);
 
                 result.GenerationTime = DateTime.Now - startTime;
                 result.Success = true;
@@ -142,66 +135,6 @@ namespace LayoutParserApi.Services.Generation.Implementations
             return requirements;
         }
 
-        private async Task<GeneratedDataResult> GenerateWithGeminiAsync(SyntheticDataRequest request)
-        {
-            // Converter layout para XML string
-            var layoutXml = SerializeLayoutToXml(request.Layout);
-
-            // Preparar exemplos (se disponíveis)
-            var examples = request.SampleRealData?.Select(s => s.Value).ToList() ?? new List<string>();
-
-            // Preparar regras do Excel (se disponíveis)
-            var excelRules = new Dictionary<string, string>();
-            if (request.ExcelContext != null)
-            {
-                // Extrair regras do Excel se necessário
-                foreach (var header in request.ExcelContext.Headers)
-                {
-                    if (request.ExcelContext.ColumnData.ContainsKey(header))
-                    {
-                        var samples = request.ExcelContext.ColumnData[header].Take(5).ToList();
-                        if (samples.Any())
-                            excelRules[header] = $"Exemplos: {string.Join(", ", samples)}";
-                    }
-                }
-            }
-
-            // Extrair nome e descrição do layout
-            var layoutName = request.Layout?.Name ?? "";
-            var layoutDescription = request.Layout?.Description ?? "";
-
-            var aiResponse = await _geminiService.GenerateSyntheticData(
-                layoutXml,
-                examples,
-                excelRules,
-                request.NumberOfRecords,
-                layoutName,
-                layoutDescription,
-                request.ExcelContext);
-
-            var lines = ParseAIResponse(aiResponse, request.NumberOfRecords);
-
-            // Pós-processamento: garantir que todas as linhas tenham exatamente 600 caracteres
-            lines = NormalizeLineLengths(lines, request.Layout?.LimitOfCaracters ?? 600);
-
-            return new GeneratedDataResult
-            {
-                Success = true,
-                GeneratedLines = lines,
-                TotalRecords = lines.Count,
-                UsedLayout = request.Layout,
-                GenerationMetadata = new Dictionary<string, object>
-                {
-                    ["generationMethod"] = "Gemini",
-                    ["layoutXml"] = layoutXml,
-                    ["layoutName"] = layoutName,
-                    ["aiResponseLength"] = aiResponse.Length,
-                    ["examplesUsed"] = examples.Count,
-                    ["excelRulesUsed"] = excelRules.Count
-                }
-            };
-        }
-
         private async Task<GeneratedDataResult> GenerateWithRulesAsync(SyntheticDataRequest request)
         {
             var generatedLines = new List<string>();
@@ -236,42 +169,6 @@ namespace LayoutParserApi.Services.Generation.Implementations
                     ["totalFields"] = allFields.Count
                 }
             };
-        }
-
-        private List<string> ParseAIResponse(string aiResponse, int expectedCount)
-        {
-            // Não remover espaços no final pois podem ser parte do layout posicional
-            var lines = aiResponse.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).Where(line => !string.IsNullOrWhiteSpace(line.Trim())).Select(line => line.TrimEnd('\r', '\n')).Take(expectedCount).ToList();
-
-            return lines;
-        }
-
-        /// <summary>
-        /// Normaliza o tamanho de todas as linhas para o tamanho exato especificado
-        /// </summary>
-        private List<string> NormalizeLineLengths(List<string> lines, int targetLength)
-        {
-            var normalized = new List<string>();
-
-            foreach (var line in lines)
-            {
-                if (line.Length == targetLength)
-                    normalized.Add(line);
-                else if (line.Length > targetLength)
-                {
-                    // Truncar se exceder o tamanho
-                    _logger.LogWarning("Linha truncada de {Original} para {Target} caracteres", line.Length, targetLength);
-                    normalized.Add(line.Substring(0, targetLength));
-                }
-                else
-                {
-                    // Preencher com espaços se for menor
-                    _logger.LogWarning("Linha preenchida de {Original} para {Target} caracteres", line.Length, targetLength);
-                    normalized.Add(line.PadRight(targetLength, ' '));
-                }
-            }
-
-            return normalized;
         }
 
         private async Task<string> GenerateLineContent(LineElement lineElement, int recordIndex, SyntheticDataRequest request)
@@ -422,20 +319,5 @@ namespace LayoutParserApi.Services.Generation.Implementations
             return word.PadRight(length, ' ');
         }
 
-        private string SerializeLayoutToXml(Layout layout)
-        {
-            try
-            {
-                var serializer = new XmlSerializer(typeof(Layout));
-                using var stringWriter = new StringWriter();
-                serializer.Serialize(stringWriter, layout);
-                return stringWriter.ToString();
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Erro ao serializar layout para XML");
-                return $"<Layout><Name>{layout.Name}</Name><LayoutType>{layout.LayoutType}</LayoutType></Layout>";
-            }
-        }
     }
 }
