@@ -358,11 +358,25 @@ jobs:
             }
         }
 
-        $destino = ($aptas | Sort-Object -Unique | Select-Object -First 1)
+        # ⚠️ Escolha pela Bin MAIS COMPLETA (mais arquivos), nao pela primeira em ordem alfabetica.
+        # Medido no servidor de producao em 2026-08-10: ha QUATRO diretorios que passam no teste
+        # "apta" (App\Bin 636 arquivos, Settings 217, Tools 158, App\Bin\Functions 102) e so o
+        # primeiro tem o conjunto completo de dependencias. Ordem alfabetica acertaria por
+        # coincidencia — escolher por acaso nao e escolher.
+        $ranking = $aptas | Sort-Object -Unique |
+                   ForEach-Object { [PSCustomObject]@{ Caminho = $_; Arquivos = (Get-ChildItem $_ -File -ErrorAction SilentlyContinue).Count } } |
+                   Sort-Object Arquivos -Descending
+
+        $destino = ($ranking | Select-Object -First 1).Caminho
         if (-not $destino) {
           Write-Warning "Nenhuma Bin do Sysmiddle APTA neste host (SysMiddle.Base.dll + log4net 2.x)."
           Write-Warning "O pathway low-code seguira indisponivel. Ver diagnostico no fim do workflow."
           exit 0
+        }
+
+        if ($ranking.Count -gt 1) {
+          Write-Host "Bins aptas encontradas ($($ranking.Count)), ordenadas por completude:"
+          $ranking | ForEach-Object { Write-Host "   $($_.Arquivos.ToString().PadLeft(5)) arquivos  $($_.Caminho)" }
         }
 
         Copy-Item $runnerExe $destino -Force
@@ -371,9 +385,6 @@ jobs:
 
         $publicado = Join-Path $destino "LayoutParserLowCodeRunner.exe"
         Write-Host "Runner publicado em: $publicado"
-        if ($aptas.Count -gt 1) {
-          Write-Host "  (havia $(($aptas | Sort-Object -Unique).Count) Bins aptas; escolhida a primeira em ordem alfabetica)"
-        }
 
         # Consumido pelo step de Environment logo abaixo — o appsettings do destino e preservado,
         # entao este caminho SO chega a API por variavel de ambiente.

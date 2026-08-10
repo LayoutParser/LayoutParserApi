@@ -312,11 +312,29 @@ jobs:
             }
         }
 
-        $destino = ($aptas | Sort-Object -Unique | Select-Object -First 1)
+        # ⚠️ Escolha pela Bin MAIS COMPLETA (mais arquivos), nao pela primeira em ordem alfabetica.
+        # Medido no .42 em 2026-08-10: ha QUATRO diretorios com SysMiddle.Base.dll + log4net 2.x —
+        #   C:\appconnector\App\Bin            636 arquivos  <- a Bin real da instancia
+        #   C:\appconnector\Settings           217
+        #   C:\appconnector\Tools              158
+        #   C:\appconnector\App\Bin\Functions  102
+        # Todos passam no teste "apta", mas so o primeiro tem o conjunto completo de dependencias.
+        # Ordem alfabetica acertaria por coincidencia aqui e erraria em qualquer host onde a
+        # instancia esteja sob um caminho de nome menor — escolher por acaso nao e escolher.
+        $ranking = $aptas | Sort-Object -Unique |
+                   ForEach-Object { [PSCustomObject]@{ Caminho = $_; Arquivos = (Get-ChildItem $_ -File -ErrorAction SilentlyContinue).Count } } |
+                   Sort-Object Arquivos -Descending
+
+        $destino = ($ranking | Select-Object -First 1).Caminho
         if (-not $destino) {
           Write-Warning "Nenhuma Bin do Sysmiddle APTA neste host (SysMiddle.Base.dll + log4net 2.x)."
           Write-Warning "O pathway low-code seguira indisponivel. Ver diagnostico no fim do workflow."
           exit 0
+        }
+
+        if ($ranking.Count -gt 1) {
+          Write-Host "Bins aptas encontradas ($($ranking.Count)), ordenadas por completude:"
+          $ranking | ForEach-Object { Write-Host "   $($_.Arquivos.ToString().PadLeft(5)) arquivos  $($_.Caminho)" }
         }
 
         Copy-Item $runnerExe $destino -Force
@@ -325,9 +343,6 @@ jobs:
 
         $publicado = Join-Path $destino "LayoutParserLowCodeRunner.exe"
         Write-Host "Runner publicado em: $publicado"
-        if (($aptas | Sort-Object -Unique).Count -gt 1) {
-          Write-Host "  (havia $(($aptas | Sort-Object -Unique).Count) Bins aptas; escolhida a primeira em ordem alfabetica)"
-        }
 
         Add-Content -Path $env:GITHUB_ENV -Value "LOWCODE_RUNNER_PATH_RESOLVED=$publicado"
 
@@ -427,8 +442,36 @@ jobs:
         # Preserva no appsettings.Production.json o que o destino tinha de proprio ([2] e [3]).
         # Production.json tem precedencia sobre o base, entao o comportamento efetivo nao muda —
         # o que muda e de onde vem o resto: passa a vir do repo, versionado e revisavel.
+        #
+        # ⚠️ EXCETO as secoes de subsistemas MORTOS. Medido no .42 em 2026-08-10: o appsettings de
+        # producao ainda carrega Gemini:ApiKey, OpenAI:ApiKey e ElasticSearch:Password COM VALOR —
+        # segredos de integracoes cujo codigo ja foi removido do repositorio (OpenAI em 9b0965f,
+        # ElasticSearch em 2026-07-27, Gemini em aa54dc3). Preservar isso "porque diverge" copiaria
+        # tres segredos vivos para um arquivo novo e os manteria em disco por mais um ciclo. A
+        # migracao e a oportunidade de DESCARTA-LOS, nao de reancora-los.
+        #
+        # Elas nao sao apenas ignoradas: o relatorio abaixo diz quais foram descartadas, para que o
+        # operador saiba exatamente quais segredos precisam ser revogados na origem.
+        $secoesMortas = @('Gemini', 'OpenAI', 'ElasticSearch', 'Logging:Type', 'Logging:Txt')
+
         $preservar = @{}
-        foreach ($chave in ($divergentes + $soNoDestino)) { $preservar[$chave] = $mapaDestino[$chave] }
+        $descartadas = New-Object System.Collections.Generic.List[string]
+        foreach ($chave in ($divergentes + $soNoDestino)) {
+          $morta = $false
+          foreach ($s in $secoesMortas) {
+            if ($chave -eq $s -or $chave.StartsWith("$s`:", [StringComparison]::OrdinalIgnoreCase)) { $morta = $true; break }
+          }
+          if ($morta) { $descartadas.Add($chave); continue }
+          $preservar[$chave] = $mapaDestino[$chave]
+        }
+
+        if ($descartadas.Count -gt 0) {
+          Write-Host "  [4] DESCARTADAS (subsistema morto — NAO vao para o Production.json):"
+          $descartadas | ForEach-Object { Write-Host "      $_" }
+          Write-Warning ("Chaves de subsistema morto sairam da config de producao. Se alguma for segredo " +
+            "(Gemini/OpenAI/ElasticSearch), REVOGUE na origem: sair do disco nao invalida o valor que ja vazou.")
+          Write-Host ""
+        }
 
         $prod = @{}
         foreach ($chave in $preservar.Keys) {
