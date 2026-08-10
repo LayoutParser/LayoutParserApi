@@ -331,6 +331,128 @@ jobs:
 
         Add-Content -Path $env:GITHUB_ENV -Value "LOWCODE_RUNNER_PATH_RESOLVED=$publicado"
 
+    # ── Config drift: repo x destino (DRY-RUN por padrao) ───────────────────────────
+    #
+    # O PROBLEMA ESTRUTURAL: o step de deploy copia com `-Exclude appsettings.json`, preservando o
+    # arquivo do servidor. A intencao era boa (nao pisar em ajuste local), mas o efeito e que TODA
+    # chave nova adicionada ao repositorio e silenciosamente ignorada em producao — o codigo cai no
+    # default sem avisar ninguem. Isso nao e um bug: e uma fabrica de bugs. LowCode:Package,
+    # RunnerTimeoutSeconds e ML:LowCodeTransformationsPath foram tres instancias do MESMO defeito.
+    #
+    # O ESTADO-ALVO (secao 3.1 do plano): inverter o default — o repo vira a fonte da verdade e o
+    # destino sobrepoe pelo que e legitimamente local, via appsettings.Production.json (que tem
+    # precedencia sobre o base e NAO e versionado) e variaveis de ambiente.
+    #
+    # POR QUE ESTE STEP NASCE EM DRY-RUN: ninguem sabe hoje o que diverge no .42 — o host nao aceita
+    # SSH/WinRM/SMB, entao o conteudo do appsettings.json de producao nunca foi comparado com o do
+    # repo. Inverter o default as cegas pode apagar ajuste local que sustenta a producao. Rodar
+    # primeiro em modo relatorio produz exatamente o dado que falta para decidir, e custa um deploy.
+    #
+    # COMO EXECUTAR A MIGRACAO, depois de ler o relatorio:
+    #   GitHub -> Settings -> Secrets and variables -> Actions -> aba Variables
+    #   MIGRATE_CONFIG_TO_REPO = true
+    # Com isso o step grava as divergencias em appsettings.Production.json no destino e libera a
+    # copia do appsettings.json do repo. O appsettings.json antigo continua indo para Backups\ pelo
+    # step de deploy, que ja fazia isso.
+    - name: Config drift repo x destino (dry-run por padrao)
+      continue-on-error: true
+      run: |
+        $ErrorActionPreference = "Continue"
+        $DEPLOY_PATH = "${{ secrets.DEPLOY_PATH }}".Trim('"', '''', ' ')
+        $destino = Join-Path $DEPLOY_PATH 'api\appsettings.json'
+        $repo = Join-Path $PWD.Path 'LayoutParserApi\appsettings.json'
+        $migrar = ("${{ vars.MIGRATE_CONFIG_TO_REPO }}" -eq 'true')
+
+        if (-not (Test-Path $destino)) {
+          Write-Host "Sem appsettings.json no destino (primeiro deploy?) — nada a comparar."
+          if ($migrar) { Add-Content -Path $env:GITHUB_ENV -Value "CONFIG_MIGRATED=true" }
+          exit 0
+        }
+        if (-not (Test-Path $repo)) {
+          Write-Warning "appsettings.json do repo nao encontrado em $repo — comparacao abortada."
+          exit 0
+        }
+
+        # Achata o JSON em pares "Secao:Chave = valor" para comparar chave a chave.
+        function Flatten($obj, $prefixo, $acc) {
+          foreach ($p in $obj.PSObject.Properties) {
+            $chave = if ($prefixo) { "$prefixo`:$($p.Name)" } else { $p.Name }
+            if ($p.Value -is [PSCustomObject]) { Flatten $p.Value $chave $acc }
+            else { $acc[$chave] = ($p.Value | ConvertTo-Json -Compress -Depth 10) }
+          }
+        }
+
+        $mapaRepo = @{}; $mapaDestino = @{}
+        Flatten (Get-Content $repo -Raw | ConvertFrom-Json) '' $mapaRepo
+        Flatten (Get-Content $destino -Raw | ConvertFrom-Json) '' $mapaDestino
+
+        # NUNCA ecoar valor de chave sensivel: o destino carrega Database:Password em texto plano.
+        function EhSensivel($chave) {
+          return ($chave -match '(?i)password|apikey|secret|token|connectionstring')
+        }
+
+        $divergentes = New-Object System.Collections.Generic.List[string]
+        $soNoDestino = New-Object System.Collections.Generic.List[string]
+        foreach ($chave in ($mapaDestino.Keys | Sort-Object)) {
+          if (-not $mapaRepo.ContainsKey($chave)) { $soNoDestino.Add($chave); continue }
+          if ($mapaDestino[$chave] -ne $mapaRepo[$chave]) { $divergentes.Add($chave) }
+        }
+        $soNoRepo = @($mapaRepo.Keys | Where-Object { -not $mapaDestino.ContainsKey($_) } | Sort-Object)
+
+        Write-Host "=== Config drift: repo x destino ==="
+        Write-Host "  Chaves no repo: $($mapaRepo.Count) | no destino: $($mapaDestino.Count)"
+        Write-Host ""
+        Write-Host "  [1] So no REPO (nunca chegaram ao servidor — o codigo usa o default):"
+        if ($soNoRepo.Count -eq 0) { Write-Host "      (nenhuma)" } else { $soNoRepo | ForEach-Object { Write-Host "      $_" } }
+        Write-Host ""
+        Write-Host "  [2] DIVERGENTES (destino tem valor proprio — candidatas a appsettings.Production.json):"
+        if ($divergentes.Count -eq 0) { Write-Host "      (nenhuma)" } else {
+          $divergentes | ForEach-Object {
+            if (EhSensivel $_) { Write-Host "      $_  (valor omitido: chave sensivel)" }
+            else { Write-Host "      $_  repo=$($mapaRepo[$_])  destino=$($mapaDestino[$_])" }
+          }
+        }
+        Write-Host ""
+        Write-Host "  [3] So no DESTINO (config orfa ou removida do repo):"
+        if ($soNoDestino.Count -eq 0) { Write-Host "      (nenhuma)" } else { $soNoDestino | ForEach-Object { Write-Host "      $_" } }
+        Write-Host ""
+
+        if (-not $migrar) {
+          Write-Host "MODO DRY-RUN — nada foi alterado."
+          Write-Host "Para migrar, defina a variable MIGRATE_CONFIG_TO_REPO=true e rode de novo."
+          exit 0
+        }
+
+        # ── Migracao ──
+        # Preserva no appsettings.Production.json o que o destino tinha de proprio ([2] e [3]).
+        # Production.json tem precedencia sobre o base, entao o comportamento efetivo nao muda —
+        # o que muda e de onde vem o resto: passa a vir do repo, versionado e revisavel.
+        $preservar = @{}
+        foreach ($chave in ($divergentes + $soNoDestino)) { $preservar[$chave] = $mapaDestino[$chave] }
+
+        $prod = @{}
+        foreach ($chave in $preservar.Keys) {
+          $partes = $chave -split ':'
+          $no = $prod
+          for ($i = 0; $i -lt $partes.Count - 1; $i++) {
+            if (-not $no.ContainsKey($partes[$i])) { $no[$partes[$i]] = @{} }
+            $no = $no[$partes[$i]]
+          }
+          $no[$partes[-1]] = ($preservar[$chave] | ConvertFrom-Json)
+        }
+
+        $prodPath = Join-Path $DEPLOY_PATH 'api\appsettings.Production.json'
+        if (Test-Path $prodPath) {
+          $bkp = Join-Path $DEPLOY_PATH "Backups\appsettings.Production-$(Get-Date -Format 'yyyyMMdd-HHmmss').json"
+          New-Item -ItemType Directory -Path (Split-Path $bkp) -Force | Out-Null
+          Copy-Item $prodPath $bkp -Force
+          Write-Host "appsettings.Production.json existente salvo em: $bkp"
+        }
+        $prod | ConvertTo-Json -Depth 10 | Set-Content -Path $prodPath -Encoding UTF8
+        Write-Host "MIGRACAO EXECUTADA: $($preservar.Count) chave(s) preservada(s) em $prodPath"
+        Write-Host "  O appsettings.json do repo passa a ser copiado neste deploy."
+        Add-Content -Path $env:GITHUB_ENV -Value "CONFIG_MIGRATED=true"
+
     - name: Configurar ambiente do servico (upsert, nao destrutivo)
       env:
         AI_METRICS_INGEST_KEY: ${{ secrets.AI_METRICS_INGEST_KEY }}
@@ -567,7 +689,16 @@ jobs:
           }
         }
         
-        $apiFiles = Get-ChildItem -Path $DEPLOY_API_SOURCE -Exclude "appsettings.json" -Recurse -File
+        # O appsettings.json do destino e preservado por padrao — e a causa do config drift descrito
+        # no step "Config drift repo x destino". Depois que a migracao roda (MIGRATE_CONFIG_TO_REPO=true),
+        # o que era local ja foi movido para appsettings.Production.json e o arquivo base passa a vir
+        # do repo, versionado. O backup do appsettings.json antigo acontece acima, nos dois casos.
+        if ($env:CONFIG_MIGRATED -eq 'true') {
+          Write-Host "Config migrada: appsettings.json do REPO sera copiado (local preservado em appsettings.Production.json)."
+          $apiFiles = Get-ChildItem -Path $DEPLOY_API_SOURCE -Recurse -File
+        } else {
+          $apiFiles = Get-ChildItem -Path $DEPLOY_API_SOURCE -Exclude "appsettings.json" -Recurse -File
+        }
         Write-Host "Encontrados $($apiFiles.Count) arquivos para copiar"
         
         if ($apiFiles.Count -eq 0) {
