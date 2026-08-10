@@ -320,16 +320,32 @@ código — mas ela está em texto plano no disco de produção, além do histó
 As demais órfãs (`Logging:Type`, `Logging:Txt:*`) são do subsistema de logging removido em
 2026-07-27 — inertes, mas ruído.
 
-### 7.4 Divergências legítimas — a lista real a preservar
+### 7.4 Divergências legítimas — a lista real, fechada
 
-Apenas **três**, e só duas precisam de decisão:
+São **duas**. `Redis:ConnectionString` foi conferida e **não diverge**: vale `localhost:6379` nos
+dois lados. Ela aparecia como divergente por artefato da própria coleta — o filtro de mascaramento
+casa `connectionstring` e substitui o valor por `***` antes da comparação. Vale como lembrete de
+que máscara aplicada antes do diff produz falso positivo.
 
-| Chave | Situação |
-|---|---|
-| `Database:Password` | Segredo legítimo. **Migrar para env var** (`Database__Password`), não para `appsettings.Production.json` |
-| `Redis:ConnectionString` | Diverge do repo; o valor foi mascarado na coleta. Precisa ser conferido antes de migrar |
-| `RAG:ExamplesPath` | Ajuste local legítimo (`C:\inetpub\...\Examples` vs `Exemplos` no repo) → `appsettings.Production.json` |
+| Chave | Situação | Destino na migração |
+|---|---|---|
+| `Database:Password` | Segredo legítimo, hoje em texto plano no disco | **Env var `Database__Password`** — nunca `appsettings.Production.json` |
+| `RAG:ExamplesPath` | Ajuste local legítimo (`C:\inetpub\...\Examples` vs `Exemplos`) | `appsettings.Production.json` |
 
-**Isto torna a migração do §3.1 pequena e conhecida**, não um salto no escuro: preservar duas
-chaves, mover uma para env var, descartar cinco seções mortas. O step já descarta as mortas
-(`2e5e1bf`) e o dry-run continua valendo como conferência final antes de ligar.
+**A migração do §3.1 está completamente especificada**: uma chave para `appsettings.Production.json`,
+uma para env var, cinco seções mortas descartadas. Deixou de ser salto no escuro.
+
+> **Guard-rail (`2f059cc`).** Copiar o `appsettings.json` do repo — que traz `Password: ""` — sem a
+> senha estar no `Environment` **derruba a conexão com o SQL em produção**. E preservá-la no
+> `Production.json` só trocaria o arquivo onde o segredo mora. Por isso a migração **aborta** se
+> houver segredo divergente sem a env var equivalente provisionada, imprimindo o que falta. Uma vez
+> provisionada, a chave sai da config em arquivo de vez.
+
+### 7.5 Ordem de execução da migração
+
+1. Provisionar `Database__Password` no `Environment` do serviço no `.42` (valor atual está no
+   `appsettings.json` do próprio servidor — não copiar para log nenhum).
+2. Rodar o deploy com `MIGRATE_CONFIG_TO_REPO` ainda ausente → confere o relatório de dry-run.
+3. Ligar `MIGRATE_CONFIG_TO_REPO=true` e rodar de novo.
+4. Revogar `Gemini:ApiKey`, `OpenAI:ApiKey` e a credencial do Elastic **na origem** — o descarte
+   tira do disco, não invalida o que já vazou.
