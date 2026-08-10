@@ -1,5 +1,6 @@
 # Memory Index — lp-backend-dev (Dex)
 
+- [Runner low-code roda da Bin, não de Functions/](runner-lowcode-roda-da-bin-nao-de-functions.md) — Functions/ tem Spring 2.0.1 e mata o bootstrap; runtime home real é a Bin v4.4.1. Cold start ~22-58s vs timeout de 15s.
 - [NuGet private feed 401](nuget-private-feed-401.md) — 401 no feed privado só no lado WSL; pelo Windows (powershell.exe) o TFS autentica. Se `dotnet`/`powershell.exe` não forem achados na Bash tool, usar caminho absoluto do .exe.
 - [Remoção do subsistema de logging morto (2026-07-27)](dead-logging-subsystem-removal-2026-07-27.md) — lista de 11 arquivos do dispatch virou 14 por dependência transitiva (DataGenerationLogger/TextFileLoggerService).
 - [Roadmap de IA 2026-07-21 — escopo Dex](ai-roadmap-2026-07-21-dex-scope.md) — o que foi feito (1.1/1.4/2.1/3.1/3.2/3.6) e o que fica bloqueado de propósito (1.2/1.3, 3.4/3.5) e por quê.
