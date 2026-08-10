@@ -85,13 +85,22 @@ namespace LayoutParserLowCodeRunner
             Console.Out.Flush();
             Console.Error.Flush();
 
-            // Environment.Exit continua aqui, mas por um motivo MENOR do que antes: o bootstrap do
-            // host (que deixava threads de transporte e uma TH_FAI de primeiro plano vivas) não
-            // existe mais. O que sobra é do próprio SDK — o APIManager registra um FileSystemWatcher
-            // sobre o exportContext.data (LoadExportContextWatcher) e o APIExecutor pode agendar uma
-            // Task de licença temporária. Nada disso é thread de primeiro plano, então em tese o
-            // processo sairia sozinho; manter o Exit é barato e evita depender dessa suposição num
-            // processo que a API mata por timeout. Ver o relatório de medição desta mudança.
+            // ── Environment.Exit: já NÃO é necessário, e fica só como cinto de segurança ──
+            // Antes ele era obrigatório: o bootstrap do host subia ThreadManagers de transporte e
+            // uma thread "TH_FAI" de PRIMEIRO PLANO (new Thread(...) sem IsBackground), então o
+            // processo nunca terminava sozinho.
+            //
+            // MEDIDO em 2026-08-10, com uma build idêntica a esta menos esta linha: o processo
+            // retorna do Main e ENCERRA sozinho (exit=0, 75,7s, saída de 4246 chars intacta). O que
+            // o SDK deixa vivo — o FileSystemWatcher do APIManager sobre o exportContext.data
+            // (LoadExportContextWatcher) e a eventual Task de licença temporária do APIExecutor —
+            // não segura o processo.
+            //
+            // Consequência prática: hospedar SysmiddleRuntime + SysmiddleMapperExecutor IN-PROCESS
+            // (projeto de teste x86) deixou de ter o risco de travar o host de teste. Mantemos o
+            // Exit aqui mesmo assim porque é grátis e blinda o CLI contra uma thread de primeiro
+            // plano futura — a API mata o runner por timeout, e um processo pendurado consome um
+            // slot de LowCode:MaxConcurrentRunners até lá.
             Environment.Exit(exitCode);
             return exitCode; // inalcançável
         }

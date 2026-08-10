@@ -44,6 +44,14 @@
          exatamente o código que roda no .exe — não uma cópia que pode divergir. -->
     <Compile Include="..\..\tools\LowCodeRunner\RunnerArgs.cs"
              Link="Transformation\RunnerArgs.cs" />
+
+    <!-- Mesmo raciocínio: as regras de documento portadas do MappersHelper (declaração XML e
+         pós-processamento NF-e) são puras (System.Xml apenas), então o que a suíte exercita é
+         exatamente o que roda no .exe. É aqui que a divergência entre ExecuteMappingDocumentById e
+         ExecuteMappingDocument (docs/architecture/decisao-remover-dependencia-appconnector.md §3)
+         deixa de ser comentário e vira invariante travada. -->
+    <Compile Include="..\..\tools\LowCodeRunner\SysmiddleDocumentRules.cs"
+             Link="Transformation\SysmiddleDocumentRules.cs" />
   </ItemGroup>
 
   <ItemGroup>

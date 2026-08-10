@@ -178,11 +178,19 @@ namespace LayoutParserApi.Tests.Transformation
         }
 
         /// <summary>
-        /// A API manda <c>--package ""</c> quando LowCode:Package não está configurado (é o caso do
-        /// appsettings atual). Valor vazio é legítimo — rejeitá-lo quebraria a instalação real.
+        /// Separação de camadas do <c>--package</c> vazio, e é ela que este teste trava.
+        ///
+        /// <para>Para o PARSER, <c>--package ""</c> continua bem-formado: a API monta a linha com
+        /// <c>--package Quote(package ?? "")</c>, então rejeitar no parse transformaria uma config
+        /// faltando em "protocolo malformado" (exit 7) e apontaria para o lugar errado.</para>
+        ///
+        /// <para>Para a EXECUÇÃO, desde 2026-08-10, package vazio é erro: o runner perdeu o fallback
+        /// <c>ConnectorApplicationManager.GetServerPackage()</c> junto com o <c>appConnector</c>, e
+        /// agora <c>--package</c> é a única fonte do identificador do projeto. Quem reporta isso é
+        /// <see cref="RunnerArgs.ValidarPackage"/> → exit 9.</para>
         /// </summary>
         [Fact]
-        public void Valor_vazio_e_aceito_porque_a_api_manda_package_vazio()
+        public void Package_vazio_passa_no_parse_mas_e_barrado_na_execucao()
         {
             var r = RunnerArgsParser.Parse(new[]
             {
@@ -193,9 +201,15 @@ namespace LayoutParserApi.Tests.Transformation
                 "--mapperId",     "MAP_1"
             });
 
+            // Camada 1 (parse): valor vazio é bem-formado.
             Assert.True(r.Success);
             Assert.Equal("", r.Args.Package);
             Assert.Equal(@"C:\in.txt", r.Args.InputPath);
+
+            // Camada 2 (execução): mas não dá para rodar com ele.
+            var erro = r.Args.ValidarPackage();
+            Assert.NotNull(erro);
+            Assert.Contains("LowCode:Package", erro);
         }
 
         [Fact]
@@ -471,10 +485,134 @@ namespace LayoutParserApi.Tests.Transformation
                 RunnerExitCodes.EmptyResult,
                 RunnerExitCodes.SweepAllFailed,
                 RunnerExitCodes.InvalidNamedArgument,
-                RunnerExitCodes.MapperNameUnresolved
+                RunnerExitCodes.MapperNameUnresolved,
+                RunnerExitCodes.PackageNotConfigured,
+                RunnerExitCodes.PackageNotFound
             };
 
             Assert.Equal(codigos.Length, codigos.Distinct().Count());
+        }
+
+        // ───────────── package obrigatório (queda do appConnector, 2026-08-10) ─────────────
+
+        /// <summary>
+        /// Package presente passa reto — a validação não pode virar um portão que rejeita o caso bom.
+        /// </summary>
+        [Fact]
+        public void Package_preenchido_e_aceito_na_execucao()
+        {
+            var r = RunnerArgsParser.Parse(LinhaDeComandoDaApi());
+
+            Assert.True(r.Success);
+            Assert.Null(r.Args.ValidarPackage());
+        }
+
+        /// <summary>
+        /// Whitespace conta como AUSENTE, não como package válido. Um <c>--package "   "</c> chegaria
+        /// ao <c>GetApiExecutorByIdentifier</c> e voltaria null, degradando em exit 10
+        /// ("package errado") quando a causa real é exit 9 ("package não configurado") — apontando o
+        /// operador para o lugar errado.
+        /// </summary>
+        [Theory]
+        [InlineData("")]
+        [InlineData("   ")]
+        [InlineData("\t")]
+        public void Package_em_branco_e_barrado_com_mensagem_acionavel(string package)
+        {
+            var r = RunnerArgsParser.Parse(new[]
+            {
+                "--globalFolder", @"C:\gf",
+                "--package",      package,
+                "--inputFile",    @"C:\in.txt",
+                "--outputFile",   @"C:\out.xml",
+                "--mapperId",     "MAP_1"
+            });
+
+            Assert.True(r.Success);
+
+            var erro = r.Args.ValidarPackage();
+            Assert.NotNull(erro);
+            // A mensagem tem que nomear as DUAS formas de configurar — é o que o operador precisa.
+            Assert.Contains("LowCode:Package", erro);
+            Assert.Contains("LowCode__Package", erro);
+        }
+
+        /// <summary>
+        /// Modo posicional (fluxo offline de gabaritos) usa a MESMA regra: o package é o slot
+        /// <c>args[1]</c> e também não pode vir vazio.
+        /// </summary>
+        [Fact]
+        public void Package_vazio_no_posicional_tambem_e_barrado()
+        {
+            var r = RunnerArgsParser.Parse(new[] { @"C:\gf", "", "MAP_9", @"C:\in.txt", @"C:\out.xml" });
+
+            Assert.True(r.Success);
+            Assert.NotNull(r.Args.ValidarPackage());
+        }
+
+        // ─────────────────────────── flag --nfePostProcessing ───────────────────────────
+
+        /// <summary>
+        /// O default é DESLIGADO, e é ele que preserva a equivalência byte a byte com o gabarito
+        /// (ver <c>SysmiddleDocumentRulesTests</c>). Se este teste falhar, a saída do runner mudou.
+        /// </summary>
+        [Fact]
+        public void NfePostProcessing_vem_desligado_por_padrao()
+        {
+            var r = RunnerArgsParser.Parse(LinhaDeComandoDaApi());
+
+            Assert.True(r.Success);
+            Assert.False(r.Args.NfePostProcessing);
+        }
+
+        [Theory]
+        [InlineData("true", true)]
+        [InlineData("TRUE", true)]
+        [InlineData("1", true)]
+        [InlineData("false", false)]
+        [InlineData("False", false)]
+        [InlineData("0", false)]
+        public void NfePostProcessing_aceita_as_formas_documentadas(string valor, bool esperado)
+        {
+            var r = RunnerArgsParser.Parse(new[]
+            {
+                "--globalFolder",      @"C:\gf",
+                "--package",           "PAC_1",
+                "--inputFile",         @"C:\in.txt",
+                "--outputFile",        @"C:\out.xml",
+                "--mapperId",          "MAP_1",
+                "--nfePostProcessing", valor
+            });
+
+            Assert.True(r.Success);
+            Assert.Equal(esperado, r.Args.NfePostProcessing);
+        }
+
+        /// <summary>
+        /// Valor não reconhecido é ERRO, não "desliga em silêncio". Quem escreve
+        /// <c>--nfePostProcessing yes</c> está pedindo para LIGAR; aceitar e deixar desligado seria a
+        /// mesma classe de falha silenciosa que este parser existe para eliminar.
+        /// </summary>
+        [Theory]
+        [InlineData("yes")]
+        [InlineData("sim")]
+        [InlineData("on")]
+        [InlineData("2")]
+        public void NfePostProcessing_com_valor_invalido_estoura_em_vez_de_desligar(string valor)
+        {
+            var r = RunnerArgsParser.Parse(new[]
+            {
+                "--globalFolder",      @"C:\gf",
+                "--package",           "PAC_1",
+                "--inputFile",         @"C:\in.txt",
+                "--outputFile",        @"C:\out.xml",
+                "--mapperId",          "MAP_1",
+                "--nfePostProcessing", valor
+            });
+
+            Assert.False(r.Success);
+            Assert.Equal(RunnerExitCodes.InvalidNamedArgument, r.ExitCode);
+            Assert.Contains(r.Messages, m => m.Contains("--nfePostProcessing"));
         }
     }
 }

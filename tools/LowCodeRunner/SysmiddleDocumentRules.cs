@@ -86,12 +86,23 @@ namespace LayoutParserLowCodeRunner
         /// Pós-processamento NF-e (escape de <c>&lt;</c>/<c>&gt;</c> em infCpl, infAdFisco e infAdProd).
         ///
         /// <para><b>Desligado por padrão de propósito.</b> A <c>ExecuteMappingDocumentById</c> — o
-        /// caminho que gerou o gabarito — <b>não</b> aplica nenhum dos três. Ligar sem evidência
-        /// quebraria a equivalência byte a byte: mesmo quando nenhum nó casa, os três passam o
-        /// documento por <c>XmlDocument.LoadXml</c> + <c>XmlWriter</c>, o que reserializa o XML
-        /// (declaração, aspas, self-closing) e altera bytes. O código fica aqui porque a
-        /// <c>ExecuteMappingDocument</c> o aplica e um dia pode ser preciso — mas a decisão de ligar
-        /// exige gabarito novo que a justifique.</para>
+        /// caminho vivo — <b>não</b> aplica nenhum dos três. Mesmo quando nenhum nó casa, os três
+        /// passam o documento por <c>XmlDocument.LoadXml</c> + <c>XmlWriter</c>, o que RESERIALIZA o
+        /// XML e altera bytes.</para>
+        ///
+        /// <para>⚠️ <b>Medido em 2026-08-10, e o resultado é contraintuitivo:</b> no par real de
+        /// <c>.claude/tmp/exemplos/</c>, ligar a flag faz a saída bater com o gabarito
+        /// <b>exatamente</b> — 4245 bytes, <c>cmp</c> limpo, sem precisar tolerar nada. Com a flag
+        /// desligada saem 4246 bytes e a única diferença é o espaço duplo em <c>&lt;?xml  version=</c>,
+        /// que a reserialização normaliza. Os escapes NF-e em si não mudam nada neste documento
+        /// (nenhum infCpl/infAdFisco/infAdProd casa): o que muda é só o round-trip.</para>
+        ///
+        /// <para>Isso <b>não</b> autoriza inverter o default. O gabarito saiu pelo pipeline de saída
+        /// do host (o nome do arquivo, <c>...-11072026094950273-env.xml</c>, é a nomenclatura do
+        /// connector), então a normalização da declaração pode ter vindo de lá e não do mapeador — e
+        /// num documento que TENHA infCpl/infAdFisco/infAdProd os três escapes mudam conteúdo de
+        /// verdade, sem evidência que sustente. Inverter o default é decisão de arquitetura, com
+        /// gabarito novo que a justifique.</para>
         /// </summary>
         public static string AplicarPosProcessamentoNFe(string document, bool ativo)
         {
