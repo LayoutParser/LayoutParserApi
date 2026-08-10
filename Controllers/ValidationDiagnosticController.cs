@@ -7,11 +7,11 @@ namespace LayoutParserApi.Controllers
     /// <summary>
     /// Diagnóstico de erros de validação (XSD/parsing) via LLM local (Ollama) — Gap 2 do contrato
     /// docs/architecture/multi-candidato-e-diagnostico-ia-contrato.md. Deliberadamente um controller
-    /// dedicado (não o XmlAnalysisController): este último depende de GeminiAIService, que hoje não
-    /// está registrado no DI (Gemini decomissionado — ver
-    /// .claude/agent-memory/lp-backend-dev/generation-services-unregistered-di.md), quebrando
-    /// QUALQUER request pra aquele controller. Endpoint exposto na mesma rota base
-    /// "api/xml-analysis" pedida pelo front, só que num controller C# separado.
+    /// dedicado (não o XmlAnalysisController): à época, aquele controller dependia do
+    /// GeminiAIService — não registrado no DI — e QUALQUER request a ele quebrava. Essa dependência
+    /// já foi removida de lá, e o próprio GeminiAIService saiu do repositório em 2026-08-10 com o
+    /// decommission de Gemini/OpenAI; a separação permanece porque a rota já está em uso pelo front.
+    /// Endpoint exposto na mesma rota base "api/xml-analysis", só que num controller C# separado.
     /// </summary>
     [ApiController]
     [Route("api/xml-analysis")]

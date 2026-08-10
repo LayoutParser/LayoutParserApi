@@ -3,6 +3,11 @@
 > `@lp-architect` (Aria), 2026-08-10. Escrito após o fechamento dos gaps de configuração do deploy
 > (commits `f48b5a9` e `a632d6c`). Tudo abaixo foi verificado no código desta árvore, não herdado de
 > documento anterior — onde um doc existente diverge do código, o código venceu e está anotado.
+>
+> **Atualização (mesma data), após autorização do dono para decidir e executar os gates.** O
+> diagnóstico do §2.1 foi rodado na máquina de dev e mudou o quadro: a instância do Sysmiddle
+> **existe**, só não com o nome que o step procurava. §2.1, §3.2 e o passo 1 do §2.2 foram
+> executados; §3.1 foi instrumentado mas **não** invertido. Ver §6 para o estado por item.
 
 ---
 
@@ -200,3 +205,147 @@ A ordem importa mais que a lista, porque alguns itens mudam o valor dos outros:
 do Gemini (console interativo do Google), destravar a rotação do SQL (DBA), autorizar escrita na
 `Bin` da instância FiatMQ, e criar os secrets `AI_METRICS_INGEST_KEY` / `AI_METRICS_INGEST_KEY_DEV`
 no GitHub.
+
+---
+
+## 6. Estado da execução (2026-08-10, após autorização do dono)
+
+### 6.1 O diagnóstico do §2.1 — o que a máquina respondeu
+
+Rodado na máquina de dev. **Corrige uma premissa do §1 deste plano:**
+
+| Pergunta | Resposta |
+|---|---|
+| Instância do Sysmiddle neste host? | **SIM** — `C:\appconnector\App\Bin`, 580 arquivos, **log4net 2.0.17.0** |
+| Runner em `<deploy>\api\`? | **AUSENTE** — confirma o bloqueador |
+| `<deploy>\api\Functions`? | log4net **1.2.13.0** — a versão que estoura em `InstanceFactory.Initialize()` |
+| Redis em `localhost:6379`? | **Aceita conexão** |
+| Serviço `LayoutParserApi`? | **Running**, com `LowCode__Package`, `LowCode__RunnerTimeoutSeconds` e `ML__LowCodeTransformationsPath` já no `Environment` |
+
+> ⚠️ **A varredura por `AppConnector.DIR` não achou nada** — e havia instância o tempo todo. O step
+> de diagnóstico que eu mesma commitei em `f48b5a9` procurava o *nome da pasta* usado no ambiente de
+> referência; aqui a instância se chama `C:\appconnector\App`. Era um **falso negativo** que teria
+> mandado a decisão para o caminho errado ("não há instância, escale ao dono"). Corrigido em
+> `27a5ca0`: a detecção passou a ser por **conteúdo** — `SysMiddle.Base.dll` com log4net 2.x ao lado
+> — e o relatório imprime a versão de cada candidata, que é o dado que decide.
+
+O `AiMetrics__IngestApiKey` **não** está no `Environment`: o secret `AI_METRICS_INGEST_KEY_DEV`
+segue por criar, e a ingestão de métricas continua recusada.
+
+### 6.2 O que foi executado
+
+| Gate | Decisão | Commit |
+|---|---|---|
+| **§2.1** Publicar o runner | **Opção A**, confirmada pelo diagnóstico. Step publica o `.exe` na Bin apta (detecção por conteúdo) e injeta `LowCode__RunnerPath`. Não-fatal: sem Bin apta, o deploy segue. | `27a5ca0` |
+| **§3.2** Código morto de IA | Remoção **cirúrgica**, não expurgo do cluster. Saíram `GeminiAIService`, `SemanticAIGenerator` e os 4 models de resposta; ficaram a geração por regras e o `DataGenerationController`, porque dado sintético é workstream ativo. −1390 linhas. | `aa54dc3` |
+| **§2.2** Autenticação (passo 1) | `ApiKeyGateFilter` **global**, nascendo **desligado**. CI ganhou o canal para ligá-lo sem quebrar o smoke test. 13 testes, validados por mutação. | `b2179c2` |
+| **§3.1** Config drift | **Instrumentado, não invertido** — ver abaixo. | `491debd` |
+
+### 6.3 Por que o §3.1 não foi invertido
+
+O plano recomenda inverter o default (repo como fonte). **Não executei**, e a razão é factual, não
+cautela genérica: ninguém sabe o que diverge no `appsettings.json` do `.42`, porque o host nega
+SSH/WinRM/SMB e o arquivo nunca foi comparado com o do repo. Inverter às cegas pode apagar ajuste
+local que sustenta a produção, e não há como testar isso daqui.
+
+O step novo roda em **dry-run** e produz exatamente o dado que falta, ao custo de um deploy: chaves
+só no repo (que nunca chegaram), divergentes, e só no destino. Valor de chave sensível nunca é
+ecoado. Lido o relatório, a migração liga por `MIGRATE_CONFIG_TO_REPO=true`.
+
+**Trocar um silêncio por outro não seria executar o recomendado — seria fingir que executou.**
+
+### 6.4 O que continua exigindo ação humana
+
+| Item | Por quê | Quem |
+|---|---|---|
+| Validar o runner de ponta a ponta na Bin | Precisa copiar o `.exe` para `C:\appconnector\App\Bin` e rodar o gate de equivalência (4246 bytes). Bloqueado por permissão nesta sessão | Dono / `@lp-devops` |
+| Rotação da senha SQL | Bloqueio externo | DBA |
+| Revogar a chave do Gemini | Console interativo do Google | Dono |
+| Secrets `AI_METRICS_INGEST_KEY(_DEV)` | Ingestão de métricas segue recusada | Operador |
+| Secret `API_KEY_DEV` + header no front | É o que liga a autenticação de fato | Operador + front |
+| TLS | `UseHttpsRedirection` comentado; sem ele a chave trafega em claro | Infra |
+| Combinar escrita na Bin do FiatMQ em produção | O step é aditivo e reversível, mas mexe em produto de terceiros | Dono + operação FiatMQ |
+| `MIGRATE_CONFIG_TO_REPO=true` | Só depois de ler o relatório de dry-run | Dono |
+
+---
+
+## 7. Config drift medido no `.42` (2026-08-10)
+
+Dados coletados pelo dono do projeto direto no servidor. Isto substitui a estimativa do §3.1: não
+era preciso gastar um deploy no dry-run — o relatório real está abaixo.
+
+**Repo: 71 chaves. Produção: 28.**
+
+### 7.1 O achado que explica tudo
+
+**A seção `LowCode` inteira (14 chaves) NUNCA existiu no `appsettings.json` de produção.** Somando
+com `XsdValidation` (14), `TransformationPipeline` (9), `ML` (2), `LayoutValidation` (2), `Cors`,
+`Examples`, `Learning`, `TransformationRules`, `AiMetrics`: **54 das 71 chaves do repositório nunca
+chegaram ao servidor.** O arquivo de produção é de uma versão do projeto anterior a todas essas
+features.
+
+Consequência direta, verificável em `LowCodeTransformationService.TransformAsync`: sem
+`LowCode:RunnerPath`, o método lança `InvalidOperationException("LowCode:RunnerPath não
+configurado")` antes de qualquer coisa.
+
+> **A transformação low-code nunca funcionou em produção. Nenhuma vez.** Não é uma regressão
+> recente nem efeito do `LowCode:Package` ter virado obrigatório — esse era o próximo obstáculo,
+> não o primeiro. O `-Exclude appsettings.json` garantiu que nenhuma das chaves necessárias jamais
+> chegasse lá.
+
+### 7.2 O `Environment` do serviço está VAZIO
+
+O serviço `LayoutParserApi` está `Running` no `.42`, e a consulta ao `Environment` (REG_MULTI_SZ)
+não retornou **nenhuma** chave. Duas leituras:
+
+1. Nada do que o `deploy.yml` passou a gerenciar foi aplicado ainda — coerente, os commits desta
+   série não foram empurrados.
+2. **`Database:Password` em produção vem do `appsettings.json`, em texto plano, no disco do
+   servidor.** O REG_MULTI_SZ não é cofre (§2.3), mas é melhor que isto.
+
+### 7.3 Segredos de subsistema morto, vivos no disco de produção
+
+Das 11 chaves órfãs no destino, **três são segredos de integrações cujo código já saiu do repo**:
+
+| Chave | Código removido em | Ação |
+|---|---|---|
+| `Gemini:ApiKey` | `aa54dc3` (hoje) | **Revogar** no Google — decomissionado, não reemitir |
+| `OpenAI:ApiKey` | `9b0965f` | **Revogar** na OpenAI |
+| `ElasticSearch:Password` | 2026-07-27 | Rotacionar/desprovisionar com quem opera o Elastic |
+
+Isso responde de forma concreta à dúvida "onde a chave do Gemini é usada": **em lugar nenhum do
+código — mas ela está em texto plano no disco de produção, além do histórico do git.** Ler o
+`appsettings.json` do `.42` basta para obtê-la.
+
+As demais órfãs (`Logging:Type`, `Logging:Txt:*`) são do subsistema de logging removido em
+2026-07-27 — inertes, mas ruído.
+
+### 7.4 Divergências legítimas — a lista real, fechada
+
+São **duas**. `Redis:ConnectionString` foi conferida e **não diverge**: vale `localhost:6379` nos
+dois lados. Ela aparecia como divergente por artefato da própria coleta — o filtro de mascaramento
+casa `connectionstring` e substitui o valor por `***` antes da comparação. Vale como lembrete de
+que máscara aplicada antes do diff produz falso positivo.
+
+| Chave | Situação | Destino na migração |
+|---|---|---|
+| `Database:Password` | Segredo legítimo, hoje em texto plano no disco | **Env var `Database__Password`** — nunca `appsettings.Production.json` |
+| `RAG:ExamplesPath` | Ajuste local legítimo (`C:\inetpub\...\Examples` vs `Exemplos`) | `appsettings.Production.json` |
+
+**A migração do §3.1 está completamente especificada**: uma chave para `appsettings.Production.json`,
+uma para env var, cinco seções mortas descartadas. Deixou de ser salto no escuro.
+
+> **Guard-rail (`2f059cc`).** Copiar o `appsettings.json` do repo — que traz `Password: ""` — sem a
+> senha estar no `Environment` **derruba a conexão com o SQL em produção**. E preservá-la no
+> `Production.json` só trocaria o arquivo onde o segredo mora. Por isso a migração **aborta** se
+> houver segredo divergente sem a env var equivalente provisionada, imprimindo o que falta. Uma vez
+> provisionada, a chave sai da config em arquivo de vez.
+
+### 7.5 Ordem de execução da migração
+
+1. Provisionar `Database__Password` no `Environment` do serviço no `.42` (valor atual está no
+   `appsettings.json` do próprio servidor — não copiar para log nenhum).
+2. Rodar o deploy com `MIGRATE_CONFIG_TO_REPO` ainda ausente → confere o relatório de dry-run.
+3. Ligar `MIGRATE_CONFIG_TO_REPO=true` e rodar de novo.
+4. Revogar `Gemini:ApiKey`, `OpenAI:ApiKey` e a credencial do Elastic **na origem** — o descarte
+   tira do disco, não invalida o que já vazou.
