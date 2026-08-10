@@ -383,6 +383,7 @@ jobs:
       env:
         DB_PASSWORD_DEV: ${{ secrets.DB_PASSWORD_DEV }}
         AI_METRICS_INGEST_KEY_DEV: ${{ secrets.AI_METRICS_INGEST_KEY_DEV }}
+        API_KEY_DEV: ${{ secrets.API_KEY_DEV }}
       run: |
         $serviceName = "LayoutParserApi"
         $exePath = Join-Path $env:DEPLOY_PATH_RESOLVED "api\LayoutParserApi.exe"
@@ -460,6 +461,17 @@ jobs:
         New-Item -ItemType Directory -Path $lowCodeStore -Force | Out-Null
         $envList += "ML__LowCodeTransformationsPath=$lowCodeStore"
 
+        # Security__ApiKey — porta de entrada de TODA a API (ApiKeyGateFilter). Opcional DE
+        # PROPOSITO: ausente, o gate fica desligado e a API segue aberta, que e o comportamento
+        # atual. Criar o secret API_KEY_DEV e o que liga a protecao — e o mesmo valor precisa ir
+        # para o front, senao ele passa a tomar 401. O smoke test deste workflow ja manda o header.
+        if (-not [string]::IsNullOrWhiteSpace($env:API_KEY_DEV)) {
+          $envList += "Security__ApiKey=$($env:API_KEY_DEV)"
+        } else {
+          Write-Warning ("Secret API_KEY_DEV ausente — a API sobe SEM AUTENTICACAO (todos os endpoints anonimos). " +
+            "Para fechar, crie o secret em: GitHub -> Settings -> Secrets and variables -> Actions.")
+        }
+
         # AiMetrics__IngestApiKey — sem ela o AiMetricsIngestKeyFilter recusa toda escrita de
         # metricas de IA (pendencia antiga do Gap 3). Opcional: ausente, o deploy segue.
         if (-not [string]::IsNullOrWhiteSpace($env:AI_METRICS_INGEST_KEY_DEV)) {
@@ -474,6 +486,8 @@ jobs:
         Write-Host "  Chaves: $(($envList | ForEach-Object { ($_ -split '=', 2)[0] }) -join ', ')"
 
     - name: Iniciar servico e smoke test
+      env:
+        API_KEY_DEV: ${{ secrets.API_KEY_DEV }}
       run: |
         $serviceName = "LayoutParserApi"
 
@@ -510,10 +524,21 @@ jobs:
         # Smoke test: 404 e aceito como SUCESSO de pipeline (resposta controlada do controller
         # quando o catalogo esta vazio/sem SQL) — o que valida e a API responder HTTP.
         $smokeUrl = "$($env:API_URL_RESOLVED)/api/document/layouts"
+
+        # ⚠️ Este smoke test bate numa rota de NEGOCIO, nao num health check anonimo. Quando a
+        # porta de entrada por chave (ApiKeyGateFilter) for ligada, sem o header ela responderia
+        # 401 e o deploy falharia — o mecanismo de seguranca derrubando o proprio pipeline que o
+        # instalou. Mandar o header quando o secret existe e o que torna o gate LIGAVEL sem
+        # quebrar o CI. Sem o secret, nada muda (o gate esta desligado por padrao).
+        $smokeHeaders = @{}
+        if (-not [string]::IsNullOrWhiteSpace($env:API_KEY_DEV)) {
+          $smokeHeaders['X-Api-Key'] = $env:API_KEY_DEV
+        }
+
         $status = $null
         for ($i = 1; $i -le 12; $i++) {
           try {
-            $resp = Invoke-WebRequest -Uri $smokeUrl -UseBasicParsing -TimeoutSec 5
+            $resp = Invoke-WebRequest -Uri $smokeUrl -UseBasicParsing -TimeoutSec 5 -Headers $smokeHeaders
             $status = [int]$resp.StatusCode
             break
           } catch {
