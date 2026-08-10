@@ -349,3 +349,62 @@ uma para env var, cinco seções mortas descartadas. Deixou de ser salto no escu
 3. Ligar `MIGRATE_CONFIG_TO_REPO=true` e rodar de novo.
 4. Revogar `Gemini:ApiKey`, `OpenAI:ApiKey` e a credencial do Elastic **na origem** — o descarte
    tira do disco, não invalida o que já vazou.
+
+---
+
+## 8. Desempenho e hardening (2026-08-10, execução final)
+
+### 8.1 Compressão de resposta — o ganho medido
+
+Não estava no plano original porque eu não havia medido nada. Medido agora, contra a API rodando:
+
+| | bytes | tempo |
+|---|---:|---:|
+| sem compressão | 238.591 | 3602 ms |
+| brotli `Fastest` | 77.865 | 3409 ms |
+| gzip `Fastest` | 69.119 | 2314 ms |
+| **brotli `Optimal`** | **15.996** | **2200 ms** |
+
+**93,3% de redução, e mais rápido que não comprimir** — mandar 16 KB no lugar de 238 KB paga a CPU
+com folga, o que importa no i7-4790 sem GPU da produção. O nível não é preferência: brotli em
+`Fastest` usa quality 1 e **perde para gzip nos dois eixos**; só em `Optimal` mostra o que sabe.
+
+Caso ruim medido e aceito: resposta de 32 bytes vira 37. O middleware não tem limiar mínimo e não
+vale construir um — bytes isolados contra ~222 KB economizados onde importa.
+
+### 8.2 Hardening aplicado (`f087e6f`)
+
+- **Cabeçalhos**: `nosniff` (a API devolve markup de terceiro — impede o navegador de tratar XML
+  como HTML executável), `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`. **HSTS ausente de
+  propósito**: só vale sobre TLS, e a app é HTTP puro — enviá-lo agora não protegeria nada e poderia
+  travar o host no navegador de quem testa.
+- **CORS**: `AllowAnyMethod` → `GET/POST/OPTIONS` (levantamento: 36 `[HttpPost]`, 28 `[HttpGet]`,
+  zero PUT/DELETE/PATCH). `WithExposedHeaders("*")` → `X-Correlation-ID`. `AllowAnyHeader` **fica** —
+  apertar header de request é o que mais quebra front e o ganho é pequeno.
+- **Upload**: teto explícito de 100 MB. Sem ele, o tamanho aceito dependia de qual camada estourava
+  primeiro — isso não é limite, é acidente.
+
+### 8.3 Encoding dos workflows — o incidente e a barreira
+
+O deploy de produção quebrou com `The string is missing the terminator`. **Causa: um travessão em
+comentário.** O Actions escreve cada bloco `run:` como `.ps1` sem BOM; o Windows PowerShell 5.1 lê
+como ANSI, o caractere multibyte vira lixo, o parser perde o pareamento de aspas e acusa erro numa
+linha muito depois da causa.
+
+Corrigido (`0736c46`, ASCII puro nos dois workflows — 148 inserções / 148 deleções, só troca de
+caractere) e **barrado na origem** (`c96048d`): o `ci-dev` reprova qualquer byte > 127 em
+`.github/workflows/`, com linha, codepoint e texto. O CI de dev protegendo o deploy de produção é o
+arranjo certo — o erro só se manifesta no runner Windows, e até lá o YAML parece perfeitamente
+válido.
+
+### 8.4 O que deliberadamente NÃO foi feito
+
+- **§3.3 (gargalo do semáforo)**: `MaxConcurrentRunners=2` vale para o processo inteiro, então dois
+  uploads simultâneos saturam a API. Aumentar o número sem medir é chute, e o host FiatMQ é sensível
+  a execução concorrente e disputa de licença. Sem o runner validado ponta a ponta, qualquer ajuste
+  aqui seria especulação — o caminho continua sendo a opção C do §2.1 (runner como serviço, com fila
+  observável).
+- **§3.4 (pathways duplicados)** e **§3.5 (IDOC)**: mudanças de domínio, não de infraestrutura.
+  IDOC em particular merece prioridade alta se estiver em uso real — "parseia com sucesso e erra
+  100% dos campos" é a pior classe de defeito em dado fiscal.
+- **TLS**: exige certificado, é decisão de infra. Sem ele, a chave do §2.2 trafega em claro.
