@@ -30,6 +30,50 @@ jobs:
       with:
         path: LayoutParserApi
 
+    # --- Gate de encoding dos workflows -------------------------------------------
+    #
+    # Roda PRIMEIRO e falha rapido, porque protege o deploy de PRODUCAO contra um defeito
+    # que ja aconteceu de verdade em 2026-08-10: o deploy quebrou com
+    #   "The string is missing the terminator" / "Missing closing '}'"
+    # sem que houvesse erro de logica nenhum.
+    #
+    # CAUSA: o Actions escreve cada bloco `run:` como um .ps1 SEM BOM, e o Windows
+    # PowerShell 5.1 le arquivo sem BOM como ANSI. Um travessao num COMENTARIO (E2 80 94
+    # em UTF-8) vira tres bytes que a code page traduz em outros caracteres, um deles aspa
+    # - dali em diante o parser perde o pareamento e acusa erro numa linha muito depois da
+    # causa. Um acento em comentario derruba o deploy inteiro.
+    #
+    # O gate e simples de proposito: qualquer byte > 127 em workflow e proibido. Nao ha
+    # excecao util - PT-BR sem acento e perfeitamente legivel, e o custo de errar aqui e
+    # producao parada.
+    - name: Validar encoding dos workflows (ASCII puro)
+      run: |
+        $ErrorActionPreference = "Stop"
+        $raiz = Join-Path $PWD.Path "LayoutParserApi\.github\workflows"
+        $problemas = 0
+
+        foreach ($wf in (Get-ChildItem $raiz -Filter *.yml -ErrorAction SilentlyContinue)) {
+          $linhas = Get-Content $wf.FullName
+          for ($i = 0; $i -lt $linhas.Count; $i++) {
+            $ruins = $linhas[$i].ToCharArray() | Where-Object { [int]$_ -gt 127 }
+            if ($ruins) {
+              $codigos = ($ruins | ForEach-Object { "U+{0:X4}" -f [int]$_ }) -join ' '
+              Write-Host "  $($wf.Name):$($i + 1)  $codigos"
+              Write-Host "      $($linhas[$i].Trim())"
+              $problemas++
+            }
+          }
+        }
+
+        if ($problemas -gt 0) {
+          Write-Error ("$problemas linha(s) com caractere nao-ASCII em workflow. " +
+            "O PowerShell do runner le o bloco run: como ANSI e isso QUEBRA o deploy de producao. " +
+            "Troque por equivalente ASCII (- em vez de travessao, [ATENCAO] em vez de emoji, sem acentos).")
+          exit 1
+        }
+
+        Write-Host "Workflows em ASCII puro - seguro para o PowerShell do runner."
+
     # O LayoutParserApi.csproj referencia a Lib via <Reference> com HintPath relativo
     # sensivel a configuracao (..\LayoutParserLib\bin\$(Configuration)\, com fallback
     # condicional para bin\Debug quando a DLL da configuracao nao existe) - o checkout
