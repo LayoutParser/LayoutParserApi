@@ -30,7 +30,19 @@ namespace LayoutParserApi.Models.Transformation
         /// <summary>XML de saída da transformação, quando bem-sucedida.</summary>
         public string? OutputXml { get; set; }
 
-        /// <summary>Mensagem de erro, quando a transformação deste candidato específico falhou.</summary>
+        /// <summary>
+        /// Tamanho do XML de saída em caracteres. Existe para o front saber o que vai buscar mesmo
+        /// quando <see cref="OutputXml"/> é omitido do payload por exceder
+        /// <c>LowCode:InlineXmlMaxChars</c> — sem isso, "campo ausente" seria indistinguível de
+        /// "candidato sem saída".
+        /// </summary>
+        public int OutputLength { get; set; }
+
+        /// <summary>
+        /// Mensagem de erro, quando a transformação deste candidato específico falhou.
+        /// <b>Já saneada</b> (<see cref="LayoutParserApi.Services.Transformation.LowCode.LowCodeErrorSanitizer"/>):
+        /// este campo sai no payload 200 do parse, então não pode carregar caminho de disco do servidor.
+        /// </summary>
         public string? ErrorMessage { get; set; }
     }
 }
