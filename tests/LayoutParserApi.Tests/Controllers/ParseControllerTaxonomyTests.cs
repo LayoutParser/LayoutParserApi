@@ -215,11 +215,15 @@ namespace LayoutParserApi.Tests.Controllers
 
             var opcoesLowCode = Options.Create(new LowCodeRunnerOptions());
 
+            // Sem Redis (null): é o cenário provável em produção e o que os testes do store cobrem.
+            var store = new LowCodeTransformationStore(
+                NullLogger<LowCodeTransformationStore>.Instance, config, opcoesLowCode, redis: null);
+
             var lowCodeAuto = new LowCodeAutoTransformationService(
                 NullLogger<LowCodeAutoTransformationService>.Instance,
                 new ServiceCollection().BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
                 new LowCodeTransformationService(NullLogger<LowCodeTransformationService>.Instance, opcoesLowCode, config),
-                config,
+                store,
                 opcoesLowCode);
 
             var controller = new ParseController(
@@ -230,7 +234,8 @@ namespace LayoutParserApi.Tests.Controllers
                 new LayoutLearningService(NullLogger<LayoutLearningService>.Instance),
                 config,
                 lowCodeAuto,
-                opcoesLowCode)
+                opcoesLowCode,
+                store)
             {
                 ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }
             };

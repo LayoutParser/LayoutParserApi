@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using System.Text;
 using LayoutParserApi.Models.Entities;
 using LayoutParserApi.Models.Transformation;
@@ -18,6 +17,7 @@ namespace LayoutParserApi.Services.Transformation.LowCode
         // Usamos IServiceScopeFactory e resolvemos o MapperDatabaseService dentro do escopo do background.
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly LowCodeTransformationService _lowCode;
+        private readonly LowCodeTransformationStore _store;
         private readonly LowCodeRunnerOptions _opt;
         private readonly string _storePath;
 
@@ -25,16 +25,18 @@ namespace LayoutParserApi.Services.Transformation.LowCode
             ILogger<LowCodeAutoTransformationService> logger,
             IServiceScopeFactory scopeFactory,
             LowCodeTransformationService lowCode,
-            IConfiguration configuration,
+            LowCodeTransformationStore store,
             IOptions<LowCodeRunnerOptions> options)
         {
             _logger = logger;
             _scopeFactory = scopeFactory;
             _lowCode = lowCode;
+            _store = store;
             _opt = options.Value;
-            _storePath = configuration["ML:LowCodeTransformationsPath"]
-                ?? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "MLData", "LowCodeTransformations");
-            Directory.CreateDirectory(_storePath);
+            // ✅ O store passou a ser o dono do caminho (ele também escreve o índice de leitura ao
+            // lado dos artefatos) — aqui só reaproveitamos a mesma raiz, sem segunda resolução de
+            // config que pudesse divergir.
+            _storePath = store.StorePath;
         }
 
         public Task RunInBackgroundAsync(
@@ -50,7 +52,7 @@ namespace LayoutParserApi.Services.Transformation.LowCode
             {
                 try
                 {
-                    await TransformAndPersistAsync(layoutGuid, layoutName, txtContent, detectedType, originalFileName, positionalMetadata);
+                    await TransformAndPersistAsync(layoutGuid, layoutName, txtContent, detectedType, originalFileName, positionalMetadata, CancellationToken.None);
                 }
                 catch (Exception ex)
                 {
@@ -62,11 +64,19 @@ namespace LayoutParserApi.Services.Transformation.LowCode
         /// <summary>
         /// Mesma operação de <see cref="RunInBackgroundAsync"/>, mas retornando o resultado (ao invés de
         /// fire-and-forget) para permitir entrega SÍNCRONA com teto de tempo por quem chama (ex.:
-        /// <c>ParseController</c>, que aguarda até <c>LowCode:SyncDeliveryTimeoutSeconds</c> e cai para
-        /// processamento em background se estourar — a persistência em disco acontece de qualquer forma,
-        /// dentro desta mesma chamada, então o trabalho não se perde mesmo se o chamador parar de esperar.
-        /// Falhas estruturais (ex.: banco fora do ar ao buscar candidatos) propagam como exceção — cabe ao
-        /// chamador decidir como degradar (nunca deve virar 500 do endpoint principal de parse).
+        /// <c>ParseController</c>, que aguarda até <c>LowCode:SyncDeliveryTimeoutSeconds</c>).
+        ///
+        /// <para><b>Semântica de cancelamento (mudou de propósito — spec §1.1).</b> Antes, estourar o
+        /// teto síncrono não interrompia nada: "o trabalho não se perde mesmo se o chamador parar de
+        /// esperar". O problema é que ele também não chegava a lugar nenhum — o store era write-only,
+        /// nenhum cliente HTTP conseguia lê-lo — enquanto continuava segurando um dos
+        /// <c>MaxConcurrentRunners</c> e atrasando o próximo upload. Agora o
+        /// <paramref name="cancellationToken"/> do chamador interrompe a execução e devolve o slot; em
+        /// troca, o que já ficou pronto é gravado no índice e passa a ser consultável por ticket
+        /// (<c>GET /api/parse/transformations/{ticket}</c>), marcado como parcial.</para>
+        ///
+        /// <para>Falhas estruturais (ex.: banco fora do ar ao buscar candidatos) propagam como exceção — cabe ao
+        /// chamador decidir como degradar (nunca deve virar 500 do endpoint principal de parse).</para>
         /// </summary>
         public Task<LowCodeAutoTransformResult> RunAsync(
             string layoutGuid,
@@ -74,8 +84,9 @@ namespace LayoutParserApi.Services.Transformation.LowCode
             string txtContent,
             string detectedType,
             string originalFileName,
-            LowCodePositionalMetadata? positionalMetadata = null)
-            => TransformAndPersistAsync(layoutGuid, layoutName, txtContent, detectedType, originalFileName, positionalMetadata);
+            LowCodePositionalMetadata? positionalMetadata = null,
+            CancellationToken cancellationToken = default)
+            => TransformAndPersistAsync(layoutGuid, layoutName, txtContent, detectedType, originalFileName, positionalMetadata, cancellationToken);
 
         private async Task<LowCodeAutoTransformResult> TransformAndPersistAsync(
             string layoutGuid,
@@ -83,10 +94,26 @@ namespace LayoutParserApi.Services.Transformation.LowCode
             string txtContent,
             string detectedType,
             string originalFileName,
-            LowCodePositionalMetadata? positionalMetadata)
+            LowCodePositionalMetadata? positionalMetadata,
+            CancellationToken cancellationToken)
         {
             if (string.IsNullOrWhiteSpace(layoutGuid) || string.IsNullOrWhiteSpace(txtContent))
                 return new LowCodeAutoTransformResult { Applicable = false };
+
+            var sha = LowCodeTransformationStore.ComputeSha256(txtContent);
+
+            // ✅ Cache-first (spec §1.2): ANTES de consultar mappers e ANTES de tocar no runner.
+            // O mesmo documento chegava a rodar o runner duas vezes — uma no parse e outra no clique
+            // de "Gerar Transformação XML" (execute-candidates) — multiplicando por 2 o custo de N
+            // candidatos. Com hit, o clique é instantâneo: sem runner, sem SQL.
+            var emCache = await _store.TryGetCachedResultAsync(sha, layoutGuid);
+            if (emCache != null)
+            {
+                _logger.LogInformation(
+                    "AutoTransform low-code servido do cache para layout={LayoutName} ({LayoutGuid}) — {Count} candidato(s), runner nao invocado",
+                    layoutName, layoutGuid, emCache.Candidates.Count);
+                return emCache;
+            }
 
             // Selecionar candidatos (filtrado por ProjectId e AllowedPackageGuids)
             // ✅ Escopo próprio para o serviço Scoped dentro do fire-and-forget
@@ -106,6 +133,11 @@ namespace LayoutParserApi.Services.Transformation.LowCode
                 return new LowCodeAutoTransformResult { Applicable = false };
             }
 
+            // ✅ Só a partir daqui existe trabalho de verdade — e só a partir daqui a entrada de
+            // índice faz sentido. Sem mapper, o ticket responde 404 e o parse já diz
+            // "not_applicable": 404 e "não aplicável" contam a mesma história, sem estado órfão.
+            await _store.WriteProcessingAsync(sha, layoutGuid);
+
             // N==1: comportamento EXATAMENTE igual ao de sempre (sem overhead, sem mudança de shape
             // dos artefatos persistidos). N>1 depois de deduplicar por MapperGuid = candidatos
             // genuinamente distintos (não apenas desempate de recência do mesmo mapper).
@@ -115,7 +147,7 @@ namespace LayoutParserApi.Services.Transformation.LowCode
                 try
                 {
                     var single = await TransformSingleAndPersistAsync(
-                        mapper, layoutGuid, layoutName, txtContent, detectedType, originalFileName, positionalMetadata);
+                        mapper, layoutGuid, layoutName, txtContent, detectedType, originalFileName, positionalMetadata, sha, cancellationToken);
                     return new LowCodeAutoTransformResult
                     {
                         Applicable = true,
@@ -128,28 +160,33 @@ namespace LayoutParserApi.Services.Transformation.LowCode
                     // ✅ Mesmo tratamento de falha isolada por candidato do caminho multi (não propaga
                     // pro chamador síncrono como exceção não tratada) — mas SEM alterar a semântica de
                     // persistência em disco de sempre: se a transformação falhar aqui (ex.: timeout do
-                    // runner), nada é persistido, exatamente como antes desta mudança (comportamento
-                    // inalterado do fire-and-forget, só passou a também ser observável por RunAsync).
+                    // runner), nenhum ARTEFATO é persistido, exatamente como antes desta mudança.
                     _logger.LogWarning(ex,
                         "Falha na transformação low-code (candidato único) mapper={MapperGuid} ({MapperName}) para layout={LayoutName} ({LayoutGuid})",
                         mapper.MapperGuid, mapper.Name, layoutName, layoutGuid);
+
+                    var falha = new LowCodeCandidateResult
+                    {
+                        MapperGuid = mapper.MapperGuid,
+                        MapperName = mapper.Name,
+                        TargetLayoutGuid = mapper.TargetLayoutGuidFromXml ?? mapper.TargetLayoutGuid,
+                        PackageGuid = mapper.PackageGuid,
+                        Success = false,
+                        // Saneado: este texto sai no payload 200 do parse (spec §3.1).
+                        ErrorMessage = LowCodeErrorSanitizer.ForWire(ex)
+                    };
+
+                    // O índice FECHA mesmo em falha: sem isto o "processing" gravado acima ficaria
+                    // eterno e o front voltaria a ter um rótulo que nunca resolve.
+                    await EscreverIndiceAsync(sha, layoutGuid, baseName: null, dateFolder: null,
+                        new[] { (candidato: falha, outputFile: (string?)null) },
+                        parcial: cancellationToken.IsCancellationRequested);
 
                     return new LowCodeAutoTransformResult
                     {
                         Applicable = true,
                         MultiCandidate = false,
-                        Candidates = new List<LowCodeCandidateResult>
-                        {
-                            new LowCodeCandidateResult
-                            {
-                                MapperGuid = mapper.MapperGuid,
-                                MapperName = mapper.Name,
-                                TargetLayoutGuid = mapper.TargetLayoutGuidFromXml ?? mapper.TargetLayoutGuid,
-                                PackageGuid = mapper.PackageGuid,
-                                Success = false,
-                                ErrorMessage = ex.Message
-                            }
-                        }
+                        Candidates = new List<LowCodeCandidateResult> { falha }
                     };
                 }
             }
@@ -160,7 +197,7 @@ namespace LayoutParserApi.Services.Transformation.LowCode
                 topN.Count, layoutName, layoutGuid, _opt.MultiCandidateTopN);
 
             var candidates = await TransformMultiCandidateAndPersistAsync(
-                topN, layoutGuid, layoutName, txtContent, detectedType, originalFileName, positionalMetadata);
+                topN, layoutGuid, layoutName, txtContent, detectedType, originalFileName, positionalMetadata, sha, cancellationToken);
             return new LowCodeAutoTransformResult { Applicable = true, MultiCandidate = true, Candidates = candidates };
         }
 
@@ -177,7 +214,9 @@ namespace LayoutParserApi.Services.Transformation.LowCode
             string txtContent,
             string detectedType,
             string originalFileName,
-            LowCodePositionalMetadata? positionalMetadata)
+            LowCodePositionalMetadata? positionalMetadata,
+            string sha,
+            CancellationToken cancellationToken)
         {
             _logger.LogInformation("AutoTransform low-code: layout={LayoutName} ({LayoutGuid}) mapper={MapperName} ({MapperGuid})",
                 layoutName, layoutGuid, mapper.Name, mapper.MapperGuid);
@@ -187,10 +226,10 @@ namespace LayoutParserApi.Services.Transformation.LowCode
                 txtContent,
                 mapperId: mapper.MapperGuid,
                 mapperName: null,
-                fileName: originalFileName);
+                fileName: originalFileName,
+                cancellationToken: cancellationToken);
 
             // Persistir para aprendizado contínuo
-            var sha = ComputeSha256(txtContent);
             var dateFolder = DateTime.UtcNow.ToString("yyyyMMdd");
             var folder = Path.Combine(_storePath, dateFolder);
             Directory.CreateDirectory(folder);
@@ -198,7 +237,8 @@ namespace LayoutParserApi.Services.Transformation.LowCode
             var baseName = $"{sha}_{DateTime.UtcNow:HHmmss}";
             var metaPath = Path.Combine(folder, $"{baseName}.meta.json");
             var inPath = Path.Combine(folder, $"{baseName}.input.txt");
-            var outPath = Path.Combine(folder, $"{baseName}.lowcode.xml");
+            var outputFile = $"{baseName}.lowcode.xml";
+            var outPath = Path.Combine(folder, outputFile);
 
             await File.WriteAllTextAsync(inPath, txtContent, Encoding.UTF8);
             await File.WriteAllTextAsync(outPath, lowCodeXml ?? "", Encoding.UTF8);
@@ -221,15 +261,25 @@ namespace LayoutParserApi.Services.Transformation.LowCode
             var json = System.Text.Json.JsonSerializer.Serialize(meta, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
             await File.WriteAllTextAsync(metaPath, json, Encoding.UTF8);
 
-            return new LowCodeCandidateResult
+            var candidato = new LowCodeCandidateResult
             {
                 MapperGuid = mapper.MapperGuid,
                 MapperName = mapper.Name,
                 TargetLayoutGuid = mapper.TargetLayoutGuidFromXml ?? mapper.TargetLayoutGuid,
                 PackageGuid = mapper.PackageGuid,
                 Success = true,
-                OutputXml = lowCodeXml
+                OutputXml = lowCodeXml,
+                OutputLength = (lowCodeXml ?? "").Length
             };
+
+            // ✅ Índice de leitura ao lado dos artefatos (spec §2.3): é o que torna o store
+            // consultável. Nenhum artefato foi renomeado — o esquema append-only {sha}_{HHmmss}
+            // continua sendo o que protege o histórico de treino.
+            await EscreverIndiceAsync(sha, layoutGuid, baseName, dateFolder,
+                new[] { (candidato, (string?)outputFile) },
+                parcial: false);
+
+            return candidato;
         }
 
         /// <summary>
@@ -246,7 +296,9 @@ namespace LayoutParserApi.Services.Transformation.LowCode
             string txtContent,
             string detectedType,
             string originalFileName,
-            LowCodePositionalMetadata? positionalMetadata)
+            LowCodePositionalMetadata? positionalMetadata,
+            string sha,
+            CancellationToken cancellationToken)
         {
             var tasks = candidates.Select(async mapper =>
             {
@@ -256,7 +308,8 @@ namespace LayoutParserApi.Services.Transformation.LowCode
                         txtContent,
                         mapperId: mapper.MapperGuid,
                         mapperName: null,
-                        fileName: originalFileName);
+                        fileName: originalFileName,
+                        cancellationToken: cancellationToken);
 
                     return new LowCodeCandidateResult
                     {
@@ -265,13 +318,16 @@ namespace LayoutParserApi.Services.Transformation.LowCode
                         TargetLayoutGuid = mapper.TargetLayoutGuidFromXml ?? mapper.TargetLayoutGuid,
                         PackageGuid = mapper.PackageGuid,
                         Success = true,
-                        OutputXml = xml
+                        OutputXml = xml,
+                        OutputLength = (xml ?? "").Length
                     };
                 }
                 catch (Exception ex)
                 {
                     // ✅ Falha de UM candidato não derruba os demais — capturada aqui, dentro da própria
                     // task, para que Task.WhenAll não propague a exceção e aborte o restante.
+                    // Cancelamento entra por aqui também: o candidato interrompido vira falha, e o
+                    // conjunto é marcado como parcial no índice (não vira cache).
                     _logger.LogWarning(ex,
                         "Falha na transformação low-code do candidato mapper={MapperGuid} ({MapperName}) para layout={LayoutName} ({LayoutGuid})",
                         mapper.MapperGuid, mapper.Name, layoutName, layoutGuid);
@@ -283,7 +339,8 @@ namespace LayoutParserApi.Services.Transformation.LowCode
                         TargetLayoutGuid = mapper.TargetLayoutGuidFromXml ?? mapper.TargetLayoutGuid,
                         PackageGuid = mapper.PackageGuid,
                         Success = false,
-                        ErrorMessage = ex.Message
+                        // Saneado: este texto sai no payload 200 do parse (spec §3.1).
+                        ErrorMessage = LowCodeErrorSanitizer.ForWire(ex)
                     };
                 }
             });
@@ -296,7 +353,6 @@ namespace LayoutParserApi.Services.Transformation.LowCode
 
             // Persistir para aprendizado contínuo: 1 input compartilhado + 1 meta.json com o array de
             // candidatos + 1 arquivo de saída por candidato bem-sucedido.
-            var sha = ComputeSha256(txtContent);
             var dateFolder = DateTime.UtcNow.ToString("yyyyMMdd");
             var folder = Path.Combine(_storePath, dateFolder);
             Directory.CreateDirectory(folder);
@@ -308,6 +364,7 @@ namespace LayoutParserApi.Services.Transformation.LowCode
             await File.WriteAllTextAsync(inPath, txtContent, Encoding.UTF8);
 
             var candidateMeta = new List<object>();
+            var paraIndice = new List<(LowCodeCandidateResult candidato, string? outputFile)>();
             for (int i = 0; i < results.Length; i++)
             {
                 var r = results[i];
@@ -317,6 +374,8 @@ namespace LayoutParserApi.Services.Transformation.LowCode
                     outputFile = $"{baseName}.cand{i}_{SanitizeForFileName(r.MapperGuid)}.lowcode.xml";
                     await File.WriteAllTextAsync(Path.Combine(folder, outputFile), r.OutputXml ?? "", Encoding.UTF8);
                 }
+
+                paraIndice.Add((r, outputFile));
 
                 candidateMeta.Add(new
                 {
@@ -348,7 +407,60 @@ namespace LayoutParserApi.Services.Transformation.LowCode
             var json = System.Text.Json.JsonSerializer.Serialize(meta, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
             await File.WriteAllTextAsync(metaPath, json, Encoding.UTF8);
 
+            // ✅ Índice de leitura (spec §2.3). "parcial" quando o chamador cancelou: o que ficou
+            // pronto continua consultável por ticket, mas um conjunto truncado NUNCA vira cache.
+            await EscreverIndiceAsync(sha, layoutGuid, baseName, dateFolder, paraIndice,
+                parcial: cancellationToken.IsCancellationRequested);
+
             return results.ToList();
+        }
+
+        /// <summary>
+        /// Fecha o índice de leitura da execução (disco + Redis opcional). Nunca lança: falha de
+        /// índice é degradação de leitura, não pode derrubar uma transformação que já aconteceu.
+        /// </summary>
+        private async Task EscreverIndiceAsync(
+            string sha,
+            string layoutGuid,
+            string? baseName,
+            string? dateFolder,
+            IEnumerable<(LowCodeCandidateResult candidato, string? outputFile)> candidatos,
+            bool parcial)
+        {
+            try
+            {
+                var entrada = new LowCodeTransformationIndexEntry
+                {
+                    BaseName = baseName,
+                    DateFolder = dateFolder,
+                    Partial = parcial
+                };
+
+                var bodies = new Dictionary<string, string?>();
+                foreach (var (c, outputFile) in candidatos)
+                {
+                    entrada.Candidates.Add(new LowCodeTransformationIndexCandidate
+                    {
+                        MapperGuid = c.MapperGuid,
+                        MapperName = c.MapperName,
+                        TargetLayoutGuid = c.TargetLayoutGuid,
+                        PackageGuid = c.PackageGuid,
+                        Success = c.Success,
+                        OutputFile = outputFile,
+                        OutputLength = c.OutputLength,
+                        ErrorMessage = c.ErrorMessage
+                    });
+
+                    if (c.Success && c.OutputXml != null && !string.IsNullOrWhiteSpace(c.MapperGuid))
+                        bodies[c.MapperGuid] = c.OutputXml;
+                }
+
+                await _store.WriteCompletedAsync(sha, layoutGuid, entrada, bodies);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Falha ao fechar indice de transformacao low-code (layoutGuid={LayoutGuid})", layoutGuid);
+            }
         }
 
         private static string SanitizeForFileName(string s)
@@ -357,15 +469,5 @@ namespace LayoutParserApi.Services.Transformation.LowCode
             var invalid = Path.GetInvalidFileNameChars();
             return new string(s.Where(c => !invalid.Contains(c)).ToArray());
         }
-
-        private static string ComputeSha256(string input)
-        {
-            using var sha = SHA256.Create();
-            var bytes = Encoding.UTF8.GetBytes(input ?? "");
-            var hash = sha.ComputeHash(bytes);
-            return Convert.ToHexString(hash).ToLowerInvariant();
-        }
     }
 }
-
-

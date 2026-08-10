@@ -228,7 +228,9 @@ namespace LayoutParserApi.Services.Database
         /// Não introduz nenhum scoring novo: é a MESMA regra de <see cref="GetBestMapperForLayoutGuidAsync"/>,
         /// só sem descartar os candidatos além do primeiro.
         /// </summary>
-        public async Task<List<Mapper>> GetRankedMapperCandidatesForLayoutGuidAsync(string layoutGuid, int projectId, IReadOnlyCollection<string> allowedPackageGuids)
+        // virtual: é o ponto de substituição dos testes do pathway low-code (que precisam exercitar
+        // seleção de candidatos sem SQL Server). Nenhum override em produção.
+        public virtual async Task<List<Mapper>> GetRankedMapperCandidatesForLayoutGuidAsync(string layoutGuid, int projectId, IReadOnlyCollection<string> allowedPackageGuids)
         {
             var candidates = await GetMappersByLayoutGuidForPackagesAsync(layoutGuid, projectId, allowedPackageGuids);
             if (candidates.Count == 0)

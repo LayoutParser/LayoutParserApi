@@ -35,6 +35,18 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Parser de linha de comando do runner low-code, compilado TAMBÉM aqui (link, não cópia).
+
+         Por que link e não ProjectReference: o runner é net481/x86 (o stack Sysmiddle é 32-bit —
+         ver o comentário do PlatformTarget no .csproj dele) e referenciá-lo de um projeto net10.0
+         não é possível. O arquivo é puro (só System/System.Collections.Generic, com #nullable
+         disable no topo para compilar idêntico nos dois targets), então o que roda no teste é
+         exatamente o código que roda no .exe — não uma cópia que pode divergir. -->
+    <Compile Include="..\..\tools\LowCodeRunner\RunnerArgs.cs"
+             Link="Transformation\RunnerArgs.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Using Include="Xunit" />
   </ItemGroup>
 

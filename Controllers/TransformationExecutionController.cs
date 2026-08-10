@@ -292,7 +292,9 @@ namespace LayoutParserApi.Controllers
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Falha estrutural no pathway sysmiddle ao gerar candidatos para layout {LayoutName}", request.LayoutName);
-                warnings.Add($"Pathway sysmiddle falhou: {ex.Message}");
+                // Saneado: exceção de I/O deste pathway carrega caminho de disco do servidor e este
+                // warning sai no payload 200 (mesmo defeito do §3.1 da spec, outro ponto de saída).
+                warnings.Add($"Pathway sysmiddle falhou: {LowCodeErrorSanitizer.ForWire(ex)}");
             }
 
             return result;
