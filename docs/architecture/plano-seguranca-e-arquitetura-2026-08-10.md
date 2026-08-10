@@ -266,3 +266,70 @@ ecoado. Lido o relatório, a migração liga por `MIGRATE_CONFIG_TO_REPO=true`.
 | TLS | `UseHttpsRedirection` comentado; sem ele a chave trafega em claro | Infra |
 | Combinar escrita na Bin do FiatMQ em produção | O step é aditivo e reversível, mas mexe em produto de terceiros | Dono + operação FiatMQ |
 | `MIGRATE_CONFIG_TO_REPO=true` | Só depois de ler o relatório de dry-run | Dono |
+
+---
+
+## 7. Config drift medido no `.42` (2026-08-10)
+
+Dados coletados pelo dono do projeto direto no servidor. Isto substitui a estimativa do §3.1: não
+era preciso gastar um deploy no dry-run — o relatório real está abaixo.
+
+**Repo: 71 chaves. Produção: 28.**
+
+### 7.1 O achado que explica tudo
+
+**A seção `LowCode` inteira (14 chaves) NUNCA existiu no `appsettings.json` de produção.** Somando
+com `XsdValidation` (14), `TransformationPipeline` (9), `ML` (2), `LayoutValidation` (2), `Cors`,
+`Examples`, `Learning`, `TransformationRules`, `AiMetrics`: **54 das 71 chaves do repositório nunca
+chegaram ao servidor.** O arquivo de produção é de uma versão do projeto anterior a todas essas
+features.
+
+Consequência direta, verificável em `LowCodeTransformationService.TransformAsync`: sem
+`LowCode:RunnerPath`, o método lança `InvalidOperationException("LowCode:RunnerPath não
+configurado")` antes de qualquer coisa.
+
+> **A transformação low-code nunca funcionou em produção. Nenhuma vez.** Não é uma regressão
+> recente nem efeito do `LowCode:Package` ter virado obrigatório — esse era o próximo obstáculo,
+> não o primeiro. O `-Exclude appsettings.json` garantiu que nenhuma das chaves necessárias jamais
+> chegasse lá.
+
+### 7.2 O `Environment` do serviço está VAZIO
+
+O serviço `LayoutParserApi` está `Running` no `.42`, e a consulta ao `Environment` (REG_MULTI_SZ)
+não retornou **nenhuma** chave. Duas leituras:
+
+1. Nada do que o `deploy.yml` passou a gerenciar foi aplicado ainda — coerente, os commits desta
+   série não foram empurrados.
+2. **`Database:Password` em produção vem do `appsettings.json`, em texto plano, no disco do
+   servidor.** O REG_MULTI_SZ não é cofre (§2.3), mas é melhor que isto.
+
+### 7.3 Segredos de subsistema morto, vivos no disco de produção
+
+Das 11 chaves órfãs no destino, **três são segredos de integrações cujo código já saiu do repo**:
+
+| Chave | Código removido em | Ação |
+|---|---|---|
+| `Gemini:ApiKey` | `aa54dc3` (hoje) | **Revogar** no Google — decomissionado, não reemitir |
+| `OpenAI:ApiKey` | `9b0965f` | **Revogar** na OpenAI |
+| `ElasticSearch:Password` | 2026-07-27 | Rotacionar/desprovisionar com quem opera o Elastic |
+
+Isso responde de forma concreta à dúvida "onde a chave do Gemini é usada": **em lugar nenhum do
+código — mas ela está em texto plano no disco de produção, além do histórico do git.** Ler o
+`appsettings.json` do `.42` basta para obtê-la.
+
+As demais órfãs (`Logging:Type`, `Logging:Txt:*`) são do subsistema de logging removido em
+2026-07-27 — inertes, mas ruído.
+
+### 7.4 Divergências legítimas — a lista real a preservar
+
+Apenas **três**, e só duas precisam de decisão:
+
+| Chave | Situação |
+|---|---|
+| `Database:Password` | Segredo legítimo. **Migrar para env var** (`Database__Password`), não para `appsettings.Production.json` |
+| `Redis:ConnectionString` | Diverge do repo; o valor foi mascarado na coleta. Precisa ser conferido antes de migrar |
+| `RAG:ExamplesPath` | Ajuste local legítimo (`C:\inetpub\...\Examples` vs `Exemplos` no repo) → `appsettings.Production.json` |
+
+**Isto torna a migração do §3.1 pequena e conhecida**, não um salto no escuro: preservar duas
+chaves, mover uma para env var, descartar cinco seções mortas. O step já descarta as mortas
+(`2e5e1bf`) e o dry-run continua valendo como conferência final antes de ligar.
