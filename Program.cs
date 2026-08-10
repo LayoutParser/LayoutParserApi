@@ -361,6 +361,58 @@ try
 
     Log.Information("Application built successfully. Environment: {Environment}", app.Environment.EnvironmentName);
 
+    // ✅ Diagnóstico de arranque da config low-code. Mesmo princípio do Redis acima: AVISA e segue,
+    // nunca derruba a app — parse e catálogo funcionam sem transformação.
+    //
+    // POR QUE ISTO EXISTE: o deploy PRESERVA o appsettings.json do destino (ci-dev.yml/deploy.yml
+    // copiam com `-Exclude appsettings.json`), então chave nova adicionada ao appsettings.json do
+    // REPO nunca chega ao servidor — o valor efetivo vem de variável de ambiente `Section__Key`.
+    // Quando esse canal falha, a falha aparecia longe da causa: o runner saía com exit 9 e o usuário
+    // via "transformação falhou", uma requisição por vez, depois de pagar o custo de subir um
+    // processo x86. Ler os valores EFETIVOS aqui (pós-binding, já com env vars aplicadas) transforma
+    // um mistério de runtime numa linha de log no arranque.
+    try
+    {
+        var lowCodeOpt = app.Services.GetRequiredService<IOptions<LowCodeRunnerOptions>>().Value;
+
+        if (string.IsNullOrWhiteSpace(lowCodeOpt.Package))
+            Log.Warning("LowCode:Package VAZIO — toda transformação low-code vai falhar (runner sai com exit 9). " +
+                        "Sem o appConnector o package não tem mais fallback. Configure a variável de ambiente LowCode__Package " +
+                        "com o <PackageMappers> do config.xml da instância Sysmiddle.");
+        else
+            Log.Information("LowCode:Package configurado: {Package}", lowCodeOpt.Package);
+
+        if (string.IsNullOrWhiteSpace(lowCodeOpt.RunnerPath))
+            Log.Warning("LowCode:RunnerPath não configurado — nenhuma transformação low-code é possível.");
+        else if (!File.Exists(lowCodeOpt.RunnerPath))
+            Log.Warning("LowCode:RunnerPath aponta para um arquivo que NÃO EXISTE: {RunnerPath}. " +
+                        "Toda transformação low-code vai falhar até o runner ser publicado neste host.", lowCodeOpt.RunnerPath);
+
+        foreach (var (chave, valor) in new[]
+                 {
+                     ("LowCode:SysmiddleDir", lowCodeOpt.SysmiddleDir),
+                     ("LowCode:GlobalFolder", lowCodeOpt.GlobalFolder)
+                 })
+        {
+            if (string.IsNullOrWhiteSpace(valor))
+                Log.Warning("{Chave} não configurado — a transformação low-code falha na validação de entrada.", chave);
+        }
+
+        // 60s é o piso empírico, não um número redondo: a medição A/B por fase mostrou a
+        // transformação completa entre 48s e 137s (só o ExecuteMapper leva 38-73s). Abaixo disso o
+        // processo é morto no meio de trabalho bom — a falha mais cara que este pathway tem, porque
+        // consome o slot inteiro e não deixa resultado.
+        if (lowCodeOpt.RunnerTimeoutSeconds > 0 && lowCodeOpt.RunnerTimeoutSeconds < 60)
+            Log.Warning("LowCode:RunnerTimeoutSeconds = {Timeout}s é INVIÁVEL — a transformação real leva 48-137s medidos. " +
+                        "O runner será morto no meio da execução. Configure LowCode__RunnerTimeoutSeconds (referência: 180).",
+                        lowCodeOpt.RunnerTimeoutSeconds);
+    }
+    catch (Exception ex)
+    {
+        // Diagnóstico nunca pode ser o motivo de a app não subir.
+        Log.Warning(ex, "Falha ao inspecionar a configuração low-code no arranque (diagnóstico ignorado).");
+    }
+
     // Configure the HTTP request pipeline.
     // CORS must be early in the pipeline - before routing and other middleware
     // This ensures CORS headers are sent even when errors occur
