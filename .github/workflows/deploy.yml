@@ -465,6 +465,42 @@ jobs:
           $preservar[$chave] = $mapaDestino[$chave]
         }
 
+        # ⚠️ GUARD-RAIL: segredo NAO vai para arquivo nenhum, nem para o Production.json.
+        # Medido no .42: Database:Password diverge (o repo tem "") e o Environment do servico esta
+        # VAZIO — ou seja, hoje a senha do SQL vem do appsettings.json em texto plano no disco.
+        # Preservar essa chave "porque diverge" so trocaria o arquivo em que o segredo mora, e a
+        # migracao teria gasto a unica chance de tira-lo do disco.
+        #
+        # Por outro lado, copiar o appsettings.json do repo (que tem Password vazio) SEM a senha
+        # estar no Environment derruba o SQL de producao. Entao a migracao ABORTA e diz o que fazer.
+        # Abortar e frustrante; migrar e quebrar a conexao com o banco e pior, e migrar mantendo o
+        # segredo em disco e fingir que resolveu.
+        $segredosDivergentes = @($preservar.Keys | Where-Object { EhSensivel $_ })
+        if ($segredosDivergentes.Count -gt 0) {
+          $envAtual = @()
+          $cur = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LayoutParserApi" -Name 'Environment' -ErrorAction SilentlyContinue).Environment
+          if ($cur) { $envAtual = @($cur | ForEach-Object { ($_ -split '=', 2)[0] }) }
+
+          $faltando = @()
+          foreach ($s in $segredosDivergentes) {
+            $envName = $s -replace ':', '__'
+            if ($envAtual -notcontains $envName) { $faltando += $envName }
+          }
+
+          if ($faltando.Count -gt 0) {
+            Write-Host "MIGRACAO ABORTADA — segredo em disco sem equivalente no ambiente do servico."
+            Write-Host "  Provisione ANTES, no Environment do servico LayoutParserApi:"
+            $faltando | ForEach-Object { Write-Host "      $_" }
+            Write-Host "  (o valor atual esta no appsettings.json do destino; nao o copie para log nenhum)"
+            Write-Host "  Feito isso, rode de novo com MIGRATE_CONFIG_TO_REPO=true."
+            exit 0
+          }
+
+          # Ja estao no ambiente: saem do arquivo de config de vez.
+          foreach ($s in $segredosDivergentes) { [void]$preservar.Remove($s) }
+          Write-Host "  Segredos ja presentes no Environment — removidos da config em arquivo: $($segredosDivergentes -join ', ')"
+        }
+
         if ($descartadas.Count -gt 0) {
           Write-Host "  [4] DESCARTADAS (subsistema morto — NAO vao para o Production.json):"
           $descartadas | ForEach-Object { Write-Host "      $_" }
