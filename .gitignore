@@ -372,4 +372,8 @@ appsettings.Local.json
 secrets.json
 *.secrets.json
 
+# Worktrees efêmeras criadas por sessões concorrentes do harness.
+# São checkouts de trabalho da própria árvore — versioná-las duplicaria o repo dentro dele.
+.claude/worktrees/
+
 .codex

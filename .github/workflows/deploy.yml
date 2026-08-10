@@ -133,36 +133,45 @@ jobs:
         
         Write-Host "LayoutParserDecrypt compilado com sucesso"
     
+    # IMPORTANTE: buildar o .csproj EXPLICITAMENTE, nunca `dotnet build` sem argumento.
+    # Na raiz do repo existem um .sln e um .csproj; o dotnet CLI resolve o comando sem
+    # argumento pela SOLUTION. Desde que o projeto de testes entrou na LayoutParserApi.sln
+    # (para o `dotnet test` deixar de mentir), um build pela solution passaria a restaurar
+    # xUnit e compilar testes AQUI, em producao — uma falha de restore quebraria o deploy.
+    # Producao compila exatamente o que publica: o projeto da API, e mais nada.
     - name: Build LayoutParserApi (.NET 10.0)
       run: |
         $WORK_DIR = $PWD.Path
         $API_DIR = Join-Path $WORK_DIR "LayoutParserApi"
-        
+        $API_PROJECT = Join-Path $API_DIR "LayoutParserApi.csproj"
+
         Write-Host "Compilando LayoutParserApi..."
-        Write-Host "Diretorio: $API_DIR"
-        
-        if (-not (Test-Path $API_DIR)) {
-          Write-Error "Diretorio LayoutParserApi nao encontrado: $API_DIR"
+        Write-Host "Projeto: $API_PROJECT"
+
+        if (-not (Test-Path $API_PROJECT)) {
+          Write-Error "Projeto nao encontrado: $API_PROJECT"
           Write-Host "Conteudo do diretorio de trabalho:"
           Get-ChildItem -Path $WORK_DIR | Select-Object Name | Format-Table
+          if (Test-Path $API_DIR) {
+            Write-Host "Conteudo de LayoutParserApi:"
+            Get-ChildItem -Path $API_DIR | Select-Object Name | Format-Table
+          }
           exit 1
         }
-        
-        Push-Location $API_DIR
-        
-        try {
-          dotnet restore
-          dotnet build --configuration Release --no-restore
-          
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "Falha ao compilar LayoutParserApi"
-            exit 1
-          }
-          
-          Write-Host "LayoutParserApi compilado com sucesso"
-        } finally {
-          Pop-Location
+
+        dotnet restore "$API_PROJECT"
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "Falha no restore do LayoutParserApi"
+          exit 1
         }
+
+        dotnet build "$API_PROJECT" --configuration Release --no-restore
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "Falha ao compilar LayoutParserApi"
+          exit 1
+        }
+
+        Write-Host "LayoutParserApi compilado com sucesso"
     
     - name: Publish LayoutParserApi
       run: |
@@ -242,6 +251,97 @@ jobs:
         
         Write-Host "`nPacote de deploy criado com sucesso!"
     
+    # ── Ambiente do servico (REG_MULTI_SZ) ──────────────────────────────────────────
+    #
+    # POR QUE ESTE STEP EXISTE: o step de deploy preserva o appsettings.json do destino
+    # (mais abaixo, `-Exclude "appsettings.json"`). Consequencia: TODA chave de
+    # configuracao nova adicionada ao appsettings.json do repositorio NUNCA chega ao
+    # servidor — o codigo cai no default silenciosamente. O unico canal que funciona e a
+    # variavel de ambiente `Section__Key` no Environment do servico Windows.
+    #
+    # DIFERENCA PARA O ci-dev.yml: la o CI e dono unico do Environment e o reescreve
+    # inteiro. Aqui NAO — producao pode ter variaveis definidas manualmente (Database__Password,
+    # por exemplo) que ninguem versionou. Este step faz UPSERT: reescreve so as chaves que
+    # gerencia e PRESERVA todo o resto. Sobrescrever em bloco apagaria a senha do SQL.
+    #
+    # Roda ANTES do deploy de proposito: o servico e parado e reiniciado la, entao sobe ja
+    # com o ambiente novo. Variavel de ambiente e lida no start do processo.
+    - name: Configurar ambiente do servico (upsert, nao destrutivo)
+      env:
+        AI_METRICS_INGEST_KEY: ${{ secrets.AI_METRICS_INGEST_KEY }}
+      run: |
+        $ErrorActionPreference = "Stop"
+        $serviceName = "LayoutParserApi"
+        $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$serviceName"
+
+        if (-not (Test-Path $regPath)) {
+          Write-Warning "Servico $serviceName nao esta registrado neste host — nada a configurar."
+          Write-Warning "A API roda aqui como servico Windows? Se roda de outra forma (IIS/console), o canal de config precisa ser revisto com @lp-devops."
+          exit 0
+        }
+
+        $DEPLOY_PATH = "${{ secrets.DEPLOY_PATH }}".Trim('"', '''', ' ')
+        if ([string]::IsNullOrWhiteSpace($DEPLOY_PATH)) {
+          Write-Error "DEPLOY_PATH nao esta configurado! Configure o secret DEPLOY_PATH no GitHub."
+          exit 1
+        }
+
+        # Chaves gerenciadas por este workflow (nome -> valor). Ordenado so para log estavel.
+        $managed = [ordered]@{}
+
+        # LowCode__Package: sem ele o runner low-code sai com exit 9 e NENHUMA transformacao
+        # acontece. O valor vem de Instance_FiatMQ\AppConnector.DIR\Conf\config.xml (<PackageMappers>).
+        # NAO e segredo — e um identificador de projeto Sysmiddle.
+        $managed['LowCode__Package'] = '938f9978-836f-48c1-9c0f-c2898caf4b20'
+
+        # LowCode__RunnerTimeoutSeconds: o default do codigo (15s) mata o processo no meio.
+        # Medicao real: ExecuteMapper sozinho leva 38-73s e a transformacao completa 48-137s.
+        # 180s da ~30% de folga sobre o pior caso medido. Ver comentario extenso no ci-dev.yml.
+        $managed['LowCode__RunnerTimeoutSeconds'] = '180'
+
+        # ML__LowCodeTransformationsPath: o default cai em <api>\MLData\LowCodeTransformations,
+        # ou seja, DENTRO da pasta que o deploy sobrescreve a cada release. Movido para fora,
+        # ao lado do ML:LearningDataPath que ja e externo.
+        $lowCodeStore = Join-Path $DEPLOY_PATH 'MLData\LowCodeTransformations'
+        New-Item -ItemType Directory -Path $lowCodeStore -Force | Out-Null
+        $managed['ML__LowCodeTransformationsPath'] = $lowCodeStore
+
+        # AiMetrics__IngestApiKey: sem ela o AiMetricsIngestKeyFilter RECUSA toda escrita de
+        # metricas de IA. Opcional — ausente, o resto do deploy segue normal.
+        if (-not [string]::IsNullOrWhiteSpace($env:AI_METRICS_INGEST_KEY)) {
+          $managed['AiMetrics__IngestApiKey'] = $env:AI_METRICS_INGEST_KEY
+        } else {
+          Write-Warning ("Secret AI_METRICS_INGEST_KEY ausente — a ingestao de metricas de IA continuara RECUSADA. " +
+            "Crie em: GitHub -> Settings -> Secrets and variables -> Actions -> aba Secrets.")
+        }
+
+        # Upsert: preserva tudo que nao e nosso, reescreve o que e.
+        $existing = @()
+        $cur = (Get-ItemProperty -Path $regPath -Name 'Environment' -ErrorAction SilentlyContinue).Environment
+        if ($cur) { $existing = @($cur) }
+
+        $resultado = New-Object System.Collections.Generic.List[string]
+        $preservadas = New-Object System.Collections.Generic.List[string]
+        foreach ($entrada in $existing) {
+          if ([string]::IsNullOrWhiteSpace($entrada)) { continue }
+          $chave = ($entrada -split '=', 2)[0]
+          if ($managed.Contains($chave)) { continue }   # sera reescrita logo abaixo
+          $resultado.Add($entrada)
+          $preservadas.Add($chave)
+        }
+        foreach ($chave in $managed.Keys) { $resultado.Add("$chave=$($managed[$chave])") }
+
+        # NUNCA ecoar valores: so nomes de chave. (O Actions mascara secrets, mas o
+        # Environment tambem carrega valores que nao passaram por secret.)
+        Set-ItemProperty -Path $regPath -Name 'Environment' -Value ([string[]]$resultado) -Type MultiString
+        Write-Host "Ambiente do servico atualizado."
+        Write-Host "  Gerenciadas por este workflow: $($managed.Keys -join ', ')"
+        if ($preservadas.Count -gt 0) {
+          Write-Host "  Preservadas (definidas fora do CI): $($preservadas -join ', ')"
+        } else {
+          Write-Host "  Preservadas (definidas fora do CI): nenhuma"
+        }
+
     - name: Deploy to server (local)
       run: |
         $ErrorActionPreference = "Stop"
@@ -494,3 +594,91 @@ jobs:
         Write-Host "Logs: $DEPLOY_LOGS_PATH"
         Write-Host "Backups: $DEPLOY_BACKUPS_PATH"
         Write-Host "Runner: Self-hosted (execucao local)"
+
+    # ── Diagnostico de pre-requisitos (NAO-FATAL) ───────────────────────────────────
+    #
+    # Este step nunca falha o deploy. Ele existe porque duas perguntas so podem ser
+    # respondidas DE DENTRO do host de destino, e ninguem tem acesso de filesystem a ele
+    # de fora (\\172.25.32.42\c$ inacessivel, SSH/WinRM/SMB negados):
+    #
+    #   1. Existe instancia FiatMQ instalada aqui? Sem ela nao ha onde publicar o
+    #      LayoutParserLowCodeRunner.exe — ele e net481/x86 e resolve dependencias pelo
+    #      diretorio do proprio .exe, entao so executa DE DENTRO da AppConnector.DIR\Bin
+    #      (a pasta tools/LowCodeRunner/Functions/ do repo NAO consegue hospeda-lo:
+    #      divergencia de assembly, log4net 1.2.13.0 vs 2.0.17.0, estoura em
+    #      InstanceFactory.Initialize()).
+    #   2. Existe Redis no host? A API conecta UMA UNICA VEZ no startup; se falhar, o cache
+    #      fica desligado ate o processo reiniciar. Sonda externa a :6379 nao responde, mas a
+    #      config e "localhost" — um Redis ligado so a interface local serviria a API e
+    #      recusaria a sonda. Inconclusivo de fora, conclusivo aqui.
+    #
+    # A saida deste step e o insumo para decidir o step de publicacao do runner.
+    - name: Diagnostico de pre-requisitos (nao-fatal)
+      continue-on-error: true
+      run: |
+        $ErrorActionPreference = "Continue"
+        try {
+          $DEPLOY_PATH = "${{ secrets.DEPLOY_PATH }}".Trim('"', '''', ' ')
+
+          Write-Host "=== 1) Runner low-code no destino ==="
+          $runnerPath = Join-Path $DEPLOY_PATH 'api\LayoutParserLowCodeRunner.exe'
+          if (Test-Path $runnerPath) {
+            $info = Get-Item $runnerPath
+            Write-Host "  PRESENTE: $runnerPath ($([math]::Round($info.Length / 1KB, 2)) KB, $($info.LastWriteTime))"
+          } else {
+            Write-Host "  AUSENTE: $runnerPath"
+            Write-Host "  -> LowCode:RunnerPath aponta para um arquivo que nao existe; toda transformacao low-code falha."
+            Write-Host "  -> Nenhum workflow compila ou copia este exe hoje (decisao pendente — ver o cabecalho deste step)."
+          }
+
+          Write-Host "=== 2) Instancia FiatMQ (AppConnector.DIR\Bin) neste host ==="
+          $achados = New-Object System.Collections.Generic.List[string]
+          $raizes = Get-ChildItem -Path 'C:\' -Directory -Force -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Name -notin @('Windows','Users','ProgramData','$Recycle.Bin','System Volume Information','Recovery') }
+          foreach ($r in $raizes) {
+            Get-ChildItem -Path $r.FullName -Directory -Recurse -Depth 3 -Filter 'AppConnector.DIR' -ErrorAction SilentlyContinue |
+              ForEach-Object { $achados.Add($_.FullName) }
+          }
+          if (Test-Path 'C:\AppConnector.DIR') { $achados.Add('C:\AppConnector.DIR') }
+
+          if ($achados.Count -eq 0) {
+            Write-Host "  NENHUMA instancia encontrada (varredura ate profundidade 3 nas raizes de C:\)."
+            Write-Host "  -> Sem instancia, publicar o runner aqui NAO o faz executar. Decisao do dono do projeto."
+          } else {
+            foreach ($a in ($achados | Sort-Object -Unique)) {
+              $bin = Join-Path $a 'Bin'
+              $temSysmiddle = Test-Path (Join-Path $bin 'SysMiddle.Base.dll')
+              $conf = Join-Path $a 'Conf\config.xml'
+              Write-Host "  $a"
+              Write-Host "     Bin\SysMiddle.Base.dll: $temSysmiddle"
+              Write-Host "     Conf\config.xml presente: $(Test-Path $conf)"
+              if ($temSysmiddle) {
+                $qtd = (Get-ChildItem -Path $bin -File -ErrorAction SilentlyContinue | Measure-Object).Count
+                Write-Host "     arquivos na Bin: $qtd"
+                Write-Host "     -> CANDIDATA a hospedar o LayoutParserLowCodeRunner.exe."
+              }
+            }
+          }
+
+          Write-Host "=== 3) Redis em localhost:6379 ==="
+          $tcp = New-Object System.Net.Sockets.TcpClient
+          $ok = $false
+          try {
+            $ok = $tcp.ConnectAsync('127.0.0.1', 6379).Wait(3000) -and $tcp.Connected
+          } catch { $ok = $false } finally { $tcp.Dispose() }
+          if ($ok) {
+            Write-Host "  ACEITANDO CONEXAO — o cache Redis da API tende a subir normalmente."
+          } else {
+            Write-Host "  NAO respondeu em 3s."
+            Write-Host "  -> A API sobe DEGRADADA (sem cache) e so reconecta se o processo reiniciar."
+          }
+          $svcRedis = Get-Service -Name '*redis*' -ErrorAction SilentlyContinue
+          if ($svcRedis) {
+            $svcRedis | ForEach-Object { Write-Host "  servico: $($_.Name) = $($_.Status)" }
+          } else {
+            Write-Host "  Nenhum servico Windows com 'redis' no nome."
+          }
+        } catch {
+          Write-Warning "Diagnostico falhou (nao bloqueia o deploy): $($_.Exception.Message)"
+        }
+        exit 0
