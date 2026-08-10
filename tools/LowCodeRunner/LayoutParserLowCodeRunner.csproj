@@ -27,23 +27,22 @@
     <InstanceBin>$(MSBuildProjectDirectory)\..\..\.claude\tmp\servidor\fiatmq\Instance_FiatMQ\AppConnector.DIR\Bin</InstanceBin>
   </PropertyGroup>
 
+  <!-- ⚠️ NÃO reintroduzir appConnector.Client.Core / appConnector.Client.Interface aqui.
+       Removidas em 2026-08-10 (docs/architecture/decisao-remover-dependencia-appconnector.md).
+       A única coisa que o runner consumia delas era
+       ConnectorApplicationManager.Instance.GetServerPackage() — que devolve UMA STRING: o
+       identificador do projeto Sysmiddle. Esse valor agora chega pela flag de package
+       (LowCode:Package).
+       Trazê-las de volta traz junto o bootstrap do host (EDocsClientConnectorManager.Start), as
+       threads de transporte e a TH_FAI que derrubava o processo. -->
   <ItemGroup>
-    <!-- MapperBasicVO (retorno do GetMappers no modo LIST) -->
+    <!-- APIManager/APIExecutor (SysMiddle.API) + MapperBasicVO/MapperResultBasicVO (SysMiddle.Base.Model.API) -->
     <Reference Include="SysMiddle.Base">
       <HintPath>$(InstanceBin)\SysMiddle.Base.dll</HintPath>
       <Private>false</Private>
     </Reference>
-    <!-- EDocsClientConnectorManager (bootstrap), ConnectorApplicationManager (config) e MappersHelper (execução) -->
-    <Reference Include="appConnector.Client.Core">
-      <HintPath>$(InstanceBin)\appConnector.Client.Core.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-    <!-- Connector (tipo retornado por GetConfiguration/SetConfiguration) -->
-    <Reference Include="appConnector.Client.Interface">
-      <HintPath>$(InstanceBin)\appConnector.Client.Interface.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-    <!-- LicenseController concreto (o Initialize da InstanceFactory não o auto-mapeia aqui) -->
+    <!-- LicenseController concreto (o Initialize da InstanceFactory não o auto-mapeia aqui).
+         Parte 1 do gate de licença — ver SysmiddleRuntime.Create. -->
     <Reference Include="SysMiddle.ConnectUs.Core">
       <HintPath>$(InstanceBin)\SysMiddle.ConnectUs.Core.dll</HintPath>
       <Private>false</Private>
