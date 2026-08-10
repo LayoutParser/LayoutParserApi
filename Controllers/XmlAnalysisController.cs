@@ -163,7 +163,8 @@ namespace LayoutParserApi.Controllers
             }
         }
 
-        // Endpoint "analyze-xsd-error-with-ai" (baseado em GeminiAIService) foi removido:
+        // Endpoint "analyze-xsd-error-with-ai" (baseado no antigo GeminiAIService, removido do
+        // repositório em 2026-08-10 junto com o decommission de Gemini/OpenAI) foi removido:
         // Gemini foi decomissionado (ver .claude/agent-memory/lp-backend-dev/generation-services-unregistered-di.md)
         // e o caso de uso equivalente já existe via Ollama em ValidationDiagnosticController
         // (POST /api/xml-analysis/diagnose-validation-error).

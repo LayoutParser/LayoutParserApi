@@ -151,7 +151,18 @@ try
     // Add services to the container.
     // Configurar opções JSON para não escapar caracteres XML/HTML
     // Isso preserva o XML intacto no JSON (não converte < para \u003C, etc.)
-    builder.Services.AddControllers()
+    builder.Services.AddControllers(options =>
+        {
+            // ✅ Porta de entrada por chave compartilhada para TODA a API. Registrado como filtro
+            // GLOBAL, e não por controller, porque o problema não é um endpoint novo: são os 18
+            // controllers que já existem servindo NF-e real sem credencial nenhuma.
+            //
+            // NASCE DESLIGADO por decisão de arquitetura: sem `Security:ApiKey` provisionada, o
+            // filtro deixa passar (fail-OPEN). Ligá-lo fail-closed neste commit derrubaria o front
+            // e o smoke test do próprio CI no deploy seguinte. Ver o comentário extenso em
+            // ApiKeyGateFilter — inclusive a ordem de passos para ligar sem quebrar produção.
+            options.Filters.Add<ApiKeyGateFilter>();
+        })
         .AddJsonOptions(options =>
         {
             options.JsonSerializerOptions.Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping;
@@ -357,9 +368,32 @@ try
     // sem AiMetrics__IngestApiKey no ambiente, a escrita é recusada — ver AiMetricsIngestKeyFilter.
     builder.Services.AddScoped<AiMetricsIngestKeyFilter>();
 
+    // ✅ Porta de entrada global da API (registrada como filtro em AddControllers, acima).
+    // Scoped pelo mesmo motivo do filtro acima: depende de IConfiguration e ILogger, sem estado.
+    builder.Services.AddScoped<ApiKeyGateFilter>();
+
     var app = builder.Build();
 
     Log.Information("Application built successfully. Environment: {Environment}", app.Environment.EnvironmentName);
+
+    // ✅ Postura de acesso da API, dita UMA vez no arranque. O filtro global não loga por request
+    // (seria uma linha por chamada num log que é relido pelo painel), então este é o único lugar
+    // onde "a API está aberta" fica registrado — e é uma informação que ninguém deveria descobrir
+    // por acidente.
+    if (string.IsNullOrWhiteSpace(builder.Configuration[ApiKeyGateFilter.ConfigKey]))
+    {
+        Log.Warning("API SEM AUTENTICACAO: {ConfigKey} nao configurada, todos os endpoints aceitam requisicao anonima. " +
+                    "Para fechar, provisione a variavel de ambiente Security__ApiKey (e liste em Security__AnonymousPaths o que " +
+                    "precisa seguir anonimo). Ver ApiKeyGateFilter antes de ligar em producao.",
+                    ApiKeyGateFilter.ConfigKey);
+    }
+    else
+    {
+        var rotasAnonimas = builder.Configuration.GetSection(ApiKeyGateFilter.AnonymousPathsKey).Get<string[]>() ?? Array.Empty<string>();
+        Log.Information("Porta de entrada por chave ATIVA (header {Header}). Rotas anonimas: {Rotas}",
+            ApiKeyGateFilter.HeaderName,
+            rotasAnonimas.Length > 0 ? string.Join(", ", rotasAnonimas) : "(nenhuma)");
+    }
 
     // ✅ Diagnóstico de arranque da config low-code. Mesmo princípio do Redis acima: AVISA e segue,
     // nunca derruba a app — parse e catálogo funcionam sem transformação.
