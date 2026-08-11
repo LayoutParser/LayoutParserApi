@@ -576,41 +576,52 @@ jobs:
         }
         Write-Host "Servico Running (estavel apos 8s)."
 
-        # Smoke test: 404 e aceito como SUCESSO de pipeline (resposta controlada do controller
-        # quando o catalogo esta vazio/sem SQL) - o que valida e a API responder HTTP.
-        $smokeUrl = "$($env:API_URL_RESOLVED)/api/document/layouts"
+        # Smoke test de READINESS: bate em /health/ready exigindo 200 ESTRITO. A sonda roda
+        # SELECT 1 no SQL e confere o warm-up do catalogo; readiness Unhealthy responde 503 e
+        # FALHA o deploy. Antes este step batia numa rota de negocio (/api/document/layouts)
+        # aceitando ate 404 como sucesso - validava "a API responde HTTP", nao "a API funciona":
+        # um catalogo vazio porque o decryptor quebrou passava batido. Redis/runner fora sao
+        # Degraded -> 200, entao nao derrubam o dev por dependencia opcional.
+        $smokeUrl = "$($env:API_URL_RESOLVED)/health/ready"
 
-        # [ATENCAO] Este smoke test bate numa rota de NEGOCIO, nao num health check anonimo. Quando a
-        # porta de entrada por chave (ApiKeyGateFilter) for ligada, sem o header ela responderia
-        # 401 e o deploy falharia - o mecanismo de seguranca derrubando o proprio pipeline que o
-        # instalou. Mandar o header quando o secret existe e o que torna o gate LIGAVEL sem
-        # quebrar o CI. Sem o secret, nada muda (o gate esta desligado por padrao).
+        # /health/ready e ANONIMO: e mapeado por MapHealthChecks (endpoint routing), FORA do
+        # pipeline de filtros MVC onde vive o ApiKeyGateFilter - a chave nao se aplica a ele.
+        # O header segue junto quando o secret existe apenas como no-op defensivo (health o ignora);
+        # nao ha rota de negocio aqui para o gate barrar.
         $smokeHeaders = @{}
         if (-not [string]::IsNullOrWhiteSpace($env:API_KEY_DEV)) {
           $smokeHeaders['X-Api-Key'] = $env:API_KEY_DEV
         }
 
+        # Readiness pode responder 503 durante o warm-up do catalogo (dependencia essencial ainda
+        # subindo). 503 NAO e sucesso e tambem NAO e falha definitiva: e "ainda nao pronto" - por
+        # isso o laco RETENTA ate 200 ou esgotar. So 200 encerra com sucesso.
         $status = $null
-        for ($i = 1; $i -le 12; $i++) {
+        $tentativas = 24
+        for ($i = 1; $i -le $tentativas; $i++) {
           try {
             $resp = Invoke-WebRequest -Uri $smokeUrl -UseBasicParsing -TimeoutSec 5 -Headers $smokeHeaders
             $status = [int]$resp.StatusCode
-            break
           } catch {
             $r = $_.Exception.Response
-            if ($r -and $r.StatusCode) { $status = [int]$r.StatusCode; break }
-            Write-Host "  tentativa $i/12: API ainda nao responde, aguardando 5s..."
+            $status = if ($r -and $r.StatusCode) { [int]$r.StatusCode } else { $null }
+          }
+
+          if ($status -eq 200) {
+            Write-Host "Smoke test: HTTP 200 em $smokeUrl (readiness OK, tentativa $i/$tentativas)."
+            break
+          }
+
+          $descr = if ($null -eq $status) { "sem resposta" } else { "HTTP $status" }
+          if ($i -lt $tentativas) {
+            Write-Host "  tentativa $i/$($tentativas): readiness ainda nao pronta ($descr), aguardando 5s..."
             Start-Sleep -Seconds 5
           }
         }
 
-        if ($null -eq $status) {
-          Write-Error "API nao respondeu em $smokeUrl apos 12 tentativas."
-          exit 1
-        }
-        Write-Host "Smoke test: HTTP $status em $smokeUrl"
-        if ($status -ne 200 -and $status -ne 404) {
-          Write-Error "Status HTTP inesperado no smoke test: $status (aceitos: 200, 404)."
+        if ($status -ne 200) {
+          $ultimo = if ($null -eq $status) { "sem resposta" } else { "HTTP $status" }
+          Write-Error "Readiness nao ficou 200 em $smokeUrl apos $tentativas tentativas (ultimo: $ultimo). Deploy de dev abortado."
           exit 1
         }
         Write-Host "Deploy de dev concluido com sucesso."
