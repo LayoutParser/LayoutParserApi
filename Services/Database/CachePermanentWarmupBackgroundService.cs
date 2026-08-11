@@ -1,3 +1,5 @@
+using LayoutParserApi.Models.Database;
+using LayoutParserApi.Services.Health;
 using LayoutParserApi.Services.Interfaces;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -19,13 +21,16 @@ namespace LayoutParserApi.Services.Database
     {
         private readonly IServiceProvider _serviceProvider;
         private readonly ILogger<CachePermanentWarmupBackgroundService> _logger;
+        private readonly CatalogWarmupState _catalogState;
 
         public CachePermanentWarmupBackgroundService(
             IServiceProvider serviceProvider,
-            ILogger<CachePermanentWarmupBackgroundService> logger)
+            ILogger<CachePermanentWarmupBackgroundService> logger,
+            CatalogWarmupState catalogState)
         {
             _serviceProvider = serviceProvider;
             _logger = logger;
+            _catalogState = catalogState;
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -63,15 +68,28 @@ namespace LayoutParserApi.Services.Database
         /// </summary>
         private async Task RefreshLayoutCacheAsync(ICachedLayoutService cachedLayoutService, CancellationToken stoppingToken)
         {
+            var layoutCount = 0;
             try
             {
                 _logger.LogInformation("Populando cache de layouts em background...");
                 await cachedLayoutService.RefreshCacheFromDatabaseAsync();
-                _logger.LogInformation("Cache de layouts populado com sucesso em background");
+
+                // ✅ P1.3: registra a contagem EFETIVA para a sonda de readiness. Lê o catálogo
+                // recém-populado (cache "all" se houver Redis, senão banco) — reflete o que a API
+                // consegue servir, não o tamanho de um cache que pode nem existir sem Redis.
+                var todos = await cachedLayoutService.SearchLayoutsAsync(new LayoutSearchRequest { SearchTerm = "" });
+                layoutCount = todos.Success ? todos.TotalFound : 0;
+
+                _logger.LogInformation("Cache de layouts populado com sucesso em background: {Count} layouts", layoutCount);
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Erro ao popular cache de layouts em background (SQL indisponivel/lento?). Cache pode ficar vazio ate proximo refresh");
+            }
+            finally
+            {
+                // Sempre registra o resultado (0 em caso de falha) para a readiness refletir a realidade.
+                _catalogState.SetResult(layoutCount);
             }
         }
 
