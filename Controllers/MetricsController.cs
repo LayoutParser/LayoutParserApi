@@ -11,6 +11,7 @@ using System.IO;
 using System.Xml.Linq;
 using System.Text;
 using LayoutParserApi.Services.Interfaces;
+using LayoutParserApi.Services.Security;
 
 namespace LayoutParserApi.Controllers
 {
@@ -200,13 +201,18 @@ namespace LayoutParserApi.Controllers
                     .Count();
 
                 // 4. Verificar se TCL existe e fazer parse
-                var tclFileName = SanitizeFileName($"{layoutName}.tcl");
-                var tclPath = Path.Combine(_tclBasePath, tclFileName);
+                // ✅ P0 — path traversal: layoutName vem da rota (cliente). Mesmo helper único do
+                // DocumentController — SanitizeFileName (saneamento) trocado por validação estrita.
+                // null = nome recusado → 404 (não revela existência de arquivo fora da base).
+                var tclPath = SafePathResolver.Resolve(_tclBasePath, $"{layoutName}.tcl");
+                if (tclPath is null)
+                    return NotFound(new { error = $"Layout '{layoutName}' não encontrado" });
                 var tclMetrics = await AnalyzeTclQualityAsync(tclPath, layoutElements, layoutName);
 
                 // 5. Verificar se XSL existe e fazer parse
-                var xslFileName = SanitizeFileName($"{layoutName}.xsl");
-                var xslPath = Path.Combine(_xslBasePath, xslFileName);
+                var xslPath = SafePathResolver.Resolve(_xslBasePath, $"{layoutName}.xsl");
+                if (xslPath is null)
+                    return NotFound(new { error = $"Layout '{layoutName}' não encontrado" });
                 var xslMetrics = await AnalyzeXslQualityAsync(xslPath, layoutName);
 
                 // 6. Calcular métricas gerais
@@ -453,14 +459,6 @@ namespace LayoutParserApi.Controllers
             };
         }
 
-        /// <summary>
-        /// Sanitiza nome de arquivo
-        /// </summary>
-        private string SanitizeFileName(string fileName)
-        {
-            var invalidChars = Path.GetInvalidFileNameChars();
-            return string.Join("_", fileName.Split(invalidChars, StringSplitOptions.RemoveEmptyEntries));
-        }
     }
 }
 

@@ -112,6 +112,8 @@ namespace LayoutParserApi.Services.Database
                 var totalRead = 0;
                 var textPositionalCount = 0;
                 var skippedCount = 0;
+                // ✅ P1.1: falha de descriptografia contada à PARTE de "não é TextPositional".
+                var decryptionFailureCount = 0;
 
                 using var reader = await command.ExecuteReaderAsync();
                 while (await reader.ReadAsync())
@@ -136,30 +138,31 @@ namespace LayoutParserApi.Services.Database
                     {
                         try
                         {
-                            layout.DecryptedContent = _decryptionService.DecryptContent(layout.ValueContent);
-
-                            // Extrair LayoutGuid do XML descriptografado (sempre priorizar XML sobre banco)
-                            ExtractLayoutGuidFromDecryptedContent(layout);
-
-                            // Verificar se o layout é do tipo TextPositional
-                            // Apenas layouts TextPositional devem ser incluídos no Redis
-                            if (!IsTextPositionalLayout(layout))
-                            {
-                                skippedCount++;
-                                _logger.LogDebug("Layout {Id} ({Name}) ignorado - nao e TextPositional", layout.Id, layout.Name);
-                                continue; // Pular este layout, não adicionar à lista
-                            }
-
-                            textPositionalCount++;
+                            layout.DecryptedContent = await _decryptionService.DecryptContentAsync(layout.ValueContent);
                         }
-                        catch (Exception ex)
+                        catch (DecryptionException ex)
+                        {
+                            // ✅ P1.1: falha REAL de descriptografia. Contada à parte de "não é
+                            // TextPositional" — taxa > 0 vira ERROR no resumo abaixo, não INFO com ✅.
+                            decryptionFailureCount++;
+                            _logger.LogWarning(ex, "Falha ao descriptografar layout {Id} ({Name}) — excluido do catalogo.", layout.Id, layout.Name);
+                            layout.DecryptedContent = "";
+                            continue; // Sem descriptografar, não dá para verificar o tipo — pula
+                        }
+
+                        // Extrair LayoutGuid do XML descriptografado (sempre priorizar XML sobre banco)
+                        ExtractLayoutGuidFromDecryptedContent(layout);
+
+                        // Verificar se o layout é do tipo TextPositional
+                        // Apenas layouts TextPositional devem ser incluídos no Redis
+                        if (!IsTextPositionalLayout(layout))
                         {
                             skippedCount++;
-                            _logger.LogWarning(ex, "Erro ao descriptografar conteudo do layout {Id} ({Name}). Continuando sem conteudo descriptografado.", layout.Id, layout.Name);
-                            layout.DecryptedContent = "";
-                            // Se não conseguiu descriptografar, não pode verificar o tipo, então pula
-                            continue;
+                            _logger.LogDebug("Layout {Id} ({Name}) ignorado - nao e TextPositional", layout.Id, layout.Name);
+                            continue; // Pular este layout, não adicionar à lista
                         }
+
+                        textPositionalCount++;
                     }
                     else
                     {
@@ -172,7 +175,12 @@ namespace LayoutParserApi.Services.Database
                     layouts.Add(layout);
                 }
 
-                _logger.LogInformation("✅ Processamento de layouts concluido: {TotalRead} lidos do banco, {TextPositionalCount} TextPositional incluidos, {SkippedCount} ignorados (nao-TextPositional ou sem conteudo)", totalRead, textPositionalCount, skippedCount);
+                // ✅ P1.1: falha de descriptografia > 0 é ERROR, não INFO com ✅ — o operador precisa
+                // ver que o catálogo pode estar parcial (decryptor ausente/errado), não achar "ok".
+                if (decryptionFailureCount > 0)
+                    _logger.LogError("Processamento de layouts concluido COM FALHAS DE DESCRIPTOGRAFIA: {TotalRead} lidos do banco, {TextPositionalCount} TextPositional incluidos, {DecryptionFailureCount} FALHARAM na descriptografia, {SkippedCount} ignorados (nao-TextPositional ou sem conteudo). Verifique o LayoutParserDecrypt.exe — o catalogo pode estar PARCIAL.", totalRead, textPositionalCount, decryptionFailureCount, skippedCount);
+                else
+                    _logger.LogInformation("✅ Processamento de layouts concluido: {TotalRead} lidos do banco, {TextPositionalCount} TextPositional incluidos, {SkippedCount} ignorados (nao-TextPositional ou sem conteudo)", totalRead, textPositionalCount, skippedCount);
                 _logger.LogInformation("Encontrados {Count} layouts TextPositional para incluir no Redis", layouts.Count);
 
                 return new LayoutSearchResponse
@@ -246,14 +254,14 @@ namespace LayoutParserApi.Services.Database
                     {
                         try
                         {
-                            layout.DecryptedContent = _decryptionService.DecryptContent(layout.ValueContent);
+                            layout.DecryptedContent = await _decryptionService.DecryptContentAsync(layout.ValueContent);
 
                             // Extrair LayoutGuid do XML descriptografado (sempre priorizar XML sobre banco)
                             ExtractLayoutGuidFromDecryptedContent(layout);
                         }
-                        catch (Exception ex)
+                        catch (DecryptionException ex)
                         {
-                            _logger.LogWarning(ex, "Erro ao descriptografar conteudo do layout {Id} ({Name}). Continuando sem conteudo descriptografado.", layout.Id, layout.Name);
+                            _logger.LogWarning(ex, "Falha ao descriptografar conteudo do layout {Id} ({Name}). Continuando sem conteudo descriptografado.", layout.Id, layout.Name);
                             layout.DecryptedContent = "";
                         }
                     }
