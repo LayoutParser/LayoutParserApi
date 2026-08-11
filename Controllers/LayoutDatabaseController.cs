@@ -173,7 +173,7 @@ namespace LayoutParserApi.Controllers
         /// Testa a descriptografia de conteúdo
         /// </summary>
         [HttpPost("test-decryption")]
-        public IActionResult TestDecryption([FromBody] TestDecryptionRequest request)
+        public async Task<IActionResult> TestDecryption([FromBody] TestDecryptionRequest request)
         {
             try
             {
@@ -184,7 +184,7 @@ namespace LayoutParserApi.Controllers
                     return BadRequest(new { error = "Conteúdo criptografado é obrigatório" });
                 }
 
-                var decryptedContent = _decryptionService.DecryptContent(request.EncryptedContent);
+                var decryptedContent = await _decryptionService.DecryptContentAsync(request.EncryptedContent);
 
                 return Ok(new
                 {
@@ -195,12 +195,23 @@ namespace LayoutParserApi.Controllers
                     timestamp = DateTime.UtcNow
                 });
             }
+            catch (DecryptionException ex)
+            {
+                // ✅ P1.1: a descriptografia NÃO ocorreu (executável ausente/falhou/timeout) →
+                // 503, nunca 200 com a cifra ecoada como se fosse texto claro.
+                _logger.LogError(ex, "Descriptografia nao ocorreu no teste de descriptografia");
+                return StatusCode(503, new
+                {
+                    success = false,
+                    error = "Descriptografia indisponivel: " + ex.Message
+                });
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Erro ao testar descriptografia");
-                return StatusCode(500, new { 
-                    success = false, 
-                    error = ex.Message 
+                return StatusCode(500, new {
+                    success = false,
+                    error = ex.Message
                 });
             }
         }
@@ -210,7 +221,7 @@ namespace LayoutParserApi.Controllers
         /// </summary>
         [HttpPost("test-decryption-raw")]
         [Consumes("text/plain", "application/octet-stream")]
-        public IActionResult TestDecryptionRaw([FromBody] string encryptedContent)
+        public async Task<IActionResult> TestDecryptionRaw([FromBody] string encryptedContent)
         {
             try
             {
@@ -222,7 +233,7 @@ namespace LayoutParserApi.Controllers
                 }
 
                 var trimmed = encryptedContent.Trim();
-                var decryptedContent = _decryptionService.DecryptContent(trimmed);
+                var decryptedContent = await _decryptionService.DecryptContentAsync(trimmed);
 
                 return Ok(new
                 {
@@ -233,12 +244,22 @@ namespace LayoutParserApi.Controllers
                     timestamp = DateTime.UtcNow
                 });
             }
+            catch (DecryptionException ex)
+            {
+                // ✅ P1.1: descriptografia não ocorreu → 503, nunca 200 com a cifra ecoada.
+                _logger.LogError(ex, "Descriptografia nao ocorreu no teste de descriptografia (raw)");
+                return StatusCode(503, new
+                {
+                    success = false,
+                    error = "Descriptografia indisponivel: " + ex.Message
+                });
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Erro ao testar descriptografia (raw)");
-                return StatusCode(500, new { 
-                    success = false, 
-                    error = ex.Message 
+                return StatusCode(500, new {
+                    success = false,
+                    error = ex.Message
                 });
             }
         }

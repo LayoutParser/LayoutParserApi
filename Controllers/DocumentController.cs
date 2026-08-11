@@ -1,5 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 
+using LayoutParserApi.Services.Security;
+
 namespace LayoutParserApi.Controllers
 {
     [ApiController]
@@ -124,8 +126,10 @@ namespace LayoutParserApi.Controllers
         {
             try
             {
-                var layoutPath = Path.Combine(_documentsPath, "Layout", fileName);
-                if (!System.IO.File.Exists(layoutPath))
+                // ✅ P0 — path traversal: nome cru do cliente resolvido pelo helper único.
+                // null = recusa (nome inválido OU escapa da base) → 404 sem revelar existência.
+                var layoutPath = SafePathResolver.Resolve(Path.Combine(_documentsPath, "Layout"), fileName);
+                if (layoutPath is null || !System.IO.File.Exists(layoutPath))
                     return NotFound($"Layout {fileName} não encontrado");
 
                 var content = System.IO.File.ReadAllText(layoutPath);
@@ -149,8 +153,9 @@ namespace LayoutParserApi.Controllers
         {
             try
             {
-                var documentPath = Path.Combine(_documentsPath, "Documento", fileName);
-                if (!System.IO.File.Exists(documentPath))
+                // ✅ P0 — path traversal (ver GetLayout).
+                var documentPath = SafePathResolver.Resolve(Path.Combine(_documentsPath, "Documento"), fileName);
+                if (documentPath is null || !System.IO.File.Exists(documentPath))
                     return NotFound($"Documento {fileName} não encontrado");
 
                 var content = System.IO.File.ReadAllText(documentPath);
@@ -174,8 +179,9 @@ namespace LayoutParserApi.Controllers
         {
             try
             {
-                var excelPath = Path.Combine(_documentsPath, "Excel", fileName);
-                if (!System.IO.File.Exists(excelPath))
+                // ✅ P0 — path traversal (ver GetLayout).
+                var excelPath = SafePathResolver.Resolve(Path.Combine(_documentsPath, "Excel"), fileName);
+                if (excelPath is null || !System.IO.File.Exists(excelPath))
                     return NotFound($"Arquivo Excel {fileName} não encontrado");
 
                 var fileBytes = System.IO.File.ReadAllBytes(excelPath);
