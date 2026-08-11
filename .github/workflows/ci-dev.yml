@@ -1,9 +1,9 @@
 name: CI Dev (LayoutParserApi)
 
-# CI/CD de DESENVOLVIMENTO — roda exclusivamente no runner local de dev (label 'dev-local').
-# Deploys de produção exigem a label 'production' (ver deploy.yml): os dois pools nunca se cruzam.
-# Este workflow valida o build E faz deploy LOCAL DE DEV: publica a API como serviço Windows
-# NATIVO (sem NSSM) no destino apontado pela Variable DEPLOY_PATH_DEV — espelho fiel de produção.
+# CI/CD de DESENVOLVIMENTO - roda exclusivamente no runner local de dev (label 'dev-local').
+# Deploys de producao exigem a label 'production' (ver deploy.yml): os dois pools nunca se cruzam.
+# Este workflow valida o build E faz deploy LOCAL DE DEV: publica a API como servico Windows
+# NATIVO (sem NSSM) no destino apontado pela Variable DEPLOY_PATH_DEV - espelho fiel de producao.
 
 on:
   push:
@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
 
 # Um push novo na mesma branch cancela o run anterior ainda em andamento
-# (o runner de dev é único — evita fila desnecessária).
+# (o runner de dev e unico - evita fila desnecessaria).
 concurrency:
   group: ci-dev-${{ github.ref }}
   cancel-in-progress: true
@@ -30,10 +30,54 @@ jobs:
       with:
         path: LayoutParserApi
 
+    # --- Gate de encoding dos workflows -------------------------------------------
+    #
+    # Roda PRIMEIRO e falha rapido, porque protege o deploy de PRODUCAO contra um defeito
+    # que ja aconteceu de verdade em 2026-08-10: o deploy quebrou com
+    #   "The string is missing the terminator" / "Missing closing '}'"
+    # sem que houvesse erro de logica nenhum.
+    #
+    # CAUSA: o Actions escreve cada bloco `run:` como um .ps1 SEM BOM, e o Windows
+    # PowerShell 5.1 le arquivo sem BOM como ANSI. Um travessao num COMENTARIO (E2 80 94
+    # em UTF-8) vira tres bytes que a code page traduz em outros caracteres, um deles aspa
+    # - dali em diante o parser perde o pareamento e acusa erro numa linha muito depois da
+    # causa. Um acento em comentario derruba o deploy inteiro.
+    #
+    # O gate e simples de proposito: qualquer byte > 127 em workflow e proibido. Nao ha
+    # excecao util - PT-BR sem acento e perfeitamente legivel, e o custo de errar aqui e
+    # producao parada.
+    - name: Validar encoding dos workflows (ASCII puro)
+      run: |
+        $ErrorActionPreference = "Stop"
+        $raiz = Join-Path $PWD.Path "LayoutParserApi\.github\workflows"
+        $problemas = 0
+
+        foreach ($wf in (Get-ChildItem $raiz -Filter *.yml -ErrorAction SilentlyContinue)) {
+          $linhas = Get-Content $wf.FullName
+          for ($i = 0; $i -lt $linhas.Count; $i++) {
+            $ruins = $linhas[$i].ToCharArray() | Where-Object { [int]$_ -gt 127 }
+            if ($ruins) {
+              $codigos = ($ruins | ForEach-Object { "U+{0:X4}" -f [int]$_ }) -join ' '
+              Write-Host "  $($wf.Name):$($i + 1)  $codigos"
+              Write-Host "      $($linhas[$i].Trim())"
+              $problemas++
+            }
+          }
+        }
+
+        if ($problemas -gt 0) {
+          Write-Error ("$problemas linha(s) com caractere nao-ASCII em workflow. " +
+            "O PowerShell do runner le o bloco run: como ANSI e isso QUEBRA o deploy de producao. " +
+            "Troque por equivalente ASCII (- em vez de travessao, [ATENCAO] em vez de emoji, sem acentos).")
+          exit 1
+        }
+
+        Write-Host "Workflows em ASCII puro - seguro para o PowerShell do runner."
+
     # O LayoutParserApi.csproj referencia a Lib via <Reference> com HintPath relativo
-    # sensível à configuração (..\LayoutParserLib\bin\$(Configuration)\, com fallback
-    # condicional para bin\Debug quando a DLL da configuração não existe) — o checkout
-    # lado a lado é obrigatório, no mesmo padrão do deploy.yml.
+    # sensivel a configuracao (..\LayoutParserLib\bin\$(Configuration)\, com fallback
+    # condicional para bin\Debug quando a DLL da configuracao nao existe) - o checkout
+    # lado a lado e obrigatorio, no mesmo padrao do deploy.yml.
     - name: Checkout LayoutParserLib
       uses: actions/checkout@v4
       with:
@@ -42,8 +86,8 @@ jobs:
         token: ${{ secrets.GH_PAT_TOKEN || secrets.GITHUB_TOKEN }}
         fetch-depth: 1
 
-    # O Decrypt é standalone (embute os fontes mínimos da Lib) e compila com dotnet build —
-    # o runner dev-local NÃO possui VS Build Tools/msbuild.exe (não usar setup-msbuild aqui).
+    # O Decrypt e standalone (embute os fontes minimos da Lib) e compila com dotnet build -
+    # o runner dev-local NAO possui VS Build Tools/msbuild.exe (nao usar setup-msbuild aqui).
     - name: Checkout LayoutParserDecrypt
       uses: actions/checkout@v4
       with:
@@ -59,12 +103,12 @@ jobs:
 
     - name: Build LayoutParserLib (Debug, .NET Framework 4.8.1)
       run: |
-        # Aqui a Lib é compilada em Debug e a API em Release: o HintPath da API é sensível
-        # à configuração ($(Configuration)) e, como bin\Release da Lib não existe neste run,
-        # o fallback condicional do .csproj (!Exists → bin\Debug) resolve a DLL — não há
-        # obrigação de config casada entre Lib e API.
-        # A Lib é csproj legado (non-SDK) sem PackageReference: o MSBuild do SDK .NET
-        # compila direto — validado no runner dev-local, que NAO possui VS Build Tools/msbuild.exe.
+        # Aqui a Lib e compilada em Debug e a API em Release: o HintPath da API e sensivel
+        # a configuracao ($(Configuration)) e, como bin\Release da Lib nao existe neste run,
+        # o fallback condicional do .csproj (!Exists -> bin\Debug) resolve a DLL - nao ha
+        # obrigacao de config casada entre Lib e API.
+        # A Lib e csproj legado (non-SDK) sem PackageReference: o MSBuild do SDK .NET
+        # compila direto - validado no runner dev-local, que NAO possui VS Build Tools/msbuild.exe.
         $LIB_PROJECT = Join-Path $PWD.Path "LayoutParserLib\LayoutParserLib.csproj"
 
         if (-not (Test-Path $LIB_PROJECT)) {
@@ -111,13 +155,13 @@ jobs:
         Write-Host "LayoutParserApi compilada com sucesso (Release)"
 
     # Quality gate de verdade. Antes deste step o CI nao rodava teste nenhum, e o
-    # `dotnet test` na solution reportava SUCESSO tendo executado ZERO testes — um gate que
+    # `dotnet test` na solution reportava SUCESSO tendo executado ZERO testes - um gate que
     # mentia. Duas coisas mudaram junto com este step:
     #   - tests/LayoutParserApi.Tests entrou na LayoutParserApi.sln (antes ficava de fora);
     #   - deploy.yml passou a buildar o .csproj EXPLICITAMENTE, para que a entrada dos testes
     #     na solution nao faca o deploy de producao restaurar xUnit e compilar testes.
     # O caminho do .csproj fica explicito aqui de proposito: nao dependemos de inferencia.
-    # Teste vermelho BLOQUEIA o deploy de dev — e o ponto do gate.
+    # Teste vermelho BLOQUEIA o deploy de dev - e o ponto do gate.
     - name: Testes (xUnit)
       run: |
         $TEST_PROJECT = Join-Path $PWD.Path "LayoutParserApi\tests\LayoutParserApi.Tests\LayoutParserApi.Tests.csproj"
@@ -129,28 +173,28 @@ jobs:
 
         dotnet test "$TEST_PROJECT" --configuration Release --logger "console;verbosity=minimal"
         if ($LASTEXITCODE -ne 0) {
-          Write-Error "Testes falharam — deploy de dev abortado."
+          Write-Error "Testes falharam - deploy de dev abortado."
           exit 1
         }
 
         Write-Host "Suite de testes verde."
 
-    # ── Deploy local de DEV (serviço Windows NATIVO) ────────────────────────────────
+    # -- Deploy local de DEV (servico Windows NATIVO) --------------------------------
 
-    # Tolerante a falha: o exe do Decrypt raramente muda — se o build quebrar,
-    # seguimos com o binário que já existir no destino.
+    # Tolerante a falha: o exe do Decrypt raramente muda - se o build quebrar,
+    # seguimos com o binario que ja existir no destino.
     - name: Build LayoutParserDecrypt (Release, .NET Framework 4.8.1)
       run: |
         $DECRYPT_PROJECT = Join-Path $PWD.Path "LayoutParserDecrypt\LayoutParserDecrypt.csproj"
 
         if (-not (Test-Path $DECRYPT_PROJECT)) {
-          Write-Warning "Projeto nao encontrado: $DECRYPT_PROJECT — seguindo sem rebuild do Decrypt."
+          Write-Warning "Projeto nao encontrado: $DECRYPT_PROJECT - seguindo sem rebuild do Decrypt."
           exit 0
         }
 
         dotnet build "$DECRYPT_PROJECT" --configuration Release
         if ($LASTEXITCODE -ne 0) {
-          Write-Warning "Falha ao compilar LayoutParserDecrypt — seguindo com o binario existente (o exe raramente muda)."
+          Write-Warning "Falha ao compilar LayoutParserDecrypt - seguindo com o binario existente (o exe raramente muda)."
         } else {
           Write-Host "LayoutParserDecrypt compilado (Release)."
         }
@@ -175,8 +219,8 @@ jobs:
         }
         Write-Host "Publish concluido em: $PUBLISH_OUTPUT"
 
-    # DEPLOY_PATH_DEV é uma *Variable* do repositório (path não é segredo).
-    # Nesta máquina de dev o valor esperado é: C:\inetpub\wwwroot\layoutparser
+    # DEPLOY_PATH_DEV e uma *Variable* do repositorio (path nao e segredo).
+    # Nesta maquina de dev o valor esperado e: C:\inetpub\wwwroot\layoutparser
     - name: Validar destino do deploy (DEPLOY_PATH_DEV)
       env:
         DEPLOY_PATH_DEV: ${{ vars.DEPLOY_PATH_DEV }}
@@ -200,14 +244,14 @@ jobs:
         Write-Host "URL da API (dev): $API_URL"
 
     # Parar ANTES de copiar (exe travado se o processo estiver rodando).
-    # Se o serviço existente for o legado do NSSM, ele é removido aqui e recriado
-    # como serviço Windows NATIVO no step de criação (migração NSSM -> nativo).
+    # Se o servico existente for o legado do NSSM, ele e removido aqui e recriado
+    # como servico Windows NATIVO no step de criacao (migracao NSSM -> nativo).
     - name: Parar servico (e remover NSSM legado, se houver)
       run: |
         $serviceName = "LayoutParserApi"
         $svc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
         if (-not $svc) {
-          Write-Host "Servico $serviceName nao existe ainda — sera criado adiante."
+          Write-Host "Servico $serviceName nao existe ainda - sera criado adiante."
           exit 0
         }
 
@@ -220,7 +264,7 @@ jobs:
           try {
             $svc.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
           } catch {
-            Write-Error "Timeout ao parar o servico $serviceName — abortando para nao copiar sobre exe em uso."
+            Write-Error "Timeout ao parar o servico $serviceName - abortando para nao copiar sobre exe em uso."
             exit 1
           }
           Write-Host "Servico parado."
@@ -238,7 +282,7 @@ jobs:
             Write-Error "Servico ainda presente apos delete (marcado para exclusao?). Feche services.msc/handles e re-execute o workflow."
             exit 1
           }
-          Write-Host "Servico NSSM removido — sera recriado como nativo."
+          Write-Host "Servico NSSM removido - sera recriado como nativo."
         }
 
     - name: Backup do appsettings e copia dos artefatos
@@ -252,7 +296,7 @@ jobs:
         New-Item -ItemType Directory -Path $BACKUPS -Force | Out-Null
 
         # Preservacao do appsettings.json do destino (mesma politica do deploy.yml):
-        # se ja existe um no servidor, ele NAO e sobrescrito — apenas backupeado.
+        # se ja existe um no servidor, ele NAO e sobrescrito - apenas backupeado.
         $destAppSettings = Join-Path $API_DEST "appsettings.json"
         $preserveAppSettings = Test-Path $destAppSettings
         if ($preserveAppSettings) {
@@ -260,7 +304,7 @@ jobs:
           Copy-Item -Path $destAppSettings -Destination (Join-Path $BACKUPS $backupName) -Force
           Write-Host "Backup do appsettings.json do destino: backups\$backupName"
         } else {
-          Write-Host "Destino sem appsettings.json (primeiro deploy?) — o do publish sera usado."
+          Write-Host "Destino sem appsettings.json (primeiro deploy?) - o do publish sera usado."
         }
 
         Write-Host "Copiando publish-api -> $API_DEST (preservar appsettings: $preserveAppSettings)..."
@@ -270,7 +314,7 @@ jobs:
           Copy-Item -Path (Join-Path $SRC '*') -Destination $API_DEST -Recurse -Force
         }
 
-        # LayoutParserDecrypt.exe (+ config) — processo externo de descriptografia.
+        # LayoutParserDecrypt.exe (+ config) - processo externo de descriptografia.
         $DECRYPT_BIN = Join-Path $PWD.Path "LayoutParserDecrypt\bin\Release"
         foreach ($f in @('LayoutParserDecrypt.exe', 'LayoutParserDecrypt.exe.config')) {
           $p = Join-Path $DECRYPT_BIN $f
@@ -278,7 +322,7 @@ jobs:
             Copy-Item -Path $p -Destination $API_DEST -Force
             Write-Host "  $f copiado."
           } else {
-            Write-Warning "  $f nao encontrado em $DECRYPT_BIN — mantendo o que existir no destino."
+            Write-Warning "  $f nao encontrado em $DECRYPT_BIN - mantendo o que existir no destino."
           }
         }
 
@@ -298,40 +342,40 @@ jobs:
         $count = (Get-ChildItem -Path $API_DEST -File -Recurse | Measure-Object).Count
         Write-Host "Copia concluida ($count arquivos no destino)."
 
-    # Serviço Windows NATIVO (Program.cs usa builder.Host.UseWindowsService()).
+    # Servico Windows NATIVO (Program.cs usa builder.Host.UseWindowsService()).
     #
-    # ⚠️ ESTE É O ÚNICO CANAL DE CONFIGURAÇÃO QUE CHEGA AO DESTINO. O step de cópia acima
-    # preserva o appsettings.json do servidor (`-Exclude 'appsettings.json'`), então chave
-    # nova adicionada ao appsettings.json do REPO não tem efeito nenhum no destino — o código
-    # cai no default em silêncio. Toda config nova entra aqui, como `Section__Key`.
+    # [ATENCAO] ESTE E O UNICO CANAL DE CONFIGURACAO QUE CHEGA AO DESTINO. O step de copia acima
+    # preserva o appsettings.json do servidor (`-Exclude 'appsettings.json'`), entao chave
+    # nova adicionada ao appsettings.json do REPO nao tem efeito nenhum no destino - o codigo
+    # cai no default em silencio. Toda config nova entra aqui, como `Section__Key`.
     #
-    # O ambiente do serviço vive em HKLM\...\Services\LayoutParserApi\Environment (REG_MULTI_SZ):
+    # O ambiente do servico vive em HKLM\...\Services\LayoutParserApi\Environment (REG_MULTI_SZ):
     #   - Kestrel__Endpoints__Http__Url: porta da instancia de dev (o appsettings fixa 5000).
     #   - Database__Password: injetada do secret DB_PASSWORD_DEV (NUNCA ecoar o valor).
-    #   - LowCode__Package: sem ele o runner sai com exit 9 e NENHUMA transformação acontece.
+    #   - LowCode__Package: sem ele o runner sai com exit 9 e NENHUMA transformacao acontece.
     #   - LowCode__RunnerTimeoutSeconds: o default de 15s mata o runner no meio, sempre.
     #   - ML__LowCodeTransformationsPath: tira o store de dentro da pasta que o deploy sobrescreve.
-    #   - AiMetrics__IngestApiKey: sem ela a ingestão de métricas de IA é recusada.
-    #   - LowCode__RunnerPath: resolvido pelo step de publicação do runner, logo abaixo.
+    #   - AiMetrics__IngestApiKey: sem ela a ingestao de metricas de IA e recusada.
+    #   - LowCode__RunnerPath: resolvido pelo step de publicacao do runner, logo abaixo.
 
-    # ── Publicação do runner low-code ───────────────────────────────────────────────
+    # -- Publicacao do runner low-code -----------------------------------------------
     #
     # O `LowCode:RunnerPath` do appsettings aponta para `<deploy>\api\LayoutParserLowCodeRunner.exe`
-    # e NENHUM workflow colocava esse arquivo lá — toda a configuração low-code ficava correta e
-    # inerte. Este step fecha isso, mas NÃO copiando para `<deploy>\api`: não adiantaria.
+    # e NENHUM workflow colocava esse arquivo la - toda a configuracao low-code ficava correta e
+    # inerte. Este step fecha isso, mas NAO copiando para `<deploy>\api`: nao adiantaria.
     #
-    # O runner é net481/x86 e resolve dependências pelo diretório do PRÓPRIO .exe. Ele só executa de
-    # dentro de uma Bin do Sysmiddle completa — e "completa" tem um discriminador binário, a versão
-    # do log4net (verificado 2026-08-10 na máquina de dev):
+    # O runner e net481/x86 e resolve dependencias pelo diretorio do PROPRIO .exe. Ele so executa de
+    # dentro de uma Bin do Sysmiddle completa - e "completa" tem um discriminador binario, a versao
+    # do log4net (verificado 2026-08-10 na maquina de dev):
     #   C:\appconnector\App\Bin        log4net 2.0.17.0  -> APTA (580 arquivos)
     #   <deploy>\api\Functions         log4net 1.2.13.0  -> estoura em InstanceFactory.Initialize()
     #
-    # Por isso a detecção é por CONTEÚDO e não por nome de pasta: procurar por 'AppConnector.DIR'
-    # (a convenção de nome do ambiente de referência) dá falso negativo aqui, onde a instância se
+    # Por isso a deteccao e por CONTEUDO e nao por nome de pasta: procurar por 'AppConnector.DIR'
+    # (a convencao de nome do ambiente de referencia) da falso negativo aqui, onde a instancia se
     # chama C:\appconnector\App.
     #
-    # Não é fatal: sem Bin apta, o deploy segue e a API sobe — só o pathway low-code fica indisponível,
-    # e o diagnóstico do fim do workflow explica por quê.
+    # Nao e fatal: sem Bin apta, o deploy segue e a API sobe - so o pathway low-code fica indisponivel,
+    # e o diagnostico do fim do workflow explica por que.
     - name: Publicar runner low-code na Bin do Sysmiddle
       continue-on-error: true
       run: |
@@ -340,7 +384,7 @@ jobs:
         $runnerExe = Join-Path $runnerSrc "LayoutParserLowCodeRunner.exe"
 
         if (-not (Test-Path $runnerExe)) {
-          Write-Warning "Runner nao encontrado no checkout: $runnerExe — pathway low-code seguira indisponivel."
+          Write-Warning "Runner nao encontrado no checkout: $runnerExe - pathway low-code seguira indisponivel."
           exit 0
         }
 
@@ -358,11 +402,11 @@ jobs:
             }
         }
 
-        # ⚠️ Escolha pela Bin MAIS COMPLETA (mais arquivos), nao pela primeira em ordem alfabetica.
+        # [ATENCAO] Escolha pela Bin MAIS COMPLETA (mais arquivos), nao pela primeira em ordem alfabetica.
         # Medido no servidor de producao em 2026-08-10: ha QUATRO diretorios que passam no teste
         # "apta" (App\Bin 636 arquivos, Settings 217, Tools 158, App\Bin\Functions 102) e so o
         # primeiro tem o conjunto completo de dependencias. Ordem alfabetica acertaria por
-        # coincidencia — escolher por acaso nao e escolher.
+        # coincidencia - escolher por acaso nao e escolher.
         $ranking = $aptas | Sort-Object -Unique |
                    ForEach-Object { [PSCustomObject]@{ Caminho = $_; Arquivos = (Get-ChildItem $_ -File -ErrorAction SilentlyContinue).Count } } |
                    Sort-Object Arquivos -Descending
@@ -386,7 +430,7 @@ jobs:
         $publicado = Join-Path $destino "LayoutParserLowCodeRunner.exe"
         Write-Host "Runner publicado em: $publicado"
 
-        # Consumido pelo step de Environment logo abaixo — o appsettings do destino e preservado,
+        # Consumido pelo step de Environment logo abaixo - o appsettings do destino e preservado,
         # entao este caminho SO chega a API por variavel de ambiente.
         Add-Content -Path $env:GITHUB_ENV -Value "LOWCODE_RUNNER_PATH_RESOLVED=$publicado"
 
@@ -418,33 +462,33 @@ jobs:
           sc.exe failure $serviceName reset= 86400 actions= restart/60000/restart/60000/restart/60000 | Out-Null
           Write-Host "Servico criado (start=auto, failure actions configuradas)."
         } else {
-          Write-Host "Servico $serviceName ja existe — binarios atualizados, registro mantido."
+          Write-Host "Servico $serviceName ja existe - binarios atualizados, registro mantido."
         }
 
-        # Ambiente do servico — reescrito a cada deploy (idempotente).
+        # Ambiente do servico - reescrito a cada deploy (idempotente).
         # NUNCA dar echo em valores: o REG_MULTI_SZ e montado em variavel e gravado direto.
         # Aqui o CI e dono UNICO do Environment (maquina de dev), entao a reescrita em bloco
         # e deliberada. Em producao NAO e assim: o deploy.yml faz upsert e preserva chaves
-        # definidas manualmente — a senha do SQL de producao vive la fora do CI.
+        # definidas manualmente - a senha do SQL de producao vive la fora do CI.
         $envList = @("Kestrel__Endpoints__Http__Url=$($env:API_URL_RESOLVED)")
 
         if (-not [string]::IsNullOrWhiteSpace($env:DB_PASSWORD_DEV)) {
           $envList += "Database__Password=$($env:DB_PASSWORD_DEV)"
         } else {
-          Write-Warning ("Secret DB_PASSWORD_DEV vazio — a API subira DEGRADADA (sem SQL) ate configurarem o secret " +
+          Write-Warning ("Secret DB_PASSWORD_DEV vazio - a API subira DEGRADADA (sem SQL) ate configurarem o secret " +
             "em: GitHub -> Settings -> Secrets and variables -> Actions -> aba Secrets.")
         }
 
-        # LowCode__Package — NAO e segredo (identificador do projeto Sysmiddle), por isso vai
+        # LowCode__Package - NAO e segredo (identificador do projeto Sysmiddle), por isso vai
         # literal no workflow e nao via secret. Valor de referencia:
         # Instance_FiatMQ\AppConnector.DIR\Conf\config.xml -> <PackageMappers>.
         # Vazio => o runner recusa com exit code proprio e TODA transformacao falha.
         $envList += "LowCode__Package=938f9978-836f-48c1-9c0f-c2898caf4b20"
 
-        # LowCode__RunnerTimeoutSeconds — o default do codigo e 15s (LowCodeRunnerOptions.cs).
+        # LowCode__RunnerTimeoutSeconds - o default do codigo e 15s (LowCodeRunnerOptions.cs).
         # Medicao real na maquina de dev: `ExecuteMapper` sozinho leva 38-73s; a transformacao
         # completa, 48-137s (a init de licenca do InstanceFactory responde por 12-38s e NAO saiu
-        # com a remocao do bootstrap). Com 15s o processo e morto no meio SEMPRE — configurar o
+        # com a remocao do bootstrap). Com 15s o processo e morto no meio SEMPRE - configurar o
         # package e deixar o timeout em 15s nao entrega transformacao nenhuma.
         # 180s = ~30% de folga sobre os 137s do pior caso medido, que ja e o pior de uma faixa
         # com variacao de 3x na MESMA build. Nao ha valor "justo": subdimensionar mata trabalho
@@ -452,43 +496,43 @@ jobs:
         # O efeito de segunda ordem que este valor teria no budget do multi-candidato
         # (RunnerTimeoutSeconds * MaxConcurrentRunners => 360s segurando o cliente) JA FOI
         # CORRIGIDO no codigo: a formula virou min(ondas x timeout, CandidatesRequestTimeoutSeconds)
-        # em LowCodeCandidatesBudget.cs. Nada a configurar aqui — o default de 90s ja e seguro.
+        # em LowCodeCandidatesBudget.cs. Nada a configurar aqui - o default de 90s ja e seguro.
         $envList += "LowCode__RunnerTimeoutSeconds=180"
 
-        # LowCode__RunnerPath — resolvido pelo step de publicacao acima. So e definido quando o
+        # LowCode__RunnerPath - resolvido pelo step de publicacao acima. So e definido quando o
         # runner foi realmente publicado numa Bin apta; do contrario a chave nao entra e a API
         # segue com o caminho do appsettings (que aponta para um .exe inexistente e falha de forma
         # explicita no diagnostico de arranque, em vez de fingir que esta configurada).
         if (-not [string]::IsNullOrWhiteSpace($env:LOWCODE_RUNNER_PATH_RESOLVED)) {
           $envList += "LowCode__RunnerPath=$($env:LOWCODE_RUNNER_PATH_RESOLVED)"
         } else {
-          Write-Warning "Runner low-code nao publicado neste host — LowCode__RunnerPath nao sera definido."
+          Write-Warning "Runner low-code nao publicado neste host - LowCode__RunnerPath nao sera definido."
         }
 
-        # ML__LowCodeTransformationsPath — o default e AppContext.BaseDirectory\MLData\...,
+        # ML__LowCodeTransformationsPath - o default e AppContext.BaseDirectory\MLData\...,
         # ou seja, DENTRO de <deploy>\api, a pasta que o deploy reescreve a cada release.
         # Movido para fora, ao lado do ML:LearningDataPath que ja e externo.
         $lowCodeStore = Join-Path $env:DEPLOY_PATH_RESOLVED 'MLData\LowCodeTransformations'
         New-Item -ItemType Directory -Path $lowCodeStore -Force | Out-Null
         $envList += "ML__LowCodeTransformationsPath=$lowCodeStore"
 
-        # Security__ApiKey — porta de entrada de TODA a API (ApiKeyGateFilter). Opcional DE
+        # Security__ApiKey - porta de entrada de TODA a API (ApiKeyGateFilter). Opcional DE
         # PROPOSITO: ausente, o gate fica desligado e a API segue aberta, que e o comportamento
-        # atual. Criar o secret API_KEY_DEV e o que liga a protecao — e o mesmo valor precisa ir
+        # atual. Criar o secret API_KEY_DEV e o que liga a protecao - e o mesmo valor precisa ir
         # para o front, senao ele passa a tomar 401. O smoke test deste workflow ja manda o header.
         if (-not [string]::IsNullOrWhiteSpace($env:API_KEY_DEV)) {
           $envList += "Security__ApiKey=$($env:API_KEY_DEV)"
         } else {
-          Write-Warning ("Secret API_KEY_DEV ausente — a API sobe SEM AUTENTICACAO (todos os endpoints anonimos). " +
+          Write-Warning ("Secret API_KEY_DEV ausente - a API sobe SEM AUTENTICACAO (todos os endpoints anonimos). " +
             "Para fechar, crie o secret em: GitHub -> Settings -> Secrets and variables -> Actions.")
         }
 
-        # AiMetrics__IngestApiKey — sem ela o AiMetricsIngestKeyFilter recusa toda escrita de
+        # AiMetrics__IngestApiKey - sem ela o AiMetricsIngestKeyFilter recusa toda escrita de
         # metricas de IA (pendencia antiga do Gap 3). Opcional: ausente, o deploy segue.
         if (-not [string]::IsNullOrWhiteSpace($env:AI_METRICS_INGEST_KEY_DEV)) {
           $envList += "AiMetrics__IngestApiKey=$($env:AI_METRICS_INGEST_KEY_DEV)"
         } else {
-          Write-Warning ("Secret AI_METRICS_INGEST_KEY_DEV ausente — a ingestao de metricas de IA continuara RECUSADA. " +
+          Write-Warning ("Secret AI_METRICS_INGEST_KEY_DEV ausente - a ingestao de metricas de IA continuara RECUSADA. " +
             "Crie em: GitHub -> Settings -> Secrets and variables -> Actions -> aba Secrets.")
         }
 
@@ -520,11 +564,11 @@ jobs:
         }
 
         # Janela do SCM: se o processo nao estiver integrado ao SCM (sem UseWindowsService),
-        # ele morre logo apos o start (erro 1053) — conferimos que CONTINUA Running.
+        # ele morre logo apos o start (erro 1053) - conferimos que CONTINUA Running.
         Start-Sleep -Seconds 8
         $svc = Get-Service -Name $serviceName
         if ($svc.Status -ne 'Running') {
-          Write-Error "Servico caiu logo apos o start (Status=$($svc.Status)) — provavel falha de inicializacao."
+          Write-Error "Servico caiu logo apos o start (Status=$($svc.Status)) - provavel falha de inicializacao."
           Get-WinEvent -LogName Application -MaxEvents 12 -ErrorAction SilentlyContinue |
             Where-Object { $_.ProviderName -match '\.NET|LayoutParser|Windows Error' } |
             ForEach-Object { Write-Host ("[{0}] {1}: {2}" -f $_.TimeCreated, $_.ProviderName, ($_.Message -split "`n")[0]) }
@@ -533,12 +577,12 @@ jobs:
         Write-Host "Servico Running (estavel apos 8s)."
 
         # Smoke test: 404 e aceito como SUCESSO de pipeline (resposta controlada do controller
-        # quando o catalogo esta vazio/sem SQL) — o que valida e a API responder HTTP.
+        # quando o catalogo esta vazio/sem SQL) - o que valida e a API responder HTTP.
         $smokeUrl = "$($env:API_URL_RESOLVED)/api/document/layouts"
 
-        # ⚠️ Este smoke test bate numa rota de NEGOCIO, nao num health check anonimo. Quando a
+        # [ATENCAO] Este smoke test bate numa rota de NEGOCIO, nao num health check anonimo. Quando a
         # porta de entrada por chave (ApiKeyGateFilter) for ligada, sem o header ela responderia
-        # 401 e o deploy falharia — o mecanismo de seguranca derrubando o proprio pipeline que o
+        # 401 e o deploy falharia - o mecanismo de seguranca derrubando o proprio pipeline que o
         # instalou. Mandar o header quando o secret existe e o que torna o gate LIGAVEL sem
         # quebrar o CI. Sem o secret, nada muda (o gate esta desligado por padrao).
         $smokeHeaders = @{}
@@ -571,9 +615,9 @@ jobs:
         }
         Write-Host "Deploy de dev concluido com sucesso."
 
-    # ── Diagnostico de pre-requisitos (NAO-FATAL) ───────────────────────────────────
+    # -- Diagnostico de pre-requisitos (NAO-FATAL) -----------------------------------
     # Mesmo step do deploy.yml. Aqui ele responde pela maquina de dev; la, pelo servidor de
-    # producao — que e a unica forma de responder, porque ninguem tem acesso de filesystem
+    # producao - que e a unica forma de responder, porque ninguem tem acesso de filesystem
     # ao .42 de fora. Nao falha o build: e instrumento de decisao, nao gate.
     - name: Diagnostico de pre-requisitos (nao-fatal)
       continue-on-error: true
@@ -592,13 +636,13 @@ jobs:
             Write-Host "  -> LowCode:RunnerPath aponta para um arquivo que nao existe; toda transformacao low-code falha."
             Write-Host "  -> Nenhum workflow compila ou copia este exe hoje. Motivo: o .csproj do runner"
             Write-Host "     referencia SysMiddle.Base.dll pela Bin da instancia FiatMQ, que esta em"
-            Write-Host "     .claude/tmp/ e e IGNORADA pelo git — o CI nao teria como compilar."
+            Write-Host "     .claude/tmp/ e e IGNORADA pelo git - o CI nao teria como compilar."
           }
 
           Write-Host "=== 2) Bin do Sysmiddle apta a hospedar o runner ==="
-          # ⚠️ Detecta pela DLL, NAO pelo nome da pasta. A versao anterior deste step procurava
+          # [ATENCAO] Detecta pela DLL, NAO pelo nome da pasta. A versao anterior deste step procurava
           # literalmente por um diretorio 'AppConnector.DIR' e dava FALSO NEGATIVO: nesta maquina de
-          # dev a instancia se chama C:\appconnector\App\Bin. O nome nao qualifica nada — o que
+          # dev a instancia se chama C:\appconnector\App\Bin. O nome nao qualifica nada - o que
           # qualifica e ter SysMiddle.Base.dll com o log4net CERTO ao lado.
           #
           # O discriminador e a versao do log4net, e a diferenca e binaria (verificado 2026-08-10):
@@ -636,7 +680,7 @@ jobs:
             $ok = $tcp.ConnectAsync('127.0.0.1', 6379).Wait(3000) -and $tcp.Connected
           } catch { $ok = $false } finally { $tcp.Dispose() }
           if ($ok) {
-            Write-Host "  ACEITANDO CONEXAO — o cache Redis da API tende a subir normalmente."
+            Write-Host "  ACEITANDO CONEXAO - o cache Redis da API tende a subir normalmente."
           } else {
             Write-Host "  NAO respondeu em 3s."
             Write-Host "  -> A API sobe DEGRADADA (sem cache) e so reconecta se o processo reiniciar."

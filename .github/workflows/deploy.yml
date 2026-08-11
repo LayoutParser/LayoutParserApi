@@ -5,10 +5,10 @@ on:
     branches:
       - main
       - master
-    # Mudanças SEM efeito de runtime na API publicada NÃO disparam deploy de produção:
-    # docs/harness/memórias, markdown, metadados de repo e as pastas mcp/, ai/ e tools/
-    # (excluídas do build da API via DefaultItemExcludes no .csproj e fora do publish).
-    # Escape manual sempre disponível via workflow_dispatch.
+    # Mudancas SEM efeito de runtime na API publicada NAO disparam deploy de producao:
+    # docs/harness/memorias, markdown, metadados de repo e as pastas mcp/, ai/ e tools/
+    # (excluidas do build da API via DefaultItemExcludes no .csproj e fora do publish).
+    # Escape manual sempre disponivel via workflow_dispatch.
     paths-ignore:
       - 'docs/**'
       - '.claude/**'
@@ -26,7 +26,7 @@ on:
 
 jobs:
   deploy:
-    # Runner org LayoutParser no servidor de PRODUÇÃO (172.25.32.42 / WINSRV2022-LIB).
+    # Runner org LayoutParser no servidor de PRODUCAO (172.25.32.42 / WINSRV2022-LIB).
     # A label 'production' garante que o deploy NUNCA rode no runner de dev (label 'dev-local').
     runs-on: [self-hosted, windows, production]
     timeout-minutes: 60
@@ -103,7 +103,7 @@ jobs:
         Write-Host "Diretorio: $DECRYPT_DIR"
         Write-Host "Projeto: $DECRYPT_PROJECT"
         
-        # Copiar DLL da lib para o diretório do Decrypt
+        # Copiar DLL da lib para o diretorio do Decrypt
         if (Test-Path $LIB_DLL) {
           Copy-Item -Path $LIB_DLL -Destination $DECRYPT_DIR -Force
           Write-Host "LayoutParserLib.dll copiado para LayoutParserDecrypt"
@@ -137,7 +137,7 @@ jobs:
     # Na raiz do repo existem um .sln e um .csproj; o dotnet CLI resolve o comando sem
     # argumento pela SOLUTION. Desde que o projeto de testes entrou na LayoutParserApi.sln
     # (para o `dotnet test` deixar de mentir), um build pela solution passaria a restaurar
-    # xUnit e compilar testes AQUI, em producao — uma falha de restore quebraria o deploy.
+    # xUnit e compilar testes AQUI, em producao - uma falha de restore quebraria o deploy.
     # Producao compila exatamente o que publica: o projeto da API, e mais nada.
     - name: Build LayoutParserApi (.NET 10.0)
       run: |
@@ -189,7 +189,7 @@ jobs:
           exit 1
         }
         
-        # Criar diretório de saída se não existir
+        # Criar diretorio de saida se nao existir
         New-Item -ItemType Directory -Path $PUBLISH_OUTPUT -Force | Out-Null
         
         # Publicar com caminhos absolutos
@@ -251,37 +251,37 @@ jobs:
         
         Write-Host "`nPacote de deploy criado com sucesso!"
     
-    # ── Ambiente do servico (REG_MULTI_SZ) ──────────────────────────────────────────
+    # -- Ambiente do servico (REG_MULTI_SZ) ------------------------------------------
     #
     # POR QUE ESTE STEP EXISTE: o step de deploy preserva o appsettings.json do destino
     # (mais abaixo, `-Exclude "appsettings.json"`). Consequencia: TODA chave de
     # configuracao nova adicionada ao appsettings.json do repositorio NUNCA chega ao
-    # servidor — o codigo cai no default silenciosamente. O unico canal que funciona e a
+    # servidor - o codigo cai no default silenciosamente. O unico canal que funciona e a
     # variavel de ambiente `Section__Key` no Environment do servico Windows.
     #
     # DIFERENCA PARA O ci-dev.yml: la o CI e dono unico do Environment e o reescreve
-    # inteiro. Aqui NAO — producao pode ter variaveis definidas manualmente (Database__Password,
+    # inteiro. Aqui NAO - producao pode ter variaveis definidas manualmente (Database__Password,
     # por exemplo) que ninguem versionou. Este step faz UPSERT: reescreve so as chaves que
     # gerencia e PRESERVA todo o resto. Sobrescrever em bloco apagaria a senha do SQL.
     #
     # Roda ANTES do deploy de proposito: o servico e parado e reiniciado la, entao sobe ja
     # com o ambiente novo. Variavel de ambiente e lida no start do processo.
 
-    # ── Publicacao do runner low-code ───────────────────────────────────────────────
+    # -- Publicacao do runner low-code -----------------------------------------------
     #
     # `LowCode:RunnerPath` aponta para `<deploy>\api\LayoutParserLowCodeRunner.exe` e NENHUM
-    # workflow colocava esse arquivo la — toda a configuracao low-code ficava correta e inerte.
+    # workflow colocava esse arquivo la - toda a configuracao low-code ficava correta e inerte.
     # Este step fecha isso, mas NAO copiando para `<deploy>\api`: nao adiantaria.
     #
     # O runner e net481/x86 e resolve dependencias pelo diretorio do PROPRIO .exe. So executa de
-    # dentro de uma Bin do Sysmiddle completa, e "completa" tem um discriminador binario — a versao
+    # dentro de uma Bin do Sysmiddle completa, e "completa" tem um discriminador binario - a versao
     # do log4net (verificado 2026-08-10 na maquina de dev):
     #   C:\appconnector\App\Bin        log4net 2.0.17.0  -> APTA (580 arquivos)
     #   <deploy>\api\Functions         log4net 1.2.13.0  -> estoura em InstanceFactory.Initialize()
     #
-    # ⚠️ ESCOPO: em producao isto escreve na Bin de um produto de TERCEIROS (a instancia do
-    # AppConnector). E deliberadamente aditivo — copia dois arquivos novos e nao sobrescreve
-    # nenhuma DLL existente — e reversivel apagando os dois. Ainda assim, combine com quem opera o
+    # [ATENCAO] ESCOPO: em producao isto escreve na Bin de um produto de TERCEIROS (a instancia do
+    # AppConnector). E deliberadamente aditivo - copia dois arquivos novos e nao sobrescreve
+    # nenhuma DLL existente - e reversivel apagando os dois. Ainda assim, combine com quem opera o
     # FiatMQ antes do primeiro deploy que rodar este step.
     #
     # Nao e fatal: sem Bin apta o deploy segue e a API sobe; so o pathway low-code fica
@@ -294,7 +294,7 @@ jobs:
         $runnerExe = Join-Path $runnerSrc "LayoutParserLowCodeRunner.exe"
 
         if (-not (Test-Path $runnerExe)) {
-          Write-Warning "Runner nao encontrado no checkout: $runnerExe — pathway low-code seguira indisponivel."
+          Write-Warning "Runner nao encontrado no checkout: $runnerExe - pathway low-code seguira indisponivel."
           exit 0
         }
 
@@ -312,15 +312,15 @@ jobs:
             }
         }
 
-        # ⚠️ Escolha pela Bin MAIS COMPLETA (mais arquivos), nao pela primeira em ordem alfabetica.
-        # Medido no .42 em 2026-08-10: ha QUATRO diretorios com SysMiddle.Base.dll + log4net 2.x —
+        # [ATENCAO] Escolha pela Bin MAIS COMPLETA (mais arquivos), nao pela primeira em ordem alfabetica.
+        # Medido no .42 em 2026-08-10: ha QUATRO diretorios com SysMiddle.Base.dll + log4net 2.x -
         #   C:\appconnector\App\Bin            636 arquivos  <- a Bin real da instancia
         #   C:\appconnector\Settings           217
         #   C:\appconnector\Tools              158
         #   C:\appconnector\App\Bin\Functions  102
         # Todos passam no teste "apta", mas so o primeiro tem o conjunto completo de dependencias.
         # Ordem alfabetica acertaria por coincidencia aqui e erraria em qualquer host onde a
-        # instancia esteja sob um caminho de nome menor — escolher por acaso nao e escolher.
+        # instancia esteja sob um caminho de nome menor - escolher por acaso nao e escolher.
         $ranking = $aptas | Sort-Object -Unique |
                    ForEach-Object { [PSCustomObject]@{ Caminho = $_; Arquivos = (Get-ChildItem $_ -File -ErrorAction SilentlyContinue).Count } } |
                    Sort-Object Arquivos -Descending
@@ -346,19 +346,19 @@ jobs:
 
         Add-Content -Path $env:GITHUB_ENV -Value "LOWCODE_RUNNER_PATH_RESOLVED=$publicado"
 
-    # ── Config drift: repo x destino (DRY-RUN por padrao) ───────────────────────────
+    # -- Config drift: repo x destino (DRY-RUN por padrao) ---------------------------
     #
     # O PROBLEMA ESTRUTURAL: o step de deploy copia com `-Exclude appsettings.json`, preservando o
     # arquivo do servidor. A intencao era boa (nao pisar em ajuste local), mas o efeito e que TODA
-    # chave nova adicionada ao repositorio e silenciosamente ignorada em producao — o codigo cai no
+    # chave nova adicionada ao repositorio e silenciosamente ignorada em producao - o codigo cai no
     # default sem avisar ninguem. Isso nao e um bug: e uma fabrica de bugs. LowCode:Package,
     # RunnerTimeoutSeconds e ML:LowCodeTransformationsPath foram tres instancias do MESMO defeito.
     #
-    # O ESTADO-ALVO (secao 3.1 do plano): inverter o default — o repo vira a fonte da verdade e o
+    # O ESTADO-ALVO (secao 3.1 do plano): inverter o default - o repo vira a fonte da verdade e o
     # destino sobrepoe pelo que e legitimamente local, via appsettings.Production.json (que tem
     # precedencia sobre o base e NAO e versionado) e variaveis de ambiente.
     #
-    # POR QUE ESTE STEP NASCE EM DRY-RUN: ninguem sabe hoje o que diverge no .42 — o host nao aceita
+    # POR QUE ESTE STEP NASCE EM DRY-RUN: ninguem sabe hoje o que diverge no .42 - o host nao aceita
     # SSH/WinRM/SMB, entao o conteudo do appsettings.json de producao nunca foi comparado com o do
     # repo. Inverter o default as cegas pode apagar ajuste local que sustenta a producao. Rodar
     # primeiro em modo relatorio produz exatamente o dado que falta para decidir, e custa um deploy.
@@ -379,12 +379,12 @@ jobs:
         $migrar = ("${{ vars.MIGRATE_CONFIG_TO_REPO }}" -eq 'true')
 
         if (-not (Test-Path $destino)) {
-          Write-Host "Sem appsettings.json no destino (primeiro deploy?) — nada a comparar."
+          Write-Host "Sem appsettings.json no destino (primeiro deploy?) - nada a comparar."
           if ($migrar) { Add-Content -Path $env:GITHUB_ENV -Value "CONFIG_MIGRATED=true" }
           exit 0
         }
         if (-not (Test-Path $repo)) {
-          Write-Warning "appsettings.json do repo nao encontrado em $repo — comparacao abortada."
+          Write-Warning "appsettings.json do repo nao encontrado em $repo - comparacao abortada."
           exit 0
         }
 
@@ -417,10 +417,10 @@ jobs:
         Write-Host "=== Config drift: repo x destino ==="
         Write-Host "  Chaves no repo: $($mapaRepo.Count) | no destino: $($mapaDestino.Count)"
         Write-Host ""
-        Write-Host "  [1] So no REPO (nunca chegaram ao servidor — o codigo usa o default):"
+        Write-Host "  [1] So no REPO (nunca chegaram ao servidor - o codigo usa o default):"
         if ($soNoRepo.Count -eq 0) { Write-Host "      (nenhuma)" } else { $soNoRepo | ForEach-Object { Write-Host "      $_" } }
         Write-Host ""
-        Write-Host "  [2] DIVERGENTES (destino tem valor proprio — candidatas a appsettings.Production.json):"
+        Write-Host "  [2] DIVERGENTES (destino tem valor proprio - candidatas a appsettings.Production.json):"
         if ($divergentes.Count -eq 0) { Write-Host "      (nenhuma)" } else {
           $divergentes | ForEach-Object {
             if (EhSensivel $_) { Write-Host "      $_  (valor omitido: chave sensivel)" }
@@ -433,18 +433,18 @@ jobs:
         Write-Host ""
 
         if (-not $migrar) {
-          Write-Host "MODO DRY-RUN — nada foi alterado."
+          Write-Host "MODO DRY-RUN - nada foi alterado."
           Write-Host "Para migrar, defina a variable MIGRATE_CONFIG_TO_REPO=true e rode de novo."
           exit 0
         }
 
-        # ── Migracao ──
+        # -- Migracao --
         # Preserva no appsettings.Production.json o que o destino tinha de proprio ([2] e [3]).
-        # Production.json tem precedencia sobre o base, entao o comportamento efetivo nao muda —
+        # Production.json tem precedencia sobre o base, entao o comportamento efetivo nao muda -
         # o que muda e de onde vem o resto: passa a vir do repo, versionado e revisavel.
         #
-        # ⚠️ EXCETO as secoes de subsistemas MORTOS. Medido no .42 em 2026-08-10: o appsettings de
-        # producao ainda carrega Gemini:ApiKey, OpenAI:ApiKey e ElasticSearch:Password COM VALOR —
+        # [ATENCAO] EXCETO as secoes de subsistemas MORTOS. Medido no .42 em 2026-08-10: o appsettings de
+        # producao ainda carrega Gemini:ApiKey, OpenAI:ApiKey e ElasticSearch:Password COM VALOR -
         # segredos de integracoes cujo codigo ja foi removido do repositorio (OpenAI em 9b0965f,
         # ElasticSearch em 2026-07-27, Gemini em aa54dc3). Preservar isso "porque diverge" copiaria
         # tres segredos vivos para um arquivo novo e os manteria em disco por mais um ciclo. A
@@ -465,9 +465,9 @@ jobs:
           $preservar[$chave] = $mapaDestino[$chave]
         }
 
-        # ⚠️ GUARD-RAIL: segredo NAO vai para arquivo nenhum, nem para o Production.json.
+        # [ATENCAO] GUARD-RAIL: segredo NAO vai para arquivo nenhum, nem para o Production.json.
         # Medido no .42: Database:Password diverge (o repo tem "") e o Environment do servico esta
-        # VAZIO — ou seja, hoje a senha do SQL vem do appsettings.json em texto plano no disco.
+        # VAZIO - ou seja, hoje a senha do SQL vem do appsettings.json em texto plano no disco.
         # Preservar essa chave "porque diverge" so trocaria o arquivo em que o segredo mora, e a
         # migracao teria gasto a unica chance de tira-lo do disco.
         #
@@ -488,7 +488,7 @@ jobs:
           }
 
           if ($faltando.Count -gt 0) {
-            Write-Host "MIGRACAO ABORTADA — segredo em disco sem equivalente no ambiente do servico."
+            Write-Host "MIGRACAO ABORTADA - segredo em disco sem equivalente no ambiente do servico."
             Write-Host "  Provisione ANTES, no Environment do servico LayoutParserApi:"
             $faltando | ForEach-Object { Write-Host "      $_" }
             Write-Host "  (o valor atual esta no appsettings.json do destino; nao o copie para log nenhum)"
@@ -498,11 +498,11 @@ jobs:
 
           # Ja estao no ambiente: saem do arquivo de config de vez.
           foreach ($s in $segredosDivergentes) { [void]$preservar.Remove($s) }
-          Write-Host "  Segredos ja presentes no Environment — removidos da config em arquivo: $($segredosDivergentes -join ', ')"
+          Write-Host "  Segredos ja presentes no Environment - removidos da config em arquivo: $($segredosDivergentes -join ', ')"
         }
 
         if ($descartadas.Count -gt 0) {
-          Write-Host "  [4] DESCARTADAS (subsistema morto — NAO vao para o Production.json):"
+          Write-Host "  [4] DESCARTADAS (subsistema morto - NAO vao para o Production.json):"
           $descartadas | ForEach-Object { Write-Host "      $_" }
           Write-Warning ("Chaves de subsistema morto sairam da config de producao. Se alguma for segredo " +
             "(Gemini/OpenAI/ElasticSearch), REVOGUE na origem: sair do disco nao invalida o valor que ja vazou.")
@@ -541,7 +541,7 @@ jobs:
         $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$serviceName"
 
         if (-not (Test-Path $regPath)) {
-          Write-Warning "Servico $serviceName nao esta registrado neste host — nada a configurar."
+          Write-Warning "Servico $serviceName nao esta registrado neste host - nada a configurar."
           Write-Warning "A API roda aqui como servico Windows? Se roda de outra forma (IIS/console), o canal de config precisa ser revisto com @lp-devops."
           exit 0
         }
@@ -557,7 +557,7 @@ jobs:
 
         # LowCode__Package: sem ele o runner low-code sai com exit 9 e NENHUMA transformacao
         # acontece. O valor vem de Instance_FiatMQ\AppConnector.DIR\Conf\config.xml (<PackageMappers>).
-        # NAO e segredo — e um identificador de projeto Sysmiddle.
+        # NAO e segredo - e um identificador de projeto Sysmiddle.
         $managed['LowCode__Package'] = '938f9978-836f-48c1-9c0f-c2898caf4b20'
 
         # LowCode__RunnerTimeoutSeconds: o default do codigo (15s) mata o processo no meio.
@@ -567,13 +567,13 @@ jobs:
 
         # LowCode__RunnerPath: resolvido pelo step de publicacao do runner, logo acima. So entra no
         # conjunto gerenciado quando o runner foi de fato publicado numa Bin apta. Se nao foi, a
-        # chave NAO e gerenciada — e, pela semantica de upsert deste step, um valor que ja exista no
+        # chave NAO e gerenciada - e, pela semantica de upsert deste step, um valor que ja exista no
         # destino (definido manualmente) e PRESERVADO em vez de apagado. Sobrescrever com vazio aqui
         # quebraria uma instalacao que alguem configurou a mao.
         if (-not [string]::IsNullOrWhiteSpace($env:LOWCODE_RUNNER_PATH_RESOLVED)) {
           $managed['LowCode__RunnerPath'] = $env:LOWCODE_RUNNER_PATH_RESOLVED
         } else {
-          Write-Warning "Runner low-code nao publicado neste host — LowCode__RunnerPath nao sera gerenciado (valor existente, se houver, fica preservado)."
+          Write-Warning "Runner low-code nao publicado neste host - LowCode__RunnerPath nao sera gerenciado (valor existente, se houver, fica preservado)."
         }
 
         # ML__LowCodeTransformationsPath: o default cai em <api>\MLData\LowCodeTransformations,
@@ -584,11 +584,11 @@ jobs:
         $managed['ML__LowCodeTransformationsPath'] = $lowCodeStore
 
         # AiMetrics__IngestApiKey: sem ela o AiMetricsIngestKeyFilter RECUSA toda escrita de
-        # metricas de IA. Opcional — ausente, o resto do deploy segue normal.
+        # metricas de IA. Opcional - ausente, o resto do deploy segue normal.
         if (-not [string]::IsNullOrWhiteSpace($env:AI_METRICS_INGEST_KEY)) {
           $managed['AiMetrics__IngestApiKey'] = $env:AI_METRICS_INGEST_KEY
         } else {
-          Write-Warning ("Secret AI_METRICS_INGEST_KEY ausente — a ingestao de metricas de IA continuara RECUSADA. " +
+          Write-Warning ("Secret AI_METRICS_INGEST_KEY ausente - a ingestao de metricas de IA continuara RECUSADA. " +
             "Crie em: GitHub -> Settings -> Secrets and variables -> Actions -> aba Secrets.")
         }
 
@@ -624,7 +624,7 @@ jobs:
         $ErrorActionPreference = "Stop"
         $DEPLOY_PATH = "${{ secrets.DEPLOY_PATH }}"
         
-        # Validar se DEPLOY_PATH está configurado
+        # Validar se DEPLOY_PATH esta configurado
         if ([string]::IsNullOrWhiteSpace($DEPLOY_PATH)) {
           Write-Error "DEPLOY_PATH nao esta configurado! Configure o secret DEPLOY_PATH no GitHub."
           exit 1
@@ -633,7 +633,7 @@ jobs:
         # Normalizar caminho (remover aspas se houver)
         $DEPLOY_PATH = $DEPLOY_PATH.Trim('"', '''', ' ')
         
-        # Obter caminho absoluto do diretório de trabalho
+        # Obter caminho absoluto do diretorio de trabalho
         $WORK_DIR = $PWD.Path
         $DEPLOY_SOURCE = Join-Path $WORK_DIR "deploy"
         $DEPLOY_API_SOURCE = Join-Path $DEPLOY_SOURCE "api"
@@ -658,7 +658,7 @@ jobs:
         Write-Host "Arquivos no pacote API:"
         Get-ChildItem -Path $DEPLOY_API_SOURCE -File | Select-Object Name | Format-Table
         
-        # Criar diretórios se não existirem
+        # Criar diretorios se nao existirem
         Write-Host "Criando diretorios de destino..."
         $DEPLOY_API_PATH = Join-Path $DEPLOY_PATH "api"
         $DEPLOY_LOGS_PATH = Join-Path $DEPLOY_API_PATH "Logs"
@@ -669,7 +669,7 @@ jobs:
         Write-Host "   Logs: $DEPLOY_LOGS_PATH"
         Write-Host "   Backups: $DEPLOY_BACKUPS_PATH"
         
-        # Criar diretórios com verificação
+        # Criar diretorios com verificacao
         if (-not (Test-Path $DEPLOY_PATH)) {
           Write-Host "Criando diretorio base: $DEPLOY_PATH"
           New-Item -ItemType Directory -Path $DEPLOY_PATH -Force | Out-Null
@@ -692,7 +692,7 @@ jobs:
         
         Write-Host "Diretorios criados/verificados"
         
-        # Verificar se os diretórios foram criados
+        # Verificar se os diretorios foram criados
         if (-not (Test-Path $DEPLOY_API_PATH)) {
           Write-Error "Falha ao criar diretorio API: $DEPLOY_API_PATH"
           exit 1
@@ -708,7 +708,7 @@ jobs:
           Write-Host "   Origem: $APP_SETTINGS_PATH"
           Write-Host "   Destino: $backupPath"
           
-          # Verificar se diretório de backup existe
+          # Verificar se diretorio de backup existe
           if (-not (Test-Path $DEPLOY_BACKUPS_PATH)) {
             Write-Host "Diretorio de backup nao existe, criando: $DEPLOY_BACKUPS_PATH"
             New-Item -ItemType Directory -Path $DEPLOY_BACKUPS_PATH -Force | Out-Null
@@ -727,7 +727,7 @@ jobs:
           Write-Host "appsettings.json nao encontrado em: $APP_SETTINGS_PATH (primeiro deploy?)"
         }
         
-        # Parar serviço Windows se existir
+        # Parar servico Windows se existir
         $serviceName = "LayoutParserApi"
         if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
           Write-Host "Parando servico $serviceName..."
@@ -738,7 +738,7 @@ jobs:
           Write-Host "Servico $serviceName nao encontrado (pode nao estar instalado como servico)"
         }
         
-        # Copiar arquivos da API (manter appsettings.json se já existir)
+        # Copiar arquivos da API (manter appsettings.json se ja existir)
         Write-Host "Copiando arquivos da API..."
         Write-Host "   Origem: $DEPLOY_API_SOURCE"
         Write-Host "   Destino: $DEPLOY_API_PATH"
@@ -768,7 +768,7 @@ jobs:
           }
         }
         
-        # O appsettings.json do destino e preservado por padrao — e a causa do config drift descrito
+        # O appsettings.json do destino e preservado por padrao - e a causa do config drift descrito
         # no step "Config drift repo x destino". Depois que a migracao roda (MIGRATE_CONFIG_TO_REPO=true),
         # o que era local ja foi movido para appsettings.Production.json e o arquivo base passa a vir
         # do repo, versionado. O backup do appsettings.json antigo acontece acima, nos dois casos.
@@ -856,7 +856,7 @@ jobs:
           Write-Warning "LayoutParserApi.dll nao encontrado em: $apiDllPath"
         }
         
-        # Reiniciar serviço Windows se existir
+        # Reiniciar servico Windows se existir
         if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
           Write-Host "Reiniciando servico $serviceName..."
           Start-Service -Name $serviceName -ErrorAction SilentlyContinue
@@ -881,21 +881,21 @@ jobs:
         Write-Host "Backups: $DEPLOY_BACKUPS_PATH"
         Write-Host "Runner: Self-hosted (execucao local)"
 
-    # ── Diagnostico de pre-requisitos (NAO-FATAL) ───────────────────────────────────
+    # -- Diagnostico de pre-requisitos (NAO-FATAL) -----------------------------------
     #
     # Este step nunca falha o deploy. Ele existe porque duas perguntas so podem ser
     # respondidas DE DENTRO do host de destino, e ninguem tem acesso de filesystem a ele
     # de fora (\\172.25.32.42\c$ inacessivel, SSH/WinRM/SMB negados):
     #
     #   1. Existe instancia FiatMQ instalada aqui? Sem ela nao ha onde publicar o
-    #      LayoutParserLowCodeRunner.exe — ele e net481/x86 e resolve dependencias pelo
+    #      LayoutParserLowCodeRunner.exe - ele e net481/x86 e resolve dependencias pelo
     #      diretorio do proprio .exe, entao so executa DE DENTRO da AppConnector.DIR\Bin
     #      (a pasta tools/LowCodeRunner/Functions/ do repo NAO consegue hospeda-lo:
     #      divergencia de assembly, log4net 1.2.13.0 vs 2.0.17.0, estoura em
     #      InstanceFactory.Initialize()).
     #   2. Existe Redis no host? A API conecta UMA UNICA VEZ no startup; se falhar, o cache
     #      fica desligado ate o processo reiniciar. Sonda externa a :6379 nao responde, mas a
-    #      config e "localhost" — um Redis ligado so a interface local serviria a API e
+    #      config e "localhost" - um Redis ligado so a interface local serviria a API e
     #      recusaria a sonda. Inconclusivo de fora, conclusivo aqui.
     #
     # A saida deste step e o insumo para decidir o step de publicacao do runner.
@@ -914,13 +914,13 @@ jobs:
           } else {
             Write-Host "  AUSENTE: $runnerPath"
             Write-Host "  -> LowCode:RunnerPath aponta para um arquivo que nao existe; toda transformacao low-code falha."
-            Write-Host "  -> Nenhum workflow compila ou copia este exe hoje (decisao pendente — ver o cabecalho deste step)."
+            Write-Host "  -> Nenhum workflow compila ou copia este exe hoje (decisao pendente - ver o cabecalho deste step)."
           }
 
           Write-Host "=== 2) Bin do Sysmiddle apta a hospedar o runner ==="
-          # ⚠️ Detecta pela DLL, NAO pelo nome da pasta. A versao anterior deste step procurava
+          # [ATENCAO] Detecta pela DLL, NAO pelo nome da pasta. A versao anterior deste step procurava
           # literalmente por um diretorio 'AppConnector.DIR' e dava FALSO NEGATIVO: na maquina de dev
-          # a instancia se chama C:\appconnector\App\Bin. O nome nao qualifica nada — o que qualifica
+          # a instancia se chama C:\appconnector\App\Bin. O nome nao qualifica nada - o que qualifica
           # e ter SysMiddle.Base.dll com o log4net CERTO ao lado.
           #
           # O discriminador e a versao do log4net, e a diferenca e binaria (verificado 2026-08-10 na
@@ -928,7 +928,7 @@ jobs:
           #   C:\appconnector\App\Bin                     log4net 2.0.17.0  -> APTA (580 arquivos)
           #   <deploy>\api\Functions                      log4net 1.2.13.0  -> INVIAVEL
           # De Functions/ o runner estoura em InstanceFactory.Initialize() por divergencia de
-          # assembly. Publicar o .exe na pasta errada produz falha em runtime, nao erro de deploy —
+          # assembly. Publicar o .exe na pasta errada produz falha em runtime, nao erro de deploy -
           # por isso a deteccao precisa ser por conteudo, e nao por convencao de nome.
           $candidatas = New-Object System.Collections.Generic.List[string]
           $raizes = Get-ChildItem -Path 'C:\' -Directory -Force -ErrorAction SilentlyContinue |
@@ -961,7 +961,7 @@ jobs:
             $ok = $tcp.ConnectAsync('127.0.0.1', 6379).Wait(3000) -and $tcp.Connected
           } catch { $ok = $false } finally { $tcp.Dispose() }
           if ($ok) {
-            Write-Host "  ACEITANDO CONEXAO — o cache Redis da API tende a subir normalmente."
+            Write-Host "  ACEITANDO CONEXAO - o cache Redis da API tende a subir normalmente."
           } else {
             Write-Host "  NAO respondeu em 3s."
             Write-Host "  -> A API sobe DEGRADADA (sem cache) e so reconecta se o processo reiniciar."
