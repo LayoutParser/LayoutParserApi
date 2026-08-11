@@ -11,6 +11,7 @@ using LayoutParserApi.Services.Learning;
 using LayoutParserApi.Services.Logging;
 using LayoutParserApi.Services.Transformation.LowCode;
 using LayoutParserApi.Services.Database;
+using LayoutParserApi.Services.Security;
 
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
@@ -488,7 +489,17 @@ namespace LayoutParserApi.Controllers
 
                 // Criar diretório baseado no nome do layout
                 var basePath = _configuration["TransformationPipeline:ExamplesPath"] ?? @"C:\inetpub\wwwroot\layoutparser\Examples";
-                var layoutDirectory = Path.Combine(basePath, layoutName);
+
+                // ✅ P0 — path traversal (WRITE): layoutName vem [FromForm] do cliente e vira nome de
+                // DIRETÓRIO. Sem blindagem, "..\..\algo" escreveria fora da base. Mesmo helper único
+                // dos endpoints de leitura. Recusado → pula o aprendizado (best-effort, não derruba o
+                // parse) em vez de gravar em lugar arbitrário.
+                var layoutDirectory = SafePathResolver.Resolve(basePath, layoutName);
+                if (layoutDirectory is null)
+                {
+                    _logger.LogWarning("Aprendizado ignorado: layoutName invalido para nome de diretorio: {LayoutName}", layoutName);
+                    return;
+                }
 
                 if (!Directory.Exists(layoutDirectory))
                 {
@@ -496,11 +507,21 @@ namespace LayoutParserApi.Controllers
                     _logger.LogInformation("Diretório criado: {Path}", layoutDirectory);
                 }
 
-                // Salvar arquivo com timestamp para evitar sobrescrita
+                // Salvar arquivo com timestamp para evitar sobrescrita.
+                // ✅ P0 — path traversal (WRITE): o nome do upload também é do cliente. Nome real de
+                // documento carrega espaço/parêntese, então a lista branca estrita não serve aqui —
+                // reduzimos a só o nome (Path.GetFileName tira qualquer caminho embutido) e ainda
+                // conferimos contenção na base antes de escrever.
                 var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-                var fileExtension = Path.GetExtension(txtFile.FileName);
-                var fileName = $"{timestamp}_{txtFile.FileName}";
+                var uploadName = Path.GetFileName(txtFile.FileName ?? string.Empty);
+                var fileName = $"{timestamp}_{uploadName}";
                 var filePath = Path.Combine(layoutDirectory, fileName);
+
+                if (!SafePathResolver.IsInsideBase(layoutDirectory, filePath))
+                {
+                    _logger.LogWarning("Aprendizado ignorado: nome de arquivo de upload invalido: {FileName}", txtFile.FileName);
+                    return;
+                }
 
                 using (var stream = new FileStream(filePath, FileMode.Create))
                 {
