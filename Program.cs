@@ -1,6 +1,7 @@
 using LayoutParserApi.Services.Cache;
 using LayoutParserApi.Services.Database;
 using LayoutParserApi.Services.Filters;
+using LayoutParserApi.Services.Health;
 using LayoutParserApi.Services.Generation.Implementations;
 using LayoutParserApi.Services.Implementations;
 using LayoutParserApi.Services.Interfaces;
@@ -15,8 +16,10 @@ using LayoutParserApi.Services.Transformation.LowCode;
 using LayoutParserApi.Services.XmlAnalysis;
 
 using Microsoft.AspNetCore.Diagnostics;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.ResponseCompression;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using System.IO.Compression;
 
 using Serilog;
@@ -312,9 +315,34 @@ try
     builder.Services.AddScoped<IDecryptionService, DecryptionService>();
     builder.Services.AddScoped<MapperDatabaseService>();
     builder.Services.AddScoped<ICachedLayoutService, CachedLayoutService>();
+    // ✅ Estado do warm-up do catálogo (P1.3), lido pela sonda de readiness. Singleton porque é
+    // preenchido pelo IHostedService de warm-up e lido pelo health check — estado compartilhado.
+    builder.Services.AddSingleton<CatalogWarmupState>();
     // ✅ Warm-up do cache permanente (layouts/mapeadores) roda em background APÓS app.Run(),
     // não bloqueia mais o startup / report ao Service Control Manager do Windows.
     builder.Services.AddHostedService<CachePermanentWarmupBackgroundService>();
+
+    // ✅ P1.3 — Health checks REAIS. O health anterior (TestController) devolvia 200 sem tocar em
+    // dependência: SQL/Redis/decryptor/runner fora → processo sobe, SCM diz Running, smoke test do
+    // CI fica verde e o deploy declara sucesso publicando uma versão inoperante. Cada sonda testa
+    // UMA dependência; a tag "ready" as agrupa em /health/ready (readiness). Registro por factory
+    // (não AddCheck<T>) porque Redis é OPCIONAL — resolvido por GetService (nullable), igual ao resto.
+    builder.Services.AddHealthChecks()
+        .Add(new HealthCheckRegistration("sql",
+            sp => new SqlServerHealthCheck(sp.GetRequiredService<IConfiguration>()),
+            HealthStatus.Unhealthy, new[] { "ready" }))
+        .Add(new HealthCheckRegistration("redis",
+            sp => new RedisHealthCheck(sp.GetService<IConnectionMultiplexer>()),
+            HealthStatus.Unhealthy, new[] { "ready" }))
+        .Add(new HealthCheckRegistration("decryptor",
+            sp => new DecryptorHealthCheck(sp.GetRequiredService<IDecryptionService>()),
+            HealthStatus.Unhealthy, new[] { "ready" }))
+        .Add(new HealthCheckRegistration("lowcode-runner",
+            sp => new LowCodeRunnerHealthCheck(sp.GetRequiredService<IOptions<LowCodeRunnerOptions>>()),
+            HealthStatus.Unhealthy, new[] { "ready" }))
+        .Add(new HealthCheckRegistration("catalog",
+            sp => new CatalogHealthCheck(sp.GetRequiredService<CatalogWarmupState>()),
+            HealthStatus.Unhealthy, new[] { "ready" }));
 
     // XML Analysis Services
     builder.Services.AddScoped<XmlAnalysisService>();
@@ -608,6 +636,45 @@ try
     // app.UseAuthorization();
 
     app.MapControllers();
+
+    // ✅ P1.3 — endpoints de health.
+    //   /health        liveness  — 200 se o PROCESSO responde (não roda sonda de dependência).
+    //   /health/ready  readiness — roda as sondas "ready"; 503 quando dependência ESSENCIAL está
+    //                              fora (SQL, catálogo vazio). Redis/runner ausentes são Degraded → 200.
+    // O corpo detalha cada dependência (status + motivo), para o operador ver O QUE está fora sem
+    // precisar do log. NOTA p/ @lp-devops: o smoke test do CI deve migrar para /health/ready estrito.
+    app.MapHealthChecks("/health", new HealthCheckOptions
+    {
+        Predicate = _ => false
+    });
+
+    app.MapHealthChecks("/health/ready", new HealthCheckOptions
+    {
+        Predicate = check => check.Tags.Contains("ready"),
+        ResultStatusCodes =
+        {
+            [HealthStatus.Healthy] = StatusCodes.Status200OK,
+            [HealthStatus.Degraded] = StatusCodes.Status200OK,
+            [HealthStatus.Unhealthy] = StatusCodes.Status503ServiceUnavailable
+        },
+        ResponseWriter = async (httpContext, report) =>
+        {
+            httpContext.Response.ContentType = "application/json";
+            var payload = new
+            {
+                status = report.Status.ToString(),
+                totalDurationMs = report.TotalDuration.TotalMilliseconds,
+                dependencies = report.Entries.Select(e => new
+                {
+                    name = e.Key,
+                    status = e.Value.Status.ToString(),
+                    description = e.Value.Description,
+                    error = e.Value.Exception?.Message
+                })
+            };
+            await httpContext.Response.WriteAsync(System.Text.Json.JsonSerializer.Serialize(payload));
+        }
+    });
 
     // Nota: a população do cache permanente de layouts/mapeadores foi movida para
     // CachePermanentWarmupBackgroundService (Services/Database), que roda como IHostedService
