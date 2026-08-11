@@ -811,7 +811,17 @@ jobs:
         }
         
         Write-Host "Arquivos da API copiados ($copiedCount arquivos, $errorCount erros)"
-        
+
+        # [ATENCAO] Copia parcial NAO e sucesso. Um arquivo travado, disco cheio ou permissao deixa
+        # a instalacao viva Frankenstein: parte binario novo, parte antigo, assemblies possivelmente
+        # incompativeis - e ate aqui isso era so um Write-Warning e o deploy seguia "com sucesso".
+        # Nao ha swap atomico nem backup dos binarios anteriores; um deploy pela metade e pior que
+        # nenhum. Entao qualquer erro de copia FALHA o step.
+        if ($errorCount -gt 0) {
+          Write-Error "Deploy abortado: $errorCount arquivo(s) falharam na copia - instalacao ficaria parcial. Corrija a causa (arquivo em uso, permissao, espaco) e rode de novo."
+          exit 1
+        }
+
         # Verificar se os arquivos foram copiados
         Write-Host "Verificando arquivos no destino: $DEPLOY_API_PATH"
         if (Test-Path $DEPLOY_API_PATH) {
