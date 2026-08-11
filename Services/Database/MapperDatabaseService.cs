@@ -69,7 +69,7 @@ namespace LayoutParserApi.Services.Database
                 {
                     try
                     {
-                        var mapper = MapReaderToMapper(reader);
+                        var mapper = await MapReaderToMapperAsync(reader);
                         mappers.Add(mapper);
                         count++;
 
@@ -130,7 +130,7 @@ namespace LayoutParserApi.Services.Database
 
                 while (await reader.ReadAsync())
                 {
-                    var mapper = MapReaderToMapper(reader);
+                    var mapper = await MapReaderToMapperAsync(reader);
 
                     // Verificar se o layoutGuid corresponde ao InputLayoutGuid ou TargetLayoutGuid
                     // Tanto das colunas quanto do XML descriptografado
@@ -327,7 +327,7 @@ namespace LayoutParserApi.Services.Database
                 using var reader = await command.ExecuteReaderAsync();
                 while (await reader.ReadAsync())
                 {
-                    var mapper = MapReaderToMapper(reader);
+                    var mapper = await MapReaderToMapperAsync(reader);
                     mappers.Add(mapper);
                 }
 
@@ -348,7 +348,7 @@ namespace LayoutParserApi.Services.Database
         /// <summary>
         /// Mapeia SqlDataReader para Mapper, descriptografando ValueContent se necessário
         /// </summary>
-        private Mapper MapReaderToMapper(SqlDataReader reader)
+        private async Task<Mapper> MapReaderToMapperAsync(SqlDataReader reader)
         {
             // Método auxiliar para ler valores como string de forma segura
             string GetStringValue(string columnName)
@@ -388,14 +388,14 @@ namespace LayoutParserApi.Services.Database
             {
                 try
                 {
-                    mapper.DecryptedContent = _decryptionService.DecryptContent(mapper.ValueContent);
+                    mapper.DecryptedContent = await _decryptionService.DecryptContentAsync(mapper.ValueContent);
 
                     // Tentar extrair InputLayoutGuid e TargetLayoutGuid do XML descriptografado
                     ExtractLayoutGuidsFromDecryptedContent(mapper);
                 }
-                catch (Exception ex)
+                catch (DecryptionException ex)
                 {
-                    _logger.LogWarning(ex, "Erro ao descriptografar ValueContent do mapeador {Id} ({Name}). Continuando sem conteudo descriptografado.", mapper.Id, mapper.Name);
+                    _logger.LogWarning(ex, "Falha ao descriptografar ValueContent do mapeador {Id} ({Name}). Continuando sem conteudo descriptografado.", mapper.Id, mapper.Name);
                     mapper.DecryptedContent = "";
                 }
             }

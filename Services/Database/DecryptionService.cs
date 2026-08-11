@@ -13,14 +13,19 @@ namespace LayoutParserApi.Services.Database
         private readonly string _layoutParserDecryptPath;
         private readonly string _logDirFromApi;
 
+        // Timeout do processo externo. Mantido em 30s (comportamento anterior), mas agora ALCANÇÁVEL:
+        // antes o ReadToEnd() síncrono bloqueava ANTES do WaitForExit(30000), então o timeout nunca
+        // era avaliado e a thread travava para sempre (P1.2 do plano de segurança).
+        private const int TimeoutMs = 30000;
+
         public DecryptionService(ILogger<DecryptionService> logger, IConfiguration configuration)
         {
             _logger = logger;
             _layoutParserDecryptPath = string.Empty; // Inicializar para evitar null
             _logDirFromApi = configuration["Logging:File:Directory"] ?? "";
-            
+
             var configuredPath = configuration["LayoutParserDecrypt:Path"];
-            
+
             if (string.IsNullOrWhiteSpace(configuredPath))
             {
                 // Tentar encontrar o executável em caminhos relativos comuns
@@ -46,7 +51,7 @@ namespace LayoutParserApi.Services.Database
 
                 if (string.IsNullOrEmpty(_layoutParserDecryptPath))
                     _logger.LogWarning("LayoutParserDecrypt.exe não encontrado automaticamente. Configure o caminho em 'LayoutParserDecrypt:Path' no appsettings.json");
-                
+
             }
             else
             {
@@ -58,7 +63,12 @@ namespace LayoutParserApi.Services.Database
             }
         }
 
-        public string DecryptContent(string encryptedContent)
+        /// <inheritdoc />
+        public bool IsDecryptorAvailable =>
+            !string.IsNullOrEmpty(_layoutParserDecryptPath) && File.Exists(_layoutParserDecryptPath);
+
+        /// <inheritdoc />
+        public async Task<string> DecryptContentAsync(string encryptedContent)
         {
             if (string.IsNullOrEmpty(encryptedContent))
             {
@@ -66,40 +76,48 @@ namespace LayoutParserApi.Services.Database
                 return string.Empty;
             }
 
-            // A descriptografia DEVE ser feita pelo executável .NET Framework 4.8.1
-            if (string.IsNullOrEmpty(_layoutParserDecryptPath) || !File.Exists(_layoutParserDecryptPath))
+            // A descriptografia DEVE ser feita pelo executável .NET Framework 4.8.1.
+            // ✅ P1.1: se o executável não existe, FALHA EXPLÍCITA — nunca devolve a cifra como se
+            // fosse texto claro. O chamador (warm-up / test-decryption) trata a exceção.
+            if (!IsDecryptorAvailable)
             {
                 _logger.LogError("LayoutParserDecrypt.exe não encontrado em: {Path}. Configure o caminho correto em appsettings.json", _layoutParserDecryptPath);
-                return encryptedContent;
+                throw new DecryptionException(
+                    $"Executável de descriptografia não encontrado: '{_layoutParserDecryptPath}'. Nada foi descriptografado.");
             }
 
-            return DecryptUsingExecutable(encryptedContent);
+            return await DecryptUsingExecutableAsync(encryptedContent);
         }
 
-        private string DecryptUsingExecutable(string encryptedContent)
+        private async Task<string> DecryptUsingExecutableAsync(string encryptedContent)
         {
-            string tempInputFile = null;
-            string tempOutputFile = null;
+            string? tempInputFile = null;
+            string? tempOutputFile = null;
 
             try
             {
                 tempInputFile = Path.GetTempFileName();
                 tempOutputFile = Path.GetTempFileName();
 
-                File.WriteAllText(tempInputFile, encryptedContent, Encoding.UTF8);
+                await File.WriteAllTextAsync(tempInputFile, encryptedContent, Encoding.UTF8);
 
                 _logger.LogInformation("Descriptografando conteúdo usando executável externo (tamanho: {Size} caracteres)", encryptedContent.Length);
 
-                CallLegacyDecryptor(tempInputFile, tempOutputFile);
+                await CallLegacyDecryptorAsync(tempInputFile, tempOutputFile);
 
-                string decryptedContent = File.ReadAllText(tempOutputFile, Encoding.UTF8);
-
-                return decryptedContent;
+                return await File.ReadAllTextAsync(tempOutputFile, Encoding.UTF8);
+            }
+            catch (DecryptionException)
+            {
+                // Já é a exceção tipada — propaga sem reembrulhar (mantém a mensagem/causa original).
+                throw;
             }
             catch (Exception ex)
             {
+                // ✅ P1.1: qualquer outra falha (I/O do temp, etc.) também é falha explícita, não
+                // "devolve a cifra". Reembrulha como DecryptionException para o chamador distinguir.
                 _logger.LogError(ex, "Erro ao descriptografar usando executável");
-                return encryptedContent;
+                throw new DecryptionException("Falha ao descriptografar conteúdo usando executável externo.", ex);
             }
             finally
             {
@@ -118,17 +136,17 @@ namespace LayoutParserApi.Services.Database
             }
         }
 
-        private void CallLegacyDecryptor(string inputFile, string outputFile)
+        private async Task CallLegacyDecryptorAsync(string inputFile, string outputFile)
         {
-            if (string.IsNullOrEmpty(_layoutParserDecryptPath) || !File.Exists(_layoutParserDecryptPath))
-            {
-                throw new FileNotFoundException($"Executável de descriptografia não encontrado: {_layoutParserDecryptPath}");
-            }
+            if (!IsDecryptorAvailable)
+                throw new DecryptionException($"Executável de descriptografia não encontrado: {_layoutParserDecryptPath}");
+
+            var corr = CorrelationContext.CurrentId ?? Guid.NewGuid().ToString();
 
             var processStartInfo = new ProcessStartInfo
             {
                 FileName = _layoutParserDecryptPath,
-                Arguments = BuildArgs(inputFile, outputFile),
+                Arguments = BuildArgs(inputFile, outputFile, corr),
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
@@ -137,7 +155,6 @@ namespace LayoutParserApi.Services.Database
             };
 
             // ✅ Propagar correlation e log dir para o Decrypt/Lib
-            var corr = CorrelationContext.CurrentId ?? Guid.NewGuid().ToString();
             processStartInfo.Environment["LAYOUTPARSER_CORRELATION_ID"] = corr;
             processStartInfo.Environment["LAYOUTPARSER_LOG_DIR"] = _logDirFromApi;
 
@@ -146,28 +163,52 @@ namespace LayoutParserApi.Services.Database
 
             process.Start();
 
-            string output = process.StandardOutput.ReadToEnd();
-            string error = process.StandardError.ReadToEnd();
+            // ✅ P1.2 — deadlock corrigido, mesmo padrão do LowCodeTransformationService.ExecuteRunnerProcessAsync:
+            // o ReadToEnd() SÍNCRONO bloqueava a thread ANTES do WaitForExit(30000), tornando o timeout
+            // inalcançável e prendendo a conexão SQL do loop do reader (esgota o pool). Agora lê stdout/stderr
+            // com ReadToEndAsync e corre Task.WhenAll(leituras + exit) contra um Task.Delay(timeout); se o
+            // delay vencer, matamos o processo nós mesmos — o timeout passa a ser de fato alcançável.
+            var stdoutTask = process.StandardOutput.ReadToEndAsync();
+            var stderrTask = process.StandardError.ReadToEndAsync();
+            var exitTask = process.WaitForExitAsync();
 
-            bool exited = process.WaitForExit(30000);
+            var allTask = Task.WhenAll(stdoutTask, stderrTask, exitTask);
+            using var timeoutCts = new CancellationTokenSource();
+            var timeoutTask = Task.Delay(TimeoutMs, timeoutCts.Token);
 
-            if (!exited)
+            var winner = await Task.WhenAny(allTask, timeoutTask);
+
+            if (winner != allTask)
             {
-                process.Kill();
-                throw new Exception("Legacy decryptor timeout (30 segundos)");
+                _logger.LogError(
+                    "Legacy decryptor excedeu o timeout de {TimeoutMs}ms (corr={CorrelationId}) — matando processo",
+                    TimeoutMs, corr);
+
+                try { if (!process.HasExited) process.Kill(entireProcessTree: true); }
+                catch (Exception killEx) { _logger.LogWarning(killEx, "Falha ao matar processo do decryptor (corr={CorrelationId})", corr); }
+
+                // Best effort: janela curta para o kill liberar os streams antes de desistir.
+                try { await Task.WhenAny(allTask, Task.Delay(TimeSpan.FromSeconds(2))); } catch { }
+
+                throw new DecryptionException($"Legacy decryptor timeout ({TimeoutMs / 1000} segundos, corr={corr})");
             }
 
-            if (process.ExitCode != 0)
-                throw new Exception($"Legacy decryptor failed (Exit code: {process.ExitCode}): {error}");
-            
+            // Encerra o Task.Delay pendente (senão o timer fica vivo até o fim do timeout).
+            timeoutCts.Cancel();
 
-            _logger.LogDebug("Processo legado finalizado: {Output}", output);
+            // allTask concluída — propaga eventual exceção real de leitura/exit, se houver.
+            await allTask;
+
+            var error = stderrTask.Result;
+            if (process.ExitCode != 0)
+                throw new DecryptionException($"Legacy decryptor failed (Exit code: {process.ExitCode}, corr={corr}): {error}");
+
+            _logger.LogDebug("Processo legado finalizado: {Output}", stdoutTask.Result);
         }
 
-        private string BuildArgs(string inputFile, string outputFile)
+        private string BuildArgs(string inputFile, string outputFile, string corr)
         {
             // args: input output correlationId logDir
-            var corr = CorrelationContext.CurrentId ?? Guid.NewGuid().ToString();
             return $"\"{inputFile}\" \"{outputFile}\" \"{corr}\" \"{_logDirFromApi}\"";
         }
     }
