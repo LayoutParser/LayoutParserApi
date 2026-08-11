@@ -24,11 +24,22 @@ on:
       - '.github/workflows/ci-dev.yml'
   workflow_dispatch: # Permite executar manualmente
 
+# Serializa deploys de producao. cancel-in-progress: false de PROPOSITO - cancelar um deploy
+# no meio (durante a troca de binario / Stop-Service -> copia -> Start-Service) deixaria a
+# instalacao pela metade. Runs concorrentes ENFILEIRAM; nenhum e abortado no meio do caminho.
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
 jobs:
   deploy:
     # Runner org LayoutParser no servidor de PRODUCAO (172.25.32.42 / WINSRV2022-LIB).
     # A label 'production' garante que o deploy NUNCA rode no runner de dev (label 'dev-local').
     runs-on: [self-hosted, windows, production]
+    # environment: production da o rotulo do ambiente a este job. So vira BARREIRA (required
+    # reviewer) depois que o environment 'production' for configurado no GitHub com reviewer
+    # obrigatorio - config de UI, fora deste arquivo (ver pendencia repassada ao dono do repo).
+    environment: production
     timeout-minutes: 60
 
     steps:
@@ -890,6 +901,83 @@ jobs:
         Write-Host "Logs: $DEPLOY_LOGS_PATH"
         Write-Host "Backups: $DEPLOY_BACKUPS_PATH"
         Write-Host "Runner: Self-hosted (execucao local)"
+
+    # -- Smoke test de READINESS pos-deploy (FATAL) ----------------------------------
+    #
+    # POR QUE ESTE STEP EXISTE: o step de deploy acima termina com Start-Service + checagem de
+    # Status -eq 'Running'. Processo DE PE nao e igual a API que SERVE: o servico pode estar
+    # Running e a API estar Unhealthy (SQL fora, catalogo que nao aqueceu, decryptor quebrado).
+    # Ate aqui producao aceitava como "sucesso" uma versao que sobe e nao funciona.
+    #
+    # Este step fecha essa lacuna espelhando a logica que o ci-dev.yml ja usa: bate em
+    # /health/ready exigindo HTTP 200 ESTRITO, com retry/backoff para dar tempo ao warm-up do
+    # catalogo (a sonda roda SELECT 1 no SQL e confere o catalogo; enquanto aquece responde 503).
+    # 503 nao e sucesso nem falha definitiva - e "ainda nao pronto", entao o laco RETENTA. So 200
+    # encerra com sucesso; esgotar as tentativas FALHA o deploy (exit 1).
+    #
+    # /health/ready e ANONIMO (mapeado por MapHealthChecks, FORA do pipeline de filtros MVC onde
+    # vive o ApiKeyGateFilter) - nao precisa de header. O X-Api-Key so viaja como no-op defensivo
+    # quando o secret existir, por consistencia com o ci-dev; health o ignora.
+    - name: Smoke test de readiness (pos-deploy)
+      env:
+        API_URL_PROD: ${{ vars.API_URL_PROD }}
+        API_KEY_PROD: ${{ secrets.API_KEY_PROD }}
+      run: |
+        $ErrorActionPreference = "Stop"
+
+        # URL de producao: nao ha var canonica de URL neste workflow (o deploy usa so DEPLOY_PATH).
+        # A instancia de producao serve na porta 5000 (o appsettings fixa 5000; o front consome :5000).
+        # Se a Variable API_URL_PROD existir, ela tem precedencia; senao, derivamos localhost:5000 -
+        # o runner roda NO proprio servidor, entao localhost e a instancia recem-publicada.
+        $API_URL = "$env:API_URL_PROD".Trim('"', "'", ' ', '/')
+        if ([string]::IsNullOrWhiteSpace($API_URL)) {
+          $API_URL = "http://localhost:5000"
+          Write-Warning ("Variable API_URL_PROD nao configurada - usando o default $API_URL. " +
+            "Para apontar a validacao para outro host/porta, crie a Variable API_URL_PROD em: " +
+            "GitHub -> repo LayoutParserApi -> Settings -> Secrets and variables -> Actions -> aba Variables.")
+        }
+        $smokeUrl = "$API_URL/health/ready"
+
+        # Header no-op defensivo: /health/ready e anonimo, mas mantemos paridade com o ci-dev.
+        $smokeHeaders = @{}
+        if (-not [string]::IsNullOrWhiteSpace($env:API_KEY_PROD)) {
+          $smokeHeaders['X-Api-Key'] = $env:API_KEY_PROD
+        }
+
+        Write-Host "Smoke test de readiness: $smokeUrl (exige HTTP 200 estrito)"
+
+        # Mesma cadencia do ci-dev: ate 24 tentativas x 5s = ~2min de folga para o warm-up.
+        $status = $null
+        $tentativas = 24
+        for ($i = 1; $i -le $tentativas; $i++) {
+          try {
+            $resp = Invoke-WebRequest -Uri $smokeUrl -UseBasicParsing -TimeoutSec 5 -Headers $smokeHeaders
+            $status = [int]$resp.StatusCode
+          } catch {
+            $r = $_.Exception.Response
+            $status = if ($r -and $r.StatusCode) { [int]$r.StatusCode } else { $null }
+          }
+
+          if ($status -eq 200) {
+            Write-Host "Smoke test: HTTP 200 em $smokeUrl (readiness OK, tentativa $i/$tentativas)."
+            break
+          }
+
+          $descr = if ($null -eq $status) { "sem resposta" } else { "HTTP $status" }
+          if ($i -lt $tentativas) {
+            Write-Host "  tentativa $i/$($tentativas): readiness ainda nao pronta ($descr), aguardando 5s..."
+            Start-Sleep -Seconds 5
+          }
+        }
+
+        if ($status -ne 200) {
+          $ultimo = if ($null -eq $status) { "sem resposta" } else { "HTTP $status" }
+          Write-Error ("Readiness nao ficou 200 em $smokeUrl apos $tentativas tentativas (ultimo: $ultimo). " +
+            "Deploy de PRODUCAO abortado: o servico subiu mas a API nao esta servindo (SQL fora, catalogo " +
+            "que nao aqueceu ou decryptor quebrado). Verifique os logs do servico no host de producao.")
+          exit 1
+        }
+        Write-Host "Deploy de producao validado: API servindo (readiness 200)."
 
     # -- Diagnostico de pre-requisitos (NAO-FATAL) -----------------------------------
     #
