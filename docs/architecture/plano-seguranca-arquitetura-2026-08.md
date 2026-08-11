@@ -32,10 +32,24 @@ tem autenticação** (`Program.cs:608`, `UseAuthorization` comentado), então n�
 1. Validar `fileName` por **lista branca de caractere** (`^[A-Za-z0-9._-]+$`) e rejeitar qualquer
    coisa com separador de caminho, `:` ou `..` — **validar, não sanear**.
 2. Após `Path.Combine`, `Path.GetFullPath` e conferir que o resultado **começa** com o diretório base
-   canonicalizado. É o mesmo padrão que o Dex já aplicou no ticket de transformação —
-   **existe referência no próprio repo** (`ParseController`, endpoints de transformação).
+   canonicalizado. Padrão de referência: a validação por regex dos **endpoints de ticket de
+   transformação** (adicionados na leva anterior). ⚠️ **CORREÇÃO (Aria, após implementação):** eu
+   escrevi que o `ParseController` inteiro seguia esse padrão — **errado**. Os endpoints de ticket
+   têm; mas `SaveFileForLearningAsync` (`ParseController:483`) **não tinha nada** e era ele próprio um
+   vetor.
 3. Auditar **todos** os endpoints que recebem nome de arquivo: `MetricsController:261,319` (TCL/XSL)
    têm a mesma forma.
+
+> **VETOR DE ESCRITA — achado do `@lp-backend-dev` durante a implementação, NÃO previsto neste plano.**
+> `SaveFileForLearningAsync` (`ParseController:483`, chamado no upload) fazia
+> `Path.Combine(basePath, layoutName)` e `Path.Combine(dir, fileName)` com **os dois vindos do
+> cliente** — `layoutName` é `[FromForm]` cru (`:58`), `fileName` é o nome do upload. **Escrita** de
+> arquivo arbitrário, estritamente pior que a leitura do P0: permite plantar arquivo fora da base.
+> Confirmado por mim no diff contra `develop`. Corrigido sob o mandato "auditar todos, não deixar
+> vetor gêmeo": `layoutName` pela lista branca (recusa → pula o aprendizado, não derruba o parse),
+> nome do upload por `Path.GetFileName` + `IsInsideBase`. Lição: o plano apontou o bom exemplo e
+> presumiu o resto do controller seguro — a auditoria ampla é que pegou o contra-exemplo no mesmo
+> arquivo.
 
 Isto sobe **antes** de qualquer melhoria de arquitetura. É o único item que eu classificaria como
 "parar e corrigir agora".
