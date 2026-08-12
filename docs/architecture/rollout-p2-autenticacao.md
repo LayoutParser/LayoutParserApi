@@ -36,8 +36,64 @@ header e o dev ter validado. Inverter isso é o 401-geral.
    um consumidor. O alvo recomendado é **autenticação integrada Windows/Negotiate** — o ambiente é AD,
    então já suporta. P2 fecha o buraco de "API 100% anônima"; não é a arquitetura final de auth.
 
-## O que estou disparando agora
+## ⛔ CORREÇÃO ESTRUTURAL (Aria, 2026-08-11, após o passo 1) — a premissa de 2 camadas estava errada
 
-**Só o passo 1** (front enviar o header condicionalmente). É o único inerte hoje, é pré-requisito de
-todos os outros, e é reversível. Os passos 2–4 são config/rollout do `@lp-devops`, e o passo 4 é
-**decisão do dono** — não serão executados sem validação de dev e aval explícito.
+Escrevi esta spec assumindo **browser → API .NET** (2 camadas). **A realidade é 3 camadas**, e há um
+esforço de autenticação paralelo que eu não tinha visto:
+
+```
+Browser  ──(Entra OIDC, sessão cifrada)──►  BFF Fastify (server/)  ──(proxy /api)──►  API .NET
+```
+
+- O `LayoutParserReact` tem um **BFF Node (Fastify)** em `server/`, e a branch `codex/feat-entra-oidc`
+  está implementando **login via Microsoft Entra ID (Azure AD)** nele: `server/src/oidc.ts` (novo),
+  `AuthenticationGate.tsx` (novo), session store cifrada, roles vindas de claims do token.
+- O BFF já faz proxy de `/api` para o upstream (`app.ts:296`, `config.upstreamUrl`) e, no
+  `rewriteProxyHeaders` (`app.ts:115`), **remove `authorization` e `cookie`** (a sessão do usuário
+  nunca vaza para a API) e **injeta headers de identidade** (`trustedUserHeader`,
+  `trustedRolesHeader`, `x-correlation-id`).
+
+**O que isso quebra na minha spec:**
+
+1. **O passo 1 está na camada errada.** O browser fala com o **BFF**, não com a API. Pôr a chave no
+   bundle (`VITE_API_KEY`) **expõe o segredo compartilhado a quem abrir a SPA** e é redundante — a
+   confiança do browser é a sessão Entra, não uma API key. A entrega do Remy está **correta como
+   código e verde nos testes**, mas é **o design errado para esta arquitetura**. Fica **retida, não
+   mergeada** (o Remy já a segurou por instinto certo — a árvore está na branch do OIDC).
+
+2. **O contrato do salto BFF→API não está acordado.** Hoje o BFF manda `trustedUserHeader`/roles; a
+   API (com o gate ligado) espera `X-Api-Key`. **Nenhum dos dois fala a língua do outro.** O
+   `ApiKeyGateFilter` **tem lugar sim** — mas o `X-Api-Key` é injetado pelo **BFF** no
+   `rewriteProxyHeaders`, server-side, **nunca pelo browser**.
+
+### Arquitetura reconciliada (recomendação, decisão do dono)
+
+Os dois esforços são **complementares, em camadas diferentes** — não concorrentes:
+
+| Fronteira | Mecanismo | Responde |
+|---|---|---|
+| Browser ↔ BFF | **Entra OIDC** (branch `codex/feat-entra-oidc`) | *quem é o usuário* — identidade real, roles, revogação, sem segredo no browser |
+| BFF ↔ API .NET | **rede** (a API só aceita conexão do BFF) **ou** `X-Api-Key` injetado pelo BFF | *esta chamada vem do nosso BFF confiável* |
+| Dentro da API | consumir `trustedUserHeader`/roles para autorização e auditoria | *o quê este usuário pode fazer* — mecanismo que a API **ainda não tem** |
+
+Entra OIDC **é o "destino recomendado"** que esta própria spec nomeou (auth integrada AD). A chave
+compartilhada deixa de ser a defesa principal e vira, no máximo, o cinto do salto BFF→API.
+
+### O que fica PARADO até o dono decidir a fronteira BFF↔API
+
+- **Não** mergear o passo 1 do Remy como está (chave no browser).
+- **Não** provisionar `Security__ApiKey` para o browser usar.
+- A pergunta para o dono: o salto BFF→API é protegido por **rede** (mais simples, a API só escuta o
+  BFF) ou por **`X-Api-Key` injetado no BFF** (defesa em profundidade, mas mais uma chave para girar)?
+  E: a API deve passar a **consumir a identidade** (`trustedUserHeader`) para autorização por papel,
+  ou o BFF já basta como porteiro nesta fase?
+
+Até isso, o P2 "chave compartilhada" está **suspenso** — não porque falhou, mas porque a arquitetura
+real é melhor e já está sendo construída noutra frente.
+
+---
+
+## (Histórico) O que eu havia disparado — antes da correção acima
+
+**Só o passo 1** (front enviar o header condicionalmente). Entregue e verde, mas **retido** pela
+correção estrutural acima — era o design de 2 camadas.
