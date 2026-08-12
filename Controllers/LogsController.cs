@@ -5,6 +5,7 @@ using LayoutParserApi.Services.Filters;
 using LayoutParserApi.Services.Interfaces;
 using LayoutParserApi.Services.Logging;
 
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 using Serilog.Context;
@@ -93,6 +94,9 @@ namespace LayoutParserApi.Controllers
         /// <summary>
         /// Leitura unificada e paginada dos 3 arquivos de log do ecossistema (Api/Lib/Decrypt).
         /// </summary>
+        // Issue #32: leitura de log é operação sensível (pode expor dado de outros usuários/
+        // tenants) — restrita ao papel "admin".
+        [Authorize(Roles = "admin")]
         [HttpGet]
         public async Task<IActionResult> GetLogs([FromQuery] UnifiedLogFilter filter)
         {
