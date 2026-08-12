@@ -8,6 +8,7 @@ using LayoutParserApi.Services.Interfaces;
 using LayoutParserApi.Services.Learning;
 using LayoutParserApi.Services.Parsing.Implementations;
 using LayoutParserApi.Services.Parsing.Interfaces;
+using LayoutParserApi.Services.Security;
 using LayoutParserApi.Services.Testing;
 using LayoutParserApi.Services.Transformation;
 using LayoutParserApi.Services.Transformation.Interface;
@@ -159,15 +160,10 @@ try
     // Isso preserva o XML intacto no JSON (não converte < para \u003C, etc.)
     builder.Services.AddControllers(options =>
         {
-            // ✅ Porta de entrada por chave compartilhada para TODA a API. Registrado como filtro
-            // GLOBAL, e não por controller, porque o problema não é um endpoint novo: são os 18
-            // controllers que já existem servindo NF-e real sem credencial nenhuma.
-            //
-            // NASCE DESLIGADO por decisão de arquitetura: sem `Security:ApiKey` provisionada, o
-            // filtro deixa passar (fail-OPEN). Ligá-lo fail-closed neste commit derrubaria o front
-            // e o smoke test do próprio CI no deploy seguinte. Ver o comentário extenso em
-            // ApiKeyGateFilter — inclusive a ordem de passos para ligar sem quebrar produção.
-            options.Filters.Add<ApiKeyGateFilter>();
+            // A porta de entrada da API é a REDE (a API só aceita o BFF, trava do @lp-devops) somada à
+            // identidade injetada pelo BFF (TrustedIdentityMiddleware, sob guarda de loopback). O antigo
+            // ApiKeyGateFilter (chave compartilhada, fail-open) foi removido: rede + identidade venceram
+            // e um filtro de meia-segurança só confundia quem lê. Ver docs/architecture/rollout-p2-autenticacao.md.
         })
         .AddJsonOptions(options =>
         {
@@ -448,6 +444,15 @@ try
     // Testing Services
     builder.Services.AddScoped<AutomatedTransformationTestService>();
 
+    // Security / Identidade
+    // ✅ Consumo da identidade que o BFF injeta (x-iis-user/x-iis-roles). Nomes dos headers e a
+    // guarda de loopback são configuráveis pela seção Security (env Security__...), com defaults
+    // seguros — ver TrustedIdentityOptions. ICurrentUser é Scoped (uma identidade por requisição),
+    // preenchido pelo TrustedIdentityMiddleware sob a guarda de loopback e lido por AuditActionFilter.
+    builder.Services.Configure<TrustedIdentityOptions>(
+        builder.Configuration.GetSection(TrustedIdentityOptions.SectionName));
+    builder.Services.AddScoped<ICurrentUser, CurrentUser>();
+
     // Audit and Logging Services
     builder.Services.AddScoped<IAuditLogger, AuditLogger>();
     builder.Services.AddScoped<ITechLogger, TechLogger>();
@@ -470,31 +475,26 @@ try
     // sem AiMetrics__IngestApiKey no ambiente, a escrita é recusada — ver AiMetricsIngestKeyFilter.
     builder.Services.AddScoped<AiMetricsIngestKeyFilter>();
 
-    // ✅ Porta de entrada global da API (registrada como filtro em AddControllers, acima).
-    // Scoped pelo mesmo motivo do filtro acima: depende de IConfiguration e ILogger, sem estado.
-    builder.Services.AddScoped<ApiKeyGateFilter>();
-
     var app = builder.Build();
 
     Log.Information("Application built successfully. Environment: {Environment}", app.Environment.EnvironmentName);
 
-    // ✅ Postura de acesso da API, dita UMA vez no arranque. O filtro global não loga por request
-    // (seria uma linha por chamada num log que é relido pelo painel), então este é o único lugar
-    // onde "a API está aberta" fica registrado — e é uma informação que ninguém deveria descobrir
-    // por acidente.
-    if (string.IsNullOrWhiteSpace(builder.Configuration[ApiKeyGateFilter.ConfigKey]))
+    // ✅ Postura da guarda de identidade, dita UMA vez no arranque (o middleware não loga por request —
+    // o log é relido pelo painel). A guarda de loopback é o que impede um host remoto de forjar
+    // x-iis-user mesmo com a API em 0.0.0.0; desligá-la só é seguro se a rede já garantir a origem.
+    var identityOpt = app.Services.GetRequiredService<IOptions<TrustedIdentityOptions>>().Value;
+    if (identityOpt.TrustIdentityFromLoopbackOnly)
     {
-        Log.Warning("API SEM AUTENTICACAO: {ConfigKey} nao configurada, todos os endpoints aceitam requisicao anonima. " +
-                    "Para fechar, provisione a variavel de ambiente Security__ApiKey (e liste em Security__AnonymousPaths o que " +
-                    "precisa seguir anonimo). Ver ApiKeyGateFilter antes de ligar em producao.",
-                    ApiKeyGateFilter.ConfigKey);
+        Log.Information("Identidade do BFF ATIVA com guarda de loopback (headers {UserHeader}/{RolesHeader}). " +
+            "Headers de identidade só são confiados em conexão loopback (127.0.0.1/::1); origem remota é ignorada.",
+            identityOpt.TrustedUserHeader, identityOpt.TrustedRolesHeader);
     }
     else
     {
-        var rotasAnonimas = builder.Configuration.GetSection(ApiKeyGateFilter.AnonymousPathsKey).Get<string[]>() ?? Array.Empty<string>();
-        Log.Information("Porta de entrada por chave ATIVA (header {Header}). Rotas anonimas: {Rotas}",
-            ApiKeyGateFilter.HeaderName,
-            rotasAnonimas.Length > 0 ? string.Join(", ", rotasAnonimas) : "(nenhuma)");
+        Log.Warning("Identidade do BFF ATIVA SEM guarda de loopback (Security__TrustIdentityFromLoopbackOnly=false): " +
+            "os headers {UserHeader}/{RolesHeader} são confiados de QUALQUER origem. Só é seguro se a rede já " +
+            "restringir a origem à do BFF (bind em 127.0.0.1 ou firewall). Reavalie com o @lp-devops.",
+            identityOpt.TrustedUserHeader, identityOpt.TrustedRolesHeader);
     }
 
     // ✅ Diagnóstico de arranque da config low-code. Mesmo princípio do Redis acima: AVISA e segue,
@@ -597,6 +597,12 @@ try
             await next();
         }
     });
+
+    // ✅ Identidade injetada pelo BFF (x-iis-user/x-iis-roles), sob a guarda de loopback. Vem DEPOIS do
+    // CorrelationId (para o log de arranque/diagnóstico compartilhar o contexto) e ANTES dos endpoints,
+    // para que ICurrentUser já esteja preenchido quando controllers e AuditActionFilter rodam. Fora de
+    // loopback ou sem header → identidade anônima, nunca exceção. Ver TrustedIdentityMiddleware.
+    app.UseMiddleware<TrustedIdentityMiddleware>();
 
     // Enable detailed error pages in development
     if (app.Environment.IsDevelopment())
