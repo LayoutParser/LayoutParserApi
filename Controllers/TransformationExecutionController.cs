@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 using LayoutParserApi.Services.XmlAnalysis.Models;
 using LayoutParserApi.Services.Interfaces;
+using LayoutParserApi.Services.Filters;
 using LayoutParserApi.Models.Database;
 using LayoutParserApi.Models.Transformation;
 
@@ -23,6 +24,7 @@ namespace LayoutParserApi.Controllers
     /// </summary>
     [ApiController]
     [Route("api/[controller]")]
+    [ServiceFilter(typeof(AuditActionFilter))]
     public class TransformationExecutionController : ControllerBase
     {
         private readonly ILogger<TransformationExecutionController> _logger;
