@@ -340,8 +340,18 @@ namespace LayoutParserApi.Services.Database
             }
             catch (Exception ex)
             {
+                // ✅ NÃO degrada aqui: "erro de SQL" (conexão/timeout/permissão) e "zero candidatos"
+                // são sinais diferentes e precisam ficar diferentes pro chamador. Engolir a exceção
+                // como lista vazia fazia o pathway sysmiddle relatar "Nenhum mapeador encontrado"
+                // mesmo quando a query nunca chegou a rodar — mascarando falha de infraestrutura
+                // como ausência de dado (issue #38/#39, capítulo 3). Os dois únicos chamadores
+                // (ParseController e TransformationExecutionController, via
+                // LowCodeAutoTransformationService.RunAsync) já capturam e degradam graciosamente
+                // no nível certo, com mensagem distinta ("Pathway sysmiddle falhou: ..." /
+                // transformationsStatus="error", diferente de "not_applicable"/"Nenhum mapeador
+                // encontrado") — então relançar aqui não quebra a resiliência do request principal.
                 _logger.LogError(ex, "Erro ao buscar mapeadores por LayoutGuid (filtrado): {LayoutGuid}", layoutGuid);
-                return mappers;
+                throw;
             }
         }
 
