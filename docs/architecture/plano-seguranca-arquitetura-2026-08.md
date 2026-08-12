@@ -110,6 +110,12 @@ warm-up (catálogo vazio = readiness fail). Expor `/health` (liveness) e `/healt
 
 ## P2 — Autenticação: a rede é a única fronteira
 
+> **Atualização (2026-08-11, `@lp-doc`):** o `Security__ApiKey` recomendado abaixo foi implementado
+> e depois **removido** (commit `c7489ca`) — não é o mecanismo vigente. A decisão final foi
+> identidade via **BFF Fastify + Entra OIDC**, consumida pela API via `TrustedIdentityMiddleware`
+> sob guarda de loopback; `[Authorize]` por papel ainda não existe. Ver
+> [`rollout-p2-autenticacao.md`](rollout-p2-autenticacao.md). Trecho abaixo é registro histórico.
+
 `UseAuthorization` está comentado (`Program.cs:608`). **Toda** a API é anônima. O Gage já preparou o
 terreno — há um `Security__ApiKey` provisionável e o mecanismo "nasce desligado sem a chave"
 (`Program.cs:163`). O P0 acima é explorável **porque** não há esta segunda barreira.

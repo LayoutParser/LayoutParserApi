@@ -687,7 +687,7 @@ try
     // em segundo plano após app.Run(). Isso evita bloquear o startup (e o report ao Service
     // Control Manager do Windows) enquanto aguarda o SQL Server responder.
 
-    var kestrelUrl = builder.Configuration["Kestrel:Endpoints:Http:Url"] ?? "http://0.0.0.0:5000";
+    var kestrelUrl = builder.Configuration["Kestrel:Endpoints:Http:Url"] ?? "http://127.0.0.1:5000";
     Log.Information("LayoutParserApi started successfully. Listening on: {Url}", kestrelUrl);
     Log.Information("CORS enabled for frontend origins");
     Log.Information("Log files are being written to: {LogDirectory}", logDirectory);
