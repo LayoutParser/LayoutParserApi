@@ -1,6 +1,7 @@
 using System.Text.Json;
 
 using LayoutParserApi.Models.Logging;
+using LayoutParserApi.Services.Filters;
 using LayoutParserApi.Services.Interfaces;
 using LayoutParserApi.Services.Logging;
 
@@ -20,6 +21,7 @@ namespace LayoutParserApi.Controllers
     /// </summary>
     [ApiController]
     [Route("api/[controller]")]
+    [ServiceFilter(typeof(AuditActionFilter))]
     public class LogsController : ControllerBase
     {
         // Níveis aceitos pelo endpoint de ingestão (Tarefa 1) — mapeiam 1:1 pros métodos do ILogger.

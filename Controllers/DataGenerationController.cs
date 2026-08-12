@@ -1,5 +1,6 @@
 using LayoutParserApi.Models.Entities;
 using LayoutParserApi.Models.Generation;
+using LayoutParserApi.Services.Filters;
 using LayoutParserApi.Services.Generation.Implementations;
 using LayoutParserApi.Services.Generation.Interfaces;
 using LayoutParserApi.Services.Generation.TxtGenerator;
@@ -15,6 +16,7 @@ namespace LayoutParserApi.Controllers
 {
     [ApiController]
     [Route("api/[controller]")]
+    [ServiceFilter(typeof(AuditActionFilter))]
     public class DataGenerationController : ControllerBase
     {
         private readonly ISyntheticDataGeneratorService _dataGenerator;
