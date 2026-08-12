@@ -305,6 +305,44 @@ docker run -p 5000:5000 \
 
 > **⚠️ Rotacionar é obrigatório mesmo após limpar a história:** qualquer clone feito antes da limpeza ainda contém os segredos. A limpeza reduz exposição futura; só a rotação invalida o que vazou.
 
+### 10.1 Identidade e autenticação (BFF → API)
+
+**🇧🇷** A API **não autentica ninguém diretamente** — ela **confia** na identidade que chega de um
+**BFF Fastify** (repo `LayoutParserReact/server/`), que faz login via **Microsoft Entra ID (OIDC)**
+e faz proxy de `/api` para esta API. Arquitetura em 3 camadas:
+
+```
+Browser  ──(Entra OIDC, sessão cifrada)──►  BFF Fastify  ──(proxy /api + headers de identidade)──►  API .NET
+```
+
+- O BFF remove quaisquer headers de identidade que vierem do próprio browser (anti-spoofing na
+  camada dele) e injeta `x-iis-user` / `x-iis-roles` confiáveis a partir da sessão Entra.
+- Na API, [`Services/Security/TrustedIdentityMiddleware.cs`](Services/Security/TrustedIdentityMiddleware.cs)
+  lê esses headers (nomes configuráveis via `Security:TrustedUserHeader` / `Security:TrustedRolesHeader`)
+  e popula `ICurrentUser` / `HttpContext.User`.
+- **Guarda de loopback:** a API só confia nesses headers se a requisição vier de `127.0.0.1`
+  (`TrustIdentityFromLoopbackOnly`, default `true`, deliberadamente **fora** do `appsettings.json`).
+  Isso fecha a forja de identidade mesmo com a API respondendo em todas as interfaces.
+- **Auditoria** (`AuditActionFilter`) já grava o usuário real (ou `anon`), não mais um IP genérico.
+- O antigo mecanismo de **chave compartilhada** (`ApiKeyGateFilter` / `ApiKeyGatePolicy`,
+  configuração `Security:ApiKey` / `Security:AnonymousPaths`) foi **removido** — não é mais o
+  mecanismo de defesa da fronteira BFF↔API.
+
+**🇺🇸** The API does **not** authenticate anyone directly — it **trusts** the identity forwarded by
+a **Fastify BFF** (`LayoutParserReact/server/`), which handles login via **Microsoft Entra ID
+(OIDC)** and proxies `/api` to this API. See the PT-BR diagram above for the 3-layer flow. The old
+shared-API-key mechanism (`ApiKeyGateFilter`/`Security:ApiKey`) has been **removed**.
+
+**🔴 Pendências conhecidas (não documentar como prontas):**
+
+1. **Trava de rede (`127.0.0.1`)** — a API ainda pode estar escutando `0.0.0.0`; o binding em
+   loopback (2ª camada de defesa) está sendo aplicado por `@lp-devops`, condicionado a confirmar
+   que o painel de produção passa pelo BFF (e não mais direto na porta da API).
+2. **Sem `[Authorize]` em nenhum endpoint** — todos os endpoints continuam acessíveis sem checagem
+   de papel; qual endpoint vira privilegiado é decisão de produto ainda em aberto.
+
+Detalhe completo (decisão, sequência, evidência de teste): [`docs/architecture/rollout-p2-autenticacao.md`](docs/architecture/rollout-p2-autenticacao.md).
+
 ---
 
 ## 11. Observabilidade / Observability
