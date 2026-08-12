@@ -438,7 +438,6 @@ jobs:
       env:
         DB_PASSWORD_DEV: ${{ secrets.DB_PASSWORD_DEV }}
         AI_METRICS_INGEST_KEY_DEV: ${{ secrets.AI_METRICS_INGEST_KEY_DEV }}
-        API_KEY_DEV: ${{ secrets.API_KEY_DEV }}
       run: |
         $serviceName = "LayoutParserApi"
         $exePath = Join-Path $env:DEPLOY_PATH_RESOLVED "api\LayoutParserApi.exe"
@@ -516,16 +515,10 @@ jobs:
         New-Item -ItemType Directory -Path $lowCodeStore -Force | Out-Null
         $envList += "ML__LowCodeTransformationsPath=$lowCodeStore"
 
-        # Security__ApiKey - porta de entrada de TODA a API (ApiKeyGateFilter). Opcional DE
-        # PROPOSITO: ausente, o gate fica desligado e a API segue aberta, que e o comportamento
-        # atual. Criar o secret API_KEY_DEV e o que liga a protecao - e o mesmo valor precisa ir
-        # para o front, senao ele passa a tomar 401. O smoke test deste workflow ja manda o header.
-        if (-not [string]::IsNullOrWhiteSpace($env:API_KEY_DEV)) {
-          $envList += "Security__ApiKey=$($env:API_KEY_DEV)"
-        } else {
-          Write-Warning ("Secret API_KEY_DEV ausente - a API sobe SEM AUTENTICACAO (todos os endpoints anonimos). " +
-            "Para fechar, crie o secret em: GitHub -> Settings -> Secrets and variables -> Actions.")
-        }
+        # Security__ApiKey - REMOVIDO (2026-08-12). O ApiKeyGateFilter/ApiKeyGatePolicy foram
+        # excluidos do codigo em `feat/identidade-do-bff`: a defesa BFF->API passou a ser rede
+        # (bind em loopback) + TrustedIdentityMiddleware, nao chave compartilhada. O secret
+        # API_KEY_DEV fica sem consumidor - ver docs/architecture/rollout-p2-autenticacao.md.
 
         # AiMetrics__IngestApiKey - sem ela o AiMetricsIngestKeyFilter recusa toda escrita de
         # metricas de IA (pendencia antiga do Gap 3). Opcional: ausente, o deploy segue.
@@ -541,8 +534,6 @@ jobs:
         Write-Host "  Chaves: $(($envList | ForEach-Object { ($_ -split '=', 2)[0] }) -join ', ')"
 
     - name: Iniciar servico e smoke test
-      env:
-        API_KEY_DEV: ${{ secrets.API_KEY_DEV }}
       run: |
         $serviceName = "LayoutParserApi"
 
@@ -584,14 +575,10 @@ jobs:
         # Degraded -> 200, entao nao derrubam o dev por dependencia opcional.
         $smokeUrl = "$($env:API_URL_RESOLVED)/health/ready"
 
-        # /health/ready e ANONIMO: e mapeado por MapHealthChecks (endpoint routing), FORA do
-        # pipeline de filtros MVC onde vive o ApiKeyGateFilter - a chave nao se aplica a ele.
-        # O header segue junto quando o secret existe apenas como no-op defensivo (health o ignora);
-        # nao ha rota de negocio aqui para o gate barrar.
+        # /health/ready e ANONIMO: e mapeado por MapHealthChecks (endpoint routing). O
+        # ApiKeyGateFilter foi REMOVIDO do codigo (2026-08-12, `feat/identidade-do-bff`) -
+        # nao ha mais gate de chave a considerar aqui, nem no resto da API.
         $smokeHeaders = @{}
-        if (-not [string]::IsNullOrWhiteSpace($env:API_KEY_DEV)) {
-          $smokeHeaders['X-Api-Key'] = $env:API_KEY_DEV
-        }
 
         # Readiness pode responder 503 durante o warm-up do catalogo (dependencia essencial ainda
         # subindo). 503 NAO e sucesso e tambem NAO e falha definitiva: e "ainda nao pronto" - por
