@@ -93,6 +93,63 @@ real é melhor e já está sendo construída noutra frente.
 
 ---
 
+## DECISÃO DO DONO (2026-08-11) e o plano reconciliado
+
+O dono escolheu: **(1)** fronteira BFF↔API protegida **por rede** (a API só aceita o BFF; sem
+`X-Api-Key` nesse salto); **(2)** a API **passa a consumir identidade** (`x-iis-user`/`x-iis-roles`)
+para autorização por papel e auditoria.
+
+**Contrato de header (lido do BFF, `server/src/config.ts:289-298`):**
+- usuário: **`x-iis-user`** (env `BFF_TRUSTED_USER_HEADER`)
+- papéis: **`x-iis-roles`** (env `BFF_TRUSTED_ROLES_HEADER`), CSV
+- O BFF **remove** as versões *inbound* desses headers antes de injetar (`app.ts:122-123`) —
+  anti-spoofing na camada dele. Isso protege o caminho browser→BFF. **Não** protege o caminho
+  direto-para-a-API (ver acoplamento letal abaixo).
+
+### 🔴 ACOPLAMENTO LETAL — a decisão tem um pré-requisito P0 que NÃO está satisfeito hoje
+
+`Program.cs:684` e `appsettings.json:142`: a API escuta em **`http://0.0.0.0:5000`** — **todas as
+interfaces, toda a rede**. Provado nesta sessão: bati em `172.25.32.42:5000` direto, várias vezes,
+sem BFF.
+
+Se a API passar a **confiar** em `x-iis-user`/`x-iis-roles` **enquanto** estiver em `0.0.0.0:5000`,
+então **qualquer um na rede** manda `x-iis-user: admin` + `x-iis-roles: admin` direto na `:5000` e
+**vira admin** — sem Entra, sem BFF, sem sessão. O stripping do BFF não ajuda: você simplesmente
+**pula o BFF**. Header de confiança só é confiável se a origem for garantida — e hoje não é.
+
+**Portanto a ordem é inegociável:**
+
+1. **O BFF vira a única porta de produção** (a branch `codex/feat-entra-oidc` em produção; o painel
+   React passa a falar com o BFF, não mais com a `:5000` direto — hoje ele fala direto, per memória).
+2. **Trancar a rede:** a API deixa de escutar em `0.0.0.0`. Se BFF e API são **co-hospedados** →
+   bindar em `127.0.0.1:5000` (via `Kestrel__Endpoints__Http__Url`, o canal que o deploy já usa). Se
+   **hosts diferentes** → firewall na `:5000` liberando **só o IP do BFF**. Topologia a confirmar no
+   host (`@lp-devops`).
+3. **Só então** a API consome `x-iis-user`/`x-iis-roles` para autorização e auditoria (`@lp-backend-dev`).
+
+Inverter isso é publicar a vulnerabilidade. **Nada de (3) antes de (2) verificado**, e **(2) não pode
+vir antes de (1)** sem derrubar o painel atual, que ainda bate direto na `:5000`.
+
+### Dependências e o que fica parado
+
+- A frente inteira depende do **BFF/OIDC (Codex) chegar em produção como porta única**. Enquanto o
+  painel falar direto com a `:5000`, não dá para trancar a rede.
+- **`ApiKeyGateFilter` não é mais o mecanismo escolhido** (rede venceu). Ele é fail-open, então é
+  inofensivo, mas é meia-segurança que engana quem lê — candidato a **remoção** como higiene
+  (`@lp-backend-dev`, baixa prioridade).
+- **A mudança do Remy (chave no browser) é descartada** — design errado para esta arquitetura. Os 4
+  arquivos precisam ser **revertidos** para não entrarem por engano na branch do OIDC.
+
+### O que NÃO estou despachando agora, e por quê
+
+Não vou mandar o `@lp-backend-dev` construir o consumo de identidade ainda: contra uma API em
+`0.0.0.0`, isso é **construir a vulnerabilidade**. E não vou mandar o `@lp-devops` trancar a rede
+ainda: quebraria o painel atual, que fala direto com a `:5000`. As duas coisas **entram em lockstep
+com o BFF virar porta única** — trabalho da branch do Codex. O que faço agora é **sequenciar e
+registrar**; a construção .NET entra quando o BFF estiver pronto para ir a produção.
+
+---
+
 ## (Histórico) O que eu havia disparado — antes da correção acima
 
 **Só o passo 1** (front enviar o header condicionalmente). Entregue e verde, mas **retido** pela
