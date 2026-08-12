@@ -140,6 +140,41 @@ vir antes de (1)** sem derrubar o painel atual, que ainda bate direto na `:5000`
 - **A mudança do Remy (chave no browser) é descartada** — design errado para esta arquitetura. Os 4
   arquivos precisam ser **revertidos** para não entrarem por engano na branch do OIDC.
 
+### RESULTADO parcial (2026-08-11) — consumo de identidade CONSTRUÍDO e verificado
+
+Branch `feat/identidade-do-bff` (de `develop`), commit `c7489ca`. Entregue pelo `@lp-backend-dev`,
+**verificado por mim** contra o código e o teste:
+
+- **`TrustedIdentityMiddleware`** lê `x-iis-user`/`x-iis-roles` e popula `ICurrentUser` +
+  `HttpContext.User`. Nomes de header configuráveis (`Security__TrustedUserHeader`, default
+  `x-iis-user`).
+- **Guarda de loopback ATIVA e provada.** Confirmei o teste `Origem_nao_loopback_ignora_os_headers`:
+  manda `x-iis-user: admin` de `172.25.32.42` e afirma identidade **anônima** nos dois slots. É real,
+  não vacuoso — fecha a forja de identidade **mesmo com a API em `0.0.0.0`**. Default
+  `TrustIdentityFromLoopbackOnly=true`, deliberadamente fora do `appsettings.json` (sem booleano
+  tentador).
+- **Auditoria** (`AuditActionFilter`) passa a gravar o usuário (`Name` ou `anon`).
+- **`ApiKeyGateFilter`/`ApiKeyGatePolicy` REMOVIDOS** — rede + identidade venceram; `Security:ApiKey`
+  e `Security:AnonymousPaths` saíram do `appsettings.json`.
+- `dotnet build` verde, 294 testes, mutação da guarda derruba a suíte em 3 pontos.
+
+**Sem `[Authorize]` em endpoint** — enforcement por papel fica para a decisão de produto (abaixo).
+
+### O que ainda falta
+
+1. **Trava de rede (`127.0.0.1`)** — `@lp-devops`. É a 2ª camada (a guarda de loopback já é a 1ª).
+   **Gated:** só vai a produção depois de confirmar que o painel de produção passa pelo BFF (senão
+   quebra o acesso direto à `:5000`).
+2. **Enforcement por papel** — decisão de produto do dono: quais endpoints viram privilegiados. O
+   mecanismo (`ICurrentUser.IsInRole`) já está pronto. Candidatos que o `@lp-backend-dev` levantou:
+   `DataGenerationController`, `execute-candidates`/transformações que sobem `.exe`, limpeza de cache
+   (privilegiado); `GET api/logs` (admin-only, expõe internals); `ParseController/upload` (operador).
+3. **Higiene de CI** — `@lp-devops`: `ci-dev.yml` (~519-524, 588) e `deploy.yml` (~919) ainda injetam
+   `Security__ApiKey` (agora morto — no-op). Limpar. O secret `API_KEY_DEV`/`VITE_API_KEY` do rollout
+   antigo perde a função.
+4. **Doc** — `@lp-doc`: README documenta o `ApiKeyGateFilter` e a chave compartilhada; atualizar para
+   identidade-do-BFF + guarda de loopback.
+
 ### O que NÃO estou despachando agora, e por quê
 
 Não vou mandar o `@lp-backend-dev` construir o consumo de identidade ainda: contra uma API em
@@ -147,6 +182,58 @@ Não vou mandar o `@lp-backend-dev` construir o consumo de identidade ainda: con
 ainda: quebraria o painel atual, que fala direto com a `:5000`. As duas coisas **entram em lockstep
 com o BFF virar porta única** — trabalho da branch do Codex. O que faço agora é **sequenciar e
 registrar**; a construção .NET entra quando o BFF estiver pronto para ir a produção.
+
+---
+
+## AUDITORIA LOCAL (2026-08-12) e decisão de enforcement por papel
+
+Rodei a API localmente (`dotnet run`, `TrustIdentityFromLoopbackOnly=true` default, requisições de
+`127.0.0.1`) e bati nos endpoints candidatos com `x-iis-user`/`x-iis-roles` simulados, para decidir
+com log em mãos — não só por inspeção de código.
+
+**O que os logs mostraram:**
+
+- `POST /api/parse/upload` (tem `[ServiceFilter(typeof(AuditActionFilter))]`): identidade flui
+  ponta a ponta. Upload multipart válido com `x-iis-user: admin.teste` produziu
+  `AUDIT | UserId:admin.teste | ... | Action:Executed`; sem headers, produziu `UserId:anon`. Confirma
+  que o mecanismo funciona quando o filtro está presente.
+- **Achado real, não previsto no plano:** uma requisição que falha o `ModelState` (ex.: `multipart`
+  malformado, 400 do `[ApiController]`) **não gera nenhuma linha `AUDIT`** — o filtro automático de
+  validação do `[ApiController]` roda antes e curto-circuita o pipeline sem chamar
+  `AuditActionFilter.OnActionExecuting`. Ou seja, **hoje a auditoria só cobre requisições
+  bem-formadas**; tentativas malformadas (que é justamente o tipo de tráfego que se quer auditar em
+  um cenário de abuso) passam sem registro.
+- **`AuditActionFilter` só está aplicado no `ParseController`.** Bati em `GET /api/logs` (anônimo e
+  como admin, ambos 200) e em `POST /api/DataGeneration/generate-synthetic` — **zero linhas `AUDIT`**
+  em qualquer um. O middleware de identidade roda globalmente (então `ICurrentUser` está populado),
+  mas nada grava quem chamou esses endpoints hoje. Os "candidatos" listados no plano original
+  (`DataGenerationController`, `execute-candidates`, limpeza de cache, `GET api/logs`,
+  `ParseController/upload`) têm **cobertura de auditoria desigual**: só o último é realmente auditado.
+
+**Decisão de enforcement por papel** (mecanismo `ICurrentUser.IsInRole`, ainda sem `[Authorize]` em
+nenhum endpoint):
+
+| Endpoint | Papel exigido | Por quê |
+|---|---|---|
+| `GET /api/logs` | `admin` | Expõe internals (stack traces, paths de servidor) — maior risco de vazamento, zero fricção de uso legítimo (só operação de suporte) |
+| `POST /api/DataGeneration/*` (`generate-synthetic`, `generate-synthetic-zip`, `process-excel`) | `admin` | Gera dados sintéticos em volume / roda IA — custo computacional e superfície de abuso, uso não é operação de rotina |
+| `POST /api/TransformationExecution/execute-candidates`, `/execute-lowcode` | `admin` | Sobe o runner LowCode (`.exe`) — mesma classe de risco do P0/P1 já fechado (execução de processo externo) |
+| `POST /api/MapperDatabaseController/refresh-cache` | `operador` | Ação de manutenção, não deveria ser self-service anônimo, mas não é tão sensível quanto executar transformação |
+| `POST /api/parse/upload` | **nenhum (mantém aberto)** | É o caminho operacional principal do sistema; já tem auditoria real. Fechar aqui quebraria o uso normal sem ganho de segurança proporcional — o registro por `UserId`/`anon` já dá rastreabilidade |
+
+**Pré-requisito antes de qualquer `[Authorize]` entrar em vigor — 2 gaps que o `[Authorize]`
+sozinho NÃO resolve:**
+
+1. **Aplicar `[ServiceFilter(typeof(AuditActionFilter))]`** em `LogsController`,
+   `DataGenerationController` e `TransformationExecutionController` — hoje eles não são auditados,
+   então mesmo com `[Authorize]` ligado não há rastro de quem tentou (e falhou) acessar.
+2. **Corrigir a ordem de filtros** para que `AuditActionFilter` rode mesmo quando o `ModelState` é
+   inválido (ou aceitar formalmente que auditoria = "requisição bem-formada que chegou à action" —
+   mas isso precisa ser uma decisão registrada, não um acidente de ordering).
+
+Sem os dois, `[Authorize]` fecha o acesso mas não deixa rastro de quem tentou contornar — é
+enforcement sem visibilidade, metade da defesa. **Trabalho de `@lp-backend-dev`**, antes de aplicar os
+atributos da tabela acima.
 
 ---
 

@@ -603,6 +603,28 @@ jobs:
             "Crie em: GitHub -> Settings -> Secrets and variables -> Actions -> aba Secrets.")
         }
 
+        # Kestrel__Endpoints__Http__Url: TRAVA DE REDE (2026-08-12, plano em
+        # docs/architecture/rollout-p2-autenticacao.md, "ACOPLAMENTO LETAL"). O default do
+        # appsettings.json/Program.cs e "http://0.0.0.0:5000" - todas as interfaces. Com o
+        # TrustedIdentityMiddleware passando a confiar em x-iis-user/x-iis-roles injetados pelo
+        # BFF, uma API em 0.0.0.0 deixa QUALQUER host da rede se passar por qualquer usuario
+        # direto na :5000, pulando o BFF e o Entra OIDC por completo - a guarda de loopback do
+        # middleware neutraliza isso, mas so a rede fecha a origem por completo (defesa em
+        # profundidade, nao redundancia).
+        #
+        # Por que via env var (canal gerenciado) e nao editando o appsettings.json do repo: este
+        # workflow copia com `-Exclude appsettings.json` por padrao (ver step "Config drift" acima)
+        # - o valor do repo so chega ao destino se MIGRATE_CONFIG_TO_REPO=true ja tiver rodado, o
+        # que nao e garantido. A variavel de ambiente do servico e o UNICO canal que sempre chega,
+        # independente do estado da migracao - mesmo padrao ja usado para LowCode__Package etc.
+        #
+        # PRE-REQUISITO verificado antes deste commit: o painel React de producao ja fala com o
+        # BFF (branch codex/feat-entra-oidc), nao mais direto com a :5000 - confirmado pelo dono.
+        # BFF e API sao co-hospedados no mesmo Windows Server 2022 (172.25.32.42,
+        # BRNDDAPPBLD01) - o smoke test abaixo roda no runner self-hosted DESTE MESMO host, entao
+        # localhost/127.0.0.1 continua alcancavel apos o bind mudar.
+        $managed['Kestrel__Endpoints__Http__Url'] = 'http://127.0.0.1:5000'
+
         # Upsert: preserva tudo que nao e nosso, reescreve o que e.
         $existing = @()
         $cur = (Get-ItemProperty -Path $regPath -Name 'Environment' -ErrorAction SilentlyContinue).Environment
@@ -915,13 +937,12 @@ jobs:
     # 503 nao e sucesso nem falha definitiva - e "ainda nao pronto", entao o laco RETENTA. So 200
     # encerra com sucesso; esgotar as tentativas FALHA o deploy (exit 1).
     #
-    # /health/ready e ANONIMO (mapeado por MapHealthChecks, FORA do pipeline de filtros MVC onde
-    # vive o ApiKeyGateFilter) - nao precisa de header. O X-Api-Key so viaja como no-op defensivo
-    # quando o secret existir, por consistencia com o ci-dev; health o ignora.
+    # /health/ready e ANONIMO (mapeado por MapHealthChecks, FORA do pipeline de filtros MVC).
+    # O ApiKeyGateFilter foi REMOVIDO do codigo (2026-08-12, `feat/identidade-do-bff`) - a
+    # defesa BFF->API passou a ser rede (bind em loopback), nao chave compartilhada.
     - name: Smoke test de readiness (pos-deploy)
       env:
         API_URL_PROD: ${{ vars.API_URL_PROD }}
-        API_KEY_PROD: ${{ secrets.API_KEY_PROD }}
       run: |
         $ErrorActionPreference = "Stop"
 
@@ -938,11 +959,8 @@ jobs:
         }
         $smokeUrl = "$API_URL/health/ready"
 
-        # Header no-op defensivo: /health/ready e anonimo, mas mantemos paridade com o ci-dev.
+        # /health/ready e anonimo - sem header de autenticacao a montar.
         $smokeHeaders = @{}
-        if (-not [string]::IsNullOrWhiteSpace($env:API_KEY_PROD)) {
-          $smokeHeaders['X-Api-Key'] = $env:API_KEY_PROD
-        }
 
         Write-Host "Smoke test de readiness: $smokeUrl (exige HTTP 200 estrito)"
 
