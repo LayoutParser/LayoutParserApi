@@ -154,4 +154,16 @@ Os segredos antigos **persistem nos commits anteriores** mesmo após este commit
 - **Nunca** logue credenciais nem conteúdo sensível de documentos de cliente.
 - **LLM em nuvem (Gemini/OpenAI):** não envie documentos/dados reais de cliente sem autorização explícita. Prefira **Ollama local** para dados sensíveis.
 - CORS está liberado para origens específicas em `Program.cs` — não abra para `*` em produção.
-- A app não usa autenticação no pipeline atual (`UseAuthorization` comentado) — sinalize se um endpoint novo expuser dado sensível sem proteção.
+- **Identidade vem do BFF, não há `[Authorize]` ainda.** A API não autentica ninguém diretamente:
+  `Services/Security/TrustedIdentityMiddleware.cs` lê os headers `x-iis-user`/`x-iis-roles`
+  (configuráveis via `Security:TrustedUserHeader`/`Security:TrustedRolesHeader`) injetados pelo BFF
+  Fastify (`LayoutParserReact/server/`, autenticação Entra OIDC) e popula `ICurrentUser` +
+  `HttpContext.User`. Só confia nesses headers se a origem da requisição for **loopback**
+  (`TrustIdentityFromLoopbackOnly`, default `true`, deliberadamente fora do `appsettings.json`) —
+  isso fecha forja de identidade mesmo com a API respondendo em `0.0.0.0`. Nenhum endpoint tem
+  `[Authorize]`/enforcement por papel ainda — é decisão de produto em aberto. Detalhe e status:
+  [`docs/architecture/rollout-p2-autenticacao.md`](../../docs/architecture/rollout-p2-autenticacao.md).
+- **`ApiKeyGateFilter`/`ApiKeyGatePolicy` foram removidos** (branch `feat/identidade-do-bff`,
+  commit `c7489ca`) — a chave compartilhada deixou de ser o mecanismo de defesa da fronteira
+  BFF↔API; a defesa hoje é rede (API só deve escutar `127.0.0.1`, em andamento por `@lp-devops`) +
+  a guarda de loopback do middleware acima. Não reintroduza `Security:ApiKey`/`Security:AnonymousPaths`.
