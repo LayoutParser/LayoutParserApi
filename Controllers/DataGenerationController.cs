@@ -7,6 +7,7 @@ using LayoutParserApi.Services.Generation.TxtGenerator;
 using LayoutParserApi.Services.Generation.TxtGenerator.Enum;
 using LayoutParserApi.Services.Interfaces;
 
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 using System.IO.Compression;
@@ -42,6 +43,8 @@ namespace LayoutParserApi.Controllers
             _logger = logger;
         }
 
+        // Issue #32: geração de dados sintéticos é operação privilegiada — restrita ao papel "admin".
+        [Authorize(Roles = "admin")]
         [HttpPost("generate-synthetic")]
         public async Task<IActionResult> GenerateSyntheticData(
             IFormFile layoutFile,
@@ -146,6 +149,8 @@ namespace LayoutParserApi.Controllers
             }
         }
 
+        // Issue #32: idem generate-synthetic — restrito ao papel "admin".
+        [Authorize(Roles = "admin")]
         [HttpPost("process-excel")]
         public async Task<IActionResult> ProcessExcel(IFormFile excelFile)
         {
@@ -378,6 +383,8 @@ namespace LayoutParserApi.Controllers
             public List<object> Details { get; set; } = new List<object>();
         }
 
+        // Issue #32: idem generate-synthetic — restrito ao papel "admin".
+        [Authorize(Roles = "admin")]
         [HttpPost("generate-synthetic-zip")]
         public async Task<IActionResult> GenerateSyntheticDataZip(IFormFile layoutFile, IFormFile excelFile = null, int numberOfRecords = 2, int numberOfFiles = 1, string generationMode = "Random")
         {
