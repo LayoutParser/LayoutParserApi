@@ -140,6 +140,41 @@ vir antes de (1)** sem derrubar o painel atual, que ainda bate direto na `:5000`
 - **A mudança do Remy (chave no browser) é descartada** — design errado para esta arquitetura. Os 4
   arquivos precisam ser **revertidos** para não entrarem por engano na branch do OIDC.
 
+### RESULTADO parcial (2026-08-11) — consumo de identidade CONSTRUÍDO e verificado
+
+Branch `feat/identidade-do-bff` (de `develop`), commit `c7489ca`. Entregue pelo `@lp-backend-dev`,
+**verificado por mim** contra o código e o teste:
+
+- **`TrustedIdentityMiddleware`** lê `x-iis-user`/`x-iis-roles` e popula `ICurrentUser` +
+  `HttpContext.User`. Nomes de header configuráveis (`Security__TrustedUserHeader`, default
+  `x-iis-user`).
+- **Guarda de loopback ATIVA e provada.** Confirmei o teste `Origem_nao_loopback_ignora_os_headers`:
+  manda `x-iis-user: admin` de `172.25.32.42` e afirma identidade **anônima** nos dois slots. É real,
+  não vacuoso — fecha a forja de identidade **mesmo com a API em `0.0.0.0`**. Default
+  `TrustIdentityFromLoopbackOnly=true`, deliberadamente fora do `appsettings.json` (sem booleano
+  tentador).
+- **Auditoria** (`AuditActionFilter`) passa a gravar o usuário (`Name` ou `anon`).
+- **`ApiKeyGateFilter`/`ApiKeyGatePolicy` REMOVIDOS** — rede + identidade venceram; `Security:ApiKey`
+  e `Security:AnonymousPaths` saíram do `appsettings.json`.
+- `dotnet build` verde, 294 testes, mutação da guarda derruba a suíte em 3 pontos.
+
+**Sem `[Authorize]` em endpoint** — enforcement por papel fica para a decisão de produto (abaixo).
+
+### O que ainda falta
+
+1. **Trava de rede (`127.0.0.1`)** — `@lp-devops`. É a 2ª camada (a guarda de loopback já é a 1ª).
+   **Gated:** só vai a produção depois de confirmar que o painel de produção passa pelo BFF (senão
+   quebra o acesso direto à `:5000`).
+2. **Enforcement por papel** — decisão de produto do dono: quais endpoints viram privilegiados. O
+   mecanismo (`ICurrentUser.IsInRole`) já está pronto. Candidatos que o `@lp-backend-dev` levantou:
+   `DataGenerationController`, `execute-candidates`/transformações que sobem `.exe`, limpeza de cache
+   (privilegiado); `GET api/logs` (admin-only, expõe internals); `ParseController/upload` (operador).
+3. **Higiene de CI** — `@lp-devops`: `ci-dev.yml` (~519-524, 588) e `deploy.yml` (~919) ainda injetam
+   `Security__ApiKey` (agora morto — no-op). Limpar. O secret `API_KEY_DEV`/`VITE_API_KEY` do rollout
+   antigo perde a função.
+4. **Doc** — `@lp-doc`: README documenta o `ApiKeyGateFilter` e a chave compartilhada; atualizar para
+   identidade-do-BFF + guarda de loopback.
+
 ### O que NÃO estou despachando agora, e por quê
 
 Não vou mandar o `@lp-backend-dev` construir o consumo de identidade ainda: contra uma API em
