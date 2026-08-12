@@ -135,6 +135,68 @@ namespace LayoutParserApi.Tests.Transformation
             Assert.Null(await store.ReadEntryAsync(LowCodeTransformationStore.ComputeSha256(Documento), LayoutGuid));
         }
 
+        /// <summary>
+        /// Regressão do diagnóstico de <c>execute-candidates:[]</c> (issue #38/#39, capítulo 3):
+        /// uma falha de SQL (conexão/timeout/permissão) em
+        /// <see cref="MapperDatabaseService.GetMappersByLayoutGuidForPackagesAsync"/> ERA engolida e
+        /// virava lista vazia — indistinguível de "não existe mapper cadastrado" (mesmo
+        /// <c>Applicable=false</c>, mesma mensagem no controller: "Nenhum mapeador low-code
+        /// encontrado"). Isso mascarava um problema de infraestrutura como ausência de dado, mesmo
+        /// quando os mappers existiam de verdade no banco (confirmado por SQL manual do dono do
+        /// projeto). Agora a falha de banco PRECISA propagar como exceção — os dois únicos chamadores
+        /// (<c>ParseController</c> e <c>TransformationExecutionController</c>) já capturam isso no
+        /// nível certo e reportam com uma mensagem distinta ("error"/"Pathway sysmiddle falhou: ..."),
+        /// nunca derrubando a resposta principal.
+        /// </summary>
+        [Fact]
+        public async Task Falha_de_banco_ao_buscar_candidatos_propaga_como_excecao_em_vez_de_Applicable_false()
+        {
+            var (autoComFalha, _, mapperDbFalho) = CriarPathwayComBancoFalho();
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                autoComFalha.RunAsync(LayoutGuid, "LAY_TESTE", Documento, "mqseries", "doc.txt"));
+
+            Assert.Equal(1, mapperDbFalho.Consultas);
+        }
+
+        private static (LowCodeAutoTransformationService auto, RunnerEspiao runner, MapperDbFalho mapperDb) CriarPathwayComBancoFalho()
+        {
+            var raiz = Path.Combine(Path.GetTempPath(), "lp-tests", "lowcode-auto", Guid.NewGuid().ToString("N"));
+
+            var config = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["ML:LowCodeTransformationsPath"] = raiz,
+                    ["Logging:File:Directory"] = Path.Combine(Path.GetTempPath(), "lp-tests", "runner-logs")
+                })
+                .Build();
+
+            var opcoes = Options.Create(new LowCodeRunnerOptions
+            {
+                RunnerPath = "runner-inexistente.exe",
+                SysmiddleDir = Path.GetTempPath(),
+                GlobalFolder = Path.GetTempPath()
+            });
+
+            var store = new LowCodeTransformationStore(
+                NullLogger<LowCodeTransformationStore>.Instance, config, opcoes, redis: null);
+
+            var runner = new RunnerEspiao(opcoes, config);
+            var mapperDb = new MapperDbFalho(config);
+
+            var servicos = new ServiceCollection();
+            servicos.AddScoped<MapperDatabaseService>(_ => mapperDb);
+
+            var auto = new LowCodeAutoTransformationService(
+                NullLogger<LowCodeAutoTransformationService>.Instance,
+                servicos.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
+                runner,
+                store,
+                opcoes);
+
+            return (auto, runner, mapperDb);
+        }
+
         // ─────────────────────────────── infraestrutura ───────────────────────────────
 
         private static Mapper Mapper(string guid) => new()
@@ -247,6 +309,29 @@ namespace LayoutParserApi.Tests.Transformation
             {
                 Interlocked.Increment(ref _consultas);
                 return Task.FromResult(_mappers.ToList());
+            }
+        }
+
+        /// <summary>
+        /// Simula a falha real de <see cref="MapperDatabaseService.GetMappersByLayoutGuidForPackagesAsync"/>
+        /// (ex.: conexão SQL indisponível) — precisa propagar, não virar lista vazia silenciosa.
+        /// </summary>
+        private sealed class MapperDbFalho : MapperDatabaseService
+        {
+            private int _consultas;
+
+            public MapperDbFalho(IConfiguration config)
+                : base(NullLogger<MapperDatabaseService>.Instance, null!, config)
+            {
+            }
+
+            public int Consultas => Volatile.Read(ref _consultas);
+
+            public override Task<List<Mapper>> GetRankedMapperCandidatesForLayoutGuidAsync(
+                string layoutGuid, int projectId, IReadOnlyCollection<string> allowedPackageGuids)
+            {
+                Interlocked.Increment(ref _consultas);
+                throw new InvalidOperationException("Falha simulada de conexão SQL ao buscar mapeadores.");
             }
         }
     }
