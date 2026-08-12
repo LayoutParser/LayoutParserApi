@@ -59,6 +59,14 @@ hoje entrega transformação, o que muda a prioridade de tudo mais.
 
 ### 2.2 A API não tem autenticação nenhuma *(exposição ativa)*
 
+> **Atualização (2026-08-11, `@lp-doc`):** a proposta abaixo (`ApiKeyGateFilter`/chave compartilhada)
+> **não foi o caminho seguido**. A decisão final do dono foi outra: identidade via **BFF Fastify +
+> Entra OIDC** (repo `LayoutParserReact`) injetando `x-iis-user`/`x-iis-roles`, consumidos pela API
+> via `TrustedIdentityMiddleware` sob guarda de loopback. `ApiKeyGateFilter`/`Security:ApiKey` foram
+> implementados, depois **removidos** (commit `c7489ca`). `[Authorize]` por papel ainda não existe.
+> Detalhe: [`rollout-p2-autenticacao.md`](rollout-p2-autenticacao.md). Esta seção permanece como
+> registro histórico da análise original — não reflete o mecanismo vigente.
+
 Verificado em `Program.cs`: `app.UseAuthorization()` está **comentado** (linha 476),
 `UseAuthentication` não existe, e `app.UseHttpsRedirection()` também está comentado (linha 473). O
 Kestrel escuta `0.0.0.0:5000` e o CORS libera origens de rede interna (`172.25.32.42`).
