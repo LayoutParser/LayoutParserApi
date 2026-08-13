@@ -378,6 +378,19 @@ try
         client.Timeout = Timeout.InfiniteTimeSpan;
     });
 
+    // ✅ Pathway IA de execute-candidates (Issue #40) — loop gerar → validar XSD → comparar com o
+    // gabarito sysmiddle → corrigir, assíncrono/desacoplado do ciclo síncrono do endpoint (ver
+    // docs/architecture/pathway-ia-execute-candidates.md). Timeout infinito no client: o teto real
+    // é o próprio CancellationTokenSource de sanidade dentro do serviço (AiTransformationCandidateOptions).
+    builder.Services.Configure<LayoutParserApi.Services.Transformation.Ai.AiTransformationCandidateOptions>(
+        builder.Configuration.GetSection("AiTransformationCandidate"));
+    builder.Services.AddSingleton<LayoutParserApi.Services.Transformation.Ai.AiCandidateStore>();
+    builder.Services.AddHttpClient<LayoutParserApi.Services.Transformation.Ai.IAiTransformationCandidateService,
+        LayoutParserApi.Services.Transformation.Ai.AiTransformationCandidateService>(client =>
+    {
+        client.Timeout = Timeout.InfiniteTimeSpan;
+    });
+
     // Transformation Services (ML)
     builder.Services.AddScoped<TransformationLearningService>();
     builder.Services.AddScoped<PatternComparisonService>();
