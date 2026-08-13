@@ -146,13 +146,79 @@ jobs:
           exit 1
         }
 
-        dotnet build "$API_PROJECT" --configuration Release --no-restore
+        $BUILD_LOG = Join-Path $PWD.Path "scs-build.log"
+        dotnet build "$API_PROJECT" --configuration Release --no-restore | Tee-Object -FilePath $BUILD_LOG
         if ($LASTEXITCODE -ne 0) {
           Write-Error "Falha ao compilar LayoutParserApi"
           exit 1
         }
 
         Write-Host "LayoutParserApi compilada com sucesso (Release)"
+
+    # Gate de seguranca estatica (SAST) gratuito, sem depender do CodeQL/GitHub Advanced
+    # Security - bloqueado neste repo porque e privado no plano free (decisao registrada em
+    # .claude/rules/agent-authority.md). O analyzer SecurityCodeScan.VS2019 ja roda dentro do
+    # `dotnet build` acima (PackageReference no LayoutParserApi.csproj) e emite achados como
+    # warning MSBuild prefixado SCS####. Este step le o log salvo pelo step anterior e decide
+    # o veredito por severidade:
+    #   - codigos de alto risco (path traversal, CSRF, SQL/LDAP/XPath injection, XXE,
+    #     deserializacao insegura) FALHAM o build visivelmente;
+    #   - o restante (ex.: SCS0005 - gerador aleatorio fraco, hoje usado so em geracao de
+    #     dado sintetico de teste, nao em criptografia/token) fica warning-only - o volume
+    #     inicial (majoritariamente SCS0005) nao pode travar o deploy de dev.
+    # Achados atuais de alto risco viram issue via @lp-pm para correcao futura, nao aqui.
+    - name: Security Code Scan - gate por severidade
+      run: |
+        $BUILD_LOG = Join-Path $PWD.Path "scs-build.log"
+
+        if (-not (Test-Path $BUILD_LOG)) {
+          Write-Warning "Log de build nao encontrado em $BUILD_LOG - pulando gate de SCS."
+          exit 0
+        }
+
+        # Codigos SecurityCodeScan considerados High/Critical para este gate.
+        $CODIGOS_ALTOS = @(
+          "SCS0002",  # SQL Injection
+          "SCS0003",  # Cipher fraco
+          "SCS0007",  # XXE
+          "SCS0016",  # CSRF
+          "SCS0018",  # Path Traversal
+          "SCS0026",  # LDAP Injection
+          "SCS0028",  # Deserializacao insegura
+          "SCS0029",  # XSS
+          "SCS0031"   # XPath Injection
+        )
+
+        $linhas = Get-Content $BUILD_LOG | Where-Object { $_ -match "warning SCS\d+" }
+        $achadosAltos = @()
+        $totalPorCodigo = @{}
+
+        foreach ($linha in $linhas) {
+          if ($linha -match "warning (SCS\d+)") {
+            $codigo = $Matches[1]
+            if (-not $totalPorCodigo.ContainsKey($codigo)) { $totalPorCodigo[$codigo] = 0 }
+            $totalPorCodigo[$codigo]++
+            if ($CODIGOS_ALTOS -contains $codigo) {
+              $achadosAltos += $linha.Trim()
+            }
+          }
+        }
+
+        Write-Host "Achados do SecurityCodeScan por codigo:"
+        foreach ($codigo in $totalPorCodigo.Keys) {
+          Write-Host "  $codigo : $($totalPorCodigo[$codigo])"
+        }
+
+        if ($achadosAltos.Count -gt 0) {
+          Write-Host ""
+          Write-Host "Achados de severidade ALTA (bloqueiam o deploy):"
+          # Deduplicar - o mesmo achado pode aparecer mais de uma vez no log de build.
+          $achadosAltos | Sort-Object -Unique | ForEach-Object { Write-Host "  $_" }
+          Write-Error "SecurityCodeScan encontrou $($achadosAltos.Count) achado(s) de severidade alta/critica. Corrija ou registre excecao explicita antes de prosseguir."
+          exit 1
+        }
+
+        Write-Host "Nenhum achado de severidade alta/critica - gate de SCS OK (warnings de menor severidade nao bloqueiam)."
 
     # Quality gate de verdade. Antes deste step o CI nao rodava teste nenhum, e o
     # `dotnet test` na solution reportava SUCESSO tendo executado ZERO testes - um gate que
