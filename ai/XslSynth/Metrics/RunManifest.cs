@@ -88,13 +88,68 @@ public sealed class RunArtifactWriter
     public string RunId { get; }
     public string CandidatesDirectory { get; }
 
+    /// <summary>Retenção default dos run dirs (issue #35) — runs mais antigos que isto são
+    /// removidos de <c>$METRICS_HOME/runs/</c> antes de publicar um run novo. Decisão do dono
+    /// do projeto: 30 dias é suficiente para o Job 2 (Pollux) reprocessar/auditar sem acumular
+    /// candidatos+manifestos indefinidamente na VM.</summary>
+    public const int DefaultRetentionDays = 30;
+
     public RunArtifactWriter(string runDirectory, string runId, Action<string>? log = null)
     {
         RunDirectory = Path.GetFullPath(runDirectory);
         RunId = runId;
         CandidatesDirectory = Path.Combine(RunDirectory, "candidates");
         _log = log ?? Console.WriteLine;
+
+        // ── Limpeza de runs antigos ANTES de criar o novo (issue #35) ──────────────
+        // Roda aqui — não num timer/cron separado — para não depender de mais um processo
+        // na VM: cada rodada do Job 1 já garante a poda das anteriores. Best-effort: uma
+        // falha de limpeza nunca impede o run atual de ser criado/publicado.
+        CleanupOldRuns(Directory.GetParent(RunDirectory)?.FullName, RunId, DefaultRetentionDays, _log);
+
         Directory.CreateDirectory(CandidatesDirectory);
+    }
+
+    /// <summary>
+    /// Remove subdiretórios de <c>runs/</c> cujo runId (nome da pasta, formato de
+    /// <see cref="NewRunId"/>: <c>yyyyMMdd'T'HHmmss'Z'</c>) seja mais antigo que
+    /// <paramref name="retentionDays"/> em relação a agora (UTC). Best-effort e por-diretório:
+    /// uma pasta com nome ilegível ou falha de I/O (ex.: arquivo travado por outro processo) é
+    /// logada e pulada — nunca aborta a limpeza inteira nem o run em curso. Nunca remove o run
+    /// que está sendo criado agora (<paramref name="currentRunId"/>) nem o ponteiro <c>latest</c>
+    /// (que não é um subdiretório, então já fica de fora do <c>EnumerateDirectories</c>).
+    /// </summary>
+    public static void CleanupOldRuns(string? runsDir, string currentRunId, int retentionDays, Action<string>? log = null)
+    {
+        var logger = log ?? Console.WriteLine;
+        if (runsDir is null || !Directory.Exists(runsDir)) return;
+
+        var limite = DateTime.UtcNow - TimeSpan.FromDays(retentionDays);
+        var removidos = 0;
+        foreach (var dir in Directory.EnumerateDirectories(runsDir))
+        {
+            var nome = Path.GetFileName(dir);
+            if (nome == currentRunId) continue;
+            if (!DateTime.TryParseExact(nome, "yyyyMMdd'T'HHmmss'Z'", null,
+                    System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal,
+                    out var criadoEm))
+                continue; // pasta que não segue a convenção de runId — não mexe (não é nosso artefato).
+
+            if (criadoEm >= limite) continue;
+
+            try
+            {
+                Directory.Delete(dir, recursive: true);
+                removidos++;
+            }
+            catch (Exception ex)
+            {
+                logger($"   [run-dir] aviso: falha ao remover run antigo '{nome}' na limpeza de retenção ({ex.Message}) — pulando.");
+            }
+        }
+
+        if (removidos > 0)
+            logger($"   [run-dir] limpeza de retenção: {removidos} run(s) com mais de {retentionDays} dia(s) removido(s).");
     }
 
     /// <summary>Grava <c>candidates/&lt;candidateId&gt;.xml</c> e devolve o caminho RELATIVO
