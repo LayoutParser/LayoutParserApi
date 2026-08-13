@@ -583,32 +583,72 @@ jobs:
         # Readiness pode responder 503 durante o warm-up do catalogo (dependencia essencial ainda
         # subindo). 503 NAO e sucesso e tambem NAO e falha definitiva: e "ainda nao pronto" - por
         # isso o laco RETENTA ate 200 ou esgotar. So 200 encerra com sucesso.
-        $status = $null
-        $tentativas = 24
-        for ($i = 1; $i -le $tentativas; $i++) {
-          try {
-            $resp = Invoke-WebRequest -Uri $smokeUrl -UseBasicParsing -TimeoutSec 5 -Headers $smokeHeaders
-            $status = [int]$resp.StatusCode
-          } catch {
-            $r = $_.Exception.Response
-            $status = if ($r -and $r.StatusCode) { [int]$r.StatusCode } else { $null }
-          }
+        #
+        # [ATENCAO] Causa raiz investigada em 2026-08-13 (run 31687154272): o warm-up do catalogo
+        # (CachePermanentWarmupBackgroundService) roda UMA UNICA VEZ apos o app subir - nao ha
+        # retry. Se o SQL estiver com um blip de rede TRANSITORIO exatamente nesse instante
+        # (confirmado no log do host: "SqlException... error: 40 - Nao foi possivel abrir uma
+        # conexao com o SQL Server", recuperado segundos depois), o catalogo fica marcado com 0
+        # layouts PARA SEMPRE (CatalogHealthCheck Unhealthy -> /health/ready 503 permanente) ate
+        # o servico ser reiniciado manualmente - mesmo com o SQL saudavel de novo. O laco de
+        # retentativas abaixo nao ajuda nesse caso porque a sonda em si e reexecutada, mas o
+        # ESTADO do warm-up (CatalogWarmupState) nunca e recalculado. Por isso: se a janela
+        # inicial esgotar, tenta UM restart do servico (reexecuta o warm-up do zero) antes de
+        # desistir. Corrigir a causa raiz de verdade (retry no warm-up em si) e codigo de negocio
+        # -> @lp-backend-dev; aqui so mitigamos no nivel de deploy.
+        function Test-Readiness {
+          param([int]$Tentativas, [int]$EsperaSegundos)
+          $statusLocal = $null
+          for ($i = 1; $i -le $Tentativas; $i++) {
+            $corpo = $null
+            try {
+              $resp = Invoke-WebRequest -Uri $smokeUrl -UseBasicParsing -TimeoutSec 5 -Headers $smokeHeaders
+              $statusLocal = [int]$resp.StatusCode
+              $corpo = $resp.Content
+            } catch {
+              $r = $_.Exception.Response
+              $statusLocal = if ($r -and $r.StatusCode) { [int]$r.StatusCode } else { $null }
+              if ($r) {
+                try {
+                  $stream = $r.GetResponseStream()
+                  $reader = New-Object System.IO.StreamReader($stream)
+                  $corpo = $reader.ReadToEnd()
+                } catch { }
+              }
+            }
 
-          if ($status -eq 200) {
-            Write-Host "Smoke test: HTTP 200 em $smokeUrl (readiness OK, tentativa $i/$tentativas)."
-            break
-          }
+            if ($statusLocal -eq 200) {
+              Write-Host "Smoke test: HTTP 200 em $smokeUrl (readiness OK, tentativa $i/$Tentativas)."
+              return 200
+            }
 
-          $descr = if ($null -eq $status) { "sem resposta" } else { "HTTP $status" }
-          if ($i -lt $tentativas) {
-            Write-Host "  tentativa $i/$($tentativas): readiness ainda nao pronta ($descr), aguardando 5s..."
-            Start-Sleep -Seconds 5
+            $descr = if ($null -eq $statusLocal) { "sem resposta" } else { "HTTP $statusLocal" }
+            Write-Host "  tentativa $i/$($Tentativas): readiness ainda nao pronta ($descr), aguardando ${EsperaSegundos}s..."
+            # Corpo do /health/ready mostra QUAL dependencia esta Unhealthy (sql/redis/decryptor/
+            # lowcode-runner/catalog) - sem isso so se descobre a causa lendo o log do host depois.
+            if ($corpo) { Write-Host "    corpo: $corpo" }
+            if ($i -lt $Tentativas) { Start-Sleep -Seconds $EsperaSegundos }
           }
+          return $statusLocal
+        }
+
+        $status = Test-Readiness -Tentativas 24 -EsperaSegundos 5
+
+        if ($status -ne 200) {
+          Write-Warning ("Readiness nao ficou 200 na janela inicial (ultimo: " +
+            $(if ($null -eq $status) { "sem resposta" } else { "HTTP $status" }) +
+            "). Tentando UM restart do servico para reexecutar o warm-up do catalogo " +
+            "(mitigacao de blip transitorio de rede no SQL durante o warm-up unico) e retestando...")
+          Restart-Service -Name $serviceName -ErrorAction SilentlyContinue
+          $svc = Get-Service -Name $serviceName
+          $svc.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+          Start-Sleep -Seconds 8
+          $status = Test-Readiness -Tentativas 24 -EsperaSegundos 5
         }
 
         if ($status -ne 200) {
           $ultimo = if ($null -eq $status) { "sem resposta" } else { "HTTP $status" }
-          Write-Error "Readiness nao ficou 200 em $smokeUrl apos $tentativas tentativas (ultimo: $ultimo). Deploy de dev abortado."
+          Write-Error "Readiness nao ficou 200 em $smokeUrl apos restart (ultimo: $ultimo). Deploy de dev abortado."
           exit 1
         }
         Write-Host "Deploy de dev concluido com sucesso."
