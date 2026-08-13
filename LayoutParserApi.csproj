@@ -43,6 +43,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Loop RAG (RepairOrchestrator etc.) extraído de ai/XslSynth para classlib compartilhada
+         — evita duplicar o loop dentro da API (Issue #40, pathway IA de execute-candidates).
+         ai\** continua excluído do glob padrão acima; esta referência é explícita. -->
+    <ProjectReference Include="ai\XslSynth.Core\XslSynth.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Folder Include="Services\Validation\Models\" />
   </ItemGroup>
 
