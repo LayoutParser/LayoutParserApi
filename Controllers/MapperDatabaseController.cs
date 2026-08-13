@@ -1,6 +1,7 @@
 using LayoutParserApi.Services.Database;
 using LayoutParserApi.Services.Interfaces;
 
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace LayoutParserApi.Controllers
@@ -193,6 +194,9 @@ namespace LayoutParserApi.Controllers
         /// <summary>
         /// Atualiza o cache de mapeadores com dados do banco
         /// </summary>
+        // Issue #32: rebuild de cache é operação operacional, não de negócio — restrita ao
+        // papel "operador" (mais permissivo que "admin", coerente com a tabela de decisão).
+        [Authorize(Roles = "operador")]
         [HttpPost("refresh-cache")]
         public async Task<IActionResult> RefreshCache()
         {
