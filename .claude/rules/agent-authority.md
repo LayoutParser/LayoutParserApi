@@ -79,6 +79,27 @@ Backlog:    QUALQUER agente acha bug/gate/pendência → @lp-pm formaliza no Git
             (rascunho → confirmação → gh issue create), dono decide prioridade
 ```
 
+## Enforcement técnico da branch protection — PERDIDO (2026-08-12)
+
+Os repositórios da org `LayoutParser` foram tornados **privados** em 2026-08-12 (correção de
+segurança — estavam públicos por engano, expondo código proprietário e topologia interna).
+Efeito colateral: a **branch protection nativa do GitHub** (PR obrigatória, 1 aprovação,
+bloqueio de push direto) que existia em `master`/`develop` deixou de ser aplicável — no plano
+free, repositório privado não tem acesso a esse recurso (`GET .../protection` retorna 403
+"Upgrade to GitHub Pro"). O dono decidiu **não assinar por ora**.
+
+**Consequência prática:** a matriz de autoridade acima (só `@lp-devops` faz `git push`/`gh pr
+create/merge`) passa a valer **só por convenção documentada aqui**, sem bloqueio técnico do
+GitHub. Um push direto a `master`/`develop` — por qualquer ferramenta ou agente — não seria mais
+rejeitado pelo GitHub. O `.github/workflows/merge-gate.yml` (`verify-source`) continua rodando e
+reportando falha visualmente em PRs contra `master`, mas também não **bloqueia** merge sem a
+proteção nativa que o exigiria como `required_status_check`.
+
+**Reversão:** se o dono decidir assinar GitHub Pro/Team no futuro, reaplicar a config documentada
+em `.claude/agent-memory/lp-devops/github-protections-pending.md` (histórico completo de
+`required_pull_request_reviews`, `allow_force_pushes: false` etc.) e retomar o plano de anexar
+`verify-source` como check obrigatório.
+
 ## Escalonamento
 
 1. Agente não consegue concluir → escalar ao usuário com contexto.

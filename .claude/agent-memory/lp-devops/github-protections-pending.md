@@ -41,3 +41,23 @@ pronto (preserva `required_pull_request_reviews` com 1 aprovação + `dismiss_st
 `allow_force_pushes/deletions: false`) está registrado na resposta da sessão de 2026-08-12.
 
 API_URL_PROD segue não existindo (nota antiga, ainda válida).
+
+**Atualizado 2026-08-12 (sessão seguinte, mais tarde) — proteção PERDIDA como efeito
+colateral de tornar os repos privados:** sequência dos fatos:
+
+1. Os repositórios da org `LayoutParser` estavam **públicos por engano**, expondo código
+   proprietário e topologia interna.
+2. Foram tornados **privados** em 2026-08-12 (correção de segurança).
+3. Efeito colateral não antecipado: branch protection avançada (`required_pull_request_reviews`,
+   bloqueio de push direto, required status checks) é **recurso pago** do GitHub em repo privado
+   no plano free — `GET .../branches/{branch}/protection` agora retorna 403 "Upgrade to GitHub
+   Pro". A config aplicada nesta mesma sessão (linhas acima) deixou de ser efetiva/consultável.
+4. Dono decidiu **não assinar GitHub Pro/Team por ora** — segue sem enforcement técnico.
+
+**Estado atual:** a regra "só `@lp-devops` dá push/merge, master só recebe de develop" vale
+**apenas por convenção documentada** (`.claude/rules/agent-authority.md`, `.claude/CLAUDE.md`),
+sem bloqueio real do GitHub. `merge-gate.yml`/`verify-source` ainda roda e reporta falha
+visualmente, mas não impede merge. Nota espelhada em `.claude/rules/agent-authority.md` (seção
+"Enforcement técnico da branch protection — PERDIDO"). Se a decisão mudar (assinar Pro/Team),
+reaplicar a config das linhas 13-18 acima e completar o plano de `required_status_checks` das
+linhas 35-41.
