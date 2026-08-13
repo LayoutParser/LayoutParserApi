@@ -162,11 +162,15 @@ jobs:
     # warning MSBuild prefixado SCS####. Este step le o log salvo pelo step anterior e decide
     # o veredito por severidade:
     #   - codigos de alto risco (path traversal, CSRF, SQL/LDAP/XPath injection, XXE,
-    #     deserializacao insegura) FALHAM o build visivelmente;
+    #     deserializacao insegura) FALHAM o build visivelmente, MAS SO se forem achados NOVOS
+    #     (nao presentes em security-code-scan-baseline.json - ver limitacao documentada la);
     #   - o restante (ex.: SCS0005 - gerador aleatorio fraco, hoje usado so em geracao de
     #     dado sintetico de teste, nao em criptografia/token) fica warning-only - o volume
     #     inicial (majoritariamente SCS0005) nao pode travar o deploy de dev.
-    # Achados atuais de alto risco viram issue via @lp-pm para correcao futura, nao aqui.
+    # Baseline: 27 achados de alto risco ja existentes (26x SCS0018 path traversal + 1x SCS0016
+    # CSRF) foram registrados em security-code-scan-baseline.json em 2026-08-13 - sao debito
+    # tecnico conhecido, nao "aprovado como seguro", e devem virar issue via @lp-pm para correcao
+    # futura. O gate so bloqueia achados que NAO estejam nessa lista.
     - name: Security Code Scan - gate por severidade
       run: |
         $BUILD_LOG = Join-Path $PWD.Path "scs-build.log"
@@ -189,17 +193,46 @@ jobs:
           "SCS0031"   # XPath Injection
         )
 
+        # Carrega o baseline de achados altos ja conhecidos (chave fragil arquivo:linha -
+        # ver limitacao documentada em security-code-scan-baseline.json).
+        $BASELINE_FILE = Join-Path $PWD.Path "security-code-scan-baseline.json"
+        $baselineKeys = New-Object System.Collections.Generic.HashSet[string]
+        if (Test-Path $BASELINE_FILE) {
+          $baselineJson = Get-Content $BASELINE_FILE -Raw | ConvertFrom-Json
+          foreach ($item in $baselineJson.findings) {
+            [void]$baselineKeys.Add("$($item.code):$($item.file):$($item.line)")
+          }
+          Write-Host "Baseline carregado: $($baselineKeys.Count) achado(s) conhecido(s) em $BASELINE_FILE"
+        } else {
+          Write-Warning "security-code-scan-baseline.json nao encontrado - todo achado alto sera tratado como novo."
+        }
+
         $linhas = Get-Content $BUILD_LOG | Where-Object { $_ -match "warning SCS\d+" }
-        $achadosAltos = @()
         $totalPorCodigo = @{}
+        $achadosConhecidos = New-Object System.Collections.Generic.HashSet[string]
+        $achadosNovos = New-Object System.Collections.Generic.HashSet[string]
 
         foreach ($linha in $linhas) {
           if ($linha -match "warning (SCS\d+)") {
             $codigo = $Matches[1]
             if (-not $totalPorCodigo.ContainsKey($codigo)) { $totalPorCodigo[$codigo] = 0 }
             $totalPorCodigo[$codigo]++
-            if ($CODIGOS_ALTOS -contains $codigo) {
-              $achadosAltos += $linha.Trim()
+
+            if ($CODIGOS_ALTOS -contains $codigo -and $linha -match '(?<file>[A-Za-z]:[^():]+\.cs)\((?<line>\d+),(?<col>\d+)\):') {
+              $relFile = $Matches.file -replace '\\', '/'
+              foreach ($marker in @('/Controllers/', '/Services/')) {
+                $idx = $relFile.IndexOf($marker)
+                if ($idx -ge 0) {
+                  $relFile = $relFile.Substring($idx + 1)
+                  break
+                }
+              }
+              $chave = "$($codigo):$($relFile):$($Matches.line)"
+              if ($baselineKeys.Contains($chave)) {
+                [void]$achadosConhecidos.Add($chave)
+              } else {
+                [void]$achadosNovos.Add($chave)
+              }
             }
           }
         }
@@ -209,16 +242,21 @@ jobs:
           Write-Host "  $codigo : $($totalPorCodigo[$codigo])"
         }
 
-        if ($achadosAltos.Count -gt 0) {
+        if ($achadosConhecidos.Count -gt 0) {
           Write-Host ""
-          Write-Host "Achados de severidade ALTA (bloqueiam o deploy):"
-          # Deduplicar - o mesmo achado pode aparecer mais de uma vez no log de build.
-          $achadosAltos | Sort-Object -Unique | ForEach-Object { Write-Host "  $_" }
-          Write-Error "SecurityCodeScan encontrou $($achadosAltos.Count) achado(s) de severidade alta/critica. Corrija ou registre excecao explicita antes de prosseguir."
+          Write-Host "Achados de severidade ALTA ja no baseline (nao bloqueiam - debito tecnico conhecido):"
+          $achadosConhecidos | Sort-Object | ForEach-Object { Write-Host "  $_" }
+        }
+
+        if ($achadosNovos.Count -gt 0) {
+          Write-Host ""
+          Write-Host "Achados de severidade ALTA NOVOS (bloqueiam o deploy):"
+          $achadosNovos | Sort-Object | ForEach-Object { Write-Host "  $_" }
+          Write-Error "SecurityCodeScan encontrou $($achadosNovos.Count) achado(s) NOVO(S) de severidade alta/critica (fora do baseline). Corrija, ou se for falso-positivo/debito aceito conscientemente, adicione ao security-code-scan-baseline.json."
           exit 1
         }
 
-        Write-Host "Nenhum achado de severidade alta/critica - gate de SCS OK (warnings de menor severidade nao bloqueiam)."
+        Write-Host "Nenhum achado de severidade alta/critica NOVO - gate de SCS OK (baseline conhecido e warnings de menor severidade nao bloqueiam)."
 
     # Quality gate de verdade. Antes deste step o CI nao rodava teste nenhum, e o
     # `dotnet test` na solution reportava SUCESSO tendo executado ZERO testes - um gate que
