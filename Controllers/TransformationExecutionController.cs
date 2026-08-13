@@ -2,6 +2,7 @@ using LayoutParserApi.Services.Transformation;
 using LayoutParserApi.Services.XmlAnalysis;
 using LayoutParserApi.Models;
 using LayoutParserApi.Services.Transformation.LowCode;
+using LayoutParserApi.Services.Transformation.Ai;
 
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -37,6 +38,7 @@ namespace LayoutParserApi.Controllers
         private readonly LowCodeAutoTransformationService _lowCodeAuto;
         private readonly ILayoutDatabaseService _layoutDb;
         private readonly LowCodeRunnerOptions _lowCodeOpt;
+        private readonly IAiTransformationCandidateService _aiCandidateService;
 
         public TransformationExecutionController(
             ILogger<TransformationExecutionController> logger,
@@ -47,7 +49,8 @@ namespace LayoutParserApi.Controllers
             LowCodeTransformationService lowCode,
             LowCodeAutoTransformationService lowCodeAuto,
             ILayoutDatabaseService layoutDb,
-            IOptions<LowCodeRunnerOptions> lowCodeOptions)
+            IOptions<LowCodeRunnerOptions> lowCodeOptions,
+            IAiTransformationCandidateService aiCandidateService)
         {
             _logger = logger;
             _pipelineService = pipelineService;
@@ -58,6 +61,7 @@ namespace LayoutParserApi.Controllers
             _lowCodeAuto = lowCodeAuto;
             _layoutDb = layoutDb;
             _lowCodeOpt = lowCodeOptions.Value;
+            _aiCandidateService = aiCandidateService;
         }
 
         /// <summary>
@@ -249,6 +253,11 @@ namespace LayoutParserApi.Controllers
             if (candidates.Count == 0)
                 warnings.Add($"Nenhum candidato de transformação encontrado para o layout {request.LayoutName}");
 
+            // Pathway IA (Issue #40): dispara só depois de ter gabarito sysmiddle disponível — nunca
+            // como terceiro Task síncrono (ver docs/architecture/pathway-ia-execute-candidates.md §3).
+            // Fire-and-forget: NUNCA atrasa nem derruba a resposta síncrona já calculada acima.
+            TryEnqueueAiCandidate(request, layoutRecord, candidates, isXmlInput);
+
             string? recommendedId = null;
             if (candidates.Count > 0)
             {
@@ -340,6 +349,55 @@ namespace LayoutParserApi.Controllers
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// Dispara o job assíncrono do pathway IA (Issue #40) quando há gabarito sysmiddle
+        /// disponível — o dono do projeto fechou que a IA "sempre trabalha" nessa condição,
+        /// não é um fallback condicionado ao tcl-xsl. Nunca lança: qualquer falha aqui vira
+        /// warning e não afeta o array <c>candidates[]</c> já calculado.
+        /// </summary>
+        private void TryEnqueueAiCandidate(
+            TransformationRequest request, LayoutRecord layoutRecord, List<TransformationCandidate> candidates, bool isXmlInput)
+        {
+            var plan = AiCandidateDispatchPlan.TryBuild(
+                request.LayoutGuid, layoutRecord.LayoutGuid, request.InputContent, isXmlInput, candidates);
+            if (plan == null)
+                return; // sem gabarito sysmiddle bem-sucedido ou sem LayoutGuid resolvível: IA não aplicável (§2.1/§3.2 do desenho).
+
+            try
+            {
+                // ✅ Não usa a request.HttpContext.RequestAborted — o job sobrevive ao fim da request
+                // (dotnet-standards.md §Background work). CancellationToken.None + teto de sanidade
+                // interno do serviço (AiTransformationCandidateOptions.SanityTimeoutMinutes).
+                _ = _aiCandidateService.EnqueueAsync(
+                    plan.Ticket,
+                    request.LayoutName,
+                    plan.LayoutGuid,
+                    plan.MapperGuid,
+                    request.InputContent,
+                    plan.GroundTruthXml,
+                    CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                // EnqueueAsync não deveria lançar (contrato do serviço), mas isolamento total aqui
+                // também — nunca derrubar a resposta síncrona de execute-candidates por causa da IA.
+                _logger.LogWarning(ex, "Falha ao disparar o pathway IA para layout {LayoutName}", request.LayoutName);
+            }
+        }
+
+        /// <summary>
+        /// Consulta o status do job assíncrono do pathway IA (Issue #40). Mesma política de
+        /// autorização de <see cref="ExecuteTransformationCandidates"/> (Issue #32) — endpoint
+        /// novo, mesmo custo/sensibilidade de disparar processos/objetos caros.
+        /// </summary>
+        [Authorize(Roles = "admin")]
+        [HttpGet("execute-candidates/{ticket}/ia-status")]
+        public async Task<IActionResult> GetAiCandidateStatus(string ticket, CancellationToken cancellationToken)
+        {
+            var status = await _aiCandidateService.GetStatusAsync(ticket, cancellationToken);
+            return Ok(status);
         }
 
         /// <summary>
