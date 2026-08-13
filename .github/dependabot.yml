@@ -1,0 +1,84 @@
+version: 2
+
+updates:
+  - package-ecosystem: nuget
+    directory: /
+    target-branch: develop
+    schedule:
+      interval: weekly
+      day: monday
+      time: '08:00'
+      timezone: America/Sao_Paulo
+    open-pull-requests-limit: 5
+    rebase-strategy: auto
+    versioning-strategy: increase-if-necessary
+    commit-message:
+      prefix: chore(deps)
+    groups:
+      aspnetcore-runtime:
+        patterns:
+          - Microsoft.AspNetCore.*
+          - Microsoft.Extensions.*
+        update-types:
+          - minor
+          - patch
+      sqlclient-and-data:
+        patterns:
+          - Microsoft.Data.SqlClient
+          - Microsoft.EntityFrameworkCore*
+        update-types:
+          - minor
+          - patch
+      serilog-toolchain:
+        patterns:
+          - Serilog*
+        update-types:
+          - minor
+          - patch
+      testing-toolchain:
+        patterns:
+          - Microsoft.NET.Test.Sdk
+          - xunit*
+          - Moq
+          - FluentAssertions
+        update-types:
+          - minor
+          - patch
+      runtime-minor-patch:
+        dependency-type: production
+        update-types:
+          - minor
+          - patch
+      development-minor-patch:
+        dependency-type: development
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # Majors de framework exigem migração conjunta (TFM, breaking changes) e nunca devem abrir
+      # PR isolado — mesma política do LayoutParserReact para o toolchain de front-end.
+      - dependency-name: Microsoft.AspNetCore.*
+        update-types: [version-update:semver-major]
+      - dependency-name: Microsoft.Extensions.*
+        update-types: [version-update:semver-major]
+      - dependency-name: Microsoft.Data.SqlClient
+        update-types: [version-update:semver-major]
+      - dependency-name: Microsoft.EntityFrameworkCore*
+        update-types: [version-update:semver-major]
+
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: develop
+    schedule:
+      interval: weekly
+      day: monday
+      time: '08:30'
+      timezone: America/Sao_Paulo
+    open-pull-requests-limit: 5
+    rebase-strategy: auto
+    commit-message:
+      prefix: chore(actions)
+    groups:
+      github-actions:
+        patterns:
+          - '*'
