@@ -395,43 +395,53 @@ namespace LayoutParserApi.Services.XmlAnalysis
         }
 
         /// <summary>
-        /// Encontra arquivo XSL apropriado
+        /// Encontra arquivo XSL apropriado.
+        /// <b>Convenção confirmada por evidência de dump de produção (issue #55, 2026-08-13):</b> os padrões
+        /// antigos (<c>{layoutName}_*.xsl</c>, <c>{targetType}*_{layoutName}.xsl</c> etc.) não batem com
+        /// nenhum arquivo real e sempre caíam no fallback silencioso "primeiro XSL da pasta" — errado pra
+        /// qualquer layout com mais de um XSL. O dump (<c>.claude/tmp/servidor/layoutparser/xsl/</c>) mostra,
+        /// em dois casos reais (CNHI e MARELLI), que o nome é <c>{mapperName}_{layoutName}.xsl</c> — ex.:
+        /// <c>MAP_CNHI_MQSERIES_SEND_ENV_TXT_XML_NFE_LAY_CNHI_TXT_MQSERIES_ENVNFE_4.00_NFe.xsl</c>. O nome do
+        /// mapper não é conhecido aqui (só o do layout chega como parâmetro), então resolvemos pelo sufixo
+        /// <c>*_{layoutName}.xsl</c>, que casa com a convenção real sem depender do prefixo do mapper.
+        /// Sem <paramref name="layoutName"/>, ou sem nenhum arquivo casando o padrão, retorna
+        /// <see langword="null"/> com log de erro claro — não há mais fallback silencioso para "qualquer XSL".
         /// </summary>
         private string FindXslFile(string sourceType, string targetType, string layoutName = null)
         {
             try
             {
-                // Tentar padrões de nome de arquivo
-                var patterns = new List<string>();
-
-                if (!string.IsNullOrEmpty(layoutName))
+                if (string.IsNullOrEmpty(layoutName))
                 {
-                    patterns.Add($"{layoutName}_*.xsl");
-                    patterns.Add($"{targetType}*_{layoutName}.xsl");
+                    _logger.LogError(
+                        "Não é possível localizar o XSL sem o nome do layout (convenção real é {{mapperName}}_{{layoutName}}.xsl). Source: {SourceType}, Target: {TargetType}",
+                        sourceType, targetType);
+                    return null;
                 }
 
-                patterns.Add($"{targetType}*{sourceType}*.xsl");
-                patterns.Add($"{sourceType}_To_{targetType}.xsl");
-                patterns.Add($"NFe*_{targetType}*.xsl");
+                var pattern = $"*_{layoutName}.xsl";
+                var files = Directory.GetFiles(_xslBasePath, pattern, SearchOption.AllDirectories);
 
-                foreach (var pattern in patterns)
+                if (files.Length == 1)
                 {
-                    var files = Directory.GetFiles(_xslBasePath, pattern, SearchOption.AllDirectories);
-                    if (files.Length > 0)
-                    {
-                        _logger.LogInformation("Arquivo XSL encontrado: {Path}", files[0]);
-                        return files[0];
-                    }
+                    _logger.LogInformation("Arquivo XSL encontrado: {Path}", files[0]);
+                    return files[0];
                 }
 
-                // Fallback: procurar qualquer arquivo XSL relacionado
-                var allXslFiles = Directory.GetFiles(_xslBasePath, "*.xsl", SearchOption.AllDirectories);
-                if (allXslFiles.Length > 0)
+                if (files.Length > 1)
                 {
-                    _logger.LogWarning("Usando arquivo XSL genérico: {Path}", allXslFiles[0]);
-                    return allXslFiles[0];
+                    // Convenção real não garante mapper único por layout (multi-candidato) — escolha
+                    // determinística (ordem alfabética), mas sinalizada como ambígua, nunca silenciosa.
+                    var chosen = files.OrderBy(f => f, StringComparer.Ordinal).First();
+                    _logger.LogWarning(
+                        "Múltiplos arquivos XSL casam com o padrão {Pattern} ({Count}); usando {Path} (ordem alfabética, ambíguo)",
+                        pattern, files.Length, chosen);
+                    return chosen;
                 }
 
+                _logger.LogError(
+                    "Nenhum arquivo XSL encontrado para o layout {LayoutName} (padrão esperado: {Pattern} em {XslBasePath})",
+                    layoutName, pattern, _xslBasePath);
                 return null;
             }
             catch (Exception ex)
