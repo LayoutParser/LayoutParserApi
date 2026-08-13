@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>preview</LangVersion>
+    <AssemblyName>XslSynth.Core</AssemblyName>
+    <RootNamespace>XslSynth</RootNamespace>
+    <!-- Números/comparações XPath independem de cultura (mesma config do CLI standalone). -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!--
+      Classlib extraída de ai/XslSynth (Core/+Synthesis/+Model/) para ser reaproveitada tanto
+      pelo CLI standalone (ai/XslSynth) quanto pelo serviço novo dentro da API
+      (Services/Transformation/Ai), sem duplicar o loop RAG (RepairOrchestrator).
+      Ver docs/architecture/pathway-ia-execute-candidates.md §4.1, opção (a).
+      100% .NET puro — sem dependência de cripto Sysmiddle nem de Windows.
+    -->
+  </PropertyGroup>
+
+</Project>
