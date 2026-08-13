@@ -41,16 +41,16 @@ namespace LayoutParserApi.Tests.Transformation
                     "</MAP>";
                 await File.WriteAllTextAsync(Path.Combine(tclDir, $"{LayoutName}.tcl"), mapXml);
 
-                // XSL identidade só para permitir o pipeline concluir a etapa 2 — não é o foco da
-                // regressão (a convenção real de nome de XSL é um problema separado, fora do escopo
-                // desta issue).
+                // XSL nomeado pela convenção real "{mapperName}_{layoutName}.xsl" (issue #55, confirmada
+                // contra xsl/MAP_CNHI_MQSERIES_SEND_ENV_TXT_XML_NFE_LAY_CNHI_TXT_MQSERIES_ENVNFE_4.00_NFe.xsl
+                // no dump de produção).
                 var xslContent =
                     "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" +
                     "<xsl:stylesheet version=\"1.0\" xmlns:xsl=\"http://www.w3.org/1999/XSL/Transform\">" +
                     "  <xsl:output method=\"xml\" encoding=\"UTF-8\"/>" +
                     "  <xsl:template match=\"/\"><Resultado/></xsl:template>" +
                     "</xsl:stylesheet>";
-                await File.WriteAllTextAsync(Path.Combine(xslDir, $"{LayoutName}_identidade.xsl"), xslContent);
+                await File.WriteAllTextAsync(Path.Combine(xslDir, $"MAP_CNHI_MQSERIES_SEND_ENV_TXT_XML_NFE_{LayoutName}.xsl"), xslContent);
 
                 var configuration = new ConfigurationBuilder()
                     .AddInMemoryCollection(new Dictionary<string, string?>
@@ -103,6 +103,139 @@ namespace LayoutParserApi.Tests.Transformation
 
                 Assert.False(resultado.Success);
                 Assert.Contains(resultado.Errors, e => e.Contains("Arquivo MAP não encontrado"));
+            }
+            finally
+            {
+                Directory.Delete(tclDir, recursive: true);
+                Directory.Delete(xslDir, recursive: true);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Regressão da issue #55: <c>TransformationPipelineService.FindXslFile</c> (privado, exercitado via
+    /// <see cref="TransformationPipelineService.TransformXmlToXmlAsync"/>) usava padrões de nome
+    /// (<c>{layoutName}_*.xsl</c>, <c>{targetType}*_{layoutName}.xsl</c> etc.) que não batem com nenhum
+    /// arquivo real e caíam num fallback silencioso ("primeiro XSL da pasta"), gerando resultado errado sem
+    /// sinalizar nada.
+    ///
+    /// <para>Evidência de produção (dump <c>.claude/tmp/servidor/layoutparser/xsl/</c>, 2026-08-13):
+    /// dois casos reais (CNHI e MARELLI) confirmam a convenção <c>{mapperName}_{layoutName}.xsl</c> — ex.
+    /// <c>MAP_CNHI_MQSERIES_SEND_ENV_TXT_XML_NFE_LAY_CNHI_TXT_MQSERIES_ENVNFE_4.00_NFe.xsl</c> e
+    /// <c>MAP_MARELLI_SAP_SEND_ENV_TXT_XML_NFE_LAY_MARELLI_TXT_SAP_ENVNFE_4.00_NFe.xsl</c>. O fix resolve
+    /// pelo sufixo <c>*_{layoutName}.xsl</c> (o nome do mapper não é conhecido pelo pipeline) e não usa
+    /// mais fallback silencioso: sem match, retorna erro claro em vez de continuar como se nada tivesse
+    /// acontecido.</para>
+    /// </summary>
+    public class TransformationPipelineServiceFindXslFileTests
+    {
+        private const string LayoutName = "LAY_MARELLI_TXT_SAP_ENVNFE_4.00_NFe";
+
+        private static IConfiguration BuildConfig(string tclDir, string xslDir) =>
+            new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["TransformationPipeline:TclPath"] = tclDir,
+                    ["TransformationPipeline:XslPath"] = xslDir,
+                })
+                .Build();
+
+        [Fact]
+        public async Task Resolve_XSL_pela_convencao_real_mapperName_layoutName()
+        {
+            var tclDir = Directory.CreateTempSubdirectory("lp-tcl-marelli-").FullName;
+            var xslDir = Directory.CreateTempSubdirectory("lp-xsl-marelli-").FullName;
+            try
+            {
+                var xslContent =
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" +
+                    "<xsl:stylesheet version=\"1.0\" xmlns:xsl=\"http://www.w3.org/1999/XSL/Transform\">" +
+                    "  <xsl:output method=\"xml\" encoding=\"UTF-8\"/>" +
+                    "  <xsl:template match=\"/\"><Resultado/></xsl:template>" +
+                    "</xsl:stylesheet>";
+                var xslFileName = $"MAP_MARELLI_SAP_SEND_ENV_TXT_XML_NFE_{LayoutName}.xsl";
+                await File.WriteAllTextAsync(Path.Combine(xslDir, xslFileName), xslContent);
+
+                var service = new TransformationPipelineService(
+                    NullLogger<TransformationPipelineService>.Instance,
+                    BuildConfig(tclDir, xslDir));
+
+                var resultado = await service.TransformXmlToXmlAsync(
+                    "<ROOT/>", "Intermediate", "NFe", LayoutName);
+
+                Assert.True(resultado.Success, string.Join("; ", resultado.Errors));
+                Assert.Equal(Path.Combine(xslDir, xslFileName), resultado.XslPath);
+            }
+            finally
+            {
+                Directory.Delete(tclDir, recursive: true);
+                Directory.Delete(xslDir, recursive: true);
+            }
+        }
+
+        [Fact]
+        public async Task Sem_XSL_casando_a_convencao_falha_com_erro_claro_sem_fallback_generico()
+        {
+            var tclDir = Directory.CreateTempSubdirectory("lp-tcl-semxsl-").FullName;
+            var xslDir = Directory.CreateTempSubdirectory("lp-xsl-semxsl-").FullName;
+            try
+            {
+                // XSL de OUTRO layout presente na pasta — antes do fix, o fallback silencioso
+                // ("primeiro XSL da pasta") teria usado este arquivo errado.
+                var xslContent =
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" +
+                    "<xsl:stylesheet version=\"1.0\" xmlns:xsl=\"http://www.w3.org/1999/XSL/Transform\">" +
+                    "  <xsl:output method=\"xml\" encoding=\"UTF-8\"/>" +
+                    "  <xsl:template match=\"/\"><Resultado/></xsl:template>" +
+                    "</xsl:stylesheet>";
+                await File.WriteAllTextAsync(
+                    Path.Combine(xslDir, "MAP_OUTRO_MAPPER_LAY_OUTRO_LAYOUT.xsl"), xslContent);
+
+                var service = new TransformationPipelineService(
+                    NullLogger<TransformationPipelineService>.Instance,
+                    BuildConfig(tclDir, xslDir));
+
+                var resultado = await service.TransformXmlToXmlAsync(
+                    "<ROOT/>", "Intermediate", "NFe", LayoutName);
+
+                Assert.False(resultado.Success);
+                Assert.Contains(resultado.Errors, e => e.Contains("Arquivo XSL não encontrado"));
+            }
+            finally
+            {
+                Directory.Delete(tclDir, recursive: true);
+                Directory.Delete(xslDir, recursive: true);
+            }
+        }
+
+        [Fact]
+        public async Task Multiplos_XSL_casando_o_sufixo_escolhe_deterministico_e_sinaliza_ambiguidade()
+        {
+            var tclDir = Directory.CreateTempSubdirectory("lp-tcl-ambiguo-").FullName;
+            var xslDir = Directory.CreateTempSubdirectory("lp-xsl-ambiguo-").FullName;
+            try
+            {
+                var xslContent =
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" +
+                    "<xsl:stylesheet version=\"1.0\" xmlns:xsl=\"http://www.w3.org/1999/XSL/Transform\">" +
+                    "  <xsl:output method=\"xml\" encoding=\"UTF-8\"/>" +
+                    "  <xsl:template match=\"/\"><Resultado/></xsl:template>" +
+                    "</xsl:stylesheet>";
+                var fileA = $"MAP_A_{LayoutName}.xsl";
+                var fileB = $"MAP_B_{LayoutName}.xsl";
+                await File.WriteAllTextAsync(Path.Combine(xslDir, fileA), xslContent);
+                await File.WriteAllTextAsync(Path.Combine(xslDir, fileB), xslContent);
+
+                var service = new TransformationPipelineService(
+                    NullLogger<TransformationPipelineService>.Instance,
+                    BuildConfig(tclDir, xslDir));
+
+                var resultado = await service.TransformXmlToXmlAsync(
+                    "<ROOT/>", "Intermediate", "NFe", LayoutName);
+
+                Assert.True(resultado.Success, string.Join("; ", resultado.Errors));
+                // Ordem alfabética determinística ("A" < "B") — não é null nem aleatório.
+                Assert.Equal(Path.Combine(xslDir, fileA), resultado.XslPath);
             }
             finally
             {
