@@ -42,6 +42,19 @@ namespace LayoutParserApi.Tests.Filters
         }
 
         [Fact]
+        public void Order_e_anterior_ao_filtro_de_ModelState_do_ApiController()
+        {
+            // Issue #31: o [ApiController] registra um filtro interno (Order = -3000) que
+            // curto-circuita a pipeline quando o ModelState é inválido, antes de qualquer
+            // ActionFilter com Order padrão (0) rodar. Este teste trava a garantia estrutural
+            // de que o AuditActionFilter roda ANTES desse filtro (Order menor), condição
+            // necessária para que uma requisição malformada também gere linha AUDIT.
+            var filtro = new AuditActionFilter(new AuditLoggerFake(), CurrentUserStub.Anonimo);
+
+            Assert.True(filtro.Order < -3000);
+        }
+
+        [Fact]
         public void Executed_tambem_carrega_o_usuario()
         {
             var logger = new AuditLoggerFake();
