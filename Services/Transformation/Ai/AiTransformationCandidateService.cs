@@ -7,6 +7,8 @@ using LayoutParserApi.Services.XmlAnalysis;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
+using XslSynth.Core;
+
 namespace LayoutParserApi.Services.Transformation.Ai
 {
     /// <summary>
@@ -14,14 +16,17 @@ namespace LayoutParserApi.Services.Transformation.Ai
     /// gerar → validar XSD → comparar com o gabarito sysmiddle → corrigir, usando o Ollama local
     /// (nunca nuvem — dado fiscal sensível, ver <c>security.md</c>).
     ///
-    /// <para><b>Divergência documentada do desenho (§4.1):</b> o desenho recomenda extrair
-    /// <c>Core/</c>+<c>Synthesis/</c> de <c>ai/XslSynth</c> (RepairOrchestrator, CanonicalDiffer,
-    /// XsdValidator, OllamaXslSynthesizer) para uma classlib compartilhada (opção "a"). Esta
-    /// implementação segue a opção "b" ("reimplementar um subconjunto fino dentro da API") pelo
-    /// prazo desta issue — o desenho já sinaliza essa opção como válida, com o trade-off de duas
-    /// implementações do mesmo loop divergirem no tempo. <c>ai/XslSynth</c> continua intocado como
-    /// bancada offline. Extrair a classlib compartilhada fica como próximo passo (ver memória de
-    /// @lp-parser-llm).</para>
+    /// <para><b>Follow-up da divergência do desenho (§4.1):</b> a extração da classlib compartilhada
+    /// <c>ai/XslSynth.Core</c> (opção "a" do desenho) foi concluída — <c>ai/XslSynth</c> (CLI) e este
+    /// serviço agora referenciam o mesmo assembly. Este serviço ainda NÃO usa o
+    /// <see cref="RepairOrchestrator"/> completo: aquele orquestrador parte de um <c>MapperVo</c>
+    /// (regras/LinkMappings do mapeador) e sintetiza/repara XSLT — não se aplica aqui, onde o LLM
+    /// gera o XML final diretamente a partir do TXT de entrada + gabarito, sem transpilar XSLT.
+    /// O que É compartilhado é o diff canônico node-a-node real (<see cref="CanonicalDiffer"/>),
+    /// substituindo a comparação estrutural simplificada que existia aqui antes — mesmo verificador
+    /// determinístico que o <c>RepairOrchestrator</c> usa no passo 5/6 do loop, e os XPaths exatos
+    /// retornados alimentam o prompt de correção do mesmo jeito que o passo 6
+    /// (<c>RepairFromDiffAsync</c>) faz no CLI.</para>
     /// </summary>
     public class AiTransformationCandidateService : IAiTransformationCandidateService
     {
@@ -31,6 +36,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
         private readonly AiTransformationCandidateOptions _options;
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly AiCandidateStore _store;
+        private readonly CanonicalDiffer _differ = new();
 
         // ✅ XsdValidationService é Scoped (dotnet-standards.md). O job roda em Task.Run
         // fire-and-forget que sobrevive ao fim do scope da request HTTP — capturar diretamente a
@@ -160,7 +166,8 @@ namespace LayoutParserApi.Services.Transformation.Ai
 
                 lastCandidateXml = candidateXml;
 
-                var diffCount = CanonicalDiffCount(candidateXml, groundTruthXml);
+                var diffs = CanonicalDiff(candidateXml, groundTruthXml);
+                var diffCount = diffs.Count;
                 var xsdValid = await TryValidateXsdAsync(candidateXml, cancellationToken);
 
                 if (diffCount < lastDiffCount)
@@ -187,7 +194,10 @@ namespace LayoutParserApi.Services.Transformation.Ai
                     return;
                 }
 
-                lastError = $"Diff estrutural contra o gabarito sysmiddle: {diffCount} divergência(s) restante(s)";
+                // Mesmo formato do passo 6 do RepairOrchestrator (RepairFromDiffAsync): o LLM recebe
+                // o XPath exato de cada divergência, não só a contagem — é isso que faz o loop
+                // convergir em vez de tentar às cegas.
+                lastError = FormatDiffsForPrompt(diffs);
 
                 // Última iteração: registra "failed" com o melhor candidato encontrado nos diagnostics
                 // (o candidato em si não vaza para candidates[]/recommendedCandidateId — §2.2 do desenho).
@@ -296,44 +306,34 @@ namespace LayoutParserApi.Services.Transformation.Ai
         }
 
         /// <summary>
-        /// Diff canônico simplificado: conta divergências de nome de elemento/valor de texto entre o
-        /// candidato e o gabarito, ignorando diferenças de formatação (indentação, quebras de linha).
-        /// Não é o diff node-a-node completo do <c>CanonicalDiffer</c> de <c>ai/XslSynth</c> — ver
-        /// divergência documentada no cabeçalho desta classe.
+        /// Diff canônico node-a-node real, via <see cref="CanonicalDiffer"/> da classlib
+        /// compartilhada <c>ai/XslSynth.Core</c> (mesmo verificador determinístico do
+        /// <c>RepairOrchestrator</c>) — normaliza espaço/atributos/namespace e reporta o XPath
+        /// exato de cada divergência (nome, texto, atributo, falta, sobra).
         /// </summary>
-        private int CanonicalDiffCount(string candidateXml, string groundTruthXml)
+        private IReadOnlyList<NodeDiff> CanonicalDiff(string candidateXml, string groundTruthXml)
         {
             try
             {
-                var candidateDoc = System.Xml.Linq.XDocument.Parse(candidateXml);
-                var groundTruthDoc = System.Xml.Linq.XDocument.Parse(groundTruthXml);
-
-                var candidateElements = candidateDoc.Descendants()
-                    .Select(e => (e.Name.LocalName, Value: (e.Value ?? "").Trim()))
-                    .ToList();
-                var groundTruthElements = groundTruthDoc.Descendants()
-                    .Select(e => (e.Name.LocalName, Value: (e.Value ?? "").Trim()))
-                    .ToList();
-
-                if (candidateElements.Count != groundTruthElements.Count)
-                    return Math.Abs(candidateElements.Count - groundTruthElements.Count) + 1;
-
-                var diffs = 0;
-                for (var i = 0; i < candidateElements.Count; i++)
-                {
-                    if (candidateElements[i].LocalName != groundTruthElements[i].LocalName
-                        || candidateElements[i].Value != groundTruthElements[i].Value)
-                        diffs++;
-                }
-
-                return diffs;
+                return _differ.Diff(groundTruthXml, candidateXml);
             }
             catch (Exception ex)
             {
                 // XML inválido do candidato conta como divergência total — não trava o loop.
                 _logger.LogDebug(ex, "Candidato IA não é XML bem-formado — tratado como divergência total");
-                return int.MaxValue;
+                return new[] { new NodeDiff("invalid", "/", null, "XML malformado") };
             }
+        }
+
+        /// <summary>Formata os diffs canônicos (até um teto) para realimentar o prompt de correção,
+        /// no mesmo espírito do passo 6 (RepairFromDiffAsync) do RepairOrchestrator do CLI.</summary>
+        private static string FormatDiffsForPrompt(IReadOnlyList<NodeDiff> diffs)
+        {
+            const int maxDiffsInPrompt = 20;
+            var shown = diffs.Take(maxDiffsInPrompt).Select(d => d.ToString());
+            var suffix = diffs.Count > maxDiffsInPrompt ? $" (+{diffs.Count - maxDiffsInPrompt} outra(s))" : "";
+            return $"Diff canônico contra o gabarito sysmiddle ({diffs.Count} divergência(s)):\n"
+                + string.Join('\n', shown) + suffix;
         }
 
         private async Task<bool> TryValidateXsdAsync(string candidateXml, CancellationToken cancellationToken)
