@@ -34,11 +34,13 @@ Ative com `@agent-name` ou via `Task` tool. Personas tailored ao stack .NET:
 | `@lp-backend-dev` | **Dex** | Implementação C#/.NET: controllers, services, DI, cache. |
 | `@lp-parser-llm` | **Lia** | Domínio: parsing, detecção, Learning/RAG, geração XSLT/TCL, Ollama/Gemini. |
 | `@lp-qa` | **Quinn** | Testes, validação de transformação, quality gates. |
-| `@lp-devops` | **Gage** | `git push` (EXCLUSIVO), Docker, CI/CD, MCP, configuração de segredos. |
+| `@lp-devops` | **Gage** | `git push` (EXCLUSIVO), `gh pr create/merge` (EXCLUSIVO), Docker, CI/CD, MCP, configuração de segredos. |
 | `@lp-doc` | **Duda** | Documentação bilíngue (README, Swagger/XML docs, diagramas). |
+| `@lp-pm` | **Pia** | Converte bug/gate/decisão/feature em PBI/User Story no GitHub Project (`gh issue`, `gh project item-add`). Não prioriza sozinha. |
 
 ### Regra de autoridade (resumo)
-- **Apenas `@lp-devops` faz `git push`** e gerencia MCP/CI. Demais agentes: `git add/commit` local apenas.
+- **Apenas `@lp-devops` faz `git push`/`gh pr create/merge`** e gerencia MCP/CI. Demais agentes: `git add/commit` local apenas.
+- **Apenas `@lp-pm` cria/edita issues e itens do GitHub Project** (`gh issue`, `gh project item-add`) — backlog, não release.
 - `@lp-architect` **analisa e recomenda**, não escreve código de produção.
 - Detalhe: [`.claude/rules/agent-authority.md`](rules/agent-authority.md).
 
