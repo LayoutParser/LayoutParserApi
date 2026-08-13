@@ -3,6 +3,9 @@ using LayoutParserApi.Services.Database;
 using LayoutParserApi.Services.Filters;
 using LayoutParserApi.Services.Health;
 using LayoutParserApi.Services.Generation.Implementations;
+using LayoutParserApi.Services.Generation.Interfaces;
+using LayoutParserApi.Services.Generation.TxtGenerator;
+using LayoutParserApi.Services.Generation.TxtGenerator.Parsers;
 using LayoutParserApi.Services.Implementations;
 using LayoutParserApi.Services.Interfaces;
 using LayoutParserApi.Services.Learning;
@@ -16,6 +19,7 @@ using LayoutParserApi.Services.Validation;
 using LayoutParserApi.Services.Transformation.LowCode;
 using LayoutParserApi.Services.XmlAnalysis;
 
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Http.Features;
@@ -158,6 +162,16 @@ try
     // Add services to the container.
     // Configurar opções JSON para não escapar caracteres XML/HTML
     // Isso preserva o XML intacto no JSON (não converte < para \u003C, etc.)
+    // ✅ Issue #32: enforcement por papel em cima da identidade que o TrustedIdentityMiddleware já
+    // populava em HttpContext.User (pronto desde o P2, mas sem consumidor até agora). O esquema
+    // "TrustedHeader" não autentica nada por conta própria — só formaliza o que o middleware
+    // preencheu para o AuthorizationMiddleware conseguir desafiar (401)/negar (403) via
+    // [Authorize(Roles = "...")] nos controllers marcados.
+    builder.Services.AddAuthentication(TrustedHeaderAuthenticationHandler.SchemeName)
+        .AddScheme<AuthenticationSchemeOptions, TrustedHeaderAuthenticationHandler>(
+            TrustedHeaderAuthenticationHandler.SchemeName, options => { });
+    builder.Services.AddAuthorization();
+
     builder.Services.AddControllers(options =>
         {
             // A porta de entrada da API é a REDE (a API só aceita o BFF, trava do @lp-devops) somada à
@@ -390,6 +404,18 @@ try
 
     // Transformation Services
     builder.Services.AddScoped<IMapperTransformationService, MapperTransformationService>();
+
+    // Generation Services (issue #33 — faltavam no DI; endpoints de
+    // DataGenerationController quebravam em runtime por falta de resolução).
+    builder.Services.AddScoped<ISyntheticDataGeneratorService, SyntheticDataGeneratorService>();
+    builder.Services.AddScoped<IExcelDataProcessor, ExcelDataProcessor>();
+    builder.Services.AddScoped<ILayoutAnalysisService, LayoutAnalysisService>();
+    // Dependências internas do TxtFileGeneratorFactory (resolvidas via IServiceProvider
+    // dentro da factory) — sem registro, o Create() do factory lançava em runtime.
+    builder.Services.AddScoped<XmlLayoutParser>();
+    builder.Services.AddScoped<ExcelRulesParser>();
+    builder.Services.AddScoped<LayoutParserApi.Services.Generation.TxtGenerator.Validators.LayoutValidator>();
+    builder.Services.AddScoped<TxtFileGeneratorFactory>();
 
     // Learning Services
     builder.Services.AddScoped<ExampleLearningService>();
@@ -638,8 +664,11 @@ try
     // Only use HTTPS redirection if actually using HTTPS
     // app.UseHttpsRedirection();
 
-    // Remove Authorization if not needed - it can interfere with CORS preflight
-    // app.UseAuthorization();
+    // Issue #32: reativado. TrustedIdentityMiddleware (linha acima) já populou HttpContext.User;
+    // UseAuthorization roda depois de UseCors (evita interferir no preflight) e habilita os
+    // [Authorize(Roles = "...")] marcados nos controllers sensíveis.
+    app.UseAuthentication();
+    app.UseAuthorization();
 
     app.MapControllers();
 
