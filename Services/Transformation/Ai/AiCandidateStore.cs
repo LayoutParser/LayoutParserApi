@@ -48,8 +48,12 @@ namespace LayoutParserApi.Services.Transformation.Ai
 
         public void Set(string ticket, AiCandidateStatus status)
         {
-            _memory[ticket] = status;
-
+            // Grava em disco ANTES de publicar em memória: quem consulta GetStatusAsync via
+            // polling só pode ver "pronto" depois que o arquivo já está completo e fechado.
+            // Antes desta correção a ordem era invertida (memória primeiro) e sob contenção de
+            // I/O um segundo Set() concorrente no mesmo ticket colidia no WriteAllText enquanto
+            // o primeiro ainda escrevia — reproduzido pelo @lp-qa como IOException intermitente
+            // ("being used by another process") ao rodar a suíte 2x seguidas.
             try
             {
                 var path = ResolvePath(ticket);
@@ -58,8 +62,13 @@ namespace LayoutParserApi.Services.Transformation.Ai
             }
             catch (Exception ex)
             {
+                // Degrade: mesmo sem durabilidade em disco, ainda publicamos em memória — perder o
+                // job inteiro por uma falha de I/O transitória seria pior que perder durabilidade
+                // entre restarts (mesmo espírito da falha de Directory.CreateDirectory no ctor).
                 _logger.LogWarning(ex, "Falha ao persistir em disco o status do pathway IA (ticket={Ticket})", ticket);
             }
+
+            _memory[ticket] = status;
         }
 
         public AiCandidateStatus? Get(string ticket)
