@@ -11,7 +11,6 @@ using LayoutParserApi.Services.Parsing.Interfaces;
 using LayoutParserApi.Services.Security;
 using LayoutParserApi.Services.Testing;
 using LayoutParserApi.Services.Transformation;
-using LayoutParserApi.Services.Transformation.Interface;
 using LayoutParserApi.Services.Validation;
 using LayoutParserApi.Services.Transformation.LowCode;
 using LayoutParserApi.Services.XmlAnalysis;
@@ -387,9 +386,6 @@ try
         return new MapperCacheService(redis, logger);
     });
     builder.Services.AddScoped<ICachedMapperService, CachedMapperService>();
-
-    // Transformation Services
-    builder.Services.AddScoped<IMapperTransformationService, MapperTransformationService>();
 
     // Learning Services
     builder.Services.AddScoped<ExampleLearningService>();
