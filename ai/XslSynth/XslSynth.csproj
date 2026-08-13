@@ -32,4 +32,10 @@
     <PackageReference Include="Serilog.Sinks.File" Version="6.0.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Core/Synthesis/Model extraídos para classlib compartilhada com a API
+         (Services/Transformation/Ai) — ver docs/architecture/pathway-ia-execute-candidates.md §4.1. -->
+    <ProjectReference Include="..\XslSynth.Core\XslSynth.Core.csproj" />
+  </ItemGroup>
+
 </Project>

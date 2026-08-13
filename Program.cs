@@ -16,6 +16,7 @@ using LayoutParserApi.Services.Testing;
 using LayoutParserApi.Services.Transformation;
 using LayoutParserApi.Services.Validation;
 using LayoutParserApi.Services.Transformation.LowCode;
+using LayoutParserApi.Services.Transformation.Ai;
 using LayoutParserApi.Services.XmlAnalysis;
 
 using Microsoft.AspNetCore.Authentication;
@@ -450,6 +451,13 @@ try
         sp.GetService<IConnectionMultiplexer>()));
     builder.Services.AddSingleton<LowCodeAutoTransformationService>();
     builder.Services.AddHostedService<LayoutValidationBackgroundService>();
+
+    // ✅ Pathway IA de execute-candidates (Issue #40): job assíncrono, consultável por ticket
+    // (mesmo padrão de LowCodeTransformationStore). Singleton porque guarda o estado dos jobs
+    // em memória entre requests (fire-and-forget via Task.Run) — dependências Scoped são
+    // resolvidas via IServiceScopeFactory dentro do próprio serviço, nunca injetadas direto.
+    // Ver docs/architecture/pathway-ia-execute-candidates.md.
+    builder.Services.AddSingleton<IAiTransformationCandidateService, AiTransformationCandidateService>();
 
     // Testing Services
     builder.Services.AddScoped<AutomatedTransformationTestService>();

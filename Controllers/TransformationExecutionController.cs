@@ -2,6 +2,7 @@ using LayoutParserApi.Services.Transformation;
 using LayoutParserApi.Services.XmlAnalysis;
 using LayoutParserApi.Models;
 using LayoutParserApi.Services.Transformation.LowCode;
+using LayoutParserApi.Services.Transformation.Ai;
 
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -37,6 +38,7 @@ namespace LayoutParserApi.Controllers
         private readonly LowCodeAutoTransformationService _lowCodeAuto;
         private readonly ILayoutDatabaseService _layoutDb;
         private readonly LowCodeRunnerOptions _lowCodeOpt;
+        private readonly IAiTransformationCandidateService _aiCandidateService;
 
         public TransformationExecutionController(
             ILogger<TransformationExecutionController> logger,
@@ -47,7 +49,8 @@ namespace LayoutParserApi.Controllers
             LowCodeTransformationService lowCode,
             LowCodeAutoTransformationService lowCodeAuto,
             ILayoutDatabaseService layoutDb,
-            IOptions<LowCodeRunnerOptions> lowCodeOptions)
+            IOptions<LowCodeRunnerOptions> lowCodeOptions,
+            IAiTransformationCandidateService aiCandidateService)
         {
             _logger = logger;
             _pipelineService = pipelineService;
@@ -58,6 +61,7 @@ namespace LayoutParserApi.Controllers
             _lowCodeAuto = lowCodeAuto;
             _layoutDb = layoutDb;
             _lowCodeOpt = lowCodeOptions.Value;
+            _aiCandidateService = aiCandidateService;
         }
 
         /// <summary>
@@ -249,6 +253,50 @@ namespace LayoutParserApi.Controllers
             if (candidates.Count == 0)
                 warnings.Add($"Nenhum candidato de transformação encontrado para o layout {request.LayoutName}");
 
+            // ── Pathway IA (Issue #40): assíncrono, fora do orçamento síncrono acima ──────────
+            // Só dispara se o sysmiddle produziu ao menos 1 candidato bem-sucedido (gabarito
+            // disponível — decisão 2.1 do desenho, "a IA sempre converge pro gabarito sysmiddle").
+            // Fire-and-forget de verdade: EnqueueAsync nunca lança e roda fora do CancellationToken
+            // do request (o job sobrevive à resposta HTTP já em voo).
+            string? aiTicket = null;
+            var sysmiddleWinner = candidates.FirstOrDefault(c => c.Pathway == "sysmiddle");
+            if (sysmiddleWinner != null)
+            {
+                try
+                {
+                    var resolvedLayoutGuid = LowCodeLayoutGuidResolver.Resolve(request.LayoutGuid, layoutRecord.LayoutGuid);
+                    var mapperGuid = sysmiddleWinner.CandidateId.StartsWith("sysmiddle-")
+                        ? sysmiddleWinner.CandidateId["sysmiddle-".Length..]
+                        : null;
+
+                    if (!string.IsNullOrWhiteSpace(resolvedLayoutGuid) && !string.IsNullOrWhiteSpace(mapperGuid)
+                        && Guid.TryParse(resolvedLayoutGuid, out var layoutGuidParsed))
+                    {
+                        aiTicket = LowCodeTransformationStore.BuildTicketFromContent(request.InputContent, resolvedLayoutGuid);
+                        if (aiTicket != null)
+                        {
+                            await _aiCandidateService.EnqueueAsync(
+                                aiTicket,
+                                request.LayoutName,
+                                layoutGuidParsed,
+                                mapperGuid,
+                                request.InputContent,
+                                sysmiddleWinner.TransformedXml,
+                                CancellationToken.None);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // Nunca deve derrubar a resposta síncrona — o pathway IA é aditivo.
+                    _logger.LogWarning(ex, "Falha ao disparar pathway IA para layout {LayoutName}", request.LayoutName);
+                }
+            }
+            else
+            {
+                warnings.Add("Pathway ia não aplicável: sem candidato sysmiddle (gabarito) disponível para este layout");
+            }
+
             string? recommendedId = null;
             if (candidates.Count > 0)
             {
@@ -261,7 +309,36 @@ namespace LayoutParserApi.Controllers
                 Success = true,
                 Candidates = candidates,
                 RecommendedCandidateId = recommendedId,
-                Warnings = warnings
+                Warnings = warnings,
+                AiCandidateTicket = aiTicket
+            });
+        }
+
+        /// <summary>
+        /// Status/resultado do pathway IA disparado por <see cref="ExecuteTransformationCandidates"/>
+        /// (Issue #40). Job assíncrono — consulta por ticket, mesmo padrão de
+        /// <c>GET /api/parse/transformations/{ticket}</c>.
+        /// </summary>
+        // Mesma restrição do execute-candidates que o disparou (Issue #32, consistência de papel).
+        [Authorize(Roles = "admin")]
+        [HttpGet("execute-candidates/{ticket}/ia-status")]
+        public async Task<IActionResult> GetAiCandidateStatus(string ticket, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(ticket))
+                return BadRequest(new { success = false, error = "Ticket é obrigatório." });
+
+            var status = await _aiCandidateService.GetStatusAsync(ticket, cancellationToken);
+
+            if (status.Status == "not-found")
+                return NotFound(new { success = false, error = "Nenhum job do pathway IA registrado para este ticket." });
+
+            return Ok(new
+            {
+                success = true,
+                ticket,
+                status = status.Status,
+                candidate = status.Candidate,
+                diagnostics = status.Diagnostics
             });
         }
 

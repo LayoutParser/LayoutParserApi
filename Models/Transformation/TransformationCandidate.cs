@@ -33,5 +33,14 @@ namespace LayoutParserApi.Models.Transformation
         public List<TransformationCandidate> Candidates { get; set; } = new();
         public string? RecommendedCandidateId { get; set; }
         public List<string> Warnings { get; set; } = new();
+
+        /// <summary>
+        /// Campo aditivo (Issue #40): ticket do job assíncrono do pathway IA, quando disparado
+        /// (sysmiddle produziu gabarito). Consultável em
+        /// <c>GET /api/transformation-execution/execute-candidates/{ticket}/ia-status</c>.
+        /// Nulo quando o pathway IA não foi aplicável (sem gabarito sysmiddle) — não quebra
+        /// consumidores que ignoram o campo.
+        /// </summary>
+        public string? AiCandidateTicket { get; set; }
     }
 }
