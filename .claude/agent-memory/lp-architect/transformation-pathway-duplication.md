@@ -53,3 +53,60 @@ polling/SSE no front. `transformationsStatus='processing'` nunca resolve.
 padrão do Pathway 1 de chamar `XsdValidationService` direto do controller — isso já viola a regra do projeto
 ("não coloque lógica de negócio no controller", `dotnet-standards.md`). O Pathway 1 é o exemplo do que não
 copiar, mesmo tendo chegado à validação primeiro.
+
+## DECISÃO FINAL (2026-08-12, Aria, review-arch, issue #41)
+
+**Decisão: (A) remover o Pathway 1 agora.** Não é mais "candidato a deprecação" — confirmado sem
+consumidor real e sem capacidade exclusiva. Evidência coletada nesta sessão (grep atual, não a de
+2026-07-21):
+
+- **Front-end (`LayoutParserReact/`, incluindo `server/` BFF):** zero ocorrências de
+  `TransformationController`, `/api/transformation/transform` ou `/api/transformation/available-targets`.
+  Todo o código de produção (`src/services/api/transformationService.ts`, `useTransformationStore.ts`,
+  `XmlTransformationDisplay.tsx`) chama exclusivamente `/api/transformationexecution/*` (Pathway 2).
+- **MCP Server (`mcp/LayoutParserMcp/`):** a única ocorrência é texto de exemplo (`Description`) num tool
+  genérico de "chamar qualquer endpoint" (`ApiTools.cs:87`) — não é uma chamada real, nunca foi.
+- **CI/scripts (`.github/`):** zero ocorrências de `/api/transformation/transform`.
+- **Capacidade exclusiva do Pathway 1?** Não. O único endpoint sem equivalente direto no Pathway 2 é
+  `GET /api/transformation/available-targets/{inputLayoutGuid}` (descoberta de layouts de destino a partir
+  de um GUID de entrada, varrendo `ICachedMapperService`) — mas ele também **não tem nenhum consumidor**
+  (grep confirmado no front-end: zero ocorrências de `available-targets`). Não é uma capacidade em uso que
+  precise ser portada antes da remoção; se um dia for necessária, é uma feature nova a desenhar sob demanda,
+  não uma migração.
+- **XSD validation inline no controller:** é o único pedaço "valioso" do Pathway 1 (chama
+  `XsdValidationService.ValidateXmlAgainstXsdAsync` após `TransformAsync`), mas (a) já está arquiteturalmente
+  errado — lógica de negócio no controller, contra `dotnet-standards.md` — e (b) o loop de diagnóstico
+  XSD→Ollama já foi decidido para entrar em Pathway 2/`TransformationPipelineService` (ver acima, decisão de
+  2026-07-21). Não há nada aqui que precise sobreviver à remoção.
+
+**Trade-off considerado e descartado:** manter o Pathway 1 "por precaução" (opção C, deprecar sem remover)
+teria sentido se houvesse qualquer sinal de consumidor externo desconhecido (parceiro, script manual,
+Postman collection versionada) — não há evidência disso, e manter código morto com `IMapperTransformationService`/
+`MapperTransformationService` vivo custa: (1) superfície de ataque sem [Authorize] nem [ServiceFilter(AuditActionFilter)]
+(diferente do Pathway 2, que já tem `[ServiceFilter(typeof(AuditActionFilter))]` no controller e `[Authorize(Roles = "admin")]`
+nos endpoints privilegiados — ver `TransformationExecutionController.cs`), (2) confusão contínua de manutenção
+(qual pathway recebe a próxima feature), (3) DI carregado sem necessidade.
+
+**Plano de execução (para `@lp-backend-dev`, não implementado aqui):**
+
+1. Remover `Controllers/TransformationController.cs` inteiro (inclui `TransformRequest` DTO local).
+2. Remover `Services/Transformation/MapperTransformationService.cs` e
+   `Services/Transformation/Interface/IMapperTransformationService.cs` — checar antes se `IMapperTransformationService`
+   é usado por mais alguém além do controller removido (`grep -r "IMapperTransformationService" --include=*.cs`);
+   se não houver outro consumidor, remover os dois arquivos.
+3. Remover o registro de DI de `IMapperTransformationService`/`MapperTransformationService` em `Program.cs`
+   (grupo Transformation).
+4. Checar se `ICachedMapperService.GetMappersByInputLayoutGuidAsync` (usado só pelo `available-targets`
+   removido) tem outro consumidor antes de tocar nela — provavelmente fica, é método genérico do cache, não
+   exclusivo do Pathway 1.
+5. Rodar `dotnet build` — deve compilar sem erros após a remoção (nenhum outro arquivo referencia
+   `TransformationController`/`MapperTransformationService` conforme grep desta sessão).
+6. Rodar `dotnet test` (`Services/Testing` e projeto de testes, se existir teste cobrindo esse controller —
+   não encontrado nesta sessão, mas confirmar).
+7. Atualizar Swagger/XML docs se houver referência a `/api/transformation/transform` ou `available-targets`
+   (delegar a `@lp-doc` se necessário).
+8. Confirmar com `@lp-qa` que nenhum quality gate/smoke test aponta para as rotas removidas.
+
+**Critério de rollback:** se após a remoção surgir um consumidor real esquecido (ex.: script de operação
+não versionado no repo), o pathway pode ser recriado a partir do histórico git — não é uma decisão
+irreversível, mas a expectativa é que não haja necessidade.

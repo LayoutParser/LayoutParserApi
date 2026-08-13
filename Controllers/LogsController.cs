@@ -1,9 +1,11 @@
 using System.Text.Json;
 
 using LayoutParserApi.Models.Logging;
+using LayoutParserApi.Services.Filters;
 using LayoutParserApi.Services.Interfaces;
 using LayoutParserApi.Services.Logging;
 
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 using Serilog.Context;
@@ -20,6 +22,7 @@ namespace LayoutParserApi.Controllers
     /// </summary>
     [ApiController]
     [Route("api/[controller]")]
+    [ServiceFilter(typeof(AuditActionFilter))]
     public class LogsController : ControllerBase
     {
         // Níveis aceitos pelo endpoint de ingestão (Tarefa 1) — mapeiam 1:1 pros métodos do ILogger.
@@ -91,6 +94,9 @@ namespace LayoutParserApi.Controllers
         /// <summary>
         /// Leitura unificada e paginada dos 3 arquivos de log do ecossistema (Api/Lib/Decrypt).
         /// </summary>
+        // Issue #32: leitura de log é operação sensível (pode expor dado de outros usuários/
+        // tenants) — restrita ao papel "admin".
+        [Authorize(Roles = "admin")]
         [HttpGet]
         public async Task<IActionResult> GetLogs([FromQuery] UnifiedLogFilter filter)
         {
