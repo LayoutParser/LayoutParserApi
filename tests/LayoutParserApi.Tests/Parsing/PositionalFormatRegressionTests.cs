@@ -49,7 +49,11 @@ namespace LayoutParserApi.Tests.Parsing
             var resultado = await ParseAsync(layoutPath, txtPath);
 
             Assert.True(resultado.Success, resultado.ErrorMessage);
-            Assert.Equal(702, resultado.ParsedFields.Count);
+            // ✅ Issue #37: 702 (baseline legado) + 2 = 704. A agregação de LINHA081
+            // (IsPositionalGroupRepetition=true, campo infCpl) anexa 2 ParsedFields adicionais
+            // (Occurrence=0: InformacoesParaEDI e Filler agregados) sem remover nenhum dos 702
+            // fragmentos originais — ver AggregatePositionalGroupRepetitions.
+            Assert.Equal(704, resultado.ParsedFields.Count);
 
             string dump = DumpCampos(resultado.ParsedFields);
             string hash = Sha256(dump);
@@ -69,11 +73,53 @@ namespace LayoutParserApi.Tests.Parsing
         }
 
         /// <summary>
-        /// Baseline do MQSeries de controle — SHA-256 do dump dos 702 campos parseados.
-        /// Recapturado por execução do commit legado <c>de92c9f</c> (pai de <c>5123e5c</c>,
-        /// antes do PositionalFormat) contra exatamente a mesma amostra usada por este teste.
+        /// Baseline do MQSeries de controle — SHA-256 do dump dos 704 campos parseados
+        /// (702 fragmentos físicos legados + 2 valores agregados de LINHA081, issue #37).
+        /// Recapturado por execução deste commit contra exatamente a mesma amostra usada por
+        /// este teste. O hash anterior (pré-#37, 702 campos) era
+        /// <c>eea774e6409e10a9806015b49816b98a1fbb487550aa309469d9dc49dd1e2375</c>.
         /// </summary>
-        private const string MqBaselineSha256 = "eea774e6409e10a9806015b49816b98a1fbb487550aa309469d9dc49dd1e2375";
+        private const string MqBaselineSha256 = "99e4688590b1ec6df01146bf3c43a3c429b1ecdaa03e6b75a2069ed45e690024";
+
+        /// <summary>
+        /// Issue #37: LINHA081 (<c>IsPositionalGroupRepetition=true</c>) forma o campo <c>infCpl</c>
+        /// da NF-e concatenando N ocorrências físicas da mesma linha no MQSeries. Este teste trava o
+        /// valor agregado byte a byte contra o XML final REAL esperado para esta amostra
+        /// (<c>.claude/tmp/exemplos/xml output/...-env.xml</c>, tag <c>&lt;infCpl&gt;</c>) — não uma
+        /// hipótese sintética. Confirma: concatenação SEM separador artificial, COM trim de cada
+        /// fragmento (o padding de alinhamento de texto dentro do campo de largura fixa não é parte
+        /// do valor lógico).
+        /// </summary>
+        [Fact]
+        public async Task LINHA081_agrega_infCpl_igual_ao_xml_esperado_do_gabarito_real()
+        {
+            var amostra = ResolveAmostra(MqLayoutRelPath, MqTxtRelPath);
+            if (amostra is null) return; // amostra real ausente nesta máquina
+
+            var (layoutPath, txtPath) = amostra.Value;
+
+            var resultado = await ParseAsync(layoutPath, txtPath);
+
+            Assert.True(resultado.Success, resultado.ErrorMessage);
+
+            const string infCplEsperado =
+                "Solicitante: Ana B Costa// Pamela GuedesPIS ST - Valor 0,00COFINS ST - Valor 0,00";
+
+            var agregado = resultado.ParsedFields.SingleOrDefault(f =>
+                f.LineName == "LINHA081" && f.FieldName == "InformacoesParaEDI" && f.Occurrence == 0);
+
+            Assert.NotNull(agregado);
+            Assert.Equal(infCplEsperado, agregado!.Value);
+
+            // Aditivo: os 4 fragmentos físicos (Occurrence 1..4) continuam intactos — é deles que
+            // ValidateLineOccurrences deriva o MinimalOccurrence/MaximumOccurrence de LINHA081.
+            var fragmentos = resultado.ParsedFields
+                .Where(f => f.LineName == "LINHA081" && f.FieldName == "InformacoesParaEDI" && f.Occurrence > 0)
+                .OrderBy(f => f.Occurrence)
+                .ToList();
+            Assert.Equal(4, fragmentos.Count);
+            Assert.Equal(new[] { 1, 2, 3, 4 }, fragmentos.Select(f => f.Occurrence));
+        }
 
         /// <summary>
         /// O defeito real: no IDOC da Marelli o offset do sequencial MQ (6 chars) era aplicado a um
