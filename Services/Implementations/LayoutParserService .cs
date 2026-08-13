@@ -387,7 +387,98 @@ namespace LayoutParserApi.Services.Implementations
 
             ValidateLineOccurrences(layout, parsedFields);
 
+            // ✅ Issue #37: agrega ocorrências físicas de LineElements marcados com
+            // IsPositionalGroupRepetition num único ParsedField lógico (Occurrence=0).
+            // Roda DEPOIS de ValidateLineOccurrences para não contaminar a contagem de
+            // ocorrências físicas (MinimalOccurrence/MaximumOccurrence).
+            AggregatePositionalGroupRepetitions(layout, parsedFields);
+
             return parsedFields;
+        }
+
+        /// <summary>
+        /// Issue #37: agrega, campo a campo, os valores das ocorrências físicas de uma
+        /// <see cref="LineElement"/> marcada com <c>IsPositionalGroupRepetition=true</c> num único
+        /// valor lógico — por exemplo, o campo <c>infCpl</c> da NF-e (LINHA081 do layout MQSeries),
+        /// que é formado por N ocorrências físicas da mesma linha no documento posicional.
+        ///
+        /// Aditivo, não substitutivo: os <see cref="ParsedField"/>s de cada ocorrência física
+        /// (Occurrence = 1..N) são preservados intactos — <see cref="ValidateLineOccurrences"/>
+        /// depende deles para validar MinimalOccurrence/MaximumOccurrence. O valor agregado é
+        /// anexado como um novo ParsedField adicional com Occurrence = 0, que não interfere na
+        /// contagem por GroupBy(f => f.Occurrence) porque essa validação já rodou antes desta etapa.
+        ///
+        /// Concatenação pura, sem separador — validado contra o par gabarito real
+        /// (QMWNFe1_QMWNFE1.SAPiens_MRB.INBOX_07-11-2025.mq_series) do layout
+        /// LAY_TXT_MQSERIES_ENVNFE_4.00_NFe: o XML esperado não tem separador artificial entre
+        /// fragmentos, e RemoveWhiteSpaceType=All já remove o padding fixo de cada ocorrência antes
+        /// da concatenação.
+        /// </summary>
+        private void AggregatePositionalGroupRepetitions(Layout layout, List<ParsedField> parsedFields)
+        {
+            if (layout?.Elements == null || parsedFields == null || parsedFields.Count == 0)
+                return;
+
+            var allLineConfigs = new List<LineElement>();
+            foreach (var lineElement in layout.Elements)
+                CollectAllLineElements(lineElement, allLineConfigs);
+
+            var aggregatedFields = new List<ParsedField>();
+
+            foreach (var lineConfig in allLineConfigs.Where(l => l.IsPositionalGroupRepetition))
+            {
+                string lineName = ObterLineNameSemHierarquia(lineConfig.Name);
+
+                // Apenas fragmentos físicos reais (Occurrence >= 1) — nunca reagregar um agregado.
+                var lineFields = parsedFields.Where(f => f.LineName == lineName && f.Occurrence > 0).ToList();
+                if (lineFields.Count == 0)
+                    continue;
+
+                foreach (var fieldGroup in lineFields.GroupBy(f => f.FieldName))
+                {
+                    var ordered = fieldGroup.OrderBy(f => f.Occurrence).ToList();
+                    var first = ordered[0];
+
+                    // Trim por fragmento antes de concatenar (não um trim único no resultado final):
+                    // cada ocorrência física já teve TrimEnd aplicado por ApplyAlignment (padding de
+                    // fim de campo), mas o padding de INÍCIO do campo (alinhamento à direita do texto
+                    // dentro da largura fixa) permanece — sem isso o valor agregado sai com espaços
+                    // internos que não existem no documento lógico. Confirmado contra o par gabarito
+                    // real (infCpl da amostra QMWNFe1_QMWNFE1.SAPiens_MRB.INBOX_07-11-2025.mq_series):
+                    // concatenação pura SEM separador, mas COM trim de cada fragmento.
+                    string aggregatedValue = string.Concat(ordered.Select(f => f.Value?.Trim() ?? string.Empty));
+
+                    string aggregatedStatus = "ok";
+                    if (ordered.Any(f => f.Status == "error"))
+                        aggregatedStatus = "error";
+                    else if (ordered.Any(f => f.Status == "warning"))
+                        aggregatedStatus = "warning";
+
+                    aggregatedFields.Add(new ParsedField
+                    {
+                        LineName = first.LineName,
+                        FieldName = first.FieldName,
+                        Sequence = first.Sequence,
+                        Start = first.Start,
+                        Length = aggregatedValue.Length,
+                        Value = aggregatedValue,
+                        Status = aggregatedStatus,
+                        IsRequired = first.IsRequired,
+                        Occurrence = 0,
+                        LineSequence = first.LineSequence
+                    });
+                }
+
+                _techLogger.LogTechnical(new TechLogEntry
+                {
+                    RequestId = Guid.NewGuid().ToString(),
+                    Endpoint = "AggregatePositionalGroupRepetitions",
+                    Level = "Info",
+                    Message = $"{lineName}: agregadas {lineFields.Select(f => f.Occurrence).Distinct().Count()} ocorrencia(s) fisica(s) em {lineFields.Select(f => f.FieldName).Distinct().Count()} campo(s) logico(s) (Occurrence=0)"
+                });
+            }
+
+            parsedFields.AddRange(aggregatedFields);
         }
 
         /// <summary>
@@ -1161,6 +1252,9 @@ namespace LayoutParserApi.Services.Implementations
                 MinimalOccurrence = GetElementIntValue(lineElem, "MinimalOccurrence"),
                 MaximumOccurrence = GetElementIntValue(lineElem, "MaximumOccurrence"),
                 InitialValue = GetElementValue(lineElem, "InitialValue"),
+                // ✅ Issue #37: sem isto, IsPositionalGroupRepetition ficava sempre false — o
+                // deserializer nunca lia a flag do XML, então a agregação nunca disparava.
+                IsPositionalGroupRepetition = GetElementBoolValue(lineElem, "IsPositionalGroupRepetition"),
                 Elements = new List<string>()
             };
 
