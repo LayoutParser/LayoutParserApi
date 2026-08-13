@@ -528,7 +528,10 @@ namespace LayoutParserApi.Services.Implementations
             foreach (var lineConfig in allLineConfigs)
             {
                 // Contar ocorrências baseado em grupos únicos (LineSequence + Occurrence)
-                var lineFields = parsedFields.Where(f => f.LineName == lineConfig.Name).ToList();
+                // Usa o nome sem hierarquia para casar com o que é gravado em ParsedField.LineName
+                // (mesma convenção do resto do parser — ver linhas 430 e 1013)
+                string lineNameSemHierarquia = ObterLineNameSemHierarquia(lineConfig.Name);
+                var lineFields = parsedFields.Where(f => f.LineName == lineNameSemHierarquia).ToList();
                 var uniqueOccurrences = lineFields.GroupBy(f => f.Occurrence).Count();
                 int actualOccurrences = uniqueOccurrences > 0 ? uniqueOccurrences : 0;
 
