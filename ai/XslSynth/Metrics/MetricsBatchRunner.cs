@@ -24,10 +24,14 @@ public sealed record MetricsBatchOptions(
 /// <summary>Um resultado individual do lote (para o resumo agregado ao final).</summary>
 /// <param name="Candidato">XSLT gerado neste caso (null quando não houve saída utilizável) —
 /// insumo do run dir do Job 2, não entra em nenhuma métrica.</param>
+/// <param name="Prompt">Prompt exato enviado ao Ollama para este caso — insumo do manifesto de
+/// auditoria (<see cref="AttemptArtifactWriter"/>), null nos caminhos que não chegam a montar
+/// prompt real (dry-run, exceção antes da chamada).</param>
 internal sealed record CaseResult(
     string Layout, bool Sucesso, double TokensPerSecond, double DurationSeconds,
     double FewShotSimilarity, double TagOverlapRatio, double TextSimilarityRatio, string? Erro,
-    string? Candidato = null);
+    string? Candidato = null, string? Prompt = null, bool WellFormedXml = false,
+    bool? XsdValid = null, string? ParseError = null);
 
 /// <summary>
 /// Item 1 do plano de métricas de IA em produção (docs/architecture/plano-metricas-ia-servidor-producao.md):
@@ -126,9 +130,14 @@ public static class MetricsBatchRunner
             var writer = opts.RunDirectory is null ? null
                 : new RunArtifactWriter(opts.RunDirectory, opts.RunId ?? RunArtifactWriter.NewRunId(iniciadoEm), log);
             var factory = new CandidateXmlFactory(opts.InstancesDirectory, opts.NfeXsdPath, log);
+            // Manifesto de AUDITORIA (issue #35): sobe junto com o run dir, mas é artefato
+            // separado do contrato Job1→Job2 — grava TODO candidato (XSLT+prompt+validação),
+            // não só os elegíveis ao Pollux. Mesmo diretório de run, para não introduzir um
+            // segundo mecanismo de configuração de path (reaproveita --run-dir/LP_METRICS_RUN_DIR).
+            var attemptsWriter = opts.RunDirectory is null ? null : new AttemptArtifactWriter(opts.RunDirectory, log);
             if (writer is null)
                 log("[metrics-batch] run dir NÃO configurado (--run-dir/LP_METRICS_RUN_DIR ausente) — "
-                    + "nenhum artefato para o Job 2 será publicado nesta rodada.");
+                    + "nenhum artefato para o Job 2 nem manifesto de auditoria será publicado nesta rodada.");
             else
                 log($"[metrics-batch] run dir: {writer.RunDirectory} (runId={writer.RunId}) · {factory.DescribeSources()}");
             log("");
@@ -158,7 +167,26 @@ public static class MetricsBatchRunner
                     LogCaso(caso.Id, modelo, sucesso: false, tokensPorSegundo: 0, promptChars: 0,
                         duracaoSegundos: 0, fewShotSimilarity: 0, tagOverlap: 0, textSim: 0, xsdValido: null);
                     resultados.Add(new CaseResult(caso.Id, false, 0, 0, 0, 0, 0, ex.Message));
+                    attemptsWriter?.RecordAttempt(caso.Id, modelo, sucesso: false, erro: ex.Message,
+                        xsltGerado: null, promptUsado: null, wellFormedXml: false, tagOverlapRatio: 0,
+                        textSimilarityRatio: 0, xsdValid: null, fewShotSimilarity: 0, parseError: null,
+                        tokensPorSegundo: 0, duracaoSegundos: 0);
                     continue;
+                }
+
+                // ── Manifesto de auditoria: TODA tentativa entra, elegível ao Pollux ou não
+                // (issue #35) — falha aqui NUNCA derruba o lote. ───────────────────────────
+                try
+                {
+                    attemptsWriter?.RecordAttempt(caso.Id, modelo, resultado.Sucesso, resultado.Erro,
+                        resultado.Candidato, resultado.Prompt, resultado.WellFormedXml,
+                        resultado.TagOverlapRatio, resultado.TextSimilarityRatio, resultado.XsdValid,
+                        resultado.FewShotSimilarity, resultado.ParseError, resultado.TokensPerSecond,
+                        resultado.DurationSeconds);
+                }
+                catch (Exception ex)
+                {
+                    log($"   [attempts] falha ao registrar tentativa (lote SEGUE): {ex.Message}");
                 }
 
                 // ── Publicação do candidato (XML primeiro; manifesto só no fim) ────────
@@ -197,6 +225,8 @@ public static class MetricsBatchRunner
                 writer.TryCommit(manifesto);
                 LogResumoCandidatos(candidatos, casos.Count, log);
             }
+            attemptsWriter?.TryCommit(writer?.RunId ?? opts.RunId ?? RunArtifactWriter.NewRunId(iniciadoEm),
+                iniciadoEm, DateTime.UtcNow, modelo);
 
             return resultados.Any(r => r.Sucesso) ? 0 : 1;
         }
@@ -232,7 +262,7 @@ public static class MetricsBatchRunner
                 promptChars: metrics.PromptChars, duracaoSegundos: metrics.DurationSeconds,
                 fewShotSimilarity: similaridadeMedia, tagOverlap: 0, textSim: 0, xsdValido: null);
             return new CaseResult(caso.Id, false, metrics.TokensPerSecond, metrics.DurationSeconds,
-                similaridadeMedia, 0, 0, erro);
+                similaridadeMedia, 0, 0, erro, Prompt: prompt);
         }
 
         var candidato = ExtractXml(respostaBruta);
@@ -248,7 +278,9 @@ public static class MetricsBatchRunner
             textSim: validacao.TextSimilarityRatio, xsdValido: validacao.XsdValid);
 
         return new CaseResult(caso.Id, true, metrics.TokensPerSecond, metrics.DurationSeconds,
-            similaridadeMedia, validacao.TagOverlapRatio, validacao.TextSimilarityRatio, null, candidato);
+            similaridadeMedia, validacao.TagOverlapRatio, validacao.TextSimilarityRatio, null, candidato,
+            Prompt: prompt, WellFormedXml: validacao.WellFormedXml, XsdValid: validacao.XsdValid,
+            ParseError: validacao.ParseError);
     }
 
     /// <summary>
