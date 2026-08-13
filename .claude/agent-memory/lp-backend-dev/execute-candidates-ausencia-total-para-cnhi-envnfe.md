@@ -203,3 +203,47 @@ de SQL (conexão, timeout, permissão), agora ela aparece como `"Pathway sysmidd
    mensagem "Erro ao buscar mapeadores por LayoutGuid (filtrado)" no horário da chamada que
    originou o `candidates: []` — isso confirma/descarta a Hipótese A sem precisar reproduzir de
    novo.
+
+## Capítulo 4 (2026-08-12) — Pathway tcl-xsl: fix APLICADO em `LoadMappingFileAsync` (issue #39)
+
+O dono decidiu prosseguir com correção baseada na evidência do dump, mesmo sem confirmação formal
+de ops/Sysmiddle. Ao reabrir o dump (`.claude/tmp/servidor/layoutparser/`) pra implementar, a
+hipótese literal do capítulo 1 ("pasta nomeada pelo mapper dentro de `Examples/`") se mostrou
+**também errada** — mais uma aposta descartada, desta vez com evidência forte o bastante pra não
+precisar de outro ciclo:
+
+- `Examples/MAP_CNHI_MQSERIES_SEND_ENV_TXT_XML_NFE/` (a pasta que motivou a hipótese) só contém
+  amostras brutas de aprendizado (`*.mq_series`, `layout_learned.json` com `Fields: []`) — nenhuma
+  estrutura `<MAP><LINE><FIELD/></LINE></MAP>` que o código espera parsear
+  (`GenerateIntermediateXmlFromMap`, `TransformationPipelineService.cs`). É armazenamento do
+  `TransformationLearningService`, não o artefato de mapeamento.
+- **Achado real:** `tcl/LAY_CNHI_TXT_MQSERIES_ENVNFE_4.00_NFe.tcl` (pasta `tcl/`, irmã de
+  `Examples/`, não dentro dela) contém, byte-a-byte, exatamente a estrutura `<MAP><LINE
+  identifier="..." name="..."><FIELD name="..." length="..."/></LINE></MAP>` que o parser espera —
+  apesar da extensão `.tcl`. Nome do arquivo é o do **LAYOUT** (`{layoutName}.tcl`), não o do
+  mapper. E o config `TransformationPipeline:TclPath` **já apontava pra essa pasta** — só não era
+  usado por `LoadMappingFileAsync` (que usava `MappingPath`/Mapeamentro, pasta que não existe em
+  produção).
+
+**Fix aplicado** em `Services/XmlAnalysis/TransformationPipelineService.cs` (`LoadMappingFileAsync`,
+~linha 371): troca de `Path.Combine(_mappingBasePath, $"MAP_{layoutName}.xml")` (+ fallback
+hardcoded pra `MAP_MQSERIES_SEND_ENV_TXT_XML_NFE.xml`, ambos inexistentes em produção) para
+`Path.Combine(_tclBasePath, $"{layoutName}.tcl")`. Campo `_mappingBasePath` e config `MappingPath`
+ficaram órfãos (não removi o `MappingPath` do `appsettings.json` — só o uso no código; decisão de
+limpar a config em si fica pro `@lp-devops`/dono se quiserem).
+
+**Fora do escopo desta correção (achado, não corrigido):** `FindXslFile` (mesmo arquivo,
+~linha 399) também não bate com a convenção real — o XSL de produção
+(`xsl/MAP_CNHI_MQSERIES_SEND_ENV_TXT_XML_NFE_LAY_CNHI_TXT_MQSERIES_ENVNFE_4.00_NFe.xsl`) é nomeado
+`{mapperName}_{layoutName}.xsl`, e nenhum dos padrões tentados (`{layoutName}_*.xsl`,
+`{targetType}*_{layoutName}.xsl` etc.) casa com isso — cai sempre no fallback "primeiro XSL da
+pasta" (`_logger.LogWarning("Usando arquivo XSL genérico...")`), o que é silenciosamente errado
+para qualquer layout com mais de um XSL. Não foi pedido nesta tarefa; registrar como próximo
+achado se o pathway tcl-xsl continuar sendo prioridade.
+
+**Teste de regressão:** `tests/LayoutParserApi.Tests/Transformation/TransformationPipelineServiceMapFileTests.cs`
+— fixture minimal com a mesma estrutura raiz do `.tcl` real (caso `LAY_CNHI_TXT_MQSERIES_ENVNFE_4.00_NFe`),
+cobre resolução via `TclPath` + caminho "arquivo ausente" continua reportando erro claro.
+`dotnet build` limpo (só warnings pré-existentes) e suíte completa 301/305 (as 4 falhas são
+pré-existentes, específicas de caminho Windows `C:\...` rodando em WSL — confirmado com
+`git stash` na branch antes do fix, mesmas 4 falhas).
