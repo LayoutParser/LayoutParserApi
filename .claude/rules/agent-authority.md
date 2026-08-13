@@ -15,6 +15,18 @@ description: Matriz de autoridade e delegação entre os agentes do LayoutParser
 | Editar `.github/workflows/`, `Dockerfile` | SIM | BLOQUEADO |
 | Adicionar/configurar MCP (`.mcp.json`) | SIM | BLOQUEADO |
 | Rotação/migração de segredos | SIM | BLOQUEADO |
+| `gh pr create` / `gh pr merge` | SIM | BLOQUEADO (inclusive `@lp-pm`) |
+
+### @lp-pm (Pia) — Backlog / GitHub Project
+
+| Possui | Não possui |
+|--------|-----------|
+| `gh issue create/edit`, `gh project item-add` — PBI/User Story/bug/gate viram item de board | `gh pr create/merge`, `git push` → `@lp-devops` |
+| Traduzir achado/decisão de qualquer agente em item rastreável | Decidir prioridade final, cortar escopo → dono |
+| Buscar issues existentes antes de criar (evitar duplicata) | Código de produção, CI/infra/segredos → `@lp-backend-dev`/`@lp-devops` |
+
+`gh issue`/`gh project` ficam com `@lp-pm` porque são backlog (produto), não release —
+diferente de `gh pr`, que é o portão de release e continua exclusivo do `@lp-devops`.
 
 ### @lp-architect (Aria) — Design
 
@@ -62,6 +74,9 @@ Feature:    @lp-architect (desenha) → @lp-backend-dev / @lp-parser-llm (implem
 Git push:   QUALQUER agente → @lp-devops *push
 
 Segredos:   QUALQUER agente detecta → @lp-devops *secure-secrets
+
+Backlog:    QUALQUER agente acha bug/gate/pendência → @lp-pm formaliza no GitHub Project
+            (rascunho → confirmação → gh issue create), dono decide prioridade
 ```
 
 ## Escalonamento

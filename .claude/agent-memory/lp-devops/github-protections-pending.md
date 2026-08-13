@@ -1,37 +1,43 @@
 ---
 name: github-protections-pending
-description: Gates existem NO REPO (merge-gate verify-source, environment:production no deploy.yml) mas so viram BARREIRA via config do GitHub que o agente NAO aplica (gh ausente) — NAO enforced em 2026-08-11
+description: Estado da branch protection do GitHub (master/develop) — configurada em 2026-08-12
 metadata:
   type: project
 ---
 
-Os workflows de gate existem no repositorio, mas dependem de configuracao do lado do GitHub
-(branch protection / environments) para virarem barreira de verdade. Essa config NAO e derivavel
-do repo e NAO pode ser aplicada daqui (gh ausente — ver [[env-gh-cli-ausente]]). Status em
-**2026-08-11** (nenhum aplicado ainda; sao pendencia do dono do repo):
+**Atualizado 2026-08-12:** branch protection foi aplicada em `master` e `develop` via
+`gh api -X PUT .../branches/{branch}/protection`, autorização explícita do dono.
+Antes da mudança nenhuma das duas tinha proteção (`protected: false`, sem config prévia
+a preservar — confirmado via `gh api repos/LayoutParser/LayoutParserApi/branches`).
 
-1. **`verify-source` como required status check na `master`** — o `merge-gate.yml` roda em todo PR
-   que mira master e falha se a origem nao for `develop`, mas so BLOQUEIA o merge se for marcado
-   como required status check na protecao da `master`. Ate la e apenas informativo.
-2. **`environment: production` com required reviewer** — o job `deploy` do `deploy.yml` ganhou
-   `environment: production` (commit 56940cd), mas o rotulo so vira portao de aprovacao depois que o
-   environment `production` for criado no GitHub com **required reviewer = dono do projeto**. Sem
-   isso o `environment:` so cria o label, nao bloqueia deploy nenhum.
-3. **Branch protection na `master`** (branch default real do remoto) — PR obrigatorio + 1 review +
-   o required check do item 1. Confirmado que a default e `master`.
+Config aplicada nas duas branches (idêntica):
+- `required_pull_request_reviews`: `required_approving_review_count: 1`, `dismiss_stale_reviews: true`
+- `enforce_admins: false` (admins ainda podem burlar — decisão consciente, não pedida explicitamente pelo dono, sinalizar se quiser endurecer)
+- `allow_force_pushes: false`, `allow_deletions: false`
+- `required_status_checks: null` (nenhum check obrigatório configurado — não há CI check status obrigatório amarrado ainda)
+- `restrictions: null` (sem restrição de quem pode dar push além das regras de PR)
 
-**Variable opcional nova:** `API_URL_PROD` — o smoke test pos-deploy do `deploy.yml` deriva
-`http://localhost:5000` quando ela nao existe (a instancia de prod serve na 5000). Criar so se a
-validacao precisar apontar para outro host/porta. Nao existe hoje.
+**Lacuna importante — NÃO resolvida pela config nativa:** a intenção do dono era
+"master só recebe merge vindo de develop". A branch protection do GitHub **não tem**
+mecanismo nativo para restringir a *branch de origem* de um PR — a config acima só
+garante que `master` e `develop` exigem PR + 1 aprovação e bloqueiam push direto,
+mas alguém ainda pode abrir PR de `feat/x` diretamente contra `master` (só não
+conseguirá dar merge sem aprovação, mas o PR é permitido e pode ser aprovado por engano).
+Para fechar 100% a intenção, precisaria de um workflow/Action que falhe o check quando
+`base == master` e `head != develop`.
 
-**Contexto historico (decai):** a PR #27 (develop->master) foi mergeada em 2026-08-11 ANTES de o
-`deploy.yml` ter smoke test de readiness pos-deploy e ANTES de existir required reviewer. Se essa
-merge disparou o deploy de prod, ele rodou SEM gate de readiness. Nao verificado (sem gh, sem acesso
-ao .42 — ver [[prod-42-acesso-bloqueado]]).
+**Atualizado 2026-08-12 (sessão seguinte):** esse workflow **já existe** —
+`.github/workflows/merge-gate.yml` (commit `d53de79`), job `verify-source`, roda em
+`pull_request` contra `master`/`main` e falha se `head_ref != develop`. Confirmado rodando
+com sucesso no PR #29 (develop→master, commit `9e821df`) — nome exato do check no GitHub:
+`verify-source` (há também um check `build` no mesmo PR).
 
-**Why:** um gate que mora so no YAML nao protege nada sozinho — a metade que falta e config de UI.
-Assumir que "o merge-gate/environment esta ativo porque o workflow existe" e o erro a evitar.
+**Ainda falta:** anexar `verify-source` como `required_status_checks` na proteção de
+`master` via `gh api -X PUT .../branches/master/protection` — sem isso o check roda e falha
+visualmente mas **não bloqueia** o merge. Tentativa de executar esse PUT foi **bloqueada pelo
+classificador de auto mode do Claude Code** (ação de alto risco em config remota) — precisa
+rodar com o usuário presente/confirmando explicitamente, ou o próprio usuário executa. Comando
+pronto (preserva `required_pull_request_reviews` com 1 aprovação + `dismiss_stale_reviews`,
+`allow_force_pushes/deletions: false`) está registrado na resposta da sessão de 2026-08-12.
 
-**How to apply:** antes de afirmar que a `master` esta protegida ou que um deploy de prod exige
-aprovacao, lembre que NADA disso estava enforced em 2026-08-11; verifique o estado atual no GitHub
-(browser ou de uma maquina com gh) em vez de inferir do repo.
+API_URL_PROD segue não existindo (nota antiga, ainda válida).

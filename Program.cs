@@ -14,7 +14,6 @@ using LayoutParserApi.Services.Parsing.Interfaces;
 using LayoutParserApi.Services.Security;
 using LayoutParserApi.Services.Testing;
 using LayoutParserApi.Services.Transformation;
-using LayoutParserApi.Services.Transformation.Interface;
 using LayoutParserApi.Services.Validation;
 using LayoutParserApi.Services.Transformation.LowCode;
 using LayoutParserApi.Services.XmlAnalysis;
@@ -401,21 +400,6 @@ try
         return new MapperCacheService(redis, logger);
     });
     builder.Services.AddScoped<ICachedMapperService, CachedMapperService>();
-
-    // Transformation Services
-    builder.Services.AddScoped<IMapperTransformationService, MapperTransformationService>();
-
-    // Generation Services (issue #33 — faltavam no DI; endpoints de
-    // DataGenerationController quebravam em runtime por falta de resolução).
-    builder.Services.AddScoped<ISyntheticDataGeneratorService, SyntheticDataGeneratorService>();
-    builder.Services.AddScoped<IExcelDataProcessor, ExcelDataProcessor>();
-    builder.Services.AddScoped<ILayoutAnalysisService, LayoutAnalysisService>();
-    // Dependências internas do TxtFileGeneratorFactory (resolvidas via IServiceProvider
-    // dentro da factory) — sem registro, o Create() do factory lançava em runtime.
-    builder.Services.AddScoped<XmlLayoutParser>();
-    builder.Services.AddScoped<ExcelRulesParser>();
-    builder.Services.AddScoped<LayoutParserApi.Services.Generation.TxtGenerator.Validators.LayoutValidator>();
-    builder.Services.AddScoped<TxtFileGeneratorFactory>();
 
     // Learning Services
     builder.Services.AddScoped<ExampleLearningService>();
