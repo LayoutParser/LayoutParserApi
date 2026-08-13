@@ -3,7 +3,7 @@ using System.Xml.Linq;
 namespace XslSynth.Core;
 
 /// <summary>Constantes/utilitários compartilhados da síntese de XSLT.</summary>
-internal static class Xslt
+public static class Xslt
 {
     /// <summary>Namespace do XSLT 1.0.</summary>
     public static readonly XNamespace Ns = "http://www.w3.org/1999/XSL/Transform";
