@@ -3,10 +3,12 @@ using LayoutParserApi.Services.XmlAnalysis;
 using LayoutParserApi.Models;
 using LayoutParserApi.Services.Transformation.LowCode;
 
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 using LayoutParserApi.Services.XmlAnalysis.Models;
 using LayoutParserApi.Services.Interfaces;
+using LayoutParserApi.Services.Filters;
 using LayoutParserApi.Models.Database;
 using LayoutParserApi.Models.Transformation;
 
@@ -23,6 +25,7 @@ namespace LayoutParserApi.Controllers
     /// </summary>
     [ApiController]
     [Route("api/[controller]")]
+    [ServiceFilter(typeof(AuditActionFilter))]
     public class TransformationExecutionController : ControllerBase
     {
         private readonly ILogger<TransformationExecutionController> _logger;
@@ -151,6 +154,9 @@ namespace LayoutParserApi.Controllers
         /// (casos-limite de zero candidatos, falha parcial, timeout etc.) em
         /// docs/architecture/multi-candidato-e-diagnostico-ia-contrato.md (Gap 1).
         /// </summary>
+        // Issue #32: dispara processos externos (runner x86) e é operação privilegiada —
+        // restrita ao papel "admin".
+        [Authorize(Roles = "admin")]
         [HttpPost("execute-candidates")]
         public async Task<IActionResult> ExecuteTransformationCandidates([FromBody] TransformationRequest request)
         {
@@ -525,6 +531,8 @@ namespace LayoutParserApi.Controllers
         /// <summary>
         /// Executa transformação usando o motor low-code (SysMiddle) via runner x86.
         /// </summary>
+        // Issue #32: idem execute-candidates — restrito ao papel "admin".
+        [Authorize(Roles = "admin")]
         [HttpPost("execute-lowcode")]
         public async Task<IActionResult> ExecuteLowCode([FromBody] LowCodeTransformationRequest request)
         {
