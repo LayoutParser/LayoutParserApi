@@ -19,7 +19,6 @@ namespace LayoutParserApi.Services.XmlAnalysis
         private readonly ILogger<TransformationPipelineService> _logger;
         private readonly string _tclBasePath;
         private readonly string _xslBasePath;
-        private readonly string _mappingBasePath;
 
         public TransformationPipelineService(
             ILogger<TransformationPipelineService> logger,
@@ -28,7 +27,6 @@ namespace LayoutParserApi.Services.XmlAnalysis
             _logger = logger;
             _tclBasePath = configuration["TransformationPipeline:TclPath"] ?? @"C:\inetpub\wwwroot\layoutparser\TCL";
             _xslBasePath = configuration["TransformationPipeline:XslPath"] ?? @"C:\inetpub\wwwroot\layoutparser\XSL";
-            _mappingBasePath = configuration["TransformationPipeline:MappingPath"] ?? @"C:\inetpub\wwwroot\layoutparser\Mapeamentro";
         }
 
         /// <summary>
@@ -366,24 +364,27 @@ namespace LayoutParserApi.Services.XmlAnalysis
         }
 
         /// <summary>
-        /// Carrega arquivo MAP
+        /// Carrega arquivo MAP (estrutura &lt;MAP&gt;&lt;LINE&gt;&lt;FIELD/&gt;&lt;/LINE&gt;&lt;/MAP&gt;).
+        /// <b>Convenção confirmada por evidência de dump de produção (issue #39, 2026-08-12):</b> apesar da
+        /// hipótese original ser <c>MAP_{layoutName}.xml</c> dentro de <c>MappingPath</c> (Mapeamentro) — pasta
+        /// que sequer existe em produção — e da hipótese seguinte ser uma pasta nomeada pelo mapper dentro de
+        /// <c>Examples/</c> — que na prática só guarda amostras brutas de aprendizado (.mq_series/layout_learned.json,
+        /// sem estrutura MAP) —, o dump real mostra que o arquivo com a definição de LINE/FIELD fica em
+        /// <c>TclPath/{layoutName}.tcl</c>: mesmo com extensão .tcl, o conteúdo é XML puro (confirmado
+        /// byte-a-byte contra <c>tcl/LAY_CNHI_TXT_MQSERIES_ENVNFE_4.00_NFe.tcl</c>). O nome usado é o do
+        /// LAYOUT (já disponível como parâmetro), não o do mapper.
         /// </summary>
         private async Task<string> LoadMappingFileAsync(string layoutName)
         {
             try
             {
-                // Procurar arquivo MAP baseado no nome do layout
-                var mapFileName = $"MAP_{layoutName}.xml";
-                var mapPath = Path.Combine(_mappingBasePath, mapFileName);
-
-                if (!File.Exists(mapPath))
-                    // Tentar padrão alternativo
-                    mapPath = Path.Combine(_mappingBasePath, "MAP_MQSERIES_SEND_ENV_TXT_XML_NFE.xml");
+                var mapFileName = $"{layoutName}.tcl";
+                var mapPath = Path.Combine(_tclBasePath, mapFileName);
 
                 if (File.Exists(mapPath))
                     return await File.ReadAllTextAsync(mapPath, Encoding.UTF8);
 
-                _logger.LogWarning("Arquivo MAP não encontrado: {Path}", mapPath);
+                _logger.LogWarning("Arquivo MAP (TCL) não encontrado: {Path}", mapPath);
                 return null;
             }
             catch (Exception ex)
