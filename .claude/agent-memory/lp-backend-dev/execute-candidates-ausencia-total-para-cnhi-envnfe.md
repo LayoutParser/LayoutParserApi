@@ -191,6 +191,43 @@ de SQL (conexão, timeout, permissão), agora ela aparece como `"Pathway sysmidd
 `_logger.LogError(ex, "Erro ao buscar mapeadores por LayoutGuid (filtrado): {LayoutGuid}", ...)`
 (nível Error, distinto do `LogWarning` de "0 candidatos") já existia e agora tem efeito real.
 
+## Capítulo 4 (2026-08-12) — Issue #39: hipótese do dono ("pasta Mapeamento, sem .xml") checada e CONTRARIADA
+
+Issue #39 pediu pra validar, antes de aplicar, a hipótese de que `LoadMappingFileAsync`
+(`Services/XmlAnalysis/TransformationPipelineService.cs:371`) deveria procurar em uma pasta
+`Mapeamento` (sem o typo `Mapeamentro`) por um arquivo `MAP_{layoutName}` **sem** extensão
+`.xml` (ex.: `MAP_CNHI_MQSERIES_SEND_ENV_TXT_XML_NFE`).
+
+**Não apliquei o fix.** Reconferi as duas fontes de evidência já registradas neste arquivo
+(capítulo 1) e elas contrariam a hipótese em três pontos, não só um:
+
+1. **Local:** a única evidência real de convenção de produção (dump `.claude/tmp/servidor/
+   layoutparser/Examples/`, já não existe mais neste worktree — era scratch de outra sessão)
+   mostrava o artefato dentro de `Examples/`, não de uma pasta `Mapeamento`. `Mapeamentro`
+   **nem aparecia** no dump.
+2. **Tipo:** é uma **pasta**, não um arquivo solto — `MAP_CNHI_MQSERIES_SEND_ENV_TXT_XML_NFE`
+   é um diretório, então "sem `.xml`" está certo mas incompleto (não é "arquivo sem
+   extensão", é uma pasta).
+3. **Nome:** o nome não é `MAP_{layoutName}` (não inclui `CNHI_TXT_MQSERIES_ENVNFE_4.00_NFe`
+   nem qualquer variação do nome do layout) — é o nome do **mapper** (`MAP_CNHI_MQSERIES_SEND_ENV_TXT_XML_NFE`),
+   independente do layout. O padrão de substituição hoje em `LoadMappingFileAsync`
+   (`$"MAP_{layoutName}.xml"`) está errado na premissa, não só na extensão/pasta.
+
+Rechequei o filesystem local (`/mnt/c/inetpub/wwwroot/layoutparser/`, mirror de dev nesta
+máquina): não existe pasta `Mapeamento` nem `Mapeamentro`, nem qualquer `MAP_*` fora do
+catálogo binário do sysmiddle (`globalfolder`, resolvido por GUID via SQL/runner CLI, ver
+[[gabarito-fiat-comando-de-verificacao]] — mecanismo completamente diferente do
+`LoadMappingFileAsync`, que é busca por nome de arquivo). Sem o dump original disponível de
+novo, não dá pra confirmar 100% a convenção certa — mas dá pra confirmar que a hipótese do
+dono, como formulada, não bate com a única evidência real já coletada.
+
+**Não criei fix nem teste de regressão** — aplicar `Mapeamento`/sem `.xml` sobre a mesma
+substituição `MAP_{layoutName}` repetiria o padrão de aposta errada já documentado
+(`MAP_MARELLI_` homônimo, [[gabarito-fiat-comando-de-verificacao]]). Reportado ao dono para
+decidir: (a) confirmar com ops/Sysmiddle a convenção real de nome de artefato antes de
+qualquer código, ou (b) aposentar de vez o pathway tcl-xsl (nenhuma evidência até agora de
+que ele já funcionou pra algum layout real).
+
 **Pergunta objetiva pro dono (próximo passo):** reproduzir a chamada real de
 `execute-candidates` pra `LAY_e339073e-32d1-492e-ae8a-dcf6337b21a1` (mesma que deu `candidates:
 []`) e:
