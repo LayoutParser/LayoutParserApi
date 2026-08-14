@@ -44,12 +44,12 @@ jobs:
 
     steps:
     - name: Checkout LayoutParserApi
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         path: LayoutParserApi
 
     - name: Checkout LayoutParserLib
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         repository: LayoutParser/LayoutParserLib
         path: LayoutParserLib
@@ -57,7 +57,7 @@ jobs:
         fetch-depth: 1
 
     - name: Checkout LayoutParserDecrypt
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         repository: LayoutParser/LayoutParserDecrypt
         path: LayoutParserDecrypt
@@ -65,12 +65,12 @@ jobs:
         fetch-depth: 1
     
     - name: Setup .NET
-      uses: actions/setup-dotnet@v4
+      uses: actions/setup-dotnet@v6
       with:
         dotnet-version: '10.0.x'
     
     - name: Setup MSBuild for .NET Framework
-      uses: microsoft/setup-msbuild@v1.1
+      uses: microsoft/setup-msbuild@v1.3
     
     - name: Build LayoutParserLib (.NET Framework 4.8.1)
       run: |

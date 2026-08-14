@@ -26,7 +26,7 @@ jobs:
 
     steps:
     - name: Checkout LayoutParserApi
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         path: LayoutParserApi
 
@@ -79,7 +79,7 @@ jobs:
     # condicional para bin\Debug quando a DLL da configuracao nao existe) - o checkout
     # lado a lado e obrigatorio, no mesmo padrao do deploy.yml.
     - name: Checkout LayoutParserLib
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         repository: LayoutParser/LayoutParserLib
         path: LayoutParserLib
@@ -89,7 +89,7 @@ jobs:
     # O Decrypt e standalone (embute os fontes minimos da Lib) e compila com dotnet build -
     # o runner dev-local NAO possui VS Build Tools/msbuild.exe (nao usar setup-msbuild aqui).
     - name: Checkout LayoutParserDecrypt
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         repository: LayoutParser/LayoutParserDecrypt
         path: LayoutParserDecrypt
@@ -97,7 +97,7 @@ jobs:
         fetch-depth: 1
 
     - name: Setup .NET
-      uses: actions/setup-dotnet@v4
+      uses: actions/setup-dotnet@v6
       with:
         dotnet-version: '10.0.x'
 
