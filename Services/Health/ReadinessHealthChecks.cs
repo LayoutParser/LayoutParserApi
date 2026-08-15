@@ -1,5 +1,6 @@
 using LayoutParserApi.Services.Interfaces;
 using LayoutParserApi.Services.Transformation.LowCode;
+using LayoutParserApi.Services.XmlAnalysis;
 
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
@@ -107,7 +108,8 @@ namespace LayoutParserApi.Services.Health
 
         public Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken cancellationToken = default)
         {
-            var path = _options.Value.RunnerPath;
+            var options = _options.Value;
+            var path = options.RunnerPath;
 
             if (string.IsNullOrWhiteSpace(path))
                 return Task.FromResult(HealthCheckResult.Degraded("LowCode:RunnerPath nao configurado — transformacao low-code indisponivel."));
@@ -115,7 +117,46 @@ namespace LayoutParserApi.Services.Health
             if (!File.Exists(path))
                 return Task.FromResult(HealthCheckResult.Degraded($"LowCode:RunnerPath nao existe ({path}) — transformacao low-code indisponivel."));
 
+            // ✅ Gate #107/#108: AllowedPackageGuids vazio faz a query de mapper virar `IN (NULL)`,
+            // nunca batendo com nada — nenhum erro visível, só "mapper não encontrado" longe da causa.
+            // O startup (A1, ver Program.cs) já falha o boot quando a seção LowCode existe e o campo
+            // está vazio; esta sonda cobre o caso em que a validação de boot foi contornada (env var
+            // setada depois do bind, teste manual, etc.) — mesma severidade Degraded do resto deste
+            // health check: parse/catálogo seguem servindo, só a transformação low-code fica capenga.
+            if (options.AllowedPackageGuids is null || options.AllowedPackageGuids.Count == 0)
+                return Task.FromResult(HealthCheckResult.Degraded(
+                    "LowCode:AllowedPackageGuids vazio — nenhum mapper sera encontrado (query vira IN (NULL)); transformacao low-code indisponivel."));
+
             return Task.FromResult(HealthCheckResult.Healthy("Runner low-code encontrado."));
+        }
+    }
+
+    /// <summary>
+    /// Config órfã do Ollama: <c>Ollama:Url</c> ausente ou apontando para localhost/127.0.0.1 é sinal
+    /// forte de que a seção não foi configurada para este host — o Ollama real deste projeto roda numa
+    /// VM Linux separada, nunca no mesmo host da API (ver memória de <c>@lp-backend-dev</c>,
+    /// dev-ollama-vs-brnddappbld01-hardware). <b>Degraded</b>: diagnóstico via IA é funcionalidade
+    /// opcional (Gap 2) — parse/catálogo/transformação low-code seguem servindo sem ela.
+    /// </summary>
+    public sealed class OllamaConfigHealthCheck : IHealthCheck
+    {
+        private readonly IOptions<OllamaOptions> _options;
+
+        public OllamaConfigHealthCheck(IOptions<OllamaOptions> options) => _options = options;
+
+        public Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken cancellationToken = default)
+        {
+            var url = _options.Value.Url;
+
+            if (string.IsNullOrWhiteSpace(url))
+                return Task.FromResult(HealthCheckResult.Degraded("Ollama:Url nao configurado — diagnostico via IA indisponivel."));
+
+            if (url.Contains("localhost", StringComparison.OrdinalIgnoreCase) ||
+                url.Contains("127.0.0.1", StringComparison.Ordinal))
+                return Task.FromResult(HealthCheckResult.Degraded(
+                    $"Ollama:Url aponta para localhost/127.0.0.1 ({url}) — sinal de config orfa: o Ollama real roda numa VM separada, nao no host da API."));
+
+            return Task.FromResult(HealthCheckResult.Healthy($"Ollama:Url configurado: {url}."));
         }
     }
 
