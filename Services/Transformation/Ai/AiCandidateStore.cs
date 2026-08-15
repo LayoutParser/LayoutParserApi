@@ -14,6 +14,18 @@ namespace LayoutParserApi.Services.Transformation.Ai
     /// mesmo espírito do <see cref="LowCode.LowCodeTransformationStore"/> mas sem a complexidade de
     /// índice/Redis — o volume de jobs IA é muito menor.
     /// </summary>
+    /// <remarks>
+    /// <b>Particionamento por usuário (issue #92):</b> antes desta mudança a chave era só o ticket —
+    /// como o dicionário/arquivo é global ao processo, qualquer usuário que soubesse (ou adivinhasse)
+    /// um ticket de outro conseguia ler o <c>ia-status</c> dele, inclusive XML fiscal em progresso. Com
+    /// a issue #93 prestes a abrir esses endpoints além do papel "admin", isso deixaria de ser teórico.
+    /// Toda operação agora exige <c>userId</c> (o <c>ICurrentUser.Name</c> resolvido no controller — a
+    /// store em si é <c>Singleton</c> e não pode injetar <c>ICurrentUser</c> Scoped diretamente, por
+    /// isso o chamador passa o valor já resolvido). Em disco, cada usuário tem sua própria subpasta
+    /// (<c>_storePath/{usuário}/{ticket}.json</c>) — mantém a varredura de TTL do
+    /// <see cref="AiCandidateStoreCleanupBackgroundService"/> igualmente eficiente (ainda é um
+    /// <c>EnumerateFiles</c> recursivo simples) sem precisar codificar usuário+ticket num nome só.
+    /// </remarks>
     public class AiCandidateStore
     {
         private readonly ILogger<AiCandidateStore> _logger;
@@ -21,6 +33,14 @@ namespace LayoutParserApi.Services.Transformation.Ai
         private readonly TimeSpan _ttl;
         private readonly Func<DateTimeOffset> _clock;
         private readonly ConcurrentDictionary<string, StoredEntry> _memory = new();
+
+        // Separador de controle (US, ) para compor a chave de memória userId+ticket sem
+        // ambiguidade — não é digitável e não deve vir de um header HTTP/nome de usuário normal.
+        private const char KeySeparator = '\u001F';
+
+        // Usuário anônimo/ausente cai neste bucket fixo em vez de virar pasta vazia/raiz — mantém o
+        // isolamento (nunca cai na pasta de outro usuário real) sem lançar por falta de identidade.
+        private const string AnonymousBucket = "_anonimo";
 
         /// <summary>Ticket em memória + carimbo de quando foi escrito (base do TTL da issue #51).</summary>
         private readonly record struct StoredEntry(AiCandidateStatus Status, DateTime StoredAtUtc);
@@ -65,21 +85,27 @@ namespace LayoutParserApi.Services.Transformation.Ai
         /// <summary>Janela de retenção efetiva do ticket (<c>AiTransformationCandidate:TicketTtlHours</c>).</summary>
         public TimeSpan Ttl => _ttl;
 
-        public void Set(string ticket, AiCandidateStatus status)
+        public void Set(string userId, string ticket, AiCandidateStatus status)
         {
             var agoraUtc = _clock().UtcDateTime;
+            var memoryKey = BuildMemoryKey(userId, ticket);
 
             // Grava em disco ANTES de publicar em memória: quem consulta GetStatusAsync via
             // polling só pode ver "pronto" depois que o arquivo já está completo e fechado.
             // Antes desta correção a ordem era invertida (memória primeiro) e sob contenção de
             // I/O um segundo Set() concorrente no mesmo ticket colidia no WriteAllText enquanto
             // o primeiro ainda escrevia — reproduzido pelo @lp-qa como IOException intermitente
-            // ("being used by another process") ao rodar a suíte 2x seguidas.
+            // ("being used by another process") ao rodar a suíte 2x seguidas. Preservada ao
+            // particionar por usuário (issue #92): a ordem disco→memória não muda, só a chave.
             try
             {
-                var path = ResolvePath(ticket);
+                var path = ResolvePath(userId, ticket);
                 if (path != null)
                 {
+                    var directory = Path.GetDirectoryName(path);
+                    if (!string.IsNullOrEmpty(directory))
+                        Directory.CreateDirectory(directory);
+
                     File.WriteAllText(path, JsonSerializer.Serialize(status, JsonOptions), Encoding.UTF8);
 
                     // Idade do ticket em disco = LastWriteTime do arquivo. Carimbar explicitamente
@@ -107,14 +133,15 @@ namespace LayoutParserApi.Services.Transformation.Ai
                 _logger.LogWarning(ex, "Falha ao persistir em disco o status do pathway IA (ticket={Ticket})", ticket);
             }
 
-            _memory[ticket] = new StoredEntry(status, agoraUtc);
+            _memory[memoryKey] = new StoredEntry(status, agoraUtc);
         }
 
-        public AiCandidateStatus? Get(string ticket)
+        public AiCandidateStatus? Get(string userId, string ticket)
         {
             var limiteUtc = ExpiracaoUtc();
+            var memoryKey = BuildMemoryKey(userId, ticket);
 
-            if (_memory.TryGetValue(ticket, out var cached))
+            if (_memory.TryGetValue(memoryKey, out var cached))
             {
                 if (cached.StoredAtUtc > limiteUtc)
                     return cached.Status;
@@ -122,13 +149,13 @@ namespace LayoutParserApi.Services.Transformation.Ai
                 // Ticket vencido: sai da memória na hora, custo O(1). Nada de varrer diretório
                 // aqui — a limpeza em disco é do BackgroundService, o caminho de request (polling
                 // de GetStatusAsync) não pode pagar por I/O de manutenção.
-                _memory.TryRemove(ticket, out _);
+                _memory.TryRemove(memoryKey, out _);
                 return null;
             }
 
             try
             {
-                var path = ResolvePath(ticket);
+                var path = ResolvePath(userId, ticket);
                 if (path == null || !File.Exists(path))
                     return null;
 
@@ -141,7 +168,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
                 var json = File.ReadAllText(path, Encoding.UTF8);
                 var status = JsonSerializer.Deserialize<AiCandidateStatus>(json, JsonOptions);
                 if (status != null)
-                    _memory[ticket] = new StoredEntry(status, escritoEmUtc);
+                    _memory[memoryKey] = new StoredEntry(status, escritoEmUtc);
                 return status;
             }
             catch (Exception ex)
@@ -155,6 +182,8 @@ namespace LayoutParserApi.Services.Transformation.Ai
         /// Remove tickets vencidos das DUAS camadas — memória e disco (issue #51). Chamado pelo
         /// <see cref="AiCandidateStoreCleanupBackgroundService"/>, fora do caminho de request.
         /// Best-effort ponta a ponta: nenhuma falha de I/O aborta a varredura nem sobe para o host.
+        /// Varre TODOS os usuários (issue #92) — não sabe nem precisa saber de quem é cada ticket,
+        /// só da idade do arquivo/entrada em memória.
         /// </summary>
         /// <remarks>
         /// Síncrono de propósito: é I/O de arquivo (<c>EnumerateFiles</c>/<c>Delete</c>), que não
@@ -182,7 +211,9 @@ namespace LayoutParserApi.Services.Transformation.Ai
             {
                 if (Directory.Exists(_storePath))
                 {
-                    foreach (var arquivo in Directory.EnumerateFiles(_storePath, "*.json"))
+                    // AllDirectories: cada usuário tem sua subpasta (ResolvePath) — a varredura
+                    // continua um único EnumerateFiles recursivo, sem precisar listar usuários antes.
+                    foreach (var arquivo in Directory.EnumerateFiles(_storePath, "*.json", SearchOption.AllDirectories))
                     {
                         try
                         {
@@ -212,21 +243,32 @@ namespace LayoutParserApi.Services.Transformation.Ai
         /// <summary>Instante-limite: o que foi escrito até aqui está vencido.</summary>
         private DateTime ExpiracaoUtc() => _clock().UtcDateTime - _ttl;
 
+        // Chave de memória userId+ticket — separador de controle evita colisão tipo
+        // userId="a", ticket="b:c" vs userId="a:b", ticket="c".
+        private static string BuildMemoryKey(string userId, string ticket)
+            => $"{SafeUserBucket(userId)}{KeySeparator}{ticket}";
+
+        private static string SafeUserBucket(string? userId)
+            => string.IsNullOrWhiteSpace(userId) ? AnonymousBucket : userId;
+
         // Ticket já vem validado por LowCodeTransformationStore.TryParseTicket no controller — aqui
         // só canonicalizamos e conferimos o prefixo, mesma defesa em profundidade do store low-code.
-        private string? ResolvePath(string ticket)
+        // userId sanitizado do mesmo jeito (whitelist alfanumérico + separadores comuns) porque pode
+        // vir de um header confiado (domínio\usuário, e-mail) e vira nome de subpasta em disco.
+        private string? ResolvePath(string userId, string ticket)
         {
             try
             {
-                var safeName = string.Concat(ticket.Where(c => char.IsLetterOrDigit(c) || c is '.' or '-' or '_'));
-                if (string.IsNullOrWhiteSpace(safeName))
+                var safeUser = SanitizeForFileSystem(SafeUserBucket(userId));
+                var safeTicket = SanitizeForFileSystem(ticket);
+                if (string.IsNullOrWhiteSpace(safeUser) || string.IsNullOrWhiteSpace(safeTicket))
                     return null;
 
                 var root = Path.GetFullPath(_storePath);
                 if (!root.EndsWith(Path.DirectorySeparatorChar))
                     root += Path.DirectorySeparatorChar;
 
-                var full = Path.GetFullPath(Path.Combine(root, $"{safeName}.json"));
+                var full = Path.GetFullPath(Path.Combine(root, safeUser, $"{safeTicket}.json"));
                 return full.StartsWith(root, StringComparison.OrdinalIgnoreCase) ? full : null;
             }
             catch
@@ -234,6 +276,9 @@ namespace LayoutParserApi.Services.Transformation.Ai
                 return null;
             }
         }
+
+        private static string SanitizeForFileSystem(string value)
+            => string.Concat(value.Where(c => char.IsLetterOrDigit(c) || c is '.' or '-' or '_' or '@'));
     }
 
     /// <summary>Resultado de uma varredura de limpeza da store do pathway IA (issue #51).</summary>

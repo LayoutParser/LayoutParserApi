@@ -25,14 +25,14 @@ namespace LayoutParserApi.Tests.Services.Transformation.Ai
                 var agora = new DateTimeOffset(2026, 8, 14, 12, 0, 0, TimeSpan.Zero);
                 var store = CriarStore(dir, () => agora, ttlHoras: 24);
 
-                store.Set("ticket-velho", new AiCandidateStatus { Status = AiCandidateStatus.StatusFailed });
+                store.Set("usuario-a", "ticket-velho", new AiCandidateStatus { Status = AiCandidateStatus.StatusFailed });
 
                 // Envelhece o relógio além do TTL e grava um ticket novo já na "era" seguinte.
                 agora = agora.AddHours(25);
-                store.Set("ticket-novo", new AiCandidateStatus { Status = AiCandidateStatus.StatusConverged });
+                store.Set("usuario-a", "ticket-novo", new AiCandidateStatus { Status = AiCandidateStatus.StatusConverged });
 
-                var arquivoVelho = Path.Combine(dir, "ticket-velho.json");
-                var arquivoNovo = Path.Combine(dir, "ticket-novo.json");
+                var arquivoVelho = Path.Combine(dir, "usuario-a", "ticket-velho.json");
+                var arquivoNovo = Path.Combine(dir, "usuario-a", "ticket-novo.json");
                 Assert.True(File.Exists(arquivoVelho), "o ticket vencido ainda deve existir em disco ANTES da varredura");
 
                 var resultado = store.RemoveExpired();
@@ -42,11 +42,11 @@ namespace LayoutParserApi.Tests.Services.Transformation.Ai
 
                 // Vencido: sumiu das duas camadas.
                 Assert.False(File.Exists(arquivoVelho));
-                Assert.Null(store.Get("ticket-velho"));
+                Assert.Null(store.Get("usuario-a", "ticket-velho"));
 
                 // Dentro do TTL: intocado nas duas camadas.
                 Assert.True(File.Exists(arquivoNovo));
-                Assert.Equal(AiCandidateStatus.StatusConverged, store.Get("ticket-novo")?.Status);
+                Assert.Equal(AiCandidateStatus.StatusConverged, store.Get("usuario-a", "ticket-novo")?.Status);
             }
             finally
             {
@@ -63,11 +63,11 @@ namespace LayoutParserApi.Tests.Services.Transformation.Ai
                 var agora = new DateTimeOffset(2026, 8, 14, 12, 0, 0, TimeSpan.Zero);
                 var store = CriarStore(dir, () => agora, ttlHoras: 24);
 
-                store.Set("ticket-poll", new AiCandidateStatus { Status = AiCandidateStatus.StatusRunning });
-                Assert.NotNull(store.Get("ticket-poll"));
+                store.Set("usuario-a", "ticket-poll", new AiCandidateStatus { Status = AiCandidateStatus.StatusRunning });
+                Assert.NotNull(store.Get("usuario-a", "ticket-poll"));
 
                 agora = agora.AddHours(25);
-                Assert.Null(store.Get("ticket-poll"));
+                Assert.Null(store.Get("usuario-a", "ticket-poll"));
 
                 // O Get já liberou a entrada da memória (O(1), sem I/O): à varredura seguinte
                 // sobra apenas o arquivo em disco.
@@ -89,19 +89,19 @@ namespace LayoutParserApi.Tests.Services.Transformation.Ai
             {
                 var agora = new DateTimeOffset(2026, 8, 14, 12, 0, 0, TimeSpan.Zero);
                 var storeAntiga = CriarStore(dir, () => agora, ttlHoras: 24);
-                storeAntiga.Set("ticket-restart", new AiCandidateStatus { Status = AiCandidateStatus.StatusConverged });
+                storeAntiga.Set("usuario-a", "ticket-restart", new AiCandidateStatus { Status = AiCandidateStatus.StatusConverged });
 
                 agora = agora.AddHours(25);
 
                 // Simula restart da API: memória zerada, disco cheio. O TTL é absoluto a partir da
                 // escrita, então o ticket não pode voltar à vida só porque o processo reiniciou.
                 var storeNova = CriarStore(dir, () => agora, ttlHoras: 24);
-                Assert.Null(storeNova.Get("ticket-restart"));
+                Assert.Null(storeNova.Get("usuario-a", "ticket-restart"));
 
                 var resultado = storeNova.RemoveExpired();
                 Assert.Equal(0, resultado.TicketsEmMemoria);
                 Assert.Equal(1, resultado.ArquivosEmDisco);
-                Assert.False(File.Exists(Path.Combine(dir, "ticket-restart.json")));
+                Assert.False(File.Exists(Path.Combine(dir, "usuario-a", "ticket-restart.json")));
             }
             finally
             {
