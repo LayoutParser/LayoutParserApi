@@ -1,0 +1,215 @@
+using System.Reflection;
+
+using LayoutParserApi.Controllers;
+using LayoutParserApi.Models;
+using LayoutParserApi.Models.Database;
+using LayoutParserApi.Models.Transformation;
+using LayoutParserApi.Services.Interfaces;
+using LayoutParserApi.Services.Transformation.LowCode;
+using LayoutParserApi.Services.Transformation.Ai;
+
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+
+namespace LayoutParserApi.Tests.Controllers
+{
+    /// <summary>
+    /// Issue #93: os endpoints <c>execute-candidates</c>, <c>ia-status</c> e <c>execute-lowcode</c>
+    /// deixaram de exigir o papel "admin" ([Authorize(Roles = "admin")] → [Authorize]) — agora
+    /// qualquer usuário autenticado pode chamá-los. O isolamento entre usuários (issue #92) passa a
+    /// ser a ÚNICA barreira que impede um usuário ler/afetar o ticket de outro.
+    ///
+    /// <para>Gap encontrado pelo @lp-qa ao verificar a #92: nenhum teste no nível do
+    /// <see cref="TransformationExecutionController"/> confirmava que <c>CurrentUserId</c> (derivado
+    /// de <see cref="ICurrentUser.Name"/>) é de fato o valor que chega em
+    /// <see cref="IAiTransformationCandidateService.GetStatusAsync"/>/<see cref="IAiTransformationCandidateService.EnqueueAsync"/>.
+    /// O QA provou o buraco mutando o controller (trocando <c>CurrentUserId</c> por um valor fixo) e
+    /// viu a suíte inteira (337/337) continuar verde. Os testes abaixo fecham esse buraco: usam um
+    /// spy de <see cref="IAiTransformationCandidateService"/> que CAPTURA o <c>userId</c> recebido, e
+    /// comparam contra o nome do usuário fake — não apenas "não lançou exceção".</para>
+    /// </summary>
+    public class TransformationExecutionControllerUserIsolationTests
+    {
+        // --- fakes ---
+
+        private sealed class FakeCurrentUser : ICurrentUser
+        {
+            public string? Name { get; set; }
+            public IReadOnlyList<string> Roles { get; set; } = Array.Empty<string>();
+            public bool IsAuthenticated => Name != null;
+            public bool IsInRole(string role) => Roles.Contains(role, StringComparer.OrdinalIgnoreCase);
+        }
+
+        /// <summary>Spy: captura o userId recebido em cada chamada, sem executar lógica real de IA.</summary>
+        private sealed class SpyAiCandidateService : IAiTransformationCandidateService
+        {
+            public string? LastEnqueueUserId { get; private set; }
+            public string? LastGetStatusUserId { get; private set; }
+            public string? LastGetStatusTicket { get; private set; }
+
+            public Task EnqueueAsync(
+                string userId, string ticket, string layoutName, Guid layoutGuid, string mapperGuid,
+                string inputContent, string groundTruthXml, CancellationToken cancellationToken)
+            {
+                LastEnqueueUserId = userId;
+                return Task.CompletedTask;
+            }
+
+            public Task<AiCandidateStatus> GetStatusAsync(string userId, string ticket, CancellationToken cancellationToken)
+            {
+                LastGetStatusUserId = userId;
+                LastGetStatusTicket = ticket;
+                return Task.FromResult(new AiCandidateStatus { Status = AiCandidateStatus.StatusNotFound });
+            }
+        }
+
+        /// <summary>
+        /// Constrói o controller real. Os demais serviços concretos (pipeline/validator/learning/
+        /// low-code/low-code-auto) recebem <c>null!</c> deliberadamente: o construtor do controller só
+        /// os armazena, nunca os invoca, e os testes abaixo não exercitam nenhum caminho que os toque
+        /// (GetAiCandidateStatus só usa _aiCandidateService/_currentUser; o teste de
+        /// TryEnqueueAiCandidate invoca o método privado diretamente via reflection).
+        /// </summary>
+        private static (TransformationExecutionController Controller, SpyAiCandidateService Spy, FakeCurrentUser User) BuildController()
+        {
+            var spy = new SpyAiCandidateService();
+            var user = new FakeCurrentUser();
+
+            var controller = new TransformationExecutionController(
+                NullLogger<TransformationExecutionController>.Instance,
+                pipelineService: null!,
+                validatorService: null!,
+                learningService: null!,
+                autoGenerator: null!,
+                lowCode: null!,
+                lowCodeAuto: null!,
+                layoutDb: null!,
+                lowCodeOptions: Options.Create(new LowCodeRunnerOptions()),
+                aiCandidateService: spy,
+                currentUser: user);
+
+            return (controller, spy, user);
+        }
+
+        [Fact]
+        public async Task GetAiCandidateStatus_propaga_CurrentUserId_para_o_servico()
+        {
+            var (controller, spy, user) = BuildController();
+            user.Name = "alice";
+
+            await controller.GetAiCandidateStatus("ticket-123", CancellationToken.None);
+
+            Assert.Equal("alice", spy.LastGetStatusUserId);
+            Assert.Equal("ticket-123", spy.LastGetStatusTicket);
+        }
+
+        [Fact]
+        public async Task GetAiCandidateStatus_usuarios_diferentes_propagam_ids_diferentes()
+        {
+            var (controller, spy, user) = BuildController();
+
+            user.Name = "alice";
+            await controller.GetAiCandidateStatus("ticket-x", CancellationToken.None);
+            Assert.Equal("alice", spy.LastGetStatusUserId);
+
+            user.Name = "bob";
+            await controller.GetAiCandidateStatus("ticket-x", CancellationToken.None);
+            Assert.Equal("bob", spy.LastGetStatusUserId);
+        }
+
+        /// <summary>
+        /// TryEnqueueAiCandidate é privado, chamado de dentro de ExecuteTransformationCandidates
+        /// como <c>TryEnqueueAiCandidate(request, layoutRecord, candidates, isXmlInput, CurrentUserId)</c>.
+        /// Rodar o método público inteiro exigiria o pathway sysmiddle real (LowCodeAutoTransformationService,
+        /// que dispara um runner x86 externo) só para produzir o candidato-gabarito que
+        /// AiCandidateDispatchPlan.TryBuild exige — fora do alcance de um teste unitário. Em vez disso,
+        /// este teste invoca o método privado via reflection passando o MESMO valor que a linha de
+        /// produção passa (a property <c>CurrentUserId</c>, também lida via reflection, não reimplementada
+        /// aqui) — cobre a mesma classe de regressão que o QA demonstrou (CurrentUserId virar um valor
+        /// fixo), porque o valor esperado da asserção vem do usuário fake, não da property.
+        /// </summary>
+        [Fact]
+        public async Task TryEnqueueAiCandidate_propaga_CurrentUserId_para_EnqueueAsync()
+        {
+            var (controller, spy, user) = BuildController();
+            user.Name = "carol";
+
+            var request = new TransformationRequest
+            {
+                InputContent = "linha-posicional-de-teste",
+                LayoutName = "LAYOUT_TESTE",
+                LayoutGuid = null
+            };
+            var layoutGuid = Guid.NewGuid();
+            var layoutRecord = new LayoutRecord { LayoutGuid = layoutGuid, Name = request.LayoutName };
+
+            // Candidato sysmiddle bem-sucedido — é o gabarito que AiCandidateDispatchPlan.TryBuild exige
+            // para não retornar null (ver Services/Transformation/Ai/AiCandidateDispatchPlan.cs).
+            var candidates = new List<TransformationCandidate>
+            {
+                new TransformationCandidate
+                {
+                    CandidateId = $"sysmiddle-{Guid.NewGuid()}",
+                    Pathway = "sysmiddle",
+                    TransformedXml = "<xml>gabarito</xml>"
+                }
+            };
+
+            var currentUserIdProperty = typeof(TransformationExecutionController)
+                .GetProperty("CurrentUserId", BindingFlags.NonPublic | BindingFlags.Instance)
+                ?? throw new InvalidOperationException("Property CurrentUserId não encontrada — o controller mudou de forma incompatível com este teste.");
+            var currentUserId = (string)currentUserIdProperty.GetValue(controller)!;
+            Assert.Equal("carol", currentUserId); // sanidade: a property em si já reflete o usuário fake
+
+            var method = typeof(TransformationExecutionController)
+                .GetMethod("TryEnqueueAiCandidate", BindingFlags.NonPublic | BindingFlags.Instance)
+                ?? throw new InvalidOperationException("Método TryEnqueueAiCandidate não encontrado — o controller mudou de forma incompatível com este teste.");
+
+            method.Invoke(controller, new object?[] { request, layoutRecord, candidates, false, currentUserId });
+
+            Assert.Equal("carol", spy.LastEnqueueUserId);
+        }
+
+        // --- TAREFA 3 (regressão geral): os 3 endpoints deixaram de exigir o papel "admin" ---
+
+        [Theory]
+        [InlineData(nameof(TransformationExecutionController.ExecuteTransformationCandidates))]
+        [InlineData(nameof(TransformationExecutionController.GetAiCandidateStatus))]
+        [InlineData(nameof(TransformationExecutionController.ExecuteLowCode))]
+        public void Endpoint_exige_autenticacao_mas_nao_mais_o_papel_admin(string methodName)
+        {
+            var method = typeof(TransformationExecutionController)
+                .GetMethods(BindingFlags.Public | BindingFlags.Instance)
+                .First(m => m.Name == methodName);
+
+            var authorize = method.GetCustomAttribute<AuthorizeAttribute>();
+
+            Assert.NotNull(authorize);
+            Assert.Null(authorize!.Roles); // antes era "admin" (issue #32) — issue #93 abriu para qualquer autenticado
+        }
+
+        [Fact]
+        public void Outros_endpoints_do_controller_nao_ganharam_Authorize()
+        {
+            // Confirma que só os 3 endpoints acima mudaram — os demais (execute, validate,
+            // learn-from-examples, run-test) continuam sem [Authorize] próprio.
+            var outrosEndpoints = new[]
+            {
+                nameof(TransformationExecutionController.ExecuteTransformation),
+                nameof(TransformationExecutionController.ValidateTransformation),
+                nameof(TransformationExecutionController.LearnFromExamples),
+                nameof(TransformationExecutionController.RunTransformationTest),
+            };
+
+            foreach (var methodName in outrosEndpoints)
+            {
+                var method = typeof(TransformationExecutionController)
+                    .GetMethods(BindingFlags.Public | BindingFlags.Instance)
+                    .First(m => m.Name == methodName);
+
+                Assert.Null(method.GetCustomAttribute<AuthorizeAttribute>());
+            }
+        }
+    }
+}
