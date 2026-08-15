@@ -347,6 +347,11 @@ try
         .Add(new HealthCheckRegistration("lowcode-runner",
             sp => new LowCodeRunnerHealthCheck(sp.GetRequiredService<IOptions<LowCodeRunnerOptions>>()),
             HealthStatus.Unhealthy, new[] { "ready" }))
+        // ✅ A2 (gate #107/#108): Ollama:Url ausente/localhost é config órfã neste projeto — o Ollama
+        // real roda numa VM Linux separada. Degraded (200): diagnóstico via IA é opcional.
+        .Add(new HealthCheckRegistration("ollama-config",
+            sp => new OllamaConfigHealthCheck(sp.GetRequiredService<IOptions<OllamaOptions>>()),
+            HealthStatus.Unhealthy, new[] { "ready" }))
         .Add(new HealthCheckRegistration("catalog",
             sp => new CatalogHealthCheck(sp.GetRequiredService<CatalogWarmupState>()),
             HealthStatus.Unhealthy, new[] { "ready" }));
@@ -461,7 +466,30 @@ try
     // Ainda sem controller consumidor (isso é o item 6.2, Lia+Dex) - registrado desde
     // já seguindo o mesmo padrão dos itens 3.1/3.2 acima.
     builder.Services.AddScoped<CfopOperationCatalogService>();
-    builder.Services.Configure<LowCodeRunnerOptions>(builder.Configuration.GetSection("LowCode"));
+    // ✅ A1 (gate #107/#108): valida no ARRANQUE, não deixa o silêncio do binding chegar a produção.
+    // Causa raiz: `IOptions<LowCodeRunnerOptions>` cai nos defaults do C# sem erro nenhum quando a
+    // seção LowCode falta — AllowedPackageGuids vira lista vazia e a query SQL de mapper vira
+    // `IN (NULL)`, nunca batendo com nada. A regra é restrita de propósito: só falha quando a seção
+    // LowCode EXISTE e AllowedPackageGuids está vazia — um host sem low-code configurado (seção
+    // ausente) continua sendo um cenário válido (parse/catálogo servem sem transformação).
+    // ProjectId NÃO entra na validação: o diagnóstico mostrou que o default C# (2) coincide por
+    // acaso com o valor real do banco, então travar nele criaria uma regra rígida em cima de uma
+    // coincidência, não de um invariante real.
+    builder.Services.AddOptions<LowCodeRunnerOptions>()
+        .Bind(builder.Configuration.GetSection("LowCode"))
+        .Validate(opt =>
+        {
+            var lowCodeSection = builder.Configuration.GetSection("LowCode");
+            if (!lowCodeSection.Exists())
+                return true; // seção ausente: host sem low-code, cenário válido
+
+            return opt.AllowedPackageGuids is { Count: > 0 };
+        }, "LowCode:AllowedPackageGuids esta vazio, mas a secao LowCode esta presente na configuracao. " +
+           "Isso faz TODA busca de mapper falhar silenciosamente (query SQL vira IN (NULL)) sem erro " +
+           "visivel ate o usuario tentar transformar um documento. Configure a variavel de ambiente " +
+           "LowCode__AllowedPackageGuids__0 (e demais indices) com os PackageGuid permitidos deste host, " +
+           "ou remova a secao LowCode inteira se este host nao usa low-code.")
+        .ValidateOnStart();
     builder.Services.AddSingleton<LowCodeTransformationService>();
     // ✅ Store/índice das transformações low-code: Singleton porque é consumido pelos Singletons do
     // pathway (auto-transform) e não guarda estado por request. Redis é OPCIONAL — resolvido por
