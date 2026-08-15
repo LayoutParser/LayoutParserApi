@@ -195,7 +195,14 @@ jobs:
 
         # Carrega o baseline de achados altos ja conhecidos (chave fragil arquivo:linha -
         # ver limitacao documentada em security-code-scan-baseline.json).
-        $BASELINE_FILE = Join-Path $PWD.Path "security-code-scan-baseline.json"
+        # [ATENCAO] O checkout do repo fica em "LayoutParserApi\" dentro do workspace do
+        # runner (`path: LayoutParserApi` no step "Checkout LayoutParserApi"), NAO na raiz
+        # de $PWD - igual todo outro path deste workflow (LIB_PROJECT, API_PROJECT etc.).
+        # O baseline foi comitado na raiz do repo (security-code-scan-baseline.json), entao
+        # o caminho correto e "LayoutParserApi\security-code-scan-baseline.json", nao
+        # direto em $PWD.Path. Bug real: causava "baseline nao encontrado" sempre (nao so
+        # flakiness) e tratava os 27 achados conhecidos como novos, bloqueando o deploy.
+        $BASELINE_FILE = Join-Path $PWD.Path "LayoutParserApi\security-code-scan-baseline.json"
         $baselineKeys = New-Object System.Collections.Generic.HashSet[string]
         if (Test-Path $BASELINE_FILE) {
           $baselineJson = Get-Content $BASELINE_FILE -Raw | ConvertFrom-Json
