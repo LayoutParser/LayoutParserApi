@@ -95,7 +95,6 @@ namespace LayoutParserApi.Services.Database
             {
                 stoppingToken.ThrowIfCancellationRequested();
                 attempt++;
-                var layoutCount = 0;
                 try
                 {
                     using var scope = _serviceProvider.CreateScope();
@@ -108,9 +107,35 @@ namespace LayoutParserApi.Services.Database
                     // recém-populado (cache "all" se houver Redis, senão banco) — reflete o que a API
                     // consegue servir, não o tamanho de um cache que pode nem existir sem Redis.
                     var todos = await cachedLayoutService.SearchLayoutsAsync(new LayoutSearchRequest { SearchTerm = "" });
-                    layoutCount = todos.Success ? todos.TotalFound : 0;
 
-                    _logger.LogInformation("Cache de layouts populado com sucesso em background: {Count} layouts (tentativa {Attempt})", layoutCount, attempt);
+                    // ✅ "Nao consegui LER o catalogo" != "o catalogo esta vazio". CachedLayoutService/
+                    // LayoutDatabaseService ENGOLEM a exceção de SQL e devolvem Success=false em vez de
+                    // propagar — ou seja, o catch abaixo NUNCA dispara num blip de SQL. Antes,
+                    // Success=false virava contagem 0 e SetResult(0) marcava o warm-up como CONCLUÍDO:
+                    // estado "Vazio" (definitivo) + `return` matavam o retry da issue #67 justamente no
+                    // cenário que ele existe para cobrir. Agora conta como tentativa falha: o estado
+                    // fica "Aquecendo" e o backoff tenta de novo até o SQL voltar.
+                    if (!todos.Success)
+                    {
+                        var delayLeitura = GetRetryDelay(attempt);
+                        _catalogState.RegisterFailedAttempt("BuscaDeLayoutsSemSucesso");
+                        _logger.LogWarning(
+                            "Busca do catalogo apos o refresh nao teve sucesso (tentativa {Attempt}): {Erro}. Warm-up segue AQUECENDO; nova tentativa em {DelaySeconds}s",
+                            attempt, todos.ErrorMessage, delayLeitura.TotalSeconds);
+                        await _delay(delayLeitura, stoppingToken);
+                        continue;
+                    }
+
+                    var layoutCount = todos.TotalFound;
+
+                    // Contagem 0 com busca BEM-SUCEDIDA é conclusão de verdade: o catálogo está mesmo
+                    // vazio. Registra como concluído (estado "Vazio") — readiness Unhealthy definitivo,
+                    // que é o sinal correto para o operador, e não fica retentando à toa.
+                    if (layoutCount <= 0)
+                        _logger.LogError("Warm-up concluiu mas o catalogo veio VAZIO (0 layouts) na tentativa {Attempt} — readiness ficara Unhealthy ate haver layouts", attempt);
+                    else
+                        _logger.LogInformation("Cache de layouts populado com sucesso em background: {Count} layouts (tentativa {Attempt})", layoutCount, attempt);
+
                     _catalogState.SetResult(layoutCount);
                     return;
                 }
@@ -121,6 +146,7 @@ namespace LayoutParserApi.Services.Database
                 catch (Exception ex)
                 {
                     var delay = GetRetryDelay(attempt);
+                    _catalogState.RegisterFailedAttempt(ex.GetType().Name);
                     _logger.LogWarning(ex, "Erro ao popular cache de layouts em background (SQL indisponivel/lento? tentativa {Attempt}). Nova tentativa em {DelaySeconds}s", attempt, delay.TotalSeconds);
 
                     // Não registra 0 aqui de propósito: registrar travaria a readiness em Unhealthy
