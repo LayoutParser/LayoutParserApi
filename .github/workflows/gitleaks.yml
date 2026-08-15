@@ -1,0 +1,58 @@
+name: Gitleaks (secret scan)
+
+# PREVENCAO DE REINCIDENCIA - item 4 do plano de remediacao de 2026-08-15
+# (.claude/rules/security.md, secao "2026-08-15 - rotacao da senha SQL descartada").
+#
+# POR QUE ESTE WORKFLOW EXISTE: a senha do SQL Server voltou ao repositorio em texto plano
+# duas vezes (PR #7 em 2026-07-18, regressao ja documentada) porque alguem testou local com o
+# segredo dentro do appsettings.json e o arquivo foi junto no commit. Como a senha e uma
+# credencial compartilhada por ~231.890 times na NDD e NAO PODE ser rotacionada, o unico jeito
+# de reduzir dano de uma proxima regressao e nunca deixar o segredo entrar no historico -
+# disciplina sozinha ja falhou duas vezes, isto e o mecanismo tecnico.
+#
+# Roda em TODO PR (nao so contra master) para pegar o segredo o mais cedo possivel no fluxo
+# feature -> develop -> master, antes que a exposicao se espalhe por mais de uma branch.
+# Mesma ferramenta (gitleaks) que o @lp-backend-dev esta configurando como hook local de
+# pre-commit em paralelo - consistencia deliberada, mesmo padrao de deteccao dos dois lados.
+#
+# Roda em runner hospedado (ubuntu-latest), como o merge-gate.yml: e leitura/scan, sem tocar
+# infra de producao/dev, sem precisar do runner self-hosted.
+
+on:
+  pull_request:
+    branches:
+      - develop
+      - master
+      - main
+
+concurrency:
+  group: gitleaks-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    name: gitleaks-scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout (historico completo do PR)
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # gitleaks-action e gratuito para repositorio publico (a org LayoutParser esta publica
+      # desde 2026-08-15 - ver .claude/rules/agent-authority.md). Sem licenca nova, mesmo
+      # espirito do SecurityCodeScan (SAST gratuito) ja usado em ci-dev.yml.
+      #
+      # Comportamento padrao em evento pull_request: escaneia os commits introduzidos pelo PR
+      # (o diff contra a base), nao o historico inteiro do repo - e exatamente o "diff do PR"
+      # pedido. Bloqueia o job (e portanto o merge, se marcado como required check) se achar
+      # padrao de segredo: connection string com senha, API key, token, chave privada etc.
+      - name: Gitleaks - scan do diff do PR
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: false

@@ -305,6 +305,21 @@ docker run -p 5000:5000 \
 
 > **⚠️ Rotacionar é obrigatório mesmo após limpar a história:** qualquer clone feito antes da limpeza ainda contém os segredos. A limpeza reduz exposição futura; só a rotação invalida o que vazou.
 
+### 10.0 Hook de pre-commit anti-segredo
+
+Para evitar reincidência (a senha do SQL já vazou uma vez para o `appsettings.json`
+comitado — ver [`.claude/rules/security.md`](.claude/rules/security.md)), o repo tem
+um hook de pre-commit versionado em [`.githooks/`](.githooks/) que roda o
+[gitleaks](https://github.com/gitleaks/gitleaks) contra os arquivos staged e bloqueia
+o commit se achar padrão de segredo. **Configure uma vez por clone:**
+
+```bash
+git config core.hooksPath .githooks
+```
+
+Instruções de instalação do binário `gitleaks` e detalhes do hook:
+[`.githooks/README.md`](.githooks/README.md).
+
 ### 10.1 Identidade e autenticação (BFF → API)
 
 **🇧🇷** A API **não autentica ninguém diretamente** — ela **confia** na identidade que chega de um

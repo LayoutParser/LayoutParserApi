@@ -250,6 +250,75 @@ provedor** (ação fora do terminal); aqui não há provedor a revogar — é s�
 
 ---
 
+## Achado adicional: `LowCode__RunnerPath` aplicado pelo dono aponta para caminho que o próprio deploy.yml nunca preenche (2026-08-15, sessão 2)
+
+Novo log de produção, após o dono aplicar `LowCode:RunnerPath` via env var:
+
+```
+System.ComponentModel.Win32Exception (2): An error occurred trying to start process
+'C:\inetpub\wwwroot\layoutparser\api\LayoutParserLowCodeRunner.exe' ... The system cannot find the file specified.
+```
+
+**Não é uma nova causa raiz — é a confirmação definitiva de uma suspeita já registrada** em
+`.claude/agent-memory/lp-architect/lowcode-nunca-rodou-em-producao.md` (2026-08-09): o valor
+`<deploy>\api\LayoutParserLowCodeRunner.exe` nunca foi um caminho válido, porque **nenhum passo do
+deploy.yml jamais escreve arquivo ali**. O `deploy.yml` atual (`.github/workflows/deploy.yml:364-441`)
+tem um step deliberado — "Publicar runner low-code na Bin do Sysmiddle" — mas ele publica em outro
+lugar por design, com o comentário explícito na linha 368: *"NAO copiando para `<deploy>\api`: nao
+adiantaria"*.
+
+Motivo estrutural (não é omissão a corrigir, é física do binário): `LayoutParserLowCodeRunner.exe` é
+**net481/x86** e resolve dependências pelo diretório do próprio `.exe` — só executa de dentro de uma
+Bin **completa** do produto de terceiros Sysmiddle/AppConnector (confirmado por divergência de
+`log4net` 1.2.13.0 vs 2.0.17.0 — ver `.claude/agent-memory/lp-backend-dev/runner-lowcode-roda-da-bin-nao-de-functions.md`).
+O deploy.yml varre o host em runtime (`C:\`, profundidade 4) procurando `SysMiddle.Base.dll` +
+`log4net` 2.x ao lado, escolhe a Bin mais completa, copia o `.exe` + `.exe.config` pra lá, e expõe o
+caminho resolvido via `$env:LOWCODE_RUNNER_PATH_RESOLVED` — que **é** a variável que o step seguinte
+(gestão do `Environment` do serviço Windows, linha ~668) usa para popular `LowCode__RunnerPath`
+automaticamente. Ou seja: **o mecanismo certo já existe e é automático** — o dono não precisava (e
+não deveria) setar `LowCode__RunnerPath` manualmente com o caminho de `<deploy>\api\`. Esse caminho é
+onde a **API** é publicada, não onde o **runner** pode viver.
+
+**Duas hipóteses não descartam uma a outra, ambas plausíveis:**
+1. O host de produção nunca teve o step "Publicar runner low-code na Bin do Sysmiddle" rodar com
+   sucesso (nenhuma Bin apta encontrada — o step é `continue-on-error: true` e sai silenciosamente
+   com warning, sem falhar o deploy) — nesse caso `LOWCODE_RUNNER_PATH_RESOLVED` nunca foi setado e
+   o valor manual do dono foi a única tentativa de destravar, só que apontando pro lugar errado.
+2. O dono aplicou a env var manualmente por fora do deploy.yml (mesmo mecanismo de
+   `HKLM\...\Environment` documentado no runbook abaixo), sem saber que o pipeline já resolve e
+   gerencia essa chave automaticamente — sobrescrevendo (ou coexistindo com) o valor correto.
+
+O diagnóstico de pré-requisitos do próprio deploy.yml (linhas 1101-1117) já emite exatamente esse
+alerta quando o `.exe` está ausente em `<deploy>\api\` — é esperado que esteja ausente ali, esse não
+é o caminho de publicação real; o alerta serve para apontar ao caminho correto (Bin do Sysmiddle),
+não para sugerir que se copie manualmente pra `<deploy>\api\`.
+
+### Próximo passo concreto
+
+1. **Não editar `LowCode__RunnerPath` manualmente de novo.** Remover o valor manual aplicado pelo
+   dono (`<deploy>\api\LayoutParserLowCodeRunner.exe`) do `Environment` do serviço Windows —
+   ele está estruturalmente errado e nenhum deploy futuro vai preenchê-lo.
+2. `@lp-devops` reexecutar o `deploy.yml` (ou `workflow_dispatch`) em produção e verificar, nos logs
+   do step "Publicar runner low-code na Bin do Sysmiddle", se alguma Bin apta foi encontrada:
+   - Se **sim**: `LOWCODE_RUNNER_PATH_RESOLVED` é setado e o step seguinte já escreve o
+     `LowCode__RunnerPath` correto no `Environment` do serviço automaticamente — nenhuma ação manual
+     adicional.
+   - Se **não** ("Nenhuma Bin do Sysmiddle APTA neste host"): confirma que o host de produção não
+     tem uma instância AppConnector/Sysmiddle completa acessível ao runner — nesse caso o pathway
+     low-code **não pode** funcionar neste host até essa instância existir/ser localizada
+     (é infraestrutura de terceiro, fora do escopo de qualquer mudança em código ou workflow deste
+     repositório). Escalar ao dono/operador do FiatMQ para confirmar onde a instância "de produção"
+     está instalada — pode ser um host diferente do que roda a API.
+3. Só depois disso reexecutar `execute-candidates` para validar; reaplicar env var manual sem
+   entender o resultado do passo 2 só reproduz o mesmo erro com outro caminho hardcoded.
+
+Relacionado: `.claude/agent-memory/lp-architect/lowcode-nunca-rodou-em-producao.md` (suspeita
+original, 2026-08-09, agora confirmada em produção real);
+`.claude/agent-memory/lp-backend-dev/runner-lowcode-roda-da-bin-nao-de-functions.md` (por que o
+`.exe` só roda de dentro da Bin).
+
+---
+
 ## Runbook de correção (produção)
 
 Seguindo o padrão já documentado em `.claude/rules/security.md` para `Database`/`Gemini`
