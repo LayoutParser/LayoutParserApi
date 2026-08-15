@@ -12,8 +12,27 @@ hardcoded no código (`GeminiAIService`, `LayoutDatabaseService`, `ElasticSearch
 | Segredo | Onde | Status |
 |---------|------|--------|
 | API key do **Gemini** | `Gemini:ApiKey` | Removido do código/JSON ✅ · **Gemini decomissionado (2026-07-21) — revogar/desprovisionar, não rotacionar** 🔴 |
-| Senha do **SQL Server** | `Database:Password` | **REGRESSÃO em 2026-07-18** (ver abaixo) · removido de novo ✅ · **rotacionar (comprometida 2x)** 🔴 |
+| Senha do **SQL Server** | `Database:Password` | **REGRESSÃO em 2026-07-18** (ver abaixo) · removido de novo ✅ · **repositório PÚBLICO desde 2026-08-15 — exposição TOTAL, rotação é BLOQUEANTE CRÍTICO** 🔴🔴 |
 | Credenciais do **Elastic** | `ElasticSearch:Username/Password` | ✅ Removido — mecanismo nunca foi conectado ao pipeline real (Serilog é o logging efetivo); código morto (`ILoggingStrategy`/`ElasticSearch*`) e config removidos em 2026-07-27 |
+
+### 🔴🔴 CRÍTICO (2026-08-15) — os 4 repositórios da org ficaram PÚBLICOS
+
+Confirmado via `gh api`: os 4 repositórios da org `LayoutParser` (`LayoutParserApi`,
+`LayoutParserLib`, `LayoutParserDecrypt`, `LayoutParserReact`) estão `private=false`. Isso
+**muda a natureza do risco** descrito nesta seção: o histórico completo do git — incluindo os
+commits onde a senha do SQL Server (login `macgyver`, `172.31.249.51`, banco
+`ConnectUS_Macgyver`) apareceu em texto plano — está **publicamente legível por qualquer
+pessoa**, sem precisar de acesso de colaborador. Não é mais "exposição a quem tem clone",
+é "exposição à internet".
+
+**Efeito imediato:**
+- A rotação da senha SQL deixa de ser "pendente, bloqueada no DBA" e vira **bloqueante crítico
+  de segurança** — tratar como incidente, não como item de backlog.
+- A limpeza de histórico (`git filter-repo`/BFG) só faz sentido **depois** da rotação — ver
+  seção "Limpeza do histórico do git" abaixo, que documenta o **preparo** (sem execução).
+- Ação em andamento (2026-08-15): `@lp-devops` acionando o DBA e preparando a limpeza em
+  paralelo, por pedido explícito do dono ("Aciona o DBA primeiro, prepara a limpeza em
+  paralelo"). Ver runbook de rotação e checklist de preparo abaixo.
 
 ### ⚠️ REGRESSÃO (2026-07-18) — senha SQL voltou ao repositório
 
@@ -32,7 +51,7 @@ mas o valor está de novo em commits públicos do histórico.
 - [x] **Remover** os fallbacks hardcoded (`?? "<segredo>"`) no código → `?? string.Empty`.
 - [x] **Ignorar** `appsettings.*.local.json` no `.gitignore`.
 - [x] **Documentar** uso de `dotnet user-secrets` (dev) e env vars `Section__Key` (prod) — ver README §9.
-- [ ] **Rotacionar** a senha do SQL Server exposta (gerar nova no banco) — **ação do operador, bloqueada/escalada ao DBA** 🔴.
+- [ ] **Rotacionar** a senha do SQL Server exposta (gerar nova no banco) — **CRÍTICO, repositório público desde 2026-08-15, escalado ao DBA nesta sessão** 🔴🔴.
 - [ ] **Revogar/desprovisionar** (não rotacionar) a API key do Gemini exposta — Gemini foi decomissionado, sem consumidor previsto. **Ação do dono do projeto** — ver runbook abaixo 🔴.
 - [ ] **Limpar o histórico do git** (`git filter-repo` / BFG) — **executar via @lp-devops, sob confirmação**.
 
@@ -64,17 +83,46 @@ Settings → Secrets and variables → Actions):
 | `API_URL_DEV` | **Variable** | URL da instância dev (default `http://localhost:5100` se ausente) | Não |
 | `DB_PASSWORD_DEV` | **Secret** | Senha do SQL **atual em uso** (hoje ainda a comprometida — ver nota abaixo) | Não — sem ela a API sobe degradada (sem SQL) |
 
-> ⚠️ **Status da rotação:** a rotação da senha SQL segue **PENDENTE** — está **bloqueada e
-> escalada ao DBA**. Por necessidade operacional, o secret `DB_PASSWORD_DEV` contém hoje a
-> senha atual (comprometida). Assim que o DBA rotacionar, execute o runbook abaixo.
+> 🔴🔴 **Status da rotação (atualizado 2026-08-15):** repositório ficou **PÚBLICO** — a rotação
+> deixou de ser "pendente" e virou **bloqueante crítico**, acionado ao DBA nesta sessão (ver
+> comunicação pronta abaixo). Por necessidade operacional, o secret `DB_PASSWORD_DEV` contém
+> hoje a senha atual (comprometida e agora publicamente exposta). Assim que o DBA rotacionar,
+> execute o runbook abaixo.
 
 **Runbook de rotação da senha SQL** (a executar quando a rotação for desbloqueada):
 
-1. No SQL Server: `ALTER LOGIN <login> WITH PASSWORD = '<nova-senha>'`.
+1. No SQL Server (`172.31.249.51`, banco `ConnectUS_Macgyver`): `ALTER LOGIN macgyver WITH
+   PASSWORD = '<nova-senha>'`.
 2. No GitHub: atualizar o secret `DB_PASSWORD_DEV` (e o equivalente de produção, quando existir).
 3. Redisparar o deploy (`workflow_dispatch` do CI Dev ou novo push) — o step reescreve o
    `Environment` do serviço e reinicia a API com a senha nova.
 4. Validar smoke test verde e conexão SQL nos logs (sem imprimir a senha).
+
+**Comunicação pronta para acionar o DBA** (o dono envia pelo canal que tiver com o DBA —
+e-mail/Slack/ticket; não temos esse canal aqui):
+
+```
+Assunto: [CRÍTICO] Rotação urgente de senha — SQL Server exposto publicamente
+
+Severidade: CRÍTICA — ação imediata.
+
+Contexto: o repositório de código que contém a senha do SQL Server em texto plano no
+histórico do git (regressão registrada em 2026-07-18, nunca rotacionada desde então) foi
+tornado PÚBLICO hoje (2026-08-15). O histórico completo do repositório — incluindo os commits
+com a senha em texto plano — está agora legível por qualquer pessoa na internet, sem
+necessidade de acesso de colaborador.
+
+Pedido: rotacionar AGORA a senha do login `macgyver` no SQL Server (172.31.249.51, banco
+ConnectUS_Macgyver):
+
+  ALTER LOGIN macgyver WITH PASSWORD = '<nova-senha>'
+
+Próximo passo (nosso lado, assim que a senha nova existir): atualizar o secret
+DB_PASSWORD_DEV (e o equivalente de produção) no GitHub Actions e redisparar o deploy para
+que o serviço passe a usar a credencial nova.
+
+Por favor confirmar aqui assim que a rotação for concluída.
+```
 
 ### Revogação da API key do Gemini — Gemini decomissionado (2026-07-21)
 
@@ -146,6 +194,41 @@ Os segredos antigos **persistem nos commits anteriores** mesmo após este commit
 
 > ⚠️ **A limpeza NÃO substitui a rotação.** Qualquer clone feito antes da limpeza ainda contém os
 > segredos. Só a **rotação** (gerar chaves novas) invalida o que já vazou — faça-a primeiro.
+
+#### Checklist de preparo (2026-08-15) — status atual, NADA executado ainda
+
+Preparação em paralelo ao acionamento do DBA, por pedido explícito do dono. Nenhum comando
+destrutivo (`git filter-repo`, force-push) foi rodado — só verificação e documentação do
+processo, conforme abaixo.
+
+| Item | Status |
+|------|--------|
+| `git filter-repo` instalado nesta máquina | ❌ Não encontrado (`pip show git-filter-repo` vazio) — instalar com `pip install git-filter-repo` quando for a hora de executar |
+| `replacements.txt` com os segredos reais | ❌ Não montado — **não deve ser montado agora**: o valor em texto plano da senha comprometida não deve ser copiado para um novo arquivo/prompt fora do necessário. Ver processo seguro abaixo. |
+| Repo local limpo (sem alterações pendentes) | Verificar com `git status` no momento da execução — nesta sessão há mudanças de memória de outro agente (`lp-pm`) não relacionadas, não bloqueiam o preparo mas devem ser resolvidas (commit ou stash) antes de qualquer `filter-repo` |
+| Backup (`git clone --mirror`) | ❌ Não feito — fazer imediatamente antes da execução real |
+| Lista de quem tem clone/fork para avisar | ❌ Não levantada — **o dono precisa levantar essa lista** (não temos visibilidade de quem clonou/forkou); sem isso, o force-push quebra colaboradores sem aviso |
+| Rotação da senha SQL concluída (pré-requisito lógico) | ❌ Pendente — ver seção acima. Limpar o histórico **antes** da rotação é inútil: quem já clonou o repo público já tem a senha antiga de qualquer forma |
+
+**Processo seguro para montar o `replacements.txt` no momento da execução (não fazer agora):**
+
+1. No momento em que a limpeza for autorizada e a senha nova já estiver ativa (rotação
+   concluída), quem tiver acesso legítimo ao valor antigo (histórico do secret `DB_PASSWORD_DEV`
+   anterior à rotação, ou o próprio DBA) cria o `replacements.txt` **localmente**, fora de
+   qualquer prompt/chat/log, com a linha `<senha-antiga-em-texto-plano>==>REMOVIDO`.
+2. O arquivo fica **fora do repo** (ex.: pasta temporária) e é apagado logo depois de rodar
+   `git filter-repo --replace-text replacements.txt`.
+3. Repetir o mesmo processo para a chave do Gemini exposta (mesmo arquivo `replacements.txt`
+   pode ter as duas linhas).
+4. Nunca colar o valor do segredo em uma mensagem para o assistente/Claude Code — isso
+   persistiria em logs de sessão. Montar o arquivo diretamente no editor/terminal do operador.
+
+**Ordem de execução recomendada quando tudo estiver pronto:**
+1. DBA confirma rotação da senha SQL concluída.
+2. Atualizar `DB_PASSWORD_DEV` (e equivalente de produção) no GitHub Actions com a senha nova.
+3. Redisparar deploy e validar smoke test.
+4. Só então: backup (`git clone --mirror`) → avisar clones/forks → montar
+   `replacements.txt` pelo processo seguro acima → `git filter-repo` → force-push coordenado.
 
 ## CodeQL desativado — Dependabot mantido (2026-08-15)
 
