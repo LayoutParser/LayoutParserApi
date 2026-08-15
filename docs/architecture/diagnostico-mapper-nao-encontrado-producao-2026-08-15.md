@@ -1,5 +1,14 @@
 # Diagnóstico: "Nenhum mapper encontrado" em produção apesar de o mapper existir no banco (2026-08-15)
 
+## Status: CAUSA RAIZ CONFIRMADA (atualizado com o `appsettings.json` real de produção)
+
+A hipótese do Achado 4/5 abaixo (config drift na seção `LowCode` do host) foi **confirmada** com
+evidência concreta: o dono colou o `appsettings.json` real, atualmente carregado em produção. A
+seção **`LowCode` inteira está ausente** do arquivo — não é um valor desatualizado, é a chave
+`LowCode` que não existe. Mecanismo exato e correção estão nas seções novas ao final deste
+documento (**"Confirmação com o `appsettings.json` real de produção"** em diante). O restante do
+documento (Achados 1-5) é preservado como registro da investigação original.
+
 ## Resumo da evidência trazida pelo dono
 
 Log de produção (`2026-08-15 10:45`), endpoint `execute-candidates`, layout
@@ -52,7 +61,7 @@ devolveria um erro distinguível de "sem mapper" — o log mostra exatamente
 rodou e retornou zero linhas** — não é uma exceção mascarada. Isso descarta a hipótese da issue
 #38/#39 recorrer, **desde que o binário em produção corresponda a este código-fonte** (ver Achado 5).
 
-## Achado 4 — causa raiz mais provável: filtro adicional que a query manual do dono NÃO tem
+## Achado 4 — causa raiz mais provável (na época): filtro adicional que a query manual do dono NÃO tem
 
 A query real do código (`Services/Database/MapperDatabaseService.cs:306-318`) filtra por **três**
 critérios, não só `InputLayoutGuid`:
@@ -66,8 +75,8 @@ WHERE [ProjectId] = @ProjectId
 
 A query que o dono rodou (`SELECT TOP (10) * FROM tbMapper WHERE InputLayoutGuid = '...'`) **não
 tem** o filtro de `ProjectId` nem o `IN` de `AllowedPackageGuids`. Os dois adicionais vêm de
-`_opt.ProjectId` e `_opt.AllowedPackageGuids`, carregados via `IOptions<LowCodeOptions>` a partir da
-seção `LowCode` do `appsettings.json` **do host em execução** — não deste repositório.
+`_opt.ProjectId` e `_opt.AllowedPackageGuids`, carregados via `IOptions<LowCodeRunnerOptions>` a
+partir da seção `LowCode` do `appsettings.json` **do host em execução** — não deste repositório.
 
 Os dados que o dono trouxe (`ProjectId=2`, `PackageGuid=PAC_266bc578-...`) **batem com o que está
 neste repositório** (`appsettings.json:121,130` — `ProjectId: 2`,
@@ -78,71 +87,225 @@ Já documentamos (memória `lp-architect/lowcode-nunca-rodou-em-producao.md`, 20
 workflows de deploy preservam o `appsettings.json` do servidor de destino** — se o arquivo já existe
 lá, ele nunca é sobrescrito pelo deploy (`ci-dev.yml:236-250`, `deploy.yml:394`). Isso significa que
 qualquer edição feita no `AllowedPackageGuids`/`ProjectId` do repositório **depois** do primeiro
-deploy nunca chega ao servidor — a seção `LowCode` do host de produção pode estar congelada num
-estado anterior. Se, por exemplo, `PAC_266bc578-b0fa-48a4-9c72-61004b729576` foi adicionado à lista
-*depois* do primeiro deploy, ou se o `ProjectId` mudou, a cláusula `IN`/`ProjectId` do servidor
-filtraria a linha 470 mesmo ela existindo e batendo em `InputLayoutGuid`.
+deploy nunca chega ao servidor.
 
-**Isto explica os dados apresentados sem exigir bug novo**: a query do dono (sem os dois filtros
-extras) encontra a linha; a query da API (com os dois filtros extras, lidos da config do host) não
-encontra — porque o host pode estar rodando uma versão diferente (mais antiga) da seção `LowCode`.
+## Achado 5 — hipótese concorrente (na época): binário/deploy desatualizado
 
-## Achado 5 — hipótese concorrente: binário/deploy desatualizado
+Descartada pelo mesmo raciocínio do Achado 3: o warning textual específico do log só existe no
+caminho pós-fix #38/#39. Se o binário fosse anterior ao fix, o sintoma esperado seria uma exceção
+SQL mascarada, não esse warning. Isso já apontava o Achado 4 (config drift) como hipótese
+dominante — agora confirmado.
 
-O fix da issue #38/#39 (troca de `return mappers` engolindo exceção por `throw`) está presente no
-código-fonte atual (Achado 3). Mas isso só é relevante se **o binário rodando no host de produção
-corresponde a esse commit**. Não temos, nesta investigação, acesso a:
-- Data/commit do último deploy real do host onde o log de 10:45 foi gerado;
-- O conteúdo atual do `appsettings.json` desse host (seção `LowCode`).
+---
 
-Sem esses dois dados, não é possível diferenciar com certeza entre "config drift" (Achado 4,
-mecanismo já comprovado noutro contexto) e "binário anterior ao fix ainda rodando" — mas a segunda
-hipótese é **menos provável** aqui porque o warning específico do log
-(`"Nenhum mapper encontrado ... nos pacotes permitidos"`) só existe no caminho pós-fix
-(`LowCodeAutoTransformationService.cs:132`, que substituiu o comportamento antigo). Se o binário
-fosse anterior ao fix #38/#39, o sintoma esperado seria uma exceção SQL sendo relatada como sucesso
-vazio, não esse warning textual específico — que já é o comportamento *corrigido*. Isso torna o
-Achado 4 (config drift de `AllowedPackageGuids`/`ProjectId`) a hipótese dominante.
+## Confirmação com o `appsettings.json` real de produção (2026-08-15, atualização)
 
-## Resposta direta: "como não foi encontrado nada"
+O dono colou o conteúdo real e atual do `appsettings.json` carregado pelo processo em produção.
+Evidência decisiva: **a chave `"LowCode"` não existe em lugar nenhum do JSON** — não é um valor
+antigo, a seção inteira nunca foi escrita nesse host (reforça o mecanismo já documentado: o deploy
+preserva o `appsettings.json` pré-existente do destino, e este host nunca teve a seção `LowCode`
+adicionada a ele).
 
-A query que a API roda em produção filtra por **`ProjectId` + `AllowedPackageGuids`
-(lista de pacotes) além de `InputLayoutGuid`/`TargetLayoutGuid`** — a consulta manual do dono não
-tinha esses dois filtros extras. O `ProjectId`/`AllowedPackageGuids` vêm da seção `LowCode` do
-`appsettings.json` **do servidor**, que os workflows de deploy **nunca sobrescrevem se o arquivo já
-existe lá** (mecanismo documentado em 2026-08-09). Os valores no repositório batem com os dados que
-o dono trouxe do banco — mas isso só prova que o repositório está certo, não que o servidor está
-com a mesma config. A hipótese mais provável é que a seção `LowCode` do `appsettings.json` em
-produção esteja desatualizada (pacote/projeto não incluído na lista que o servidor está realmente
-usando), fazendo a query da API devolver zero linhas mesmo com o mapper existindo no banco.
+### Mecanismo exato: binding de `IOptions<LowCodeRunnerOptions>` com seção ausente
 
-## O que precisa ser confirmado no servidor (ação, não suposição)
+`Program.cs:464` registra:
 
-1. Ler o `appsettings.json` (ou override via env var `LowCode__AllowedPackageGuids`/
-   `LowCode__ProjectId`) **efetivamente carregado pelo processo em produção** — não o do
-   repositório. Comparar `ProjectId` e a lista completa de `AllowedPackageGuids` com os valores
-   atuais do repositório.
-2. Se divergir: corrigir a config do servidor (via env var `Section__Key`, não editando o
-   `appsettings.json` do host à mão — ver `.claude/rules/security.md`) e reexecutar
-   `execute-candidates` para o mesmo layout.
-3. Se **não** divergir (config idêntica): a hipótese de config drift cai, e a investigação
-   precisa ir para uma direção que exige acesso ao servidor não disponível aqui — coleção real
-   (não `git log` local) de qual commit está rodando (ex.: endpoint de health/versão, se existir,
-   ou timestamp do `.dll` no host) — porque nesse caso restaria só a hipótese, menos provável mas
-   não descartável, de collation/normalização de string do SQL Server tratando
-   `InputLayoutGuid`/`PackageGuid` de forma diferente do que o C# espera (ex.: coluna com espaços
-   à direita não capturados pelo `.Trim()` do C#, ou collation case-sensitive fazendo o `REPLACE
-   (LOWER(...))` não bater com um `PAC_` gravado em formato inesperado). Isso é apenas plausível a
-   partir daqui — não achamos nenhuma evidência de collation nos dados apresentados.
+```csharp
+builder.Services.Configure<LowCodeRunnerOptions>(builder.Configuration.GetSection("LowCode"));
+```
+
+`IConfiguration.GetSection("LowCode")` **nunca lança exceção quando a chave não existe** — devolve
+um `IConfigurationSection` "vazio" (existe, mas sem filhos). O binder do `Options` pattern, ao
+encontrar uma seção sem filhos, simplesmente **não seta nenhuma propriedade** — o objeto final é a
+instância criada pelo construtor de `LowCodeRunnerOptions` com **todos os seus valores default do
+C#**, não os defaults "razoáveis" que alguém poderia assumir olhando o `appsettings.json` do repo.
+
+Os defaults relevantes (`Services/Transformation/LowCode/LowCodeRunnerOptions.cs`):
+
+| Propriedade | Default em C# (sem config) | Efeito |
+|---|---|---|
+| `ProjectId` | `2` | **Coincide** com o `ProjectId=2` do mapper `Id=470` no banco — por isso este campo **não** é o culpado, apesar de também estar ausente do JSON. |
+| `AllowedPackageGuids` | `new()` → lista **vazia** | **Este é o culpado.** |
+| `Package` | `""` | Vazio faz o runner (`.exe`) sair com `exit=9` (`RunnerExitCodes.PackageNotConfigured`) — quebra um caminho de execução diferente (invocação do runner), não a query de mapper. |
+| `RunnerPath`, `SysmiddleDir`, `GlobalFolder` | `""` | Também vazios — todo o subsistema low-code está sem config funcional neste host, não só a query. |
+
+Com `AllowedPackageGuids` vazio, a query em `MapperDatabaseService.GetMappersByLayoutGuidForPackagesAsync`
+(linhas 300-304) monta:
+
+```csharp
+var allowedNorm = new HashSet<string>(allowedPackageGuids.Select(NormalizePackageGuid), ...); // vazio
+var pkgParams = allowedNorm.Select((_, i) => $"@p{i}").ToList();                               // vazio
+var inClause = pkgParams.Count > 0 ? string.Join(", ", pkgParams) : "NULL";                    // "NULL"
+```
+
+O `WHERE` efetivo em produção vira:
+
+```sql
+WHERE [ProjectId] = 2                                   -- bate (coincidência de default, não config real)
+  AND (REPLACE(LOWER([PackageGuid]), 'pac_', '') IN (NULL))  -- NUNCA verdadeiro para nenhuma linha
+  AND (...)
+```
+
+`x IN (NULL)` é sempre `UNKNOWN`/falso em SQL, para qualquer valor de `x` — mesmo se o `PackageGuid`
+do mapper `Id=470` estivesse correto. **A query roda sem erro, não lança exceção (por isso o Achado
+3 continua válido — não há exceção mascarada), e devolve zero linhas sempre, para qualquer layout,
+independentemente de qual mapper exista no banco.** Isso bate exatamente com o log
+(`"Nenhum mapper encontrado ... nos pacotes permitidos"`, emitido quando `ranked.Count == 0`).
+
+**Correção à hipótese original:** o Achado 4 especulava "config drift" genérico em `ProjectId`
+*e* `AllowedPackageGuids`. Com o dado real, `ProjectId` não é o problema (o default do C# já
+coincide com o valor do banco, por acaso). O bloqueio é **exclusivamente** `AllowedPackageGuids`
+vazio — mas o efeito é o mesmo: zero mappers encontrados para qualquer layout/pacote, não só o
+`LAY_TXT_MQSERIES_ENVNFE_4.00_NFe` deste ticket.
+
+### Chaves `LowCode:*` que faltam em produção (valores de referência do repositório, não-sensíveis)
+
+Do `appsettings.json` do repositório (linhas 115-126), campos que não são segredo:
+
+```json
+"LowCode": {
+  "RunnerPath": "C:\\inetpub\\wwwroot\\layoutparser\\api\\LayoutParserLowCodeRunner.exe",
+  "SysmiddleDir": "C:\\inetpub\\wwwroot\\layoutparser\\sysmiddle",
+  "GlobalFolder": "C:\\inetpub\\wwwroot\\layoutparser\\globalfolder",
+  "Package": "938f9978-836f-48c1-9c0f-c2898caf4b20",
+  "ProjectId": 2,
+  "AllowedPackageGuids": ["PAC_266bc578-b0fa-48a4-9c72-61004b729576", "..."],
+  "MultiCandidateTopN": 4,
+  "RunnerTimeoutSeconds": 180,
+  "MaxConcurrentRunners": 2,
+  "SyncDeliveryTimeoutSeconds": 6,
+  "CandidatesRequestTimeoutSeconds": 90,
+  "InlineXmlMaxChars": 262144,
+  "TransformationCacheTtlHours": 2
+}
+```
+
+Nenhum desses valores é segredo — são caminhos de instalação e parâmetros operacionais, seguros
+para ir em `appsettings.json` ou variável de ambiente sem cuidado especial de rotação. O único item
+que exige atenção é conferir se `AllowedPackageGuids` do repo está **completo** (todos os pacotes
+que produção de fato usa) antes de aplicar — não assumir que a lista do repo já é exaustiva.
+
+---
+
+## Achado novo — `Ollama:Url` órfão apontando para `localhost`, host real é uma VM Linux separada
+
+O dono reportou que, em produção, `Ollama:Url` = `http://localhost:11434`, mas o Ollama **não roda
+mais no host Windows Server 2022** — roda numa VM Linux, e o Windows Server é o **hospedeiro** dessa
+VM, não a própria VM. `localhost` do processo ASP.NET Core aponta para o Windows Server, não para a
+VM — a URL está estruturalmente errada para o topologia atual (mesma classe de drift do achado
+principal: configuração desatualizada em relação à infraestrutura real, documentada em
+`.claude/agent-memory/lp-architect/deploy-production-topology.md`).
+
+**Isto é um gate ativo quebrado agora, não só uma pendência de limpeza.** Confirmado em código:
+
+- `Program.cs:367` registra `Configure<OllamaOptions>(builder.Configuration.GetSection("Ollama"))`
+  e `Program.cs:374` registra `AddHttpClient<OllamaValidationDiagnosticService>` — **ambos ativos
+  no DI de produção**, não código morto (diferente do caso do Gemini/OpenAI, já decomissionados e
+  não registrados).
+- `OllamaValidationDiagnosticService` (`Services/XmlAnalysis/OllamaValidationDiagnosticService.cs`)
+  é o serviço de diagnóstico de erro de validação (Gap 2 do contrato multi-candidato) e depende de
+  alcançar `_options.Url` para funcionar.
+- Isso está alinhado com a decisão de arquitetura já registrada (memória
+  `lp-architect/gemini-openai-decommission-decision.md`): Gemini/OpenAI foram abandonados e
+  **Ollama local assume 100% do papel de LLM** — não há fallback para nuvem. Se o Ollama é
+  inalcançável, o diagnóstico via IA simplesmente não roda em produção **hoje**.
+
+**Mas o serviço degrada corretamente** — segue o princípio de resiliência do projeto
+(`.claude/rules/dotnet-standards.md`): connection refused é capturado e logado como
+`LogWarning("Ollama indisponível em {Url}", _options.Url)` (linha 89), sem derrubar o request
+principal. Ou seja: **não é um crash**, é uma feature (diagnóstico assistido por IA) silenciosamente
+sempre indisponível — o request principal de parse/transformação continua respondendo normalmente,
+só sem o diagnóstico enriquecido. Isso é o comportamento correto do padrão de resiliência, mas
+esconde o problema: sem olhar o log, ninguém percebe que a feature nunca funcionou desde que o
+Ollama migrou para a VM.
+
+**Correção:** `Ollama:Url` precisa apontar para o IP/host da VM Linux (porta `11434`), não
+`localhost`. Requer confirmar com `@lp-devops` o endereço de rede atual da VM (não documentado
+neste arquivo para evitar valor desatualizado — a topologia já registrada em
+`deploy-production-topology.md` confirma a separação host/VM, mas não fixa o IP).
+
+---
+
+## Achado novo — `ElasticSearch:Password: "123"` em texto claro — resquício órfão, não risco ativo
+
+O `appsettings.json` de produção ainda tem a seção `ElasticSearch` com `Username: "elastic"` e
+`Password: "123"` em texto plano. Verificado no código atual: **não há mais nenhum consumidor**
+dessa seção.
+
+```
+grep -rn "ElasticSearch" *.cs → sem resultados de código de produção ativo
+```
+
+Isso confirma o que `.claude/rules/security.md` já registra: o mecanismo Elastic **nunca foi
+conectado ao pipeline real** (Serilog é o logging efetivo) e o código morto (`ILoggingStrategy`,
+`ElasticSearch*`) foi removido do repositório em 2026-07-27. A seção que sobra no `appsettings.json`
+de produção é órfã do lado da config — nada no binário atual a lê.
+
+**Classificação:** não é um risco ativo (nenhum código consome essas credenciais hoje), mas é uma
+senha fraca (`"123"`) em texto plano num arquivo de config de produção, e merece ser removida por
+higiene — mesma lógica de "não deixar segredo morto no arquivo só porque não é explorável agora"
+já aplicada à chave do Gemini. Diferença importante: a chave do Gemini precisa ser **revogada no
+provedor** (ação fora do terminal); aqui não há provedor a revogar — é só remover as duas linhas do
+`appsettings.json` de produção (ou zerar via env var, se preferir não editar o arquivo à mão).
+
+---
+
+## Runbook de correção (produção)
+
+Seguindo o padrão já documentado em `.claude/rules/security.md` para `Database`/`Gemini`
+(precedência `appsettings.json` → env vars `Section__Key`, sem editar o `appsettings.json` do host
+à mão): configurar as variáveis de ambiente do serviço Windows
+(`HKLM\SYSTEM\...\Services\LayoutParserApi\Environment`, mesmo mecanismo do `ci-dev.yml` para
+`DB_PASSWORD_DEV`) com:
+
+```
+LowCode__RunnerPath=C:\inetpub\wwwroot\layoutparser\api\LayoutParserLowCodeRunner.exe
+LowCode__SysmiddleDir=C:\inetpub\wwwroot\layoutparser\sysmiddle
+LowCode__GlobalFolder=C:\inetpub\wwwroot\layoutparser\globalfolder
+LowCode__Package=938f9978-836f-48c1-9c0f-c2898caf4b20
+LowCode__ProjectId=2
+LowCode__AllowedPackageGuids__0=PAC_266bc578-b0fa-48a4-9c72-61004b729576
+LowCode__AllowedPackageGuids__1=<demais pacotes permitidos, conferir lista completa do repo>
+Ollama__Url=http://<ip-da-vm-linux>:11434
+```
+
+(`AllowedPackageGuids` é uma lista — o binder do `IConfiguration` para env vars usa índice
+numérico `__0`, `__1`, ... como sufixo, não uma string separada por vírgula.)
+
+Passos:
+
+1. Confirmar com `@lp-devops` o IP/host atual da VM Linux que roda o Ollama (não assumir — a
+   topologia mudou e este documento não fixa um valor que pode já estar desatualizado de novo).
+2. Aplicar as variáveis de ambiente acima no serviço Windows de produção (mesmo runbook de rotação
+   já documentado em `rules/security.md`, seção "Segredos no CI de dev").
+3. Reiniciar o serviço `LayoutParserApi` para o `IOptions` reler o ambiente atualizado.
+4. Reexecutar `execute-candidates` para `layoutGuid=LAY_ad4fb6f4-9ff5-44fd-988b-3da5ed56b22c` e
+   confirmar que o mapper `Id=470` é encontrado (warning "Nenhum mapper encontrado" desaparece).
+5. Confirmar no log que o diagnóstico via Ollama deixa de emitir `"Ollama indisponível em
+   http://localhost:11434"` e passa a responder (ou falhar por outro motivo, mas alcançando a VM).
+6. Separadamente (não bloqueante, não relacionado ao bug do mapper): remover
+   `ElasticSearch:Username`/`ElasticSearch:Password` do `appsettings.json` de produção — item de
+   limpeza de higiene, sem consumidor no código atual.
+7. **Item preexistente, não introduzido por este diagnóstico:** o `ProjectId=2` "funcionar por
+   coincidência de default" é frágil — se o schema do banco algum dia introduzir `ProjectId != 2`
+   como válido para outro projeto, o mesmo host voltaria a quebrar silenciosamente sem que a causa
+   fosse óbvia (default do C# mascarando ausência de config). Vale considerar, fora do escopo desta
+   correção imediata, se `LowCodeRunnerOptions.ProjectId` deveria ter um default inválido
+   (ex.: `0` ou `-1`) para falhar de forma mais visível quando a seção `LowCode` estiver ausente —
+   decisão de `@lp-backend-dev`/`@lp-architect`, não implementada aqui.
 
 ## Delegação
 
-- `@lp-devops`: confirmar a seção `LowCode` do `appsettings.json` efetivo em produção (ação 1) —
-  é infraestrutura/config de servidor, fora do escopo de leitura de código.
-- `@lp-backend-dev`: se confirmado o config drift, considerar (fora do escopo desta investigação)
-  se `AllowedPackageGuids`/`ProjectId` deveriam ser sobrepostos por env var em vez de depender do
-  `appsettings.json` congelado do host — mesma classe de risco já registrada para `LowCode:RunnerPath`.
+- `@lp-devops`: aplicar as variáveis de ambiente `LowCode__*` e `Ollama__Url` em produção (runbook
+  acima) — é infraestrutura/config de servidor, fora do escopo de leitura de código. Confirmar o
+  IP da VM Linux do Ollama antes de aplicar.
+- `@lp-backend-dev`: avaliar (fora do escopo desta correção imediata) se `LowCodeRunnerOptions`
+  deveria falhar de forma mais visível (ex.: validação no startup, ou `ProjectId` default inválido)
+  quando a seção `LowCode` estiver ausente, em vez de silenciosamente rodar com defaults que podem
+  coincidir por acidente com um valor válido do banco.
 
-Relacionado: `docs/architecture/multi-candidato-e-diagnostico-ia-contrato.md` (Gap 1, contrato do
-`execute-candidates`); memória `lp-architect/lowcode-nunca-rodou-em-producao.md` (mecanismo de
-"appsettings do destino nunca é sobrescrito").
+Relacionado: `docs/architecture/multi-candidato-e-diagnostico-ia-contrato.md` (Gap 1/Gap 2, contrato
+do `execute-candidates`); memória `lp-architect/lowcode-nunca-rodou-em-producao.md` (mecanismo de
+"appsettings do destino nunca é sobrescrito"); memória `lp-architect/deploy-production-topology.md`
+(separação host Windows Server / VM Linux do Ollama); `.claude/rules/security.md` (padrão de env
+vars `Section__Key`, status da remediação de segredos).
