@@ -53,6 +53,20 @@ try
     // ciclo de vida do SCM. Fora do SCM (dotnet run / console) é no-op — zero impacto.
     builder.Host.UseWindowsService();
 
+    // ✅ Hardening da senha do SQL em repouso (ver docs/architecture/runbook-hardening-senha-sql-em-repouso.md).
+    // Por padrão, o ASP.NET Core só carrega user-secrets quando IsDevelopment() é true — o que
+    // deixaria o mecanismo (DPAPI via user-secrets, escopo CurrentUser do usuário do serviço)
+    // inútil em produção. Habilitamos aqui fora do ambiente Development. CreateBuilder(args) já
+    // registrou appsettings.json/appsettings.{env}.json e env vars antes deste ponto; como
+    // AddUserSecrets é adicionado por último, ele passa a ter a maior precedência — é o
+    // comportamento desejado: uma vez migrada (passo 4 do runbook), a senha em user-secrets
+    // é a fonte da verdade e a env var do serviço Windows pode ser removida. optional:true evita
+    // erro caso o secrets.json ainda não exista no host.
+    if (!builder.Environment.IsDevelopment())
+    {
+        builder.Configuration.AddUserSecrets<Program>(optional: true);
+    }
+
     // Configure Serilog for file and console logging
     var logDirectory = builder.Configuration["Logging:File:Directory"] ?? "Logs";
     // Nome base do arquivo (conforme requisito)
