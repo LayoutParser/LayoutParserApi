@@ -39,6 +39,7 @@ namespace LayoutParserApi.Controllers
         private readonly ILayoutDatabaseService _layoutDb;
         private readonly LowCodeRunnerOptions _lowCodeOpt;
         private readonly IAiTransformationCandidateService _aiCandidateService;
+        private readonly ICurrentUser _currentUser;
 
         public TransformationExecutionController(
             ILogger<TransformationExecutionController> logger,
@@ -50,7 +51,8 @@ namespace LayoutParserApi.Controllers
             LowCodeAutoTransformationService lowCodeAuto,
             ILayoutDatabaseService layoutDb,
             IOptions<LowCodeRunnerOptions> lowCodeOptions,
-            IAiTransformationCandidateService aiCandidateService)
+            IAiTransformationCandidateService aiCandidateService,
+            ICurrentUser currentUser)
         {
             _logger = logger;
             _pipelineService = pipelineService;
@@ -62,7 +64,13 @@ namespace LayoutParserApi.Controllers
             _layoutDb = layoutDb;
             _lowCodeOpt = lowCodeOptions.Value;
             _aiCandidateService = aiCandidateService;
+            _currentUser = currentUser;
         }
+
+        // Issue #92: chave de particionamento da AiCandidateStore. ICurrentUser.Name é null quando
+        // anônimo (sem [Authorize] em algum endpoint futuro ou identidade não confiável) — a store já
+        // trata esse caso como um bucket fixo próprio, nunca cai no de outro usuário real.
+        private string CurrentUserId => _currentUser.Name ?? string.Empty;
 
         /// <summary>
         /// Executa transformação completa (TXT -> XML ou XML -> XML)
@@ -158,9 +166,11 @@ namespace LayoutParserApi.Controllers
         /// (casos-limite de zero candidatos, falha parcial, timeout etc.) em
         /// docs/architecture/multi-candidato-e-diagnostico-ia-contrato.md (Gap 1).
         /// </summary>
-        // Issue #32: dispara processos externos (runner x86) e é operação privilegiada —
-        // restrita ao papel "admin".
-        [Authorize(Roles = "admin")]
+        // Issue #32: dispara processos externos (runner x86) e é operação privilegiada — era
+        // restrita ao papel "admin". Issue #93: reabre para qualquer usuário autenticado (o
+        // isolamento por dono via CurrentUserId/AiCandidateStore, já feito na issue #92, é quem
+        // impede um usuário ler/afetar o ticket de outro — não mais o papel).
+        [Authorize]
         [HttpPost("execute-candidates")]
         public async Task<IActionResult> ExecuteTransformationCandidates([FromBody] TransformationRequest request)
         {
@@ -256,7 +266,7 @@ namespace LayoutParserApi.Controllers
             // Pathway IA (Issue #40): dispara só depois de ter gabarito sysmiddle disponível — nunca
             // como terceiro Task síncrono (ver docs/architecture/pathway-ia-execute-candidates.md §3).
             // Fire-and-forget: NUNCA atrasa nem derruba a resposta síncrona já calculada acima.
-            TryEnqueueAiCandidate(request, layoutRecord, candidates, isXmlInput);
+            TryEnqueueAiCandidate(request, layoutRecord, candidates, isXmlInput, CurrentUserId);
 
             string? recommendedId = null;
             if (candidates.Count > 0)
@@ -358,7 +368,8 @@ namespace LayoutParserApi.Controllers
         /// warning e não afeta o array <c>candidates[]</c> já calculado.
         /// </summary>
         private void TryEnqueueAiCandidate(
-            TransformationRequest request, LayoutRecord layoutRecord, List<TransformationCandidate> candidates, bool isXmlInput)
+            TransformationRequest request, LayoutRecord layoutRecord, List<TransformationCandidate> candidates, bool isXmlInput,
+            string userId)
         {
             var plan = AiCandidateDispatchPlan.TryBuild(
                 request.LayoutGuid, layoutRecord.LayoutGuid, request.InputContent, isXmlInput, candidates);
@@ -370,7 +381,10 @@ namespace LayoutParserApi.Controllers
                 // ✅ Não usa a request.HttpContext.RequestAborted — o job sobrevive ao fim da request
                 // (dotnet-standards.md §Background work). CancellationToken.None + teto de sanidade
                 // interno do serviço (AiTransformationCandidateOptions.SanityTimeoutMinutes).
+                // userId (issue #92): particiona o ticket na AiCandidateStore — só quem disparou o job
+                // consegue consultá-lo depois em ia-status.
                 _ = _aiCandidateService.EnqueueAsync(
+                    userId,
                     plan.Ticket,
                     request.LayoutName,
                     plan.LayoutGuid,
@@ -392,11 +406,21 @@ namespace LayoutParserApi.Controllers
         /// autorização de <see cref="ExecuteTransformationCandidates"/> (Issue #32) — endpoint
         /// novo, mesmo custo/sensibilidade de disparar processos/objetos caros.
         /// </summary>
-        [Authorize(Roles = "admin")]
+        /// <remarks>
+        /// Issue #92: a consulta é isolada por usuário — <c>ticket</c> de outro usuário devolve 404,
+        /// nunca 403. 403 confirmaria "o ticket existe, mas não é seu" (enumeração); 404 se comporta
+        /// exatamente como um ticket inexistente/expirado, que é o mesmo caso hoje. Único gate de
+        /// papel era o <c>[Authorize(Roles = "admin")]</c> — a issue #93 abriu o endpoint além de
+        /// admin (<c>[Authorize]</c> simples) porque o isolamento por dono já estava pronto.
+        /// </remarks>
+        [Authorize]
         [HttpGet("execute-candidates/{ticket}/ia-status")]
         public async Task<IActionResult> GetAiCandidateStatus(string ticket, CancellationToken cancellationToken)
         {
-            var status = await _aiCandidateService.GetStatusAsync(ticket, cancellationToken);
+            var status = await _aiCandidateService.GetStatusAsync(CurrentUserId, ticket, cancellationToken);
+            if (status.Status == AiCandidateStatus.StatusNotFound)
+                return NotFound();
+
             return Ok(status);
         }
 
@@ -589,8 +613,9 @@ namespace LayoutParserApi.Controllers
         /// <summary>
         /// Executa transformação usando o motor low-code (SysMiddle) via runner x86.
         /// </summary>
-        // Issue #32: idem execute-candidates — restrito ao papel "admin".
-        [Authorize(Roles = "admin")]
+        // Issue #32: idem execute-candidates — era restrito ao papel "admin". Issue #93: mesma
+        // reabertura para qualquer usuário autenticado.
+        [Authorize]
         [HttpPost("execute-lowcode")]
         public async Task<IActionResult> ExecuteLowCode([FromBody] LowCodeTransformationRequest request)
         {
