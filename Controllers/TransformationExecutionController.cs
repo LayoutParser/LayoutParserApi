@@ -166,9 +166,11 @@ namespace LayoutParserApi.Controllers
         /// (casos-limite de zero candidatos, falha parcial, timeout etc.) em
         /// docs/architecture/multi-candidato-e-diagnostico-ia-contrato.md (Gap 1).
         /// </summary>
-        // Issue #32: dispara processos externos (runner x86) e é operação privilegiada —
-        // restrita ao papel "admin".
-        [Authorize(Roles = "admin")]
+        // Issue #32: dispara processos externos (runner x86) e é operação privilegiada — era
+        // restrita ao papel "admin". Issue #93: reabre para qualquer usuário autenticado (o
+        // isolamento por dono via CurrentUserId/AiCandidateStore, já feito na issue #92, é quem
+        // impede um usuário ler/afetar o ticket de outro — não mais o papel).
+        [Authorize]
         [HttpPost("execute-candidates")]
         public async Task<IActionResult> ExecuteTransformationCandidates([FromBody] TransformationRequest request)
         {
@@ -408,10 +410,10 @@ namespace LayoutParserApi.Controllers
         /// Issue #92: a consulta é isolada por usuário — <c>ticket</c> de outro usuário devolve 404,
         /// nunca 403. 403 confirmaria "o ticket existe, mas não é seu" (enumeração); 404 se comporta
         /// exatamente como um ticket inexistente/expirado, que é o mesmo caso hoje. Único gate de
-        /// papel continua sendo o <c>[Authorize(Roles = "admin")]</c> — quando a issue #93 abrir o
-        /// endpoint além de admin, o isolamento por dono já está pronto.
+        /// papel era o <c>[Authorize(Roles = "admin")]</c> — a issue #93 abriu o endpoint além de
+        /// admin (<c>[Authorize]</c> simples) porque o isolamento por dono já estava pronto.
         /// </remarks>
-        [Authorize(Roles = "admin")]
+        [Authorize]
         [HttpGet("execute-candidates/{ticket}/ia-status")]
         public async Task<IActionResult> GetAiCandidateStatus(string ticket, CancellationToken cancellationToken)
         {
@@ -611,8 +613,9 @@ namespace LayoutParserApi.Controllers
         /// <summary>
         /// Executa transformação usando o motor low-code (SysMiddle) via runner x86.
         /// </summary>
-        // Issue #32: idem execute-candidates — restrito ao papel "admin".
-        [Authorize(Roles = "admin")]
+        // Issue #32: idem execute-candidates — era restrito ao papel "admin". Issue #93: mesma
+        // reabertura para qualquer usuário autenticado.
+        [Authorize]
         [HttpPost("execute-lowcode")]
         public async Task<IActionResult> ExecuteLowCode([FromBody] LowCodeTransformationRequest request)
         {
