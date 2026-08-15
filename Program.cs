@@ -711,7 +711,11 @@ try
                     name = e.Key,
                     status = e.Value.Status.ToString(),
                     description = e.Value.Description,
-                    error = e.Value.Exception?.Message
+                    error = e.Value.Exception?.Message,
+                    // "data" carrega a classificação estruturada da sonda (o catálogo publica
+                    // estado/transitorio aqui). Sem isso, "aquecendo" e "vazio definitivo" —
+                    // que respondem o MESMO 503 — só se distinguiriam lendo o texto da descrição.
+                    data = e.Value.Data.Count > 0 ? e.Value.Data : null
                 })
             };
             await httpContext.Response.WriteAsync(System.Text.Json.JsonSerializer.Serialize(payload));
