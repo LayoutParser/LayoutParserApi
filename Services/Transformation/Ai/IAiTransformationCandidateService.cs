@@ -11,7 +11,12 @@ namespace LayoutParserApi.Services.Transformation.Ai
         /// Dispara o job assíncrono. NUNCA lança para o chamador (fire-and-forget) — toda
         /// falha vira estado "failed" consultável por <see cref="GetStatusAsync"/>.
         /// </summary>
+        /// <param name="userId">
+        /// Dono do ticket (issue #92 — <c>ICurrentUser.Name</c> resolvido pelo controller). Particiona
+        /// a store para que outro usuário nunca consiga ler o status/candidato deste ticket.
+        /// </param>
         Task EnqueueAsync(
+            string userId,
             string ticket,
             string layoutName,
             Guid layoutGuid,
@@ -20,6 +25,8 @@ namespace LayoutParserApi.Services.Transformation.Ai
             string groundTruthXml,
             CancellationToken cancellationToken);
 
-        Task<AiCandidateStatus> GetStatusAsync(string ticket, CancellationToken cancellationToken);
+        /// <param name="userId">Mesmo dono passado a <see cref="EnqueueAsync"/> — ticket de outro
+        /// usuário não é encontrado (comporta-se como inexistente, não como erro).</param>
+        Task<AiCandidateStatus> GetStatusAsync(string userId, string ticket, CancellationToken cancellationToken);
     }
 }
