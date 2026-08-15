@@ -1,0 +1,29 @@
+title = "gitleaks config — LayoutParser API"
+
+# Estende o conjunto de regras padrão do gitleaks (segredos genéricos: AWS keys,
+# tokens de API conhecidos, private keys, etc.) e adiciona regras específicas
+# deste projeto — em especial a connection string do SQL Server com senha
+# embutida, que já vazou uma vez (regressão de 2026-07-18, ver
+# .claude/rules/security.md).
+[extend]
+useDefault = true
+
+[[rules]]
+id = "sqlserver-connection-string-with-password"
+description = "Connection string de SQL Server com senha em texto plano (Password=/Pwd=)"
+regex = '''(?i)(Server|Data Source)\s*=.*(Password|Pwd)\s*=\s*[^;"'\s]+'''
+tags = ["secret", "connection-string", "sql"]
+
+[[rules]]
+id = "generic-password-assignment"
+description = "Atribuição de senha em texto plano em appsettings/config (Password/Pwd/ApiKey com valor não vazio)"
+regex = '''(?i)"(Password|Pwd|ApiKey|Secret|ConnectionString)"\s*:\s*"[^"\s]{4,}"'''
+tags = ["secret", "config"]
+
+# appsettings*.json legítimos deste repo usam placeholders vazios ("") —
+# a regra acima só dispara com valor não vazio, então não conflita com eles.
+[allowlist]
+paths = [
+    '''\.githooks/pre-commit''',
+    '''\.gitleaks\.toml''',
+]
