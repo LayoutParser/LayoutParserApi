@@ -120,8 +120,23 @@ namespace LayoutParserApi.Services.Health
     }
 
     /// <summary>
-    /// Contagem do warm-up. Catálogo vazio (ou warm-up não concluído) = <b>Unhealthy</b> → readiness
-    /// falha (503). É o gate que fecha a classe "deploy publica versão inoperante e declara sucesso".
+    /// Contagem do warm-up. É o gate que fecha a classe "deploy publica versão inoperante e declara
+    /// sucesso" — e distingue <b>TRÊS</b> estados, não dois:
+    ///
+    /// <list type="bullet">
+    ///   <item><b>Aquecendo</b> (warm-up não concluiu / retry em andamento) → Unhealthy, mas marcado
+    ///   como <c>transitorio=true</c>: é "ainda não pronto", não "quebrado".</item>
+    ///   <item><b>Pronto</b> (concluiu com layouts &gt; 0) → Healthy. Único estado saudável.</item>
+    ///   <item><b>Vazio</b> (concluiu e o catálogo veio VAZIO) → Unhealthy <c>transitorio=false</c>:
+    ///   falha definitiva, exige intervenção (SQL/decryptor fora, catálogo sem layouts).</item>
+    /// </list>
+    ///
+    /// <para><b>Por que "Aquecendo" é Unhealthy e não Degraded:</b> Degraded mapeia para 200 em
+    /// <c>/health/ready</c> (ver Program.cs) e o smoke test de deploy exige 200 ESTRITO — reportar
+    /// Degraded enquanto aquece faria o deploy declarar sucesso com o catálogo ainda vazio, que é
+    /// exatamente o bug que esta sonda existe para fechar. O smoke test já trata 503 como "ainda não
+    /// pronto" e retenta, então manter Unhealthy não trava deploy nenhum; o que muda é a
+    /// <b>descrição/payload</b>, que agora diz claramente qual dos dois 503 é.</para>
     /// </summary>
     public sealed class CatalogHealthCheck : IHealthCheck
     {
@@ -131,13 +146,43 @@ namespace LayoutParserApi.Services.Health
 
         public Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken cancellationToken = default)
         {
-            if (!_state.Completed)
-                return Task.FromResult(HealthCheckResult.Unhealthy("Warm-up do catalogo ainda nao concluiu — instancia nao esta pronta."));
+            var status = _state.Status;
 
-            if (_state.LayoutCount <= 0)
-                return Task.FromResult(HealthCheckResult.Unhealthy("Catalogo de layouts VAZIO apos warm-up (SQL/decryptor fora?) — instancia nao esta pronta."));
+            // Payload legível pelo operador (o corpo do /health/ready aparece no log do smoke test)
+            // e por monitoramento — permite alertar só no estado definitivo, sem barulho de warm-up.
+            var data = new Dictionary<string, object>
+            {
+                ["estado"] = status.ToString(),
+                ["layoutCount"] = _state.LayoutCount,
+                ["transitorio"] = status == CatalogWarmupStatus.Aquecendo,
+                ["tentativasFalhas"] = _state.FailedAttempts
+            };
 
-            return Task.FromResult(HealthCheckResult.Healthy($"Catalogo com {_state.LayoutCount} layouts."));
+            if (!string.IsNullOrEmpty(_state.LastFailureReason))
+                data["ultimaFalha"] = _state.LastFailureReason!;
+
+            var resultado = status switch
+            {
+                CatalogWarmupStatus.Pronto =>
+                    HealthCheckResult.Healthy($"Catalogo com {_state.LayoutCount} layouts.", data),
+
+                CatalogWarmupStatus.Vazio =>
+                    HealthCheckResult.Unhealthy(
+                        "Catalogo de layouts VAZIO apos warm-up CONCLUIDO (SQL/decryptor fora, ou catalogo sem layouts) — " +
+                        "falha DEFINITIVA, nao se resolve sozinha: exige intervencao.",
+                        exception: null,
+                        data: data),
+
+                // Aquecendo (inclui a 1ª tentativa e todo retry com backoff da issue #67).
+                _ =>
+                    HealthCheckResult.Unhealthy(
+                        $"Catalogo AQUECENDO — warm-up ainda nao concluiu ({_state.FailedAttempts} tentativa(s) falharam ate agora). " +
+                        "Transitorio: o retry com backoff ainda pode recuperar sozinho, NAO e falha definitiva.",
+                        exception: null,
+                        data: data)
+            };
+
+            return Task.FromResult(resultado);
         }
     }
 }
