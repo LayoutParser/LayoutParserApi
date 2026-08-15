@@ -2,10 +2,8 @@ using LayoutParserApi.Services.Cache;
 using LayoutParserApi.Services.Database;
 using LayoutParserApi.Services.Filters;
 using LayoutParserApi.Services.Health;
+using LayoutParserApi.Services.Generation;
 using LayoutParserApi.Services.Generation.Implementations;
-using LayoutParserApi.Services.Generation.Interfaces;
-using LayoutParserApi.Services.Generation.TxtGenerator;
-using LayoutParserApi.Services.Generation.TxtGenerator.Parsers;
 using LayoutParserApi.Services.Implementations;
 using LayoutParserApi.Services.Interfaces;
 using LayoutParserApi.Services.Learning;
@@ -385,6 +383,10 @@ try
     builder.Services.Configure<LayoutParserApi.Services.Transformation.Ai.AiTransformationCandidateOptions>(
         builder.Configuration.GetSection("AiTransformationCandidate"));
     builder.Services.AddSingleton<LayoutParserApi.Services.Transformation.Ai.AiCandidateStore>();
+    // ✅ Issue #51: a store não tinha expiração — cada ticket ficava para sempre em memória e em
+    // disco. A poda roda em BackgroundService (previsível e independente de tráfego) justamente
+    // para o polling de status não pagar por varredura de diretório no caminho de request.
+    builder.Services.AddHostedService<LayoutParserApi.Services.Transformation.Ai.AiCandidateStoreCleanupBackgroundService>();
     builder.Services.AddHttpClient<LayoutParserApi.Services.Transformation.Ai.IAiTransformationCandidateService,
         LayoutParserApi.Services.Transformation.Ai.AiTransformationCandidateService>(client =>
     {
@@ -428,6 +430,14 @@ try
     // ✅ Item 4.4 do roadmap de IA: checagem de near-duplicate obrigatória para QUALQUER
     // saída "sintética" antes de indexar - este projeto é material de TCC.
     builder.Services.AddScoped<NearDuplicateChecker>();
+
+    // Generation Services (geração sintética / TXT — DataGenerationController)
+    // ✅ Issue #33: o grupo não existia e QUALQUER chamada ao controller quebrava na resolução de
+    // DI (build passa, o erro só aparece em runtime). Foi restaurado depois de ser apagado como
+    // dano colateral na resolução de conflito do merge que removeu o Pathway 1 — por isso a
+    // composição mora em AddGenerationServices (Services/Generation), chamada aqui e exercitada
+    // pelo teste DataGenerationControllerDiTests: uma composição só, sem réplica que diverge.
+    builder.Services.AddGenerationServices();
 
     // RAG Services (retrieval de exemplos para geração sintética)
     // ✅ Fix incidental (item 1.4 do roadmap de IA, 2026-07-21): RAGService nunca esteve
@@ -701,7 +711,11 @@ try
                     name = e.Key,
                     status = e.Value.Status.ToString(),
                     description = e.Value.Description,
-                    error = e.Value.Exception?.Message
+                    error = e.Value.Exception?.Message,
+                    // "data" carrega a classificação estruturada da sonda (o catálogo publica
+                    // estado/transitorio aqui). Sem isso, "aquecendo" e "vazio definitivo" —
+                    // que respondem o MESMO 503 — só se distinguiriam lendo o texto da descrição.
+                    data = e.Value.Data.Count > 0 ? e.Value.Data : null
                 })
             };
             await httpContext.Response.WriteAsync(System.Text.Json.JsonSerializer.Serialize(payload));

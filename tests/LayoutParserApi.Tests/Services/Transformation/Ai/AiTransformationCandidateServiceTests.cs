@@ -29,6 +29,7 @@ namespace LayoutParserApi.Tests.Services.Transformation.Ai
             try
             {
                 await service.EnqueueAsync(
+                    userId: "usuario-a",
                     ticket: "ticket-sem-gabarito",
                     layoutName: "NFe",
                     layoutGuid: Guid.NewGuid(),
@@ -37,7 +38,7 @@ namespace LayoutParserApi.Tests.Services.Transformation.Ai
                     groundTruthXml: "",
                     cancellationToken: CancellationToken.None);
 
-                var status = await service.GetStatusAsync("ticket-sem-gabarito", CancellationToken.None);
+                var status = await service.GetStatusAsync("usuario-a", "ticket-sem-gabarito", CancellationToken.None);
 
                 Assert.Equal(AiCandidateStatus.StatusNotApplicable, status.Status);
                 Assert.False(chamouOllama);
@@ -58,6 +59,7 @@ namespace LayoutParserApi.Tests.Services.Transformation.Ai
             {
                 var ticket = "ticket-converge";
                 await service.EnqueueAsync(
+                    userId: "usuario-a",
                     ticket: ticket,
                     layoutName: "NFe",
                     layoutGuid: Guid.NewGuid(),
@@ -67,7 +69,7 @@ namespace LayoutParserApi.Tests.Services.Transformation.Ai
                     cancellationToken: CancellationToken.None);
 
                 // EnqueueAsync é fire-and-forget: aguarda o job em background terminar (poll com teto).
-                var status = await PollUntilAsync(service, ticket, s => s.Status != AiCandidateStatus.StatusRunning, TimeSpan.FromSeconds(10));
+                var status = await PollUntilAsync(service, "usuario-a", ticket, s => s.Status != AiCandidateStatus.StatusRunning, TimeSpan.FromSeconds(10));
 
                 Assert.Equal(AiCandidateStatus.StatusConverged, status.Status);
                 Assert.NotNull(status.Candidate);
@@ -92,8 +94,8 @@ namespace LayoutParserApi.Tests.Services.Transformation.Ai
             try
             {
                 var ticket = "ticket-sem-score";
-                await service.EnqueueAsync(ticket, "NFe", Guid.NewGuid(), "mapper-x", "linha", groundTruth, CancellationToken.None);
-                var status = await PollUntilAsync(service, ticket, s => s.Status != AiCandidateStatus.StatusRunning, TimeSpan.FromSeconds(10));
+                await service.EnqueueAsync("usuario-a", ticket, "NFe", Guid.NewGuid(), "mapper-x", "linha", groundTruth, CancellationToken.None);
+                var status = await PollUntilAsync(service, "usuario-a", ticket, s => s.Status != AiCandidateStatus.StatusRunning, TimeSpan.FromSeconds(10));
 
                 Assert.Equal(AiCandidateStatus.StatusConverged, status.Status);
                 Assert.Null(status.Candidate!.Score);
@@ -104,13 +106,43 @@ namespace LayoutParserApi.Tests.Services.Transformation.Ai
             }
         }
 
+        [Fact]
+        public async Task Usuario_nao_consegue_ler_status_de_ticket_de_outro_usuario()
+        {
+            // Issue #92 — regressão de isolamento: a store era chaveada só por ticket, então
+            // qualquer usuário que soubesse (ou adivinhasse) o ticket de outro conseguia ler o
+            // status/candidato dele. Crítico com a issue #93 abrindo ia-status além do papel admin.
+            const string groundTruth = "<nfe><infNFe><campo>valor</campo></infNFe></nfe>";
+            var service = CriarService(_ => groundTruth, out var tempDir);
+
+            try
+            {
+                var ticket = "ticket-isolado";
+                await service.EnqueueAsync("usuario-dono", ticket, "NFe", Guid.NewGuid(), "mapper-x", "linha", groundTruth, CancellationToken.None);
+
+                // O próprio dono consegue consultar normalmente.
+                var statusDono = await PollUntilAsync(service, "usuario-dono", ticket, s => s.Status != AiCandidateStatus.StatusRunning, TimeSpan.FromSeconds(10));
+                Assert.Equal(AiCandidateStatus.StatusConverged, statusDono.Status);
+
+                // Outro usuário, mesmo ticket: nunca deve enxergar o status/candidato do dono —
+                // o contrato é "comporta-se como inexistente" (o controller traduz isso em 404).
+                var statusOutroUsuario = await service.GetStatusAsync("usuario-intruso", ticket, CancellationToken.None);
+                Assert.Equal(AiCandidateStatus.StatusNotFound, statusOutroUsuario.Status);
+                Assert.Null(statusOutroUsuario.Candidate);
+            }
+            finally
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
+
         private static async Task<AiCandidateStatus> PollUntilAsync(
-            IAiTransformationCandidateService service, string ticket, Func<AiCandidateStatus, bool> until, TimeSpan timeout)
+            IAiTransformationCandidateService service, string userId, string ticket, Func<AiCandidateStatus, bool> until, TimeSpan timeout)
         {
             var deadline = DateTime.UtcNow + timeout;
             while (DateTime.UtcNow < deadline)
             {
-                var status = await service.GetStatusAsync(ticket, CancellationToken.None);
+                var status = await service.GetStatusAsync(userId, ticket, CancellationToken.None);
                 if (until(status))
                     return status;
 

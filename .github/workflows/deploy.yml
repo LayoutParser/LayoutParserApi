@@ -27,6 +27,13 @@ on:
 # Serializa deploys de producao. cancel-in-progress: false de PROPOSITO - cancelar um deploy
 # no meio (durante a troca de binario / Stop-Service -> copia -> Start-Service) deixaria a
 # instalacao pela metade. Runs concorrentes ENFILEIRAM; nenhum e abortado no meio do caminho.
+#
+# O grupo e uma constante ('deploy-prod'), NAO derivado de workflow+ref (github.workflow /
+# github.ref) como nos demais workflows: este arquivo dispara por main, por master e por
+# workflow_dispatch, e os tres publicam no MESMO host e no MESMO servico Windows. Agrupar por
+# ref permitiria dois runs simultaneos disputando os mesmos binarios - e o step de copia falha
+# com .exe/.dll em uso (hoje isso ABORTA o deploy, deixando a instalacao parcial). Constante
+# serializa tudo que aponta para producao, que e a propriedade que interessa aqui.
 concurrency:
   group: deploy-prod
   cancel-in-progress: false
@@ -44,12 +51,12 @@ jobs:
 
     steps:
     - name: Checkout LayoutParserApi
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         path: LayoutParserApi
 
     - name: Checkout LayoutParserLib
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         repository: LayoutParser/LayoutParserLib
         path: LayoutParserLib
@@ -57,7 +64,7 @@ jobs:
         fetch-depth: 1
 
     - name: Checkout LayoutParserDecrypt
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         repository: LayoutParser/LayoutParserDecrypt
         path: LayoutParserDecrypt
@@ -65,12 +72,12 @@ jobs:
         fetch-depth: 1
     
     - name: Setup .NET
-      uses: actions/setup-dotnet@v4
+      uses: actions/setup-dotnet@v6
       with:
         dotnet-version: '10.0.x'
     
     - name: Setup MSBuild for .NET Framework
-      uses: microsoft/setup-msbuild@v1.1
+      uses: microsoft/setup-msbuild@v1.3
     
     - name: Build LayoutParserLib (.NET Framework 4.8.1)
       run: |
@@ -149,7 +156,9 @@ jobs:
     # argumento pela SOLUTION. Desde que o projeto de testes entrou na LayoutParserApi.sln
     # (para o `dotnet test` deixar de mentir), um build pela solution passaria a restaurar
     # xUnit e compilar testes AQUI, em producao - uma falha de restore quebraria o deploy.
-    # Producao compila exatamente o que publica: o projeto da API, e mais nada.
+    # Producao compila exatamente o que PUBLICA: o projeto da API, e mais nada. O projeto de
+    # testes tambem passa a ser compilado neste host, mas por um step proprio e explicito logo
+    # abaixo (quality gate) - nunca por inferencia da solution, e nada dele entra no publish.
     - name: Build LayoutParserApi (.NET 10.0)
       run: |
         $WORK_DIR = $PWD.Path
@@ -183,7 +192,81 @@ jobs:
         }
 
         Write-Host "LayoutParserApi compilado com sucesso"
-    
+
+    # -- Quality gate: suite de testes ANTES de tocar producao (FATAL) ----------------
+    #
+    # POR QUE ESTE STEP EXISTE: ate aqui SOMENTE o ci-dev.yml rodava `dotnet test`. Producao
+    # buildava e publicava sem NUNCA executar a suite. O unico caminho que garantia o gate
+    # (feat -> develop -> master via PR, com o ci-dev rodando no meio) deixou de ser obrigatorio
+    # quando a branch protection nativa do GitHub foi perdida ao tornar os repos privados
+    # (recurso pago no plano free - ver .claude/rules/agent-authority.md). Ou seja: um push
+    # direto em master ia para PRODUCAO sem um unico teste ter rodado, e nada bloqueava.
+    #
+    # POSICAO: logo apos o build da API (a suite depende do LayoutParserLib.dll e do assembly da
+    # API, compilados nos steps acima) e ANTES de qualquer step que escreva no host - publicacao
+    # do runner low-code, Environment do servico, Stop-Service/copia de binarios. Falhar aqui
+    # custa tempo de build; falhar depois custa producao pela metade: este workflow nao tem swap
+    # atomico nem backup dos binarios anteriores.
+    #
+    # CONTRAPARTIDA ACEITA: este step restaura xUnit e compila o projeto de testes no host de
+    # producao - justamente o que o comentario do step de build acima evita fazer por ACIDENTE
+    # (build pela solution). Aqui e deliberado e escopado a UM csproj explicito; o publish
+    # continua saindo so do LayoutParserApi.csproj.
+    #
+    # SEM BYPASS de proposito: nao ha input de workflow_dispatch para pular a suite. Deploy de
+    # emergencia com teste vermelho e exatamente a situacao que este gate existe para impedir.
+    - name: Quality gate - suite de testes (pre-producao)
+      run: |
+        $WORK_DIR = $PWD.Path
+        $TEST_PROJECT = Join-Path $WORK_DIR "LayoutParserApi\tests\LayoutParserApi.Tests\LayoutParserApi.Tests.csproj"
+        $RESULTS_DIR = Join-Path $WORK_DIR "test-results"
+        $TRX = Join-Path $RESULTS_DIR "prod-gate.trx"
+
+        if (-not (Test-Path $TEST_PROJECT)) {
+          Write-Error "Projeto de testes nao encontrado: $TEST_PROJECT - deploy de PRODUCAO abortado (gate sem suite nao e gate)."
+          exit 1
+        }
+
+        New-Item -ItemType Directory -Path $RESULTS_DIR -Force | Out-Null
+        Remove-Item $TRX -Force -ErrorAction SilentlyContinue
+
+        Write-Host "Executando a suite completa antes de tocar o host de producao..."
+        dotnet test "$TEST_PROJECT" --configuration Release --logger "console;verbosity=minimal" --logger "trx;LogFileName=prod-gate.trx" --results-directory "$RESULTS_DIR"
+        $testExit = $LASTEXITCODE
+
+        # [ATENCAO] Exit code 0 NAO basta como veredito. Este repo ja teve um gate que mentia:
+        # `dotnet test` pela solution reportava SUCESSO tendo executado ZERO teste (ver o
+        # comentario do step "Testes (xUnit)" no ci-dev.yml). Por isso o veredito sai do TRX -
+        # total/passed/failed - e a ausencia do relatorio e tratada como FALHA, nao como sucesso.
+        if (-not (Test-Path $TRX)) {
+          Write-Error "Relatorio TRX nao gerado em $TRX - impossivel confirmar que a suite rodou. Deploy de PRODUCAO abortado."
+          exit 1
+        }
+
+        [xml]$relatorio = Get-Content $TRX -Raw
+        $contadores = $relatorio.TestRun.ResultSummary.Counters
+        if ($null -eq $contadores) {
+          Write-Error "TRX sem ResultSummary/Counters ($TRX) - gate inconclusivo. Deploy de PRODUCAO abortado."
+          exit 1
+        }
+
+        $total = [int]$contadores.total
+        $passed = [int]$contadores.passed
+        $failed = [int]$contadores.failed
+        Write-Host "Suite: total=$total passed=$passed failed=$failed (exit do dotnet test: $testExit)"
+
+        if ($testExit -ne 0 -or $failed -gt 0) {
+          Write-Error "Teste(s) falharam ($failed de $total) - deploy de PRODUCAO abortado ANTES de qualquer alteracao no host."
+          exit 1
+        }
+
+        if ($total -le 0) {
+          Write-Error "A suite executou ZERO teste - gate inconclusivo, tratado como FALHA. Deploy de PRODUCAO abortado."
+          exit 1
+        }
+
+        Write-Host "Quality gate verde: $passed/$total testes passaram - liberado a tocar producao."
+
     - name: Publish LayoutParserApi
       run: |
         $WORK_DIR = $PWD.Path

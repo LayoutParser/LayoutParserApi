@@ -13,26 +13,42 @@ namespace LayoutParserApi.Tests.Health
     /// </summary>
     public class ReadinessHealthCheckTests
     {
-        // ---- Catálogo: gate duro da readiness ---------------------------------------------------
+        // ---- Catálogo: gate duro da readiness, em TRÊS estados ----------------------------------
+        //
+        // (a) Aquecendo → Unhealthy, mas marcado transitório (o retry ainda pode recuperar).
+        // (b) Pronto (> 0 layouts) → Healthy — ÚNICO estado saudável.
+        // (c) Vazio (warm-up concluiu com 0) → Unhealthy definitivo. NUNCA Healthy: catálogo sem
+        //     layouts não serve requisição nenhuma, e um deploy não pode declarar sucesso com ele.
 
         [Fact]
-        public async Task Catalogo_vazio_apos_warmup_e_unhealthy()
+        public async Task Catalogo_vazio_apos_warmup_e_unhealthy_definitivo()
         {
             var state = new CatalogWarmupState();
-            state.SetResult(0);
+            state.SetResult(0); // warm-up CONCLUIU e o catálogo veio vazio
 
             var result = await new CatalogHealthCheck(state).CheckHealthAsync(new HealthCheckContext());
 
             Assert.Equal(HealthStatus.Unhealthy, result.Status);
+            Assert.Equal(nameof(CatalogWarmupStatus.Vazio), result.Data["estado"]);
+            Assert.Equal(false, result.Data["transitorio"]); // exige intervenção, não se resolve sozinho
+            Assert.Equal(0, result.Data["layoutCount"]);
         }
 
         [Fact]
-        public async Task Catalogo_ainda_nao_concluido_e_unhealthy()
+        public async Task Catalogo_ainda_nao_concluido_e_unhealthy_transitorio()
         {
-            // Warm-up não rodou (Completed=false) → instância não está pronta.
-            var result = await new CatalogHealthCheck(new CatalogWarmupState()).CheckHealthAsync(new HealthCheckContext());
+            // Warm-up não rodou/está em retry (Completed=false) → instância não está pronta, mas
+            // isso NÃO é falha definitiva: o backoff da issue #67 ainda pode recuperar sozinho.
+            var state = new CatalogWarmupState();
+            state.RegisterFailedAttempt("SqlException");
+
+            var result = await new CatalogHealthCheck(state).CheckHealthAsync(new HealthCheckContext());
 
             Assert.Equal(HealthStatus.Unhealthy, result.Status);
+            Assert.Equal(nameof(CatalogWarmupStatus.Aquecendo), result.Data["estado"]);
+            Assert.Equal(true, result.Data["transitorio"]);
+            Assert.Equal(1, result.Data["tentativasFalhas"]);
+            Assert.Contains("AQUECENDO", result.Description);
         }
 
         [Fact]
@@ -44,6 +60,30 @@ namespace LayoutParserApi.Tests.Health
             var result = await new CatalogHealthCheck(state).CheckHealthAsync(new HealthCheckContext());
 
             Assert.Equal(HealthStatus.Healthy, result.Status);
+            Assert.Equal(nameof(CatalogWarmupStatus.Pronto), result.Data["estado"]);
+            Assert.Equal(42, result.Data["layoutCount"]);
+        }
+
+        /// <summary>
+        /// Os dois estados NÃO saudáveis respondem o mesmo HTTP (503), então só o payload os separa.
+        /// Sem essa distinção o operador não sabe se espera (aquecendo) ou se age (vazio definitivo).
+        /// </summary>
+        [Fact]
+        public async Task Aquecendo_e_vazio_sao_ambos_unhealthy_mas_distinguiveis()
+        {
+            var aquecendo = new CatalogWarmupState();
+
+            var vazio = new CatalogWarmupState();
+            vazio.SetResult(0);
+
+            var rAquecendo = await new CatalogHealthCheck(aquecendo).CheckHealthAsync(new HealthCheckContext());
+            var rVazio = await new CatalogHealthCheck(vazio).CheckHealthAsync(new HealthCheckContext());
+
+            Assert.Equal(HealthStatus.Unhealthy, rAquecendo.Status);
+            Assert.Equal(HealthStatus.Unhealthy, rVazio.Status);
+            Assert.NotEqual(rAquecendo.Data["estado"], rVazio.Data["estado"]);
+            Assert.NotEqual(rAquecendo.Data["transitorio"], rVazio.Data["transitorio"]);
+            Assert.NotEqual(rAquecendo.Description, rVazio.Description);
         }
 
         // ---- Dependências opcionais: Degraded, não Unhealthy ------------------------------------
@@ -100,6 +140,37 @@ namespace LayoutParserApi.Tests.Health
             var report = await svc.CheckHealthAsync(r => r.Tags.Contains("ready"));
 
             Assert.Equal(HealthStatus.Unhealthy, report.Status);
+        }
+
+        /// <summary>
+        /// Trava a decisão de NÃO reportar o warm-up em andamento como <c>Degraded</c>: Degraded
+        /// mapeia para <b>200</b> em /health/ready e o smoke test do deploy exige 200 estrito — a
+        /// instância seria declarada pronta com o catálogo ainda vazio, exatamente a classe de bug
+        /// que esta sonda fecha. Unhealthy (503) mantém o smoke test retentando, que é o correto:
+        /// o laço do deploy já trata 503 como "ainda não pronto", não como falha definitiva.
+        /// </summary>
+        [Fact]
+        public async Task Readiness_com_catalogo_aquecendo_agrega_unhealthy_e_nao_degraded()
+        {
+            var services = new ServiceCollection();
+            services.AddLogging();
+
+            // Warm-up em andamento/retry: nunca chamou SetResult.
+            var state = new CatalogWarmupState();
+            state.RegisterFailedAttempt("SqlException");
+            services.AddSingleton(state);
+
+            services.AddHealthChecks()
+                .Add(new HealthCheckRegistration("catalog",
+                    sp => new CatalogHealthCheck(sp.GetRequiredService<CatalogWarmupState>()),
+                    HealthStatus.Unhealthy, new[] { "ready" }));
+
+            await using var provider = services.BuildServiceProvider();
+            var report = await provider.GetRequiredService<HealthCheckService>()
+                .CheckHealthAsync(r => r.Tags.Contains("ready"));
+
+            Assert.Equal(HealthStatus.Unhealthy, report.Status);
+            Assert.Equal(true, report.Entries["catalog"].Data["transitorio"]);
         }
 
         [Fact]

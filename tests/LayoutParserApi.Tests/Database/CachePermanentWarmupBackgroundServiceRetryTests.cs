@@ -107,6 +107,92 @@ namespace LayoutParserApi.Tests.Database
             await sut.StopAsync(CancellationToken.None);
         }
 
+        /// <summary>
+        /// Falha de LEITURA do catálogo não pode virar "catálogo vazio". CachedLayoutService/
+        /// LayoutDatabaseService engolem a exceção de SQL e devolvem <c>Success=false</c> — o catch
+        /// do retry nunca vê exceção nesse caminho. Antes isso virava <c>SetResult(0)</c>:
+        /// warm-up marcado como CONCLUÍDO no estado definitivo "Vazio", com o retry da issue #67
+        /// morto justamente no cenário que ele existe para cobrir (blip de SQL).
+        /// </summary>
+        [Fact]
+        public async Task Busca_sem_sucesso_nao_conclui_warmup_e_continua_aquecendo()
+        {
+            // Refresh não lança (exceção engolida lá dentro), mas a busca subsequente não tem sucesso.
+            var fakeLayoutService = new FakeCachedLayoutService(failuresBeforeSuccess: 0, successCount: 0, searchSuccess: false);
+            var fakeMapperService = new FakeCachedMapperService(failuresBeforeSuccess: 0);
+            var catalogState = new CatalogWarmupState();
+
+            var services = new ServiceCollection();
+            services.AddSingleton<ICachedLayoutService>(fakeLayoutService);
+            services.AddSingleton<ICachedMapperService>(fakeMapperService);
+            await using var provider = services.BuildServiceProvider();
+
+            var delayCalls = 0;
+            using var cts = new CancellationTokenSource();
+            Task NoDelay(TimeSpan _, CancellationToken __)
+            {
+                delayCalls++;
+                if (delayCalls >= 3) cts.Cancel(); // sem isso o loop (corretamente) tentaria para sempre
+                return Task.CompletedTask;
+            }
+
+            var sut = new CachePermanentWarmupBackgroundService(
+                provider,
+                NullLogger<CachePermanentWarmupBackgroundService>.Instance,
+                catalogState,
+                NoDelay);
+
+            await sut.StartAsync(cts.Token);
+            await WaitUntilAsync(() => cts.IsCancellationRequested && fakeLayoutService.RefreshAttempts >= 3, TimeSpan.FromSeconds(5));
+
+            Assert.False(catalogState.Completed);
+            Assert.Equal(CatalogWarmupStatus.Aquecendo, catalogState.Status);
+            Assert.Equal(-1, catalogState.LayoutCount); // nunca registrou 0 como conclusão
+            Assert.True(catalogState.FailedAttempts >= 3);
+            Assert.True(fakeLayoutService.RefreshAttempts >= 3); // continuou tentando
+
+            await sut.StopAsync(CancellationToken.None);
+        }
+
+        /// <summary>
+        /// O outro lado da moeda: busca BEM-SUCEDIDA devolvendo 0 layouts é conclusão de verdade
+        /// (o catálogo está mesmo vazio) → estado "Vazio", definitivo, sem retry infinito. Readiness
+        /// segue Unhealthy — é o sinal correto para o operador, não um Healthy mentiroso.
+        /// </summary>
+        [Fact]
+        public async Task Catalogo_realmente_vazio_conclui_como_vazio_definitivo()
+        {
+            var fakeLayoutService = new FakeCachedLayoutService(failuresBeforeSuccess: 0, successCount: 0);
+            var fakeMapperService = new FakeCachedMapperService(failuresBeforeSuccess: 0);
+            var catalogState = new CatalogWarmupState();
+
+            var services = new ServiceCollection();
+            services.AddSingleton<ICachedLayoutService>(fakeLayoutService);
+            services.AddSingleton<ICachedMapperService>(fakeMapperService);
+            await using var provider = services.BuildServiceProvider();
+
+            var delayCalls = 0;
+            Task NoDelay(TimeSpan _, CancellationToken __) { delayCalls++; return Task.CompletedTask; }
+
+            var sut = new CachePermanentWarmupBackgroundService(
+                provider,
+                NullLogger<CachePermanentWarmupBackgroundService>.Instance,
+                catalogState,
+                NoDelay);
+
+            using var cts = new CancellationTokenSource();
+            await sut.StartAsync(cts.Token);
+            await WaitUntilAsync(() => catalogState.Completed, TimeSpan.FromSeconds(5));
+
+            Assert.True(catalogState.Completed);
+            Assert.Equal(CatalogWarmupStatus.Vazio, catalogState.Status);
+            Assert.Equal(0, catalogState.LayoutCount);
+            Assert.Equal(1, fakeLayoutService.RefreshAttempts); // não fica retentando à toa
+            Assert.Equal(0, delayCalls);
+
+            await sut.StopAsync(cts.Token);
+        }
+
         private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
         {
             var deadline = DateTime.UtcNow + timeout;
@@ -121,12 +207,14 @@ namespace LayoutParserApi.Tests.Database
         {
             private readonly int _failuresBeforeSuccess;
             private readonly int _successCount;
+            private readonly bool _searchSuccess;
             public int RefreshAttempts { get; private set; }
 
-            public FakeCachedLayoutService(int failuresBeforeSuccess, int successCount)
+            public FakeCachedLayoutService(int failuresBeforeSuccess, int successCount, bool searchSuccess = true)
             {
                 _failuresBeforeSuccess = failuresBeforeSuccess;
                 _successCount = successCount;
+                _searchSuccess = searchSuccess;
             }
 
             public Task RefreshCacheFromDatabaseAsync()
@@ -141,7 +229,14 @@ namespace LayoutParserApi.Tests.Database
 
             public Task<LayoutSearchResponse> SearchLayoutsAsync(LayoutSearchRequest request)
             {
-                return Task.FromResult(new LayoutSearchResponse { Success = true, TotalFound = _successCount });
+                // searchSuccess=false simula o que o serviço real faz quando o SQL cai: ENGOLE a
+                // exceção e devolve Success=false (não propaga) — "não consegui ler", não "vazio".
+                return Task.FromResult(new LayoutSearchResponse
+                {
+                    Success = _searchSuccess,
+                    TotalFound = _searchSuccess ? _successCount : 0,
+                    ErrorMessage = _searchSuccess ? "" : "SQL indisponivel (simulado)"
+                });
             }
 
             public Task<LayoutRecord?> GetLayoutByIdAsync(int id) => Task.FromResult<LayoutRecord?>(null);
