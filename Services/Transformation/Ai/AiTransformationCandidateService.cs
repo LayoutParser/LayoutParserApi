@@ -59,6 +59,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
         }
 
         public Task EnqueueAsync(
+            string userId,
             string ticket,
             string layoutName,
             Guid layoutGuid,
@@ -73,11 +74,11 @@ namespace LayoutParserApi.Services.Transformation.Ai
             if (string.IsNullOrWhiteSpace(groundTruthXml))
             {
                 // Reforça 2.1 do desenho: sem gabarito sysmiddle, o pathway IA não é aplicável.
-                _store.Set(ticket, new AiCandidateStatus { Status = AiCandidateStatus.StatusNotApplicable });
+                _store.Set(userId, ticket, new AiCandidateStatus { Status = AiCandidateStatus.StatusNotApplicable });
                 return Task.CompletedTask;
             }
 
-            _store.Set(ticket, new AiCandidateStatus { Status = AiCandidateStatus.StatusRunning });
+            _store.Set(userId, ticket, new AiCandidateStatus { Status = AiCandidateStatus.StatusRunning });
 
             // ✅ Fire-and-forget real: NUNCA propaga exceção para o chamador (dotnet-standards.md
             // §Background work). O teto de sanidade (não é SLA de produto — §2.3/§6 do desenho)
@@ -90,14 +91,14 @@ namespace LayoutParserApi.Services.Transformation.Ai
 
                 try
                 {
-                    await RunLoopAsync(ticket, layoutName, layoutGuid, mapperGuid, inputContent, groundTruthXml, linkedCts.Token);
+                    await RunLoopAsync(userId, ticket, layoutName, layoutGuid, mapperGuid, inputContent, groundTruthXml, linkedCts.Token);
                 }
                 catch (OperationCanceledException)
                 {
                     _logger.LogWarning(
                         "Job do pathway IA excedeu o teto de sanidade de {SanityMinutes}min (ticket={Ticket}, layout={LayoutName})",
                         sanityMinutes, ticket, layoutName);
-                    _store.Set(ticket, new AiCandidateStatus
+                    _store.Set(userId, ticket, new AiCandidateStatus
                     {
                         Status = AiCandidateStatus.StatusFailed,
                         Diagnostics = new AiCandidateDiagnostics { LastError = "Teto de sanidade excedido" }
@@ -106,7 +107,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "Falha não tratada no job do pathway IA (ticket={Ticket}, layout={LayoutName})", ticket, layoutName);
-                    _store.Set(ticket, new AiCandidateStatus
+                    _store.Set(userId, ticket, new AiCandidateStatus
                     {
                         Status = AiCandidateStatus.StatusFailed,
                         Diagnostics = new AiCandidateDiagnostics { LastError = "Falha interna no job de geração via IA" }
@@ -117,9 +118,9 @@ namespace LayoutParserApi.Services.Transformation.Ai
             return Task.CompletedTask;
         }
 
-        public Task<AiCandidateStatus> GetStatusAsync(string ticket, CancellationToken cancellationToken)
+        public Task<AiCandidateStatus> GetStatusAsync(string userId, string ticket, CancellationToken cancellationToken)
         {
-            var status = _store.Get(ticket) ?? new AiCandidateStatus { Status = AiCandidateStatus.StatusNotFound };
+            var status = _store.Get(userId, ticket) ?? new AiCandidateStatus { Status = AiCandidateStatus.StatusNotFound };
             return Task.FromResult(status);
         }
 
@@ -128,7 +129,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
         /// node-a-node como <c>CanonicalDiffer</c> de <c>ai/XslSynth</c>) → corrigir.
         /// </summary>
         private async Task RunLoopAsync(
-            string ticket, string layoutName, Guid layoutGuid, string mapperGuid,
+            string userId, string ticket, string layoutName, Guid layoutGuid, string mapperGuid,
             string inputContent, string groundTruthXml, CancellationToken cancellationToken)
         {
             var maxIterations = _options.MaxIterations > 0 ? _options.MaxIterations : 3;
@@ -149,7 +150,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
                 catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
                 {
                     _logger.LogWarning(ex, "Ollama indisponível/timeout no pathway IA (ticket={Ticket}, iteração={Iteration})", ticket, iteration);
-                    _store.Set(ticket, new AiCandidateStatus
+                    _store.Set(userId, ticket, new AiCandidateStatus
                     {
                         Status = AiCandidateStatus.StatusFailed,
                         Diagnostics = new AiCandidateDiagnostics { Iterations = iteration - 1, LastError = "Ollama indisponível ou excedeu o tempo limite" }
@@ -175,7 +176,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
 
                 if (diffCount == 0)
                 {
-                    _store.Set(ticket, new AiCandidateStatus
+                    _store.Set(userId, ticket, new AiCandidateStatus
                     {
                         Status = AiCandidateStatus.StatusConverged,
                         Candidate = new TransformationCandidate
@@ -203,7 +204,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
                 // (o candidato em si não vaza para candidates[]/recommendedCandidateId — §2.2 do desenho).
                 if (iteration == maxIterations)
                 {
-                    _store.Set(ticket, new AiCandidateStatus
+                    _store.Set(userId, ticket, new AiCandidateStatus
                     {
                         Status = AiCandidateStatus.StatusFailed,
                         Diagnostics = new AiCandidateDiagnostics
