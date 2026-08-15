@@ -1,5 +1,6 @@
 using LayoutParserApi.Services.Health;
 using LayoutParserApi.Services.Transformation.LowCode;
+using LayoutParserApi.Services.XmlAnalysis;
 
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
@@ -105,6 +106,82 @@ namespace LayoutParserApi.Tests.Health
             var result = await new LowCodeRunnerHealthCheck(options).CheckHealthAsync(new HealthCheckContext());
 
             Assert.Equal(HealthStatus.Degraded, result.Status);
+        }
+
+        /// <summary>
+        /// A2 (gate #107/#108): mesmo com RunnerPath válido, AllowedPackageGuids vazio é
+        /// Degraded — a query de mapper vira IN (NULL) e nenhuma transformação low-code funciona,
+        /// mas parse/catálogo seguem servindo (mesma severidade do resto deste health check).
+        /// </summary>
+        [Fact]
+        public async Task Runner_com_AllowedPackageGuids_vazio_e_degraded()
+        {
+            var options = Options.Create(new LowCodeRunnerOptions
+            {
+                RunnerPath = System.Reflection.Assembly.GetExecutingAssembly().Location, // arquivo que existe de verdade
+                AllowedPackageGuids = new List<string>()
+            });
+
+            var result = await new LowCodeRunnerHealthCheck(options).CheckHealthAsync(new HealthCheckContext());
+
+            Assert.Equal(HealthStatus.Degraded, result.Status);
+            Assert.Contains("AllowedPackageGuids", result.Description);
+        }
+
+        [Fact]
+        public async Task Runner_com_AllowedPackageGuids_preenchido_e_healthy()
+        {
+            var options = Options.Create(new LowCodeRunnerOptions
+            {
+                RunnerPath = System.Reflection.Assembly.GetExecutingAssembly().Location,
+                AllowedPackageGuids = new List<string> { "11111111-1111-1111-1111-111111111111" }
+            });
+
+            var result = await new LowCodeRunnerHealthCheck(options).CheckHealthAsync(new HealthCheckContext());
+
+            Assert.Equal(HealthStatus.Healthy, result.Status);
+        }
+
+        // ---- Ollama: config órfã (Url ausente/localhost) é sinal forte neste projeto ------------
+
+        [Fact]
+        public async Task Ollama_com_url_localhost_e_degraded()
+        {
+            var options = Options.Create(new OllamaOptions { Url = "http://localhost:11434" });
+
+            var result = await new OllamaConfigHealthCheck(options).CheckHealthAsync(new HealthCheckContext());
+
+            Assert.Equal(HealthStatus.Degraded, result.Status);
+        }
+
+        [Fact]
+        public async Task Ollama_com_url_127_0_0_1_e_degraded()
+        {
+            var options = Options.Create(new OllamaOptions { Url = "http://127.0.0.1:11434" });
+
+            var result = await new OllamaConfigHealthCheck(options).CheckHealthAsync(new HealthCheckContext());
+
+            Assert.Equal(HealthStatus.Degraded, result.Status);
+        }
+
+        [Fact]
+        public async Task Ollama_com_url_vazia_e_degraded()
+        {
+            var options = Options.Create(new OllamaOptions { Url = "" });
+
+            var result = await new OllamaConfigHealthCheck(options).CheckHealthAsync(new HealthCheckContext());
+
+            Assert.Equal(HealthStatus.Degraded, result.Status);
+        }
+
+        [Fact]
+        public async Task Ollama_com_url_de_vm_remota_e_healthy()
+        {
+            var options = Options.Create(new OllamaOptions { Url = "http://10.0.0.42:11434" });
+
+            var result = await new OllamaConfigHealthCheck(options).CheckHealthAsync(new HealthCheckContext());
+
+            Assert.Equal(HealthStatus.Healthy, result.Status);
         }
 
         // ---- Agregação: dependência forçada a falhar → readiness responde 503 -------------------
