@@ -147,6 +147,37 @@ Os segredos antigos **persistem nos commits anteriores** mesmo após este commit
 > ⚠️ **A limpeza NÃO substitui a rotação.** Qualquer clone feito antes da limpeza ainda contém os
 > segredos. Só a **rotação** (gerar chaves novas) invalida o que já vazou — faça-a primeiro.
 
+## CodeQL desativado — Dependabot mantido (2026-08-15)
+
+**Causa raiz do erro de CI** (`Advanced Security must be enabled...`): CodeQL *code scanning* em
+repositório **privado** exige GitHub Advanced Security (GHAS), pago. O repo está privado desde
+2026-08-12. A análise roda e conclui, só o **upload do SARIF** falha — todo run do
+`.github/workflows/codeql.yml` falha eternamente, sem alternativa de config (não é bug de YAML/
+permissions, ver comentário já presente no arquivo). Como `SecurityCodeScan` (Roslyn, gratuito, já
+ativo com `security-code-scan-baseline.json`) cobre o mesmo papel de SAST pra C#, o CodeQL é
+puro desperdício de minutos de CI + ruído de "falhou" a cada push/PR/segunda-feira.
+
+**Decisão: remover `.github/workflows/codeql.yml` por completo** (não só o step de upload — sem
+GHAS o job de `analyze` não tem efeito nenhum; manter só a análise local sem upload seria rodar
+`autobuild`/`security-extended` por ~30min pra descartar o resultado). Instrução exata pra
+`@lp-devops`: apagar o arquivo (o `LayoutParserReact` tem workflow idêntico — mesmo repo privado,
+mesma limitação de GHAS; a distinção não é "publico vs privado", é confirmar se o dono quer
+remover lá também, decisão dele).
+
+**Dependabot NÃO é o problema — mantido como está.** Confirmado lendo `.github/dependabot.yml`:
+são `version updates` (PRs automáticos de bump de dependência, `nuget` + `github-actions`), que
+é gratuito em qualquer repositório (público ou privado), sem GHAS. O que exige GHAS em repo
+privado é uma família diferente — `Dependabot alerts` (scanning de vulnerabilidade) e `secret
+scanning` — nenhum dos dois está configurado aqui (não há nada em `Settings → Security`
+habilitando alerts, só o `dependabot.yml` de version updates). O dono lembrava de "parar
+Dependabot por licença" — essa lembrança se aplica ao CodeQL (mesma família "Advanced Security"),
+não ao Dependabot version updates. Nenhuma ação necessária no `dependabot.yml`.
+
+**Resumo pra `@lp-devops` executar:**
+1. `git rm .github/workflows/codeql.yml` (LayoutParserApi). Avaliar o mesmo no LayoutParserReact.
+2. `dependabot.yml` — **não mexer**, já é 100% gratuito e correto.
+3. `SecurityCodeScan` + baseline — **não mexer**, é o substituto ativo do CodeQL.
+
 ## Regras gerais (todos os agentes)
 
 - **NUNCA** comite segredos, connection strings ou tokens.
