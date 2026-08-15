@@ -383,6 +383,10 @@ try
     builder.Services.Configure<LayoutParserApi.Services.Transformation.Ai.AiTransformationCandidateOptions>(
         builder.Configuration.GetSection("AiTransformationCandidate"));
     builder.Services.AddSingleton<LayoutParserApi.Services.Transformation.Ai.AiCandidateStore>();
+    // ✅ Issue #51: a store não tinha expiração — cada ticket ficava para sempre em memória e em
+    // disco. A poda roda em BackgroundService (previsível e independente de tráfego) justamente
+    // para o polling de status não pagar por varredura de diretório no caminho de request.
+    builder.Services.AddHostedService<LayoutParserApi.Services.Transformation.Ai.AiCandidateStoreCleanupBackgroundService>();
     builder.Services.AddHttpClient<LayoutParserApi.Services.Transformation.Ai.IAiTransformationCandidateService,
         LayoutParserApi.Services.Transformation.Ai.AiTransformationCandidateService>(client =>
     {
