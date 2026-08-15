@@ -12,27 +12,57 @@ hardcoded no código (`GeminiAIService`, `LayoutDatabaseService`, `ElasticSearch
 | Segredo | Onde | Status |
 |---------|------|--------|
 | API key do **Gemini** | `Gemini:ApiKey` | Removido do código/JSON ✅ · **Gemini decomissionado (2026-07-21) — revogar/desprovisionar, não rotacionar** 🔴 |
-| Senha do **SQL Server** | `Database:Password` | **REGRESSÃO em 2026-07-18** (ver abaixo) · removido de novo ✅ · **repositório PÚBLICO desde 2026-08-15 — exposição TOTAL, rotação é BLOQUEANTE CRÍTICO** 🔴🔴 |
+| Senha do **SQL Server** | `Database:Password` | **REGRESSÃO em 2026-07-18** (ver abaixo) · removido de novo ✅ · repositórios da org PÚBLICOS desde 2026-08-15 · **ROTAÇÃO NÃO É OPÇÃO (ver 2026-08-15 abaixo) — mitigação é limpeza de histórico + hardening em repouso + prevenção de reincidência** 🔴🔴 |
 | Credenciais do **Elastic** | `ElasticSearch:Username/Password` | ✅ Removido — mecanismo nunca foi conectado ao pipeline real (Serilog é o logging efetivo); código morto (`ILoggingStrategy`/`ElasticSearch*`) e config removidos em 2026-07-27 |
 
-### 🔴🔴 CRÍTICO (2026-08-15) — os 4 repositórios da org ficaram PÚBLICOS
+### 🔴🔴 2026-08-15 — rotação da senha SQL descartada: credencial compartilhada org-wide
 
-Confirmado via `gh api`: os 4 repositórios da org `LayoutParser` (`LayoutParserApi`,
-`LayoutParserLib`, `LayoutParserDecrypt`, `LayoutParserReact`) estão `private=false`. Isso
-**muda a natureza do risco** descrito nesta seção: o histórico completo do git — incluindo os
-commits onde a senha do SQL Server (login `macgyver`, `172.31.249.51`, banco
-`ConnectUS_Macgyver`) apareceu em texto plano — está **publicamente legível por qualquer
-pessoa**, sem precisar de acesso de colaborador. Não é mais "exposição a quem tem clone",
-é "exposição à internet".
+O dono confirmou uma restrição crítica que **invalida a linha de ação anterior** ("rotacionar"):
+a senha do SQL Server (login `macgyver`, host `172.31.249.51`, banco `ConnectUS_Macgyver`)
+é uma credencial **compartilhada por ~231.890 times dentro da NDD inteira**, não exclusiva deste
+projeto. Trocá-la não é uma decisão que este time pode tomar unilateralmente — quebraria todo
+consumidor da credencial fora deste repositório. **Rotação sai do plano de remediação.**
 
-**Efeito imediato:**
-- A rotação da senha SQL deixa de ser "pendente, bloqueada no DBA" e vira **bloqueante crítico
-  de segurança** — tratar como incidente, não como item de backlog.
-- A limpeza de histórico (`git filter-repo`/BFG) só faz sentido **depois** da rotação — ver
-  seção "Limpeza do histórico do git" abaixo, que documenta o **preparo** (sem execução).
-- Ação em andamento (2026-08-15): `@lp-devops` acionando o DBA e preparando a limpeza em
-  paralelo, por pedido explícito do dono ("Aciona o DBA primeiro, prepara a limpeza em
-  paralelo"). Ver runbook de rotação e checklist de preparo abaixo.
+Isso muda o cálculo de risco: como o segredo não pode ser invalidado, o vazamento em texto plano
+no histórico do git (regressão de 2026-07-18) **é permanente** enquanto o histórico não for
+limpo — e os 4 repositórios da org estão públicos desde 2026-08-15, então qualquer pessoa na
+internet já pode ler esses commits hoje. A resposta correta deixa de ser "invalidar a senha" e
+passa a ser: (1) reduzir a exposição futura, (2) reduzir o raio de dano se a senha vazada for
+usada, (3) impedir reincidência.
+
+**Prioridades, em ordem:**
+
+1. **[PRIORIDADE #1] Limpar o histórico do git** (`git filter-repo`/BFG, ver seção abaixo) —
+   única ação que efetivamente reduz a exposição, já que a senha não pode ser trocada.
+   Dono: `@lp-devops`, sob confirmação explícita do dono do projeto (reescreve histórico,
+   exige re-clone de todo mundo). Antes disso, considerar também **voltar os repos a privado**
+   como mitigação imediata e reversível enquanto a limpeza é preparada.
+2. **Hardening da senha em repouso no host** — hoje, mesmo fora do `appsettings.json`, a senha
+   fica em texto plano no `Environment` do serviço Windows (`HKLM\SYSTEM\...\Services\
+   LayoutParserApi\Environment`), legível por qualquer admin local. Avaliar DPAPI
+   (`ProtectedData` com `Machine` scope), Windows Credential Manager, ou
+   `ProtectedConfigurationBuilder` do ASP.NET Core para criptografar a connection string em
+   repouso — sem infra nova (Vault/Consul já descartados por porte do projeto). Dono:
+   `@lp-devops` (host) com apoio de `@lp-backend-dev` (código, se precisar de leitura custom).
+3. **Nunca logar/exibir a connection string.** Checado nesta sessão: os `LogError(ex, ...)` em
+   `Services/Database/CachedMapperService.cs` e `MapperDatabaseService.cs` logam `ex.Message`,
+   mas `SqlException.Message` do SqlClient não inclui a senha (só server/DB/user) — risco baixo,
+   não zero. Confirmar que nenhum outro ponto loga a connection string completa (`ex.ToString()`
+   em nível `Debug`/`Trace`, por exemplo). Dono: `@lp-backend-dev`.
+4. **Prevenir reincidência com mecanismo técnico, não só disciplina** — a regressão de
+   2026-07-18 aconteceu porque alguém testou local com a senha no `appsettings.json` e comitou
+   junto. Propor: (a) hook de pre-commit local com `gitleaks`/`detect-secrets`; (b) step no CI
+   (`ci-dev.yml`/`deploy.yml`) que escaneia o diff do PR por padrão de connection string com
+   senha antes de permitir merge. Ambos gratuitos, sem licença. Dono: `@lp-backend-dev` (hook
+   local) + `@lp-devops` (step de CI).
+5. **Compartimentalizar o dano no lado do SQL** — avaliar com o DBA se o login `macgyver`, tal
+   como usado por esta API, tem permissões mais amplas do que o necessário (acesso de
+   escrita/DDL em bases que a API não toca). Restringir ao mínimo necessário não impede o
+   vazamento, mas reduz o que alguém com a senha comprometida consegue fazer. Dono: escalar ao
+   DBA (fora do alcance de qualquer agente).
+
+**Reversão futura:** se algum dia a NDD decidir isolar este projeto com um login SQL próprio
+(não compartilhado), a rotação volta a ser viável e o runbook antigo (abaixo) pode ser reativado.
 
 ### ⚠️ REGRESSÃO (2026-07-18) — senha SQL voltou ao repositório
 
@@ -40,8 +70,9 @@ A senha do SQL Server **reapareceu em texto plano** no `appsettings.json` comita
 **histórico da `master` via merge da PR #7**. A remoção foi refeita em 2026-07-18 (placeholder `""`),
 mas o valor está de novo em commits públicos do histórico.
 
-- **Rotação continua PENDENTE e ficou ainda mais urgente** 🔴 — a exposição agora inclui a master.
-- A futura limpeza de histórico (`git filter-repo`/BFG, seção abaixo) precisará cobrir **também** esses commits novos.
+- A limpeza de histórico (`git filter-repo`/BFG, seção abaixo) precisa cobrir **também** esses
+  commits novos — é a única mitigação real agora que rotação está fora de cogitação (ver
+  2026-08-15 acima).
 - Causa raiz a vigiar: ao testar localmente com a senha no JSON, o arquivo acaba indo junto no commit.
   Use `dotnet user-secrets` (dev) ou o mecanismo de CI abaixo — **nunca** edite o segredo no `appsettings.json`.
 
@@ -51,9 +82,13 @@ mas o valor está de novo em commits públicos do histórico.
 - [x] **Remover** os fallbacks hardcoded (`?? "<segredo>"`) no código → `?? string.Empty`.
 - [x] **Ignorar** `appsettings.*.local.json` no `.gitignore`.
 - [x] **Documentar** uso de `dotnet user-secrets` (dev) e env vars `Section__Key` (prod) — ver README §9.
-- [ ] **Rotacionar** a senha do SQL Server exposta (gerar nova no banco) — **CRÍTICO, repositório público desde 2026-08-15, escalado ao DBA nesta sessão** 🔴🔴.
+- [ ] ~~Rotacionar a senha do SQL Server~~ — **DESCARTADO em 2026-08-15**: credencial compartilhada
+      por ~231.890 times na NDD, fora do controle deste projeto. Ver seção 2026-08-15 acima.
+- [ ] **Limpar o histórico do git** (`git filter-repo` / BFG) — **PRIORIDADE #1 agora**;
+      executar via `@lp-devops`, sob confirmação.
+- [ ] **Hardening em repouso** da senha no host (DPAPI/Credential Manager/`ProtectedConfigurationBuilder`) — `@lp-devops`.
+- [ ] **Hook de pre-commit + step de CI** anti-reincidência (`gitleaks`/`detect-secrets`) — `@lp-backend-dev` + `@lp-devops`.
 - [ ] **Revogar/desprovisionar** (não rotacionar) a API key do Gemini exposta — Gemini foi decomissionado, sem consumidor previsto. **Ação do dono do projeto** — ver runbook abaixo 🔴.
-- [ ] **Limpar o histórico do git** (`git filter-repo` / BFG) — **executar via @lp-devops, sob confirmação**.
 
 ### Como configurar os segredos (dev)
 
@@ -83,46 +118,21 @@ Settings → Secrets and variables → Actions):
 | `API_URL_DEV` | **Variable** | URL da instância dev (default `http://localhost:5100` se ausente) | Não |
 | `DB_PASSWORD_DEV` | **Secret** | Senha do SQL **atual em uso** (hoje ainda a comprometida — ver nota abaixo) | Não — sem ela a API sobe degradada (sem SQL) |
 
-> 🔴🔴 **Status da rotação (atualizado 2026-08-15):** repositório ficou **PÚBLICO** — a rotação
-> deixou de ser "pendente" e virou **bloqueante crítico**, acionado ao DBA nesta sessão (ver
-> comunicação pronta abaixo). Por necessidade operacional, o secret `DB_PASSWORD_DEV` contém
-> hoje a senha atual (comprometida e agora publicamente exposta). Assim que o DBA rotacionar,
-> execute o runbook abaixo.
+> ⚠️ **Status (atualizado 2026-08-15):** a rotação da senha SQL foi **descartada** — é
+> credencial compartilhada por ~231.890 times na NDD, fora do controle deste projeto (ver seção
+> 2026-08-15 acima). O secret `DB_PASSWORD_DEV` continua com a senha atual (comprometida, mas
+> permanente) — a mitigação real é a limpeza do histórico do git e o hardening em repouso, não a
+> troca do valor.
 
-**Runbook de rotação da senha SQL** (a executar quando a rotação for desbloqueada):
+**Runbook de rotação da senha SQL** (mantido apenas como referência histórica — **não aplicável
+enquanto a senha for compartilhada org-wide**; reativar só se este projeto ganhar um login SQL
+próprio no futuro):
 
-1. No SQL Server (`172.31.249.51`, banco `ConnectUS_Macgyver`): `ALTER LOGIN macgyver WITH
-   PASSWORD = '<nova-senha>'`.
+1. No SQL Server: `ALTER LOGIN <login> WITH PASSWORD = '<nova-senha>'`.
 2. No GitHub: atualizar o secret `DB_PASSWORD_DEV` (e o equivalente de produção, quando existir).
 3. Redisparar o deploy (`workflow_dispatch` do CI Dev ou novo push) — o step reescreve o
    `Environment` do serviço e reinicia a API com a senha nova.
 4. Validar smoke test verde e conexão SQL nos logs (sem imprimir a senha).
-
-**Comunicação pronta para acionar o DBA** (o dono envia pelo canal que tiver com o DBA —
-e-mail/Slack/ticket; não temos esse canal aqui):
-
-```
-Assunto: [CRÍTICO] Rotação urgente de senha — SQL Server exposto publicamente
-
-Severidade: CRÍTICA — ação imediata.
-
-Contexto: o repositório de código que contém a senha do SQL Server em texto plano no
-histórico do git (regressão registrada em 2026-07-18, nunca rotacionada desde então) foi
-tornado PÚBLICO hoje (2026-08-15). O histórico completo do repositório — incluindo os commits
-com a senha em texto plano — está agora legível por qualquer pessoa na internet, sem
-necessidade de acesso de colaborador.
-
-Pedido: rotacionar AGORA a senha do login `macgyver` no SQL Server (172.31.249.51, banco
-ConnectUS_Macgyver):
-
-  ALTER LOGIN macgyver WITH PASSWORD = '<nova-senha>'
-
-Próximo passo (nosso lado, assim que a senha nova existir): atualizar o secret
-DB_PASSWORD_DEV (e o equivalente de produção) no GitHub Actions e redisparar o deploy para
-que o serviço passe a usar a credencial nova.
-
-Por favor confirmar aqui assim que a rotação for concluída.
-```
 
 ### Revogação da API key do Gemini — Gemini decomissionado (2026-07-21)
 
@@ -192,74 +202,11 @@ Os segredos antigos **persistem nos commits anteriores** mesmo após este commit
 4. **Force-push** a história reescrita e **invalidar** os reflogs no remoto.
    Exige coordenação: todos reclonam; PRs/branches abertos quebram.
 
-> ⚠️ **A limpeza NÃO substitui a rotação.** Qualquer clone feito antes da limpeza ainda contém os
-> segredos. Só a **rotação** (gerar chaves novas) invalida o que já vazou — faça-a primeiro.
-
-#### Checklist de preparo (2026-08-15) — status atual, NADA executado ainda
-
-Preparação em paralelo ao acionamento do DBA, por pedido explícito do dono. Nenhum comando
-destrutivo (`git filter-repo`, force-push) foi rodado — só verificação e documentação do
-processo, conforme abaixo.
-
-| Item | Status |
-|------|--------|
-| `git filter-repo` instalado nesta máquina | ❌ Não encontrado (`pip show git-filter-repo` vazio) — instalar com `pip install git-filter-repo` quando for a hora de executar |
-| `replacements.txt` com os segredos reais | ❌ Não montado — **não deve ser montado agora**: o valor em texto plano da senha comprometida não deve ser copiado para um novo arquivo/prompt fora do necessário. Ver processo seguro abaixo. |
-| Repo local limpo (sem alterações pendentes) | Verificar com `git status` no momento da execução — nesta sessão há mudanças de memória de outro agente (`lp-pm`) não relacionadas, não bloqueiam o preparo mas devem ser resolvidas (commit ou stash) antes de qualquer `filter-repo` |
-| Backup (`git clone --mirror`) | ❌ Não feito — fazer imediatamente antes da execução real |
-| Lista de quem tem clone/fork para avisar | ❌ Não levantada — **o dono precisa levantar essa lista** (não temos visibilidade de quem clonou/forkou); sem isso, o force-push quebra colaboradores sem aviso |
-| Rotação da senha SQL concluída (pré-requisito lógico) | ❌ Pendente — ver seção acima. Limpar o histórico **antes** da rotação é inútil: quem já clonou o repo público já tem a senha antiga de qualquer forma |
-
-**Processo seguro para montar o `replacements.txt` no momento da execução (não fazer agora):**
-
-1. No momento em que a limpeza for autorizada e a senha nova já estiver ativa (rotação
-   concluída), quem tiver acesso legítimo ao valor antigo (histórico do secret `DB_PASSWORD_DEV`
-   anterior à rotação, ou o próprio DBA) cria o `replacements.txt` **localmente**, fora de
-   qualquer prompt/chat/log, com a linha `<senha-antiga-em-texto-plano>==>REMOVIDO`.
-2. O arquivo fica **fora do repo** (ex.: pasta temporária) e é apagado logo depois de rodar
-   `git filter-repo --replace-text replacements.txt`.
-3. Repetir o mesmo processo para a chave do Gemini exposta (mesmo arquivo `replacements.txt`
-   pode ter as duas linhas).
-4. Nunca colar o valor do segredo em uma mensagem para o assistente/Claude Code — isso
-   persistiria em logs de sessão. Montar o arquivo diretamente no editor/terminal do operador.
-
-**Ordem de execução recomendada quando tudo estiver pronto:**
-1. DBA confirma rotação da senha SQL concluída.
-2. Atualizar `DB_PASSWORD_DEV` (e equivalente de produção) no GitHub Actions com a senha nova.
-3. Redisparar deploy e validar smoke test.
-4. Só então: backup (`git clone --mirror`) → avisar clones/forks → montar
-   `replacements.txt` pelo processo seguro acima → `git filter-repo` → force-push coordenado.
-
-## CodeQL desativado — Dependabot mantido (2026-08-15)
-
-**Causa raiz do erro de CI** (`Advanced Security must be enabled...`): CodeQL *code scanning* em
-repositório **privado** exige GitHub Advanced Security (GHAS), pago. O repo está privado desde
-2026-08-12. A análise roda e conclui, só o **upload do SARIF** falha — todo run do
-`.github/workflows/codeql.yml` falha eternamente, sem alternativa de config (não é bug de YAML/
-permissions, ver comentário já presente no arquivo). Como `SecurityCodeScan` (Roslyn, gratuito, já
-ativo com `security-code-scan-baseline.json`) cobre o mesmo papel de SAST pra C#, o CodeQL é
-puro desperdício de minutos de CI + ruído de "falhou" a cada push/PR/segunda-feira.
-
-**Decisão: remover `.github/workflows/codeql.yml` por completo** (não só o step de upload — sem
-GHAS o job de `analyze` não tem efeito nenhum; manter só a análise local sem upload seria rodar
-`autobuild`/`security-extended` por ~30min pra descartar o resultado). Instrução exata pra
-`@lp-devops`: apagar o arquivo (o `LayoutParserReact` tem workflow idêntico — mesmo repo privado,
-mesma limitação de GHAS; a distinção não é "publico vs privado", é confirmar se o dono quer
-remover lá também, decisão dele).
-
-**Dependabot NÃO é o problema — mantido como está.** Confirmado lendo `.github/dependabot.yml`:
-são `version updates` (PRs automáticos de bump de dependência, `nuget` + `github-actions`), que
-é gratuito em qualquer repositório (público ou privado), sem GHAS. O que exige GHAS em repo
-privado é uma família diferente — `Dependabot alerts` (scanning de vulnerabilidade) e `secret
-scanning` — nenhum dos dois está configurado aqui (não há nada em `Settings → Security`
-habilitando alerts, só o `dependabot.yml` de version updates). O dono lembrava de "parar
-Dependabot por licença" — essa lembrança se aplica ao CodeQL (mesma família "Advanced Security"),
-não ao Dependabot version updates. Nenhuma ação necessária no `dependabot.yml`.
-
-**Resumo pra `@lp-devops` executar:**
-1. `git rm .github/workflows/codeql.yml` (LayoutParserApi). Avaliar o mesmo no LayoutParserReact.
-2. `dependabot.yml` — **não mexer**, já é 100% gratuito e correto.
-3. `SecurityCodeScan` + baseline — **não mexer**, é o substituto ativo do CodeQL.
+> ⚠️ **Para a senha SQL, a limpeza É a mitigação principal** (rotação não é opção — ver seção
+> 2026-08-15 acima): qualquer clone feito antes da limpeza ainda contém o segredo, mas ao menos
+> deixa de ser publicamente acessível via GitHub. Para a API key do Gemini, revogação continua
+> sendo a ação que efetivamente invalida o segredo — a limpeza de histórico é complementar,
+> não substitui a revogação.
 
 ## Regras gerais (todos os agentes)
 
