@@ -2,10 +2,8 @@ using LayoutParserApi.Services.Cache;
 using LayoutParserApi.Services.Database;
 using LayoutParserApi.Services.Filters;
 using LayoutParserApi.Services.Health;
+using LayoutParserApi.Services.Generation;
 using LayoutParserApi.Services.Generation.Implementations;
-using LayoutParserApi.Services.Generation.Interfaces;
-using LayoutParserApi.Services.Generation.TxtGenerator;
-using LayoutParserApi.Services.Generation.TxtGenerator.Parsers;
 using LayoutParserApi.Services.Implementations;
 using LayoutParserApi.Services.Interfaces;
 using LayoutParserApi.Services.Learning;
@@ -428,6 +426,14 @@ try
     // ✅ Item 4.4 do roadmap de IA: checagem de near-duplicate obrigatória para QUALQUER
     // saída "sintética" antes de indexar - este projeto é material de TCC.
     builder.Services.AddScoped<NearDuplicateChecker>();
+
+    // Generation Services (geração sintética / TXT — DataGenerationController)
+    // ✅ Issue #33: o grupo não existia e QUALQUER chamada ao controller quebrava na resolução de
+    // DI (build passa, o erro só aparece em runtime). Foi restaurado depois de ser apagado como
+    // dano colateral na resolução de conflito do merge que removeu o Pathway 1 — por isso a
+    // composição mora em AddGenerationServices (Services/Generation), chamada aqui e exercitada
+    // pelo teste DataGenerationControllerDiTests: uma composição só, sem réplica que diverge.
+    builder.Services.AddGenerationServices();
 
     // RAG Services (retrieval de exemplos para geração sintética)
     // ✅ Fix incidental (item 1.4 do roadmap de IA, 2026-07-21): RAGService nunca esteve
