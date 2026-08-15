@@ -84,10 +84,16 @@ mas o valor está de novo em commits públicos do histórico.
 - [x] **Documentar** uso de `dotnet user-secrets` (dev) e env vars `Section__Key` (prod) — ver README §9.
 - [ ] ~~Rotacionar a senha do SQL Server~~ — **DESCARTADO em 2026-08-15**: credencial compartilhada
       por ~231.890 times na NDD, fora do controle deste projeto. Ver seção 2026-08-15 acima.
-- [ ] **Limpar o histórico do git** (`git filter-repo` / BFG) — **PRIORIDADE #1 agora**;
-      executar via `@lp-devops`, sob confirmação.
+- [x] **Limpar o histórico do git** (`git filter-repo` / BFG) — executado em 2026-08-15
+      (`@lp-devops`, sob confirmação do dono): force-push feito, repos voltaram a público.
 - [ ] **Hardening em repouso** da senha no host (DPAPI/Credential Manager/`ProtectedConfigurationBuilder`) — `@lp-devops`.
-- [ ] **Hook de pre-commit + step de CI** anti-reincidência (`gitleaks`/`detect-secrets`) — `@lp-backend-dev` + `@lp-devops`.
+      Avaliação e runbook prontos (recomendação: `ProtectedConfigurationBuilder`/user-secrets
+      com DPAPI, opção C — ver [`docs/architecture/runbook-hardening-senha-sql-em-repouso.md`](../../docs/architecture/runbook-hardening-senha-sql-em-repouso.md));
+      falta aplicar no host de produção (dono, via RDP) + um handoff pontual de código para
+      `@lp-backend-dev` (`AddUserSecrets` fora de `IsDevelopment()`).
+- [x] **Step de CI** anti-reincidência (`gitleaks`) — `.github/workflows/gitleaks.yml`, roda em
+      todo PR contra `develop`/`master`/`main`, escaneando o diff introduzido pelo PR
+      (`@lp-devops`). Falta a metade de `@lp-backend-dev`: hook de pre-commit local.
 - [ ] **Revogar/desprovisionar** (não rotacionar) a API key do Gemini exposta — Gemini foi decomissionado, sem consumidor previsto. **Ação do dono do projeto** — ver runbook abaixo 🔴.
 
 ### Como configurar os segredos (dev)
