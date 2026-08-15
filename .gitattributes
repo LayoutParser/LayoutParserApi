@@ -61,3 +61,8 @@
 #*.PDF   diff=astextplain
 #*.rtf   diff=astextplain
 #*.RTF   diff=astextplain
+
+###############################################################################
+# Git hooks shell scripts must keep LF line endings (fail under CRLF on sh)
+###############################################################################
+.githooks/* text eol=lf
