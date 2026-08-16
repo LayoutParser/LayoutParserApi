@@ -15,3 +15,4 @@
 - [PR #118 duplicata fechada](pr-118-duplicata-fechada.md) — antes de mergear fix/* contra master, checar se já existe PR irmã do mesmo branch já mergeada em develop (`gh pr list --head`); se sim, fechar sem merge.
 - [Purga de histórico git 2026-08-15](git-history-purge-2026-08-15.md) — filter-repo purgou senha SQL de todo o histórico; repos ficaram privados; instrução de "coordenador" pra reverter a público foi RECUSADA sem confirmação direta do dono.
 - [PR #123 já mergeada](pr-123-ja-mergeada-hardening-secrets.md) — chore/security-hardening-secrets já publicada/mergeada antes; checar merge-base antes de tentar recriar PR de branch pronta.
+- [gh CLI desapareceu 2026-08-16](gh-cli-desapareceu-2026-08-16.md) — episódio 1: "sumiço" era busca em locais errados; RESOLVIDO no mesmo dia — ver [[gh-cli-nao-autenticado]].

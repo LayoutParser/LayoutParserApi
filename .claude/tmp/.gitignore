@@ -1,4 +1,0 @@
-# Pasta de trabalho temporária do harness.
-# NUNCA versionar nada aqui (pode conter dados sensíveis / credenciais).
-*
-!.gitignore
