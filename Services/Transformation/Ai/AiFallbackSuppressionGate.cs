@@ -13,14 +13,11 @@ namespace LayoutParserApi.Services.Transformation.Ai
         private readonly ConcurrentDictionary<Guid, DateTimeOffset> _cooldowns = new();
         private readonly Func<DateTimeOffset> _clock;
 
-        public AiFallbackSuppressionGate() : this(() => DateTimeOffset.UtcNow)
+        /// <param name="clock">Relógio injetável para testes determinísticos. Em produção fica
+        /// nulo e cai em <see cref="DateTimeOffset.UtcNow"/>.</param>
+        public AiFallbackSuppressionGate(Func<DateTimeOffset>? clock = null)
         {
-        }
-
-        // Construtor interno para testes determinísticos (injeta um clock fixo/controlável).
-        internal AiFallbackSuppressionGate(Func<DateTimeOffset> clock)
-        {
-            _clock = clock;
+            _clock = clock ?? (() => DateTimeOffset.UtcNow);
         }
 
         public bool IsInCooldown(Guid layoutGuid, out DateTimeOffset retryAt)

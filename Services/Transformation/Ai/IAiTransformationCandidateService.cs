@@ -21,10 +21,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
         /// automático de IA (Estado A — docs/architecture/design-fallback-ia-automatico-2026-08-16.md
         /// §6): critério de convergência vira XSD válido + validação de negócio, teto de iterações
         /// <see cref="AiTransformationCandidateOptions.MaxIterationsFallback"/> e o
-        /// <see cref="AiCandidateDiagnostics"/> resultante deve marcar <c>HasGroundTruth = false</c>.
-        /// A implementação completa desse modo é responsabilidade de <c>@lp-parser-llm</c>
-        /// (branch <c>feat/ai-fallback-automatico</c>) — este parâmetro nullable é o contrato que
-        /// a orquestração do controller já assume.
+        /// <see cref="AiCandidateDiagnostics"/> resultante marca <c>HasGroundTruth = false</c>.
         /// </param>
         Task EnqueueAsync(
             string userId,
