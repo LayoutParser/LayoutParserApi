@@ -6,9 +6,15 @@
 
 ## 1. Recomendação
 
-**Opção 3 imediata + Opção 1 como trabalho de fundo + Opção 2 como investigação paralela barata.**
+**Opção 3 imediata + Opção 1 como trabalho de fundo, com validação cruzada
+comportamental do `.exe` como marco embutido na própria Opção 1.**
 
-Não são alternativas — são sequenciais/paralelas com propósitos diferentes:
+> **Atualização 2026-08-16:** a Opção 2 original ("perguntar ao fornecedor
+> Sysmiddle/AppConnector se existe modo de saída anotada") foi **descartada pelo dono** —
+> não há canal de contato disponível com o fornecedor. Não é substituída por uma "Opção 2"
+> nova; ver §1.1 para a razão e o mecanismo que assume esse papel.
+
+Não são alternativas — são sequenciais com propósitos diferentes:
 
 - **Opção 3** desbloqueia o front *agora* com o dado que já existe (granularidade de
   seção/linha via `SegmentMappings`, hoje só no pathway MQSeries — precisa generalizar
@@ -17,20 +23,47 @@ Não são alternativas — são sequenciais/paralelas com propósitos diferentes
 - **Opção 1** é o único caminho que resolve o pedido original (`fieldMappings` campo a
   campo) sem depender de terceiro. É trabalho real de projeto (promover
   `RealMapperParser` pra runtime), não uma extensão de contrato — vira trilha própria,
-  liderada pela Lia.
-- **Opção 2** corre em paralelo, sem bloquear nada: é uma pergunta a fazer (existe modo
-  de saída anotada no `.exe`?), não uma tarefa de engenharia. Se a resposta vier "sim" a
-  tempo, ela pode substituir/validar a Opção 1; se não vier em prazo curto, é descartada
-  sem custo — nenhuma fase de execução dependeu dela.
+  liderada pela Lia. A confiança nessa opção não vem mais de uma fonte externa anotada
+  (Opção 2 antiga); vem de comparação comportamental contra o próprio `.exe`, formalizada
+  como marco de validação da Fase 2 (ver §1.1 e §3).
 
 **Por que não só Opção 1 (ignorar a 3):** o pedido do front já está em drift há tempo
 (ver §1.3 da resposta anterior) e "campo a campo" é um projeto de meses. Entregar seção
 primeiro é reduzir o tempo de bloqueio do time de UI sem comprometer a qualidade do
 resultado final.
 
-**Por que não só Opção 2 (esperar o fornecedor):** fora do nosso controle, sem prazo
-garantido, e a resposta mais provável (produto fechado, sem cooperação formal com a NDD)
-é "não". Não pode ser dependência de bloqueio de nenhuma fase.
+### 1.1 Por que não existe mais uma "Opção 2" separada
+
+Sem canal com o fornecedor, qualquer estratégia de validação de terceiro exigiria
+decompilação do `.exe` — fora de cogitação (risco de licenciamento, e o binário é
+propriedade do fornecedor, não código que possamos inspecionar). Avaliei três
+alternativas que **não** dependem de contato externo:
+
+1. **Engenharia reversa comportamental (adotada).** O `.exe`
+  (`LayoutParserLowCodeRunner.exe`) já roda localmente e aceita input controlado (mapper
+  conhecido + TXT conhecido). Em vez de perguntar ao fornecedor "existe saída anotada?",
+  rodamos os dois lados — nosso `RealMapperParser` promovido e o `.exe` real — sobre a
+  mesma amostra de produção, e comparamos **por valor** (onde o valor de um campo aparece
+  no XML de saída) contra o que nosso parser aponta como origem. Isso não é uma opção
+  paralela e descartável: é o próprio marco de validação que a Fase 2 já precisava ter
+  (divergência zero ou explicada antes de avançar pra Fase 3) — só que agora é o
+  mecanismo *central* de confiança na Opção 1, não um complemento opcional. Não depende de
+  ninguém fora do time: usa apenas artefatos que já temos (o `.exe`, mappers de produção,
+  TXTs de amostra, XMLs de saída reais).
+2. **Flags de verbosidade/debug do `.exe` já expostas.** Verificação rápida e de baixo
+  custo: `LayoutParserLowCodeRunner.exe --help` (ou observação de variáveis de ambiente já
+  lidas pelo runner) pode revelar um modo de log mais granular que já ajuda a depurar o
+  parser sem esperar ninguém. Vale conferir no início da Fase 1 (minutos, não dias) — se
+  não houver nada, descartar sem reabrir investigação.
+3. **Documentação já presente localmente.** Antes de assumir que não existe nada
+  escrito, checar rapidamente as pastas de exemplos/gabaritos SEFAZ e o "servidor de
+  assets" já mapeado em sessões anteriores (`.claude/agent-memory/lp-architect/
+  server-assets-inventory.md`) — se houver manual ou spec do Sysmiddle/Mapper ali, é
+  ganho de graça. Também é checagem de minutos, não uma trilha de trabalho.
+
+Os itens 2 e 3 são checagens pontuais de baixíssimo custo a rodar no início da Fase 1
+(não geram PBI próprio); o item 1 é o que realmente substitui a Opção 2 antiga e por
+isso vira parte explícita da Fase 2 (§3), não uma seção separada do plano.
 
 ## 2. Diagrama do fluxo proposto
 
@@ -53,13 +86,8 @@ flowchart TB
         MVO["MapperVO real\n(amostra produção)"] --> PARSER["RealMapperParser\npromovido a runtime\n(ai/XslSynth.Core → novo serviço)"]
         LAYOUT[(Catálogo TargetLayoutGuid → XPath)] --> PARSER
         PARSER --> FM[FieldMapping por request]
-        FM -->|validação cruzada, amostra| XML
+        FM -->|"validação cruzada comportamental\n(por valor, amostra >=20 docs reais)"| XML
         FM -->|fieldMappings novo campo| FRONT
-    end
-
-    subgraph paralelo["Investigação paralela — Opção 2"]
-        DEVOPS["@lp-devops: contato Sysmiddle/AppConnector\nmodo de saída anotada?"] -.->|se existir| EXE
-        DEVOPS -.->|prazo estourado, sem resposta| DESCARTA[Descartar, seguir só 1+3]
     end
 ```
 
@@ -110,9 +138,13 @@ flowchart TB
   `line-repetition-position-bug`, não a versão quebrada) pro índice de grupo repetido.
 - **Critério de aceite:** parser de runtime produz `FieldMapping[]` completo (origem N,
   destino 1, incluindo valor estático `null` explícito) para um `MapperVO` de amostra.
-- **Marco de validação:** comparação campo a campo entre a saída do nosso parser e o XML
-  real gerado pelo `.exe`, numa amostra de pelo menos 20 documentos reais cobrindo os 3
-  tipos de origem (TXT/MQSeries/IDOC) — só avança se divergência for zero ou explicada.
+- **Marco de validação (é a substituição da Opção 2 antiga, ver §1.1):** engenharia
+  reversa comportamental — rodar `RealMapperParser` promovido e o `LayoutParserLowCodeRunner.exe`
+  real sobre a mesma amostra de produção (mapper conhecido + TXT conhecido) e comparar
+  **por valor** (onde o valor de cada campo aparece no XML de saída real) contra a origem
+  que nosso parser aponta. Amostra de pelo menos 20 documentos reais cobrindo os 3 tipos
+  de origem (TXT/MQSeries/IDOC) — só avança pra Fase 3 se divergência for zero ou
+  explicada. Não depende de nenhum contato externo com o fornecedor.
 
 ### Fase 3 — Expor `fieldMappings` no contrato HTTP
 - **Título de PBI:** "Adicionar `fieldMappings` opcional em `execute-candidates`,
@@ -128,30 +160,18 @@ flowchart TB
 - **Marco de validação:** `@lp-qa` valida contrato + regressão de performance;
   `@lp-doc` atualiza Swagger e o contrato documentado pro front.
 
-### Paralelo — Investigação Opção 2 (descoberta externa)
-- **Título de PBI:** "Descoberta: o `LayoutParserLowCodeRunner.exe`/Sysmiddle tem modo de
-  saída anotada com mapeamento campo↔destino?"
-- **Dono:** `@lp-devops` (Gage) — é quem tem contexto de infra/fornecedor pra buscar
-  documentação ou contato do produto Sysmiddle/AppConnector na NDD.
-- **Escopo:** procurar documentação do fornecedor; perguntar a quem conhece o produto
-  internamente. Não decompilar o binário.
-- **Prazo:** 1 semana corrida a partir do início da Fase 1. Rodar em paralelo, não bloqueia
-  nenhuma fase de 1 a 3.
-- **Se travar (sem resposta em 1 semana):** descartar, seguir só com Opção 1 (Fases 1-3).
-  Se encontrar algo, replanejar a Fase 2 pra usar a saída anotada real em vez do catálogo
-  construído por nós — reduz risco de duas fontes da verdade.
-
 ## 4. Riscos explícitos
 
 | Risco | Mitigação / plano B |
 |---|---|
 | Fase 2 (catálogo + DSL) é maior do que parece — DSL condicional pode ter ramificações não cobertas por regex simples | Escopar Fase 2 como spike com timebox antes de comprometer prazo; se DSL for arbitrariamente complexa, considerar interpretador real (parser de expressão) em vez de regex incremental |
-| Divergência entre nosso parser e o `.exe` real (duas fontes da verdade) | Marco de validação da Fase 2 é bloqueante — não avança pra Fase 3 sem amostra validada; se divergência persistir, `fieldMappings` sai marcado como "best-effort", não fonte oficial |
+| Divergência entre nosso parser e o `.exe` real (duas fontes da verdade) — agora o único juiz de confiança, já que não há fonte externa anotada (Opção 2 descartada) | Marco de validação da Fase 2 é bloqueante — não avança pra Fase 3 sem amostra validada; se divergência persistir, `fieldMappings` sai marcado como "best-effort", não fonte oficial |
 | `tcl-xsl` não usa `MapperVO` (confirmação pendente da Fase 1) | Fase 3 já prevê `fieldMappings` opcional/nulo nesse pathway — não é bloqueio, é escopo reduzido |
-| Opção 2 nunca responde | Timebox de 1 semana, sem crédito de bloqueio — plano segue só com 1+3 |
+| Amostra de validação comportamental (Fase 2) não cobre um caso de borda real de produção (ex.: grupo repetido raro, DSL condicional pouco comum) | Ampliar a amostra incrementalmente conforme casos de borda aparecerem em produção; não é bloqueio de lançamento, é item de acompanhamento pós-Fase 3 |
 | Fase 0 (Opção 3) cria expectativa no front de que "seção" é suficiente e a pressão por `fieldMappings` esfria, mascarando a real necessidade | Comunicar explicitamente ao front, junto da entrega da Fase 0, que é uma etapa intermediária — a Fase 3 continua no roadmap |
 
 ## 5. Próximo passo
 
-Confirmação do dono sobre a recomendação (3 imediata + 1 de fundo + 2 paralela) antes de
-`@lp-pm` formalizar as fases acima como PBIs no board.
+Confirmação do dono sobre a recomendação (Opção 3 imediata + Opção 1 de fundo, com
+validação cruzada comportamental do `.exe` como marco da Fase 2) antes de `@lp-pm`
+formalizar as fases acima como PBIs no board.
