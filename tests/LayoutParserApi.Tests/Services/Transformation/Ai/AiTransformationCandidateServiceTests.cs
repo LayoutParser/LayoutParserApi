@@ -21,10 +21,13 @@ namespace LayoutParserApi.Tests.Services.Transformation.Ai
     public class AiTransformationCandidateServiceTests
     {
         [Fact]
-        public async Task Sem_gabarito_fica_not_applicable_sem_chamar_ollama()
+        public async Task Sem_gabarito_dispara_fallback_automatico_via_ollama()
         {
+            // Design docs/architecture/design-fallback-ia-automatico-2026-08-16.md §6: sem gabarito
+            // sysmiddle, EnqueueAsync não fica mais "not-applicable" na hora — dispara o modo
+            // fallback (Estado A), que também chama o Ollama (só o critério de convergência muda).
             var chamouOllama = false;
-            var service = CriarService(_ => { chamouOllama = true; return "<nfe>não deveria ser gerado</nfe>"; }, out var tempDir);
+            var service = CriarService(_ => { chamouOllama = true; return "<nfe>candidato do fallback</nfe>"; }, out var tempDir, out _);
 
             try
             {
@@ -35,13 +38,53 @@ namespace LayoutParserApi.Tests.Services.Transformation.Ai
                     layoutGuid: Guid.NewGuid(),
                     mapperGuid: "mapper-x",
                     inputContent: "linha-posicional",
-                    groundTruthXml: "",
+                    groundTruthXml: null,
                     cancellationToken: CancellationToken.None);
 
-                var status = await service.GetStatusAsync("usuario-a", "ticket-sem-gabarito", CancellationToken.None);
+                var status = await PollUntilAsync(service, "usuario-a", "ticket-sem-gabarito", s => s.Status != AiCandidateStatus.StatusRunning, TimeSpan.FromSeconds(10));
 
-                Assert.Equal(AiCandidateStatus.StatusNotApplicable, status.Status);
-                Assert.False(chamouOllama);
+                Assert.True(chamouOllama);
+                Assert.NotEqual(AiCandidateStatus.StatusNotApplicable, status.Status);
+            }
+            finally
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
+
+        [Fact]
+        public async Task Fallback_sem_gabarito_usa_MaxIterationsFallback_e_registra_cooldown_ao_falhar()
+        {
+            // Sem schema XSD real disponível no ambiente de teste, TryValidateXsdAsync nunca
+            // valida com sucesso — o loop sempre esgota as iterações. Isso é determinístico o
+            // bastante para testar (a) o teto de MaxIterationsFallback (2, mais conservador que os
+            // 3 do modo com gabarito) e (b) o registro de cooldown no gate ao falhar (§5 do desenho).
+            var iteracoesChamadas = 0;
+            var layoutGuid = Guid.NewGuid();
+            var gate = new AiFallbackSuppressionGate();
+            var service = CriarService(_ => { iteracoesChamadas++; return "<qualquer>candidato</qualquer>"; }, out var tempDir, out _, gate);
+
+            try
+            {
+                Assert.False(gate.IsInCooldown(layoutGuid, out _));
+
+                await service.EnqueueAsync(
+                    userId: "usuario-a",
+                    ticket: "ticket-fallback-falha",
+                    layoutName: "NFe",
+                    layoutGuid: layoutGuid,
+                    mapperGuid: "mapper-x",
+                    inputContent: "linha-posicional",
+                    groundTruthXml: "   ", // só whitespace também conta como "sem gabarito"
+                    cancellationToken: CancellationToken.None);
+
+                var status = await PollUntilAsync(service, "usuario-a", "ticket-fallback-falha", s => s.Status != AiCandidateStatus.StatusRunning, TimeSpan.FromSeconds(10));
+
+                Assert.Equal(AiCandidateStatus.StatusFailed, status.Status);
+                Assert.False(status.Diagnostics?.HasGroundTruth);
+                Assert.Equal(2, status.Diagnostics?.Iterations); // MaxIterationsFallback default
+                Assert.Equal(2, iteracoesChamadas);
+                Assert.True(gate.IsInCooldown(layoutGuid, out _)); // §5 — cooldown registrado ao falhar
             }
             finally
             {
@@ -76,6 +119,9 @@ namespace LayoutParserApi.Tests.Services.Transformation.Ai
                 Assert.Equal("ia", status.Candidate!.Pathway);
                 Assert.Equal("ia-mapper-x", status.Candidate.CandidateId);
                 Assert.Equal(0, status.Diagnostics?.RemainingDiffs);
+                // Modo COM gabarito (Issue #40): HasGroundTruth deve ficar true — é o sinal de
+                // contrato que diferencia este candidato do fallback automático sem gabarito.
+                Assert.True(status.Diagnostics?.HasGroundTruth);
             }
             finally
             {
@@ -154,6 +200,11 @@ namespace LayoutParserApi.Tests.Services.Transformation.Ai
 
         /// <summary>Monta o serviço com um HttpClient falso (sem rede real) simulando o Ollama.</summary>
         private static IAiTransformationCandidateService CriarService(Func<string, string> respostaModelo, out string tempStorePath)
+            => CriarService(respostaModelo, out tempStorePath, out _);
+
+        private static IAiTransformationCandidateService CriarService(
+            Func<string, string> respostaModelo, out string tempStorePath, out IAiFallbackSuppressionGate gate,
+            IAiFallbackSuppressionGate? gateOverride = null)
         {
             var handler = new FakeOllamaHandler(respostaModelo);
             var httpClient = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
@@ -162,6 +213,7 @@ namespace LayoutParserApi.Tests.Services.Transformation.Ai
             services.AddLogging();
             services.AddScoped<XmlDocumentTypeDetector>();
             services.AddScoped<XsdValidationService>();
+            services.AddScoped<XmlAnalysisService>();
             services.AddSingleton<IConfiguration>(new ConfigurationBuilder().Build());
             var provider = services.BuildServiceProvider();
             var scopeFactory = provider.GetRequiredService<IServiceScopeFactory>();
@@ -172,13 +224,16 @@ namespace LayoutParserApi.Tests.Services.Transformation.Ai
                 NullLogger<AiCandidateStore>.Instance,
                 Options.Create(new AiTransformationCandidateOptions { StorePath = tempStorePath }));
 
+            gate = gateOverride ?? new AiFallbackSuppressionGate();
+
             return new AiTransformationCandidateService(
                 NullLogger<AiTransformationCandidateService>.Instance,
                 httpClient,
                 Options.Create(new OllamaOptions { Url = "http://fake-ollama.local", Model = "fake-model" }),
-                Options.Create(new AiTransformationCandidateOptions { MaxIterations = 3, SanityTimeoutMinutes = 1, StorePath = tempStorePath }),
+                Options.Create(new AiTransformationCandidateOptions { MaxIterations = 3, MaxIterationsFallback = 2, SanityTimeoutMinutes = 1, StorePath = tempStorePath }),
                 scopeFactory,
-                store);
+                store,
+                gate);
         }
 
         private class FakeOllamaHandler : HttpMessageHandler

@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+
 using LayoutParserApi.Services.Transformation;
 using LayoutParserApi.Services.XmlAnalysis;
 using LayoutParserApi.Models;
@@ -39,6 +41,7 @@ namespace LayoutParserApi.Controllers
         private readonly ILayoutDatabaseService _layoutDb;
         private readonly LowCodeRunnerOptions _lowCodeOpt;
         private readonly IAiTransformationCandidateService _aiCandidateService;
+        private readonly IAiFallbackSuppressionGate _aiFallbackGate;
         private readonly ICurrentUser _currentUser;
 
         public TransformationExecutionController(
@@ -52,6 +55,7 @@ namespace LayoutParserApi.Controllers
             ILayoutDatabaseService layoutDb,
             IOptions<LowCodeRunnerOptions> lowCodeOptions,
             IAiTransformationCandidateService aiCandidateService,
+            IAiFallbackSuppressionGate aiFallbackGate,
             ICurrentUser currentUser)
         {
             _logger = logger;
@@ -64,6 +68,7 @@ namespace LayoutParserApi.Controllers
             _layoutDb = layoutDb;
             _lowCodeOpt = lowCodeOptions.Value;
             _aiCandidateService = aiCandidateService;
+            _aiFallbackGate = aiFallbackGate;
             _currentUser = currentUser;
         }
 
@@ -165,6 +170,10 @@ namespace LayoutParserApi.Controllers
         /// (sysmiddle/low-code e tcl-xsl/canônico) em vez de um resultado singular. Contrato completo
         /// (casos-limite de zero candidatos, falha parcial, timeout etc.) em
         /// docs/architecture/multi-candidato-e-diagnostico-ia-contrato.md (Gap 1).
+        /// Quando nenhum pathway resolve (Estado A — não encontrado, distinto de Estado B de falha
+        /// de infra), o fallback automático de IA é disparado em background (loop gerar→validar→
+        /// corrigir via Ollama), sujeito a cooldown de 4h por LayoutGuid; ver
+        /// <see cref="GetAiCandidateStatus"/> para acompanhar o resultado.
         /// </summary>
         // Issue #32: dispara processos externos (runner x86) e é operação privilegiada — era
         // restrita ao papel "admin". Issue #93: reabre para qualquer usuário autenticado (o
@@ -238,8 +247,11 @@ namespace LayoutParserApi.Controllers
             // chamada e o resultado fica consultável pelo ticket.
             using var candidatesCts = new CancellationTokenSource(TimeSpan.FromSeconds(overallTimeoutSeconds));
 
-            var sysmiddleTask = ExecuteSysmiddleCandidatesAsync(request, layoutRecord, isXmlInput, warnings, candidatesCts.Token);
-            var tclXslTask = ExecuteTclXslCandidatesAsync(request, isXmlInput, warnings);
+            // failureKinds: classificação interna (§2 do design-fallback-ia-automatico) coletada na
+            // ORIGEM de cada pathway — nunca inferida depois por regex sobre warning já sanitizado.
+            var failureKinds = new ConcurrentBag<FailureKind>();
+            var sysmiddleTask = ExecuteSysmiddleCandidatesAsync(request, layoutRecord, isXmlInput, warnings, failureKinds, candidatesCts.Token);
+            var tclXslTask = ExecuteTclXslCandidatesAsync(request, isXmlInput, warnings, failureKinds);
 
             var allTask = Task.WhenAll(sysmiddleTask, tclXslTask);
             var winner = await Task.WhenAny(allTask, Task.Delay(TimeSpan.FromSeconds(overallTimeoutSeconds)));
@@ -267,6 +279,13 @@ namespace LayoutParserApi.Controllers
             // como terceiro Task síncrono (ver docs/architecture/pathway-ia-execute-candidates.md §3).
             // Fire-and-forget: NUNCA atrasa nem derruba a resposta síncrona já calculada acima.
             TryEnqueueAiCandidate(request, layoutRecord, candidates, isXmlInput, CurrentUserId);
+
+            // Fallback automático de IA (design-fallback-ia-automatico-2026-08-16.md §1/§2): só
+            // quando NENHUM candidato foi produzido pelos dois pathways síncronos E nenhum deles
+            // falhou por infra (Estado B) — aí a correção é operacional, não de transformação, e a
+            // IA nunca deveria tentar "recriar" um mapper que já existe e está correto.
+            if (candidates.Count == 0)
+                TryEnqueueAiFallback(request, layoutRecord, isXmlInput, failureKinds, warnings, CurrentUserId);
 
             string? recommendedId = null;
             if (candidates.Count > 0)
@@ -296,11 +315,12 @@ namespace LayoutParserApi.Controllers
         /// </summary>
         private async Task<List<TransformationCandidate>> ExecuteSysmiddleCandidatesAsync(
             TransformationRequest request, LayoutRecord layoutRecord, bool isXmlInput, List<string> warnings,
-            CancellationToken cancellationToken)
+            ConcurrentBag<FailureKind> failureKinds, CancellationToken cancellationToken)
         {
             var result = new List<TransformationCandidate>();
 
-            // Sysmiddle/low-code espera texto posicional (TXT), não XML.
+            // Sysmiddle/low-code espera texto posicional (TXT), não XML — não é uma falha do
+            // pathway, é entrada fora de escopo (a IA não deveria disparar por causa disso).
             if (isXmlInput)
                 return result;
 
@@ -310,6 +330,7 @@ namespace LayoutParserApi.Controllers
                 if (resolvedLayoutGuid == null)
                 {
                     warnings.Add($"Layout {request.LayoutName} sem LayoutGuid válido no request ou no catálogo — pathway sysmiddle não aplicável");
+                    failureKinds.Add(FailureKind.NotApplicable);
                     return result;
                 }
 
@@ -328,6 +349,9 @@ namespace LayoutParserApi.Controllers
                 if (!autoResult.Applicable)
                 {
                     warnings.Add($"Nenhum mapeador low-code encontrado para o layout {request.LayoutName} (pathway sysmiddle)");
+                    // Estado A (§2 do design-fallback-ia-automatico): não existe mapper cadastrado
+                    // para este layout — gap real de cobertura, elegível ao fallback de IA.
+                    failureKinds.Add(FailureKind.NotApplicable);
                     return result;
                 }
 
@@ -345,8 +369,11 @@ namespace LayoutParserApi.Controllers
                     else
                     {
                         // Falha isolada de UM candidato — não entra no array (nunca item com XML nulo),
-                        // vira warning (ver tabela de decisão do contrato).
+                        // vira warning (ver tabela de decisão do contrato). Estado B (§2 do design):
+                        // o mapper EXISTE (Applicable==true) mas a execução falhou — é infra/config
+                        // (runner, timeout, .exe ausente), não gap de cobertura. Nunca dispara IA.
                         warnings.Add($"Candidato {c.MapperGuid} (pathway sysmiddle) falhou: {c.ErrorMessage ?? "erro desconhecido"}");
+                        failureKinds.Add(FailureKind.ExecutionInfraError);
                     }
                 }
             }
@@ -356,6 +383,8 @@ namespace LayoutParserApi.Controllers
                 // Saneado: exceção de I/O deste pathway carrega caminho de disco do servidor e este
                 // warning sai no payload 200 (mesmo defeito do §3.1 da spec, outro ponto de saída).
                 warnings.Add($"Pathway sysmiddle falhou: {LowCodeErrorSanitizer.ForWire(ex)}");
+                // Falha estrutural (exceção) é sempre infra, não "não modelado" — nunca dispara IA.
+                failureKinds.Add(FailureKind.ExecutionInfraError);
             }
 
             return result;
@@ -402,6 +431,70 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
+        /// Fallback automático de IA — Estado A (docs/architecture/design-fallback-ia-automatico-2026-08-16.md
+        /// §1/§2/§5). Só chega aqui quando <c>candidates.Count == 0</c>. Dispara <see cref="IAiTransformationCandidateService.EnqueueAsync"/>
+        /// no modo SEM gabarito (<c>groundTruthXml: null</c>) se, e somente se, nenhum dos pathways
+        /// síncronos reportou <see cref="FailureKind.ExecutionInfraError"/> (Estado B — correção é
+        /// operacional, a IA não deveria tentar recriar um mapper que já existe). Consulta o
+        /// <see cref="IAiFallbackSuppressionGate"/> antes de disparar para não repetir uma chamada
+        /// cara ao Ollama para um layout que já falhou recentemente. Nunca lança: qualquer falha aqui
+        /// vira warning e não afeta a resposta síncrona já calculada.
+        /// </summary>
+        private void TryEnqueueAiFallback(
+            TransformationRequest request, LayoutRecord layoutRecord, bool isXmlInput,
+            ConcurrentBag<FailureKind> failureKinds, List<string> warnings, string userId)
+        {
+            try
+            {
+                if (failureKinds.Any(k => k == FailureKind.ExecutionInfraError))
+                {
+                    // Estado B: já existe o warning de infra específico emitido pelo pathway que
+                    // falhou — nada a acrescentar aqui, só não disparar a IA (§2 do desenho).
+                    return;
+                }
+
+                var resolvedLayoutGuidText = LowCodeLayoutGuidResolver.Resolve(request.LayoutGuid, layoutRecord.LayoutGuid);
+                if (resolvedLayoutGuidText == null || !Guid.TryParse(resolvedLayoutGuidText, out var resolvedLayoutGuid))
+                {
+                    warnings.Add($"Layout {request.LayoutName} sem LayoutGuid válido — fallback de IA não aplicável");
+                    return;
+                }
+
+                if (_aiFallbackGate.IsInCooldown(resolvedLayoutGuid, out var retryAt))
+                {
+                    warnings.Add($"Pathway IA fallback suprimido para este layout até {retryAt:HH:mm} (já tentado sem sucesso)");
+                    return;
+                }
+
+                var ticket = LowCodeTransformationStore.BuildTicketFromContent(request.InputContent, resolvedLayoutGuidText);
+                if (ticket == null)
+                {
+                    warnings.Add($"Layout {request.LayoutName}: não foi possível compor o ticket do fallback de IA");
+                    return;
+                }
+
+                // mapperGuid: não há candidato sysmiddle bem-sucedido no Estado A (por definição), então
+                // não existe um MapperGuid real a associar — usa o próprio LayoutGuid como identificador
+                // estável do job (mesma convenção de particionamento por layout do gate de supressão).
+                _ = _aiCandidateService.EnqueueAsync(
+                    userId,
+                    ticket,
+                    request.LayoutName,
+                    resolvedLayoutGuid,
+                    mapperGuid: resolvedLayoutGuidText,
+                    request.InputContent,
+                    groundTruthXml: null,
+                    CancellationToken.None);
+
+                warnings.Add($"Nenhum candidato de transformação encontrado — fallback automático de IA enfileirado (ticket {ticket}), consulte GET execute-candidates/{ticket}/ia-status");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Falha ao disparar o fallback automático de IA para layout {LayoutName}", request.LayoutName);
+            }
+        }
+
+        /// <summary>
         /// Consulta o status do job assíncrono do pathway IA (Issue #40). Mesma política de
         /// autorização de <see cref="ExecuteTransformationCandidates"/> (Issue #32) — endpoint
         /// novo, mesmo custo/sensibilidade de disparar processos/objetos caros.
@@ -412,6 +505,9 @@ namespace LayoutParserApi.Controllers
         /// exatamente como um ticket inexistente/expirado, que é o mesmo caso hoje. Único gate de
         /// papel era o <c>[Authorize(Roles = "admin")]</c> — a issue #93 abriu o endpoint além de
         /// admin (<c>[Authorize]</c> simples) porque o isolamento por dono já estava pronto.
+        /// Candidatos originados do fallback automático de IA (Estado A) trazem
+        /// <c>HasGroundTruth=false</c>: não há gabarito/histórico de validação para o layout, então
+        /// o resultado é uma sugestão que exige revisão humana antes de ir para produção.
         /// </remarks>
         [Authorize]
         [HttpGet("execute-candidates/{ticket}/ia-status")]
@@ -430,7 +526,7 @@ namespace LayoutParserApi.Controllers
         /// noção de múltiplos TCL/XSL candidatos para o mesmo layout).
         /// </summary>
         private async Task<List<TransformationCandidate>> ExecuteTclXslCandidatesAsync(
-            TransformationRequest request, bool isXmlInput, List<string> warnings)
+            TransformationRequest request, bool isXmlInput, List<string> warnings, ConcurrentBag<FailureKind> failureKinds)
         {
             var result = new List<TransformationCandidate>();
 
@@ -450,6 +546,8 @@ namespace LayoutParserApi.Controllers
                 if (!pipelineResult.Success || string.IsNullOrEmpty(pipelineResult.TransformedXml))
                 {
                     warnings.Add($"Candidato tcl-xsl falhou: {string.Join("; ", pipelineResult.Errors)}");
+                    // "Sem heurística aplicável" para este layout — Estado A (§2 do design).
+                    failureKinds.Add(FailureKind.NotApplicable);
                     return result;
                 }
 
@@ -487,6 +585,8 @@ namespace LayoutParserApi.Controllers
             {
                 _logger.LogWarning(ex, "Falha estrutural no pathway tcl-xsl ao gerar candidato para layout {LayoutName}", request.LayoutName);
                 warnings.Add($"Pathway tcl-xsl falhou: {ex.Message}");
+                // Exceção estrutural é infra, não "não modelado" — nunca dispara IA.
+                failureKinds.Add(FailureKind.ExecutionInfraError);
             }
 
             return result;
