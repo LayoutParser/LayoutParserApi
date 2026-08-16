@@ -84,10 +84,16 @@ mas o valor está de novo em commits públicos do histórico.
 - [x] **Documentar** uso de `dotnet user-secrets` (dev) e env vars `Section__Key` (prod) — ver README §9.
 - [ ] ~~Rotacionar a senha do SQL Server~~ — **DESCARTADO em 2026-08-15**: credencial compartilhada
       por ~231.890 times na NDD, fora do controle deste projeto. Ver seção 2026-08-15 acima.
-- [ ] **Limpar o histórico do git** (`git filter-repo` / BFG) — **PRIORIDADE #1 agora**;
-      executar via `@lp-devops`, sob confirmação.
+- [x] **Limpar o histórico do git** (`git filter-repo` / BFG) — executado em 2026-08-15
+      (`@lp-devops`, sob confirmação do dono): force-push feito, repos voltaram a público.
 - [ ] **Hardening em repouso** da senha no host (DPAPI/Credential Manager/`ProtectedConfigurationBuilder`) — `@lp-devops`.
-- [ ] **Hook de pre-commit + step de CI** anti-reincidência (`gitleaks`/`detect-secrets`) — `@lp-backend-dev` + `@lp-devops`.
+      Avaliação e runbook prontos (recomendação: `ProtectedConfigurationBuilder`/user-secrets
+      com DPAPI, opção C — ver [`docs/architecture/runbook-hardening-senha-sql-em-repouso.md`](../../docs/architecture/runbook-hardening-senha-sql-em-repouso.md));
+      falta aplicar no host de produção (dono, via RDP) + um handoff pontual de código para
+      `@lp-backend-dev` (`AddUserSecrets` fora de `IsDevelopment()`).
+- [x] **Step de CI** anti-reincidência (`gitleaks`) — `.github/workflows/gitleaks.yml`, roda em
+      todo PR contra `develop`/`master`/`main`, escaneando o diff introduzido pelo PR
+      (`@lp-devops`). Falta a metade de `@lp-backend-dev`: hook de pre-commit local.
 - [ ] **Revogar/desprovisionar** (não rotacionar) a API key do Gemini exposta — Gemini foi decomissionado, sem consumidor previsto. **Ação do dono do projeto** — ver runbook abaixo 🔴.
 
 ### Como configurar os segredos (dev)
@@ -207,6 +213,37 @@ Os segredos antigos **persistem nos commits anteriores** mesmo após este commit
 > deixa de ser publicamente acessível via GitHub. Para a API key do Gemini, revogação continua
 > sendo a ação que efetivamente invalida o segredo — a limpeza de histórico é complementar,
 > não substitui a revogação.
+
+## CodeQL desativado — Dependabot mantido (2026-08-15)
+
+**Causa raiz do erro de CI** (`Advanced Security must be enabled...`): CodeQL *code scanning* em
+repositório **privado** exige GitHub Advanced Security (GHAS), pago. O repo está privado desde
+2026-08-12. A análise roda e conclui, só o **upload do SARIF** falha — todo run do
+`.github/workflows/codeql.yml` falha eternamente, sem alternativa de config (não é bug de YAML/
+permissions, ver comentário já presente no arquivo). Como `SecurityCodeScan` (Roslyn, gratuito, já
+ativo com `security-code-scan-baseline.json`) cobre o mesmo papel de SAST pra C#, o CodeQL é
+puro desperdício de minutos de CI + ruído de "falhou" a cada push/PR/segunda-feira.
+
+**Decisão: remover `.github/workflows/codeql.yml` por completo** (não só o step de upload — sem
+GHAS o job de `analyze` não tem efeito nenhum; manter só a análise local sem upload seria rodar
+`autobuild`/`security-extended` por ~30min pra descartar o resultado). Instrução exata pra
+`@lp-devops`: apagar o arquivo (o `LayoutParserReact` tem workflow idêntico — mesmo repo privado,
+mesma limitação de GHAS; a distinção não é "publico vs privado", é confirmar se o dono quer
+remover lá também, decisão dele).
+
+**Dependabot NÃO é o problema — mantido como está.** Confirmado lendo `.github/dependabot.yml`:
+são `version updates` (PRs automáticos de bump de dependência, `nuget` + `github-actions`), que
+é gratuito em qualquer repositório (público ou privado), sem GHAS. O que exige GHAS em repo
+privado é uma família diferente — `Dependabot alerts` (scanning de vulnerabilidade) e `secret
+scanning` — nenhum dos dois está configurado aqui (não há nada em `Settings → Security`
+habilitando alerts, só o `dependabot.yml` de version updates). O dono lembrava de "parar
+Dependabot por licença" — essa lembrança se aplica ao CodeQL (mesma família "Advanced Security"),
+não ao Dependabot version updates. Nenhuma ação necessária no `dependabot.yml`.
+
+**Resumo pra `@lp-devops` executar:**
+1. `git rm .github/workflows/codeql.yml` (LayoutParserApi). Avaliar o mesmo no LayoutParserReact.
+2. `dependabot.yml` — **não mexer**, já é 100% gratuito e correto.
+3. `SecurityCodeScan` + baseline — **não mexer**, é o substituto ativo do CodeQL.
 
 ## Regras gerais (todos os agentes)
 

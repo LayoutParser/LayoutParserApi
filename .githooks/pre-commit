@@ -1,0 +1,40 @@
+#!/bin/sh
+# Hook de pre-commit — anti-reincidência de segredos (LayoutParser API).
+#
+# Motivo: a senha do SQL Server já vazou uma vez para o appsettings.json
+# comitado (regressão de 2026-07-18, ver .claude/rules/security.md) porque
+# alguém testou local com a senha no arquivo e o commit foi junto. Esse hook
+# roda o gitleaks contra o diff staged e BLOQUEIA o commit se achar padrão
+# de segredo (connection string com senha, API key, etc.).
+#
+# Instalação (uma vez por clone):
+#   git config core.hooksPath .githooks
+#
+# Requer o binário `gitleaks` no PATH. Ver .githooks/README.md para instalar.
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+    echo "⚠️  gitleaks não encontrado no PATH — commit NÃO foi verificado por segredos." >&2
+    echo "    Instale o gitleaks (ver .githooks/README.md) para reativar essa proteção." >&2
+    echo "    Prosseguindo sem bloquear (fail-open) para não travar quem ainda não instalou." >&2
+    exit 0
+fi
+
+# Usa o config do projeto (.gitleaks.toml) se existir na raiz do repo.
+repo_root=$(git rev-parse --show-toplevel)
+config_arg=""
+if [ -f "$repo_root/.gitleaks.toml" ]; then
+    config_arg="--config=$repo_root/.gitleaks.toml"
+fi
+
+gitleaks protect --staged --redact --no-banner $config_arg
+status=$?
+
+if [ $status -ne 0 ]; then
+    echo "" >&2
+    echo "🔴 gitleaks encontrou possível segredo nos arquivos staged. Commit BLOQUEADO." >&2
+    echo "   Remova o segredo (use dotnet user-secrets / variáveis de ambiente) antes de comitar." >&2
+    echo "   Ver .claude/rules/security.md para o contexto completo do incidente." >&2
+    exit 1
+fi
+
+exit 0

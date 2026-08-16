@@ -735,6 +735,63 @@ jobs:
           Write-Host "  Preservadas (definidas fora do CI): nenhuma"
         }
 
+    # -- Backup pre-deploy do binario atual (rollback automatico) --------------------
+    #
+    # POR QUE ESTE STEP EXISTE: incidente de 2026-08-15 (PR #114) - o smoke test de readiness
+    # falhou 24x apos o deploy, o workflow abortou (exit 1), mas o servico Windows ja tinha sido
+    # parado/reiniciado com o binario NOVO quebrado - producao ficou no ar crashada ate
+    # intervencao manual. Ate aqui nao havia NENHUM backup versionado do binario anterior; so o
+    # appsettings.json era copiado para Backups\ (step "Deploy to server (local)" abaixo).
+    #
+    # Este step copia o diretorio `api` inteiro (o binario que esta rodando AGORA, antes de ser
+    # sobrescrito) para `backups\pre-deploy-<timestamp>\api`. Mesmo disco, custo baixo. O smoke
+    # test de readiness (mais abaixo) restaura daqui se a versao nova falhar.
+    #
+    # Roda ANTES de "Deploy to server (local)" de proposito: precisa capturar o binario ainda
+    # intacto, antes do Stop-Service/copia que o sobrescreve.
+    - name: Backup pre-deploy do binario atual (para rollback)
+      run: |
+        $ErrorActionPreference = "Stop"
+        $DEPLOY_PATH = "${{ secrets.DEPLOY_PATH }}".Trim('"', '''', ' ')
+
+        if ([string]::IsNullOrWhiteSpace($DEPLOY_PATH)) {
+          Write-Error "DEPLOY_PATH nao esta configurado! Configure o secret DEPLOY_PATH no GitHub."
+          exit 1
+        }
+
+        $DEPLOY_API_PATH = Join-Path $DEPLOY_PATH "api"
+        $BACKUPS_ROOT = Join-Path $DEPLOY_PATH "backups"
+
+        if (-not (Test-Path $DEPLOY_API_PATH)) {
+          Write-Host "Nenhuma instalacao anterior em $DEPLOY_API_PATH - primeiro deploy, sem binario para fazer backup."
+          exit 0
+        }
+
+        New-Item -ItemType Directory -Path $BACKUPS_ROOT -Force | Out-Null
+        $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+        $geracaoPath = Join-Path $BACKUPS_ROOT "pre-deploy-$timestamp"
+        $destino = Join-Path $geracaoPath "api"
+        New-Item -ItemType Directory -Path $geracaoPath -Force | Out-Null
+
+        Write-Host "Copiando binario atual para backup: $DEPLOY_API_PATH -> $destino"
+        Copy-Item -Path $DEPLOY_API_PATH -Destination $destino -Recurse -Force
+
+        # Registrado no ambiente do JOB (nao do servico) para o step de smoke test - mais abaixo,
+        # na MESMA execucao - encontrar direto o backup sem precisar redescobrir pelo nome.
+        Add-Content -Path $env:GITHUB_ENV -Value "PRE_DEPLOY_BACKUP_PATH=$destino"
+        Write-Host "Backup pre-deploy concluido: $destino"
+
+        # Retencao: mantem so as ultimas 5 geracoes - disco nao acumula indefinidamente.
+        $geracoes = Get-ChildItem -Path $BACKUPS_ROOT -Directory -Filter 'pre-deploy-*' -ErrorAction SilentlyContinue |
+                    Sort-Object Name -Descending
+        if ($geracoes.Count -gt 5) {
+          $antigas = $geracoes | Select-Object -Skip 5
+          foreach ($g in $antigas) {
+            Write-Host "Removendo geracao antiga de backup: $($g.FullName)"
+            Remove-Item -Path $g.FullName -Recurse -Force -ErrorAction SilentlyContinue
+          }
+        }
+
     - name: Deploy to server (local)
       run: |
         $ErrorActionPreference = "Stop"
@@ -1074,8 +1131,99 @@ jobs:
         if ($status -ne 200) {
           $ultimo = if ($null -eq $status) { "sem resposta" } else { "HTTP $status" }
           Write-Error ("Readiness nao ficou 200 em $smokeUrl apos $tentativas tentativas (ultimo: $ultimo). " +
-            "Deploy de PRODUCAO abortado: o servico subiu mas a API nao esta servindo (SQL fora, catalogo " +
-            "que nao aqueceu ou decryptor quebrado). Verifique os logs do servico no host de producao.")
+            "A versao nova falhou o smoke test - iniciando rollback automatico para nao deixar producao no ar " +
+            "quebrada (incidente de 2026-08-15, PR #114, motivou este mecanismo).")
+
+          # -- Rollback automatico -------------------------------------------------------
+          #
+          # Restaura o binario capturado pelo step "Backup pre-deploy do binario atual (para
+          # rollback)", mais acima no MESMO job. So confirma readiness UMA VEZ apos o rollback
+          # (sem retry longo) - o objetivo aqui e so tirar a producao do estado quebrado, nao
+          # revalidar a fundo. O `exit 1` acontece de qualquer forma logo abaixo: a versao nova
+          # falhou e isso continua sendo sempre uma falha de deploy que precisa ser investigada.
+          $rollbackOk = $false
+          $rollbackMsg = ""
+          try {
+            $DEPLOY_PATH = "${{ secrets.DEPLOY_PATH }}".Trim('"', '''', ' ')
+            $DEPLOY_API_PATH = Join-Path $DEPLOY_PATH "api"
+            $BACKUPS_ROOT = Join-Path $DEPLOY_PATH "backups"
+
+            $backupPath = "$env:PRE_DEPLOY_BACKUP_PATH"
+            if ([string]::IsNullOrWhiteSpace($backupPath) -or -not (Test-Path $backupPath)) {
+              # Fallback: acha a geracao pre-deploy mais recente pelo nome do diretorio (o timestamp
+              # no nome ordena cronologicamente). Cobre o caso do env var nao ter propagado.
+              $maisRecente = Get-ChildItem -Path $BACKUPS_ROOT -Directory -Filter 'pre-deploy-*' -ErrorAction SilentlyContinue |
+                             Sort-Object Name -Descending | Select-Object -First 1
+              if ($maisRecente) { $backupPath = Join-Path $maisRecente.FullName 'api' }
+            }
+
+            if ([string]::IsNullOrWhiteSpace($backupPath) -or -not (Test-Path $backupPath)) {
+              $rollbackMsg = ("ROLLBACK NAO EXECUTADO - nenhum backup pre-deploy encontrado em $BACKUPS_ROOT " +
+                "(primeiro deploy?). Producao permanece na versao que falhou o smoke test - intervencao " +
+                "manual necessaria AGORA no host de producao.")
+              Write-Error $rollbackMsg
+            } else {
+              Write-Host "Restaurando backup: $backupPath -> $DEPLOY_API_PATH"
+              $serviceName = "LayoutParserApi"
+
+              if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
+                Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds 3
+              }
+
+              Get-ChildItem -Path $DEPLOY_API_PATH -Recurse -File -ErrorAction SilentlyContinue |
+                Remove-Item -Force -ErrorAction SilentlyContinue
+              Copy-Item -Path (Join-Path $backupPath '*') -Destination $DEPLOY_API_PATH -Recurse -Force
+
+              if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
+                Start-Service -Name $serviceName -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds 3
+              }
+
+              # Checagem UNICA pos-rollback (sem retry/backoff) - so confirma que o rollback trouxe
+              # o servico de volta, nao revalida o warm-up completo.
+              $statusRollback = $null
+              try {
+                $respRollback = Invoke-WebRequest -Uri $smokeUrl -UseBasicParsing -TimeoutSec 5
+                $statusRollback = [int]$respRollback.StatusCode
+              } catch {
+                $r = $_.Exception.Response
+                $statusRollback = if ($r -and $r.StatusCode) { [int]$r.StatusCode } else { $null }
+              }
+
+              if ($statusRollback -eq 200) {
+                $rollbackOk = $true
+                $rollbackMsg = "ROLLBACK EXECUTADO - versao anterior restaurada de $backupPath, servico voltou a responder (readiness 200)."
+                Write-Host $rollbackMsg
+              } else {
+                $descrRollback = if ($null -eq $statusRollback) { "sem resposta" } else { "HTTP $statusRollback" }
+                $rollbackMsg = ("ROLLBACK EXECUTADO mas o servico NAO respondeu 200 apos restaurar ($descrRollback) - " +
+                  "situacao MAIS GRAVE que uma falha comum de deploy, requer intervencao manual IMEDIATA no host de producao.")
+                Write-Error $rollbackMsg
+              }
+            }
+          } catch {
+            $rollbackMsg = ("ROLLBACK FALHOU com excecao: $($_.Exception.Message) - producao pode estar em estado " +
+              "inconsistente, intervencao manual IMEDIATA necessaria no host de producao.")
+            Write-Error $rollbackMsg
+          }
+
+          # Resumo minimo viavel (sem webhook/integracao nova): o proprio GITHUB_STEP_SUMMARY,
+          # visivel direto na pagina do run. Montado linha a linha (sem here-string) para nao
+          # depender de indentacao literal dentro do bloco YAML `run: |`.
+          $resumoStatus = if ($rollbackOk) { "ROLLBACK OK" } else { "ATENCAO - ROLLBACK FALHOU OU NAO FOI POSSIVEL" }
+          if ($env:GITHUB_STEP_SUMMARY) {
+            $resumoLinhas = New-Object System.Collections.Generic.List[string]
+            $resumoLinhas.Add("## Deploy de producao FALHOU - smoke test de readiness")
+            $resumoLinhas.Add("")
+            $resumoLinhas.Add("- Versao nova nao ficou HTTP 200 em ``$smokeUrl`` apos $tentativas tentativas (ultimo: $ultimo).")
+            $resumoLinhas.Add("- **$resumoStatus**")
+            $resumoLinhas.Add("- $rollbackMsg")
+            $resumoLinhas.Add("")
+            $resumoLinhas.Add("Investigue a causa raiz antes de tentar um novo deploy.")
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $resumoLinhas
+          }
+
           exit 1
         }
         Write-Host "Deploy de producao validado: API servindo (readiness 200)."
