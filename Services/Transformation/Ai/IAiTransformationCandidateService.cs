@@ -15,6 +15,14 @@ namespace LayoutParserApi.Services.Transformation.Ai
         /// Dono do ticket (issue #92 — <c>ICurrentUser.Name</c> resolvido pelo controller). Particiona
         /// a store para que outro usuário nunca consiga ler o status/candidato deste ticket.
         /// </param>
+        /// <param name="groundTruthXml">
+        /// Gabarito sysmiddle (Issue #40, modo COM gabarito — critério de convergência: diff
+        /// canônico zero + XSD válido). <c>null</c>/vazio aciona o modo SEM gabarito do fallback
+        /// automático de IA (Estado A — docs/architecture/design-fallback-ia-automatico-2026-08-16.md
+        /// §6): critério de convergência vira XSD válido + validação de negócio, teto de iterações
+        /// <see cref="AiTransformationCandidateOptions.MaxIterationsFallback"/> e o
+        /// <see cref="AiCandidateDiagnostics"/> resultante marca <c>HasGroundTruth = false</c>.
+        /// </param>
         Task EnqueueAsync(
             string userId,
             string ticket,
@@ -22,7 +30,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
             Guid layoutGuid,
             string mapperGuid,
             string inputContent,
-            string groundTruthXml,
+            string? groundTruthXml,
             CancellationToken cancellationToken);
 
         /// <param name="userId">Mesmo dono passado a <see cref="EnqueueAsync"/> — ticket de outro

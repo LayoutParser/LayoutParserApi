@@ -47,5 +47,21 @@ namespace LayoutParserApi.Services.Transformation.Ai
         /// Valor &lt;= 0 cai no default (<see cref="DefaultCleanupIntervalMinutes"/>).
         /// </summary>
         public int CleanupIntervalMinutes { get; set; } = DefaultCleanupIntervalMinutes;
+
+        /// <summary>
+        /// Fallback automático de IA (Estado A — "não encontrado/não modelado", ver
+        /// docs/architecture/design-fallback-ia-automatico-2026-08-16.md §5): cooldown do
+        /// <see cref="IAiFallbackSuppressionGate"/> por <c>LayoutGuid</c> após uma tentativa sem
+        /// sucesso. Default 240min (4h) — folgado o bastante para não bloquear retentativa manual
+        /// no mesmo dia, curto o bastante para não travar indefinidamente.
+        /// </summary>
+        public int CooldownMinutes { get; set; } = 240;
+
+        /// <summary>
+        /// Teto de iterações do loop no modo "sem gabarito" (Estado A, §6 do desenho) — mais
+        /// conservador que <see cref="MaxIterations"/> porque, sem diff canônico para convergir,
+        /// iterações extras tendem a não melhorar a confiança do resultado, só o custo.
+        /// </summary>
+        public int MaxIterationsFallback { get; set; } = 2;
     }
 }
