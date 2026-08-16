@@ -1,5 +1,6 @@
 # Memory Index — lp-devops (Gage)
 
+- [Limpeza de branches 2026-08-16](branch-cleanup-2026-08-16.md) — 41 branches remotas deletadas (`git cherry`, não hash, por causa do filter-repo); `worktree-agent-a1403e675beb9d14f` NÃO deletada — tem doc real não mergeada sobre credencial SQL org-wide.
 - [Runner isolation rollout](runner-isolation-rollout.md) — ci-dev FAZ deploy (serviço nativo, 5100); criar vars/secrets DEV antes de push feat/**; rotação SQL BLOQUEADA (DBA); prod com paths-ignore.
 - [gh CLI ausente](env-gh-cli-ausente.md) — sem gh na workstation; status do CI dev sai de `C:\actions-runner\_diag\Worker_*.log`; datar deploy de prod via `/api/logs?search=`.
 - [Prod .42 sem acesso admin](prod-42-acesso-bloqueado.md) — SSH/WinRM/SMB/RPC todos negados no 172.25.32.42; desbloqueio = pub key no administrators_authorized_keys.
@@ -11,3 +12,6 @@
 - [gh CLI não autenticado](gh-cli-nao-autenticado.md) — RESOLVIDO 2026-08-12: gh autenticado (elson-vinicius-lopes); PR #28 criada (feat/identidade-do-bff → develop); só ajustar PATH por sessão Bash.
 - [git fetch/pull trava (GCM)](git-fetch-hang-gcm-workaround.md) — HTTPS fetch/pull trava por prompt do Credential Manager mesmo com gh autenticado; workaround: `git -c http.extraHeader=...` com `gh auth token`.
 - [VM Windows conectividade RESOLVIDO](vm-windows-connectivity-diagnostico-2026-08-13.md) — causa raiz era bridge no adaptador Hyper-V errado (não DHCP/ufw); IP atual `172.25.32.5`; `Ollama:Url` prod não verificado nesta sessão.
+- [PR #118 duplicata fechada](pr-118-duplicata-fechada.md) — antes de mergear fix/* contra master, checar se já existe PR irmã do mesmo branch já mergeada em develop (`gh pr list --head`); se sim, fechar sem merge.
+- [Purga de histórico git 2026-08-15](git-history-purge-2026-08-15.md) — filter-repo purgou senha SQL de todo o histórico; repos ficaram privados; instrução de "coordenador" pra reverter a público foi RECUSADA sem confirmação direta do dono.
+- [PR #123 já mergeada](pr-123-ja-mergeada-hardening-secrets.md) — chore/security-hardening-secrets já publicada/mergeada antes; checar merge-base antes de tentar recriar PR de branch pronta.
