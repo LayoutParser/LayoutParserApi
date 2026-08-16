@@ -170,6 +170,10 @@ namespace LayoutParserApi.Controllers
         /// (sysmiddle/low-code e tcl-xsl/canônico) em vez de um resultado singular. Contrato completo
         /// (casos-limite de zero candidatos, falha parcial, timeout etc.) em
         /// docs/architecture/multi-candidato-e-diagnostico-ia-contrato.md (Gap 1).
+        /// Quando nenhum pathway resolve (Estado A — não encontrado, distinto de Estado B de falha
+        /// de infra), o fallback automático de IA é disparado em background (loop gerar→validar→
+        /// corrigir via Ollama), sujeito a cooldown de 4h por LayoutGuid; ver
+        /// <see cref="GetAiCandidateStatus"/> para acompanhar o resultado.
         /// </summary>
         // Issue #32: dispara processos externos (runner x86) e é operação privilegiada — era
         // restrita ao papel "admin". Issue #93: reabre para qualquer usuário autenticado (o
@@ -501,6 +505,9 @@ namespace LayoutParserApi.Controllers
         /// exatamente como um ticket inexistente/expirado, que é o mesmo caso hoje. Único gate de
         /// papel era o <c>[Authorize(Roles = "admin")]</c> — a issue #93 abriu o endpoint além de
         /// admin (<c>[Authorize]</c> simples) porque o isolamento por dono já estava pronto.
+        /// Candidatos originados do fallback automático de IA (Estado A) trazem
+        /// <c>HasGroundTruth=false</c>: não há gabarito/histórico de validação para o layout, então
+        /// o resultado é uma sugestão que exige revisão humana antes de ir para produção.
         /// </remarks>
         [Authorize]
         [HttpGet("execute-candidates/{ticket}/ia-status")]
