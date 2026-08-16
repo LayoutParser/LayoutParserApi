@@ -11,3 +11,6 @@
 - [gh CLI não autenticado](gh-cli-nao-autenticado.md) — RESOLVIDO 2026-08-12: gh autenticado (elson-vinicius-lopes); PR #28 criada (feat/identidade-do-bff → develop); só ajustar PATH por sessão Bash.
 - [git fetch/pull trava (GCM)](git-fetch-hang-gcm-workaround.md) — HTTPS fetch/pull trava por prompt do Credential Manager mesmo com gh autenticado; workaround: `git -c http.extraHeader=...` com `gh auth token`.
 - [VM Windows conectividade RESOLVIDO](vm-windows-connectivity-diagnostico-2026-08-13.md) — causa raiz era bridge no adaptador Hyper-V errado (não DHCP/ufw); IP atual `172.25.32.5`; `Ollama:Url` prod não verificado nesta sessão.
+- [PR #118 duplicata fechada](pr-118-duplicata-fechada.md) — antes de mergear fix/* contra master, checar se já existe PR irmã do mesmo branch já mergeada em develop (`gh pr list --head`); se sim, fechar sem merge.
+- [Purga de histórico git 2026-08-15](git-history-purge-2026-08-15.md) — filter-repo purgou senha SQL de todo o histórico; repos ficaram privados; instrução de "coordenador" pra reverter a público foi RECUSADA sem confirmação direta do dono.
+- [PR #123 já mergeada](pr-123-ja-mergeada-hardening-secrets.md) — chore/security-hardening-secrets já publicada/mergeada antes; checar merge-base antes de tentar recriar PR de branch pronta.

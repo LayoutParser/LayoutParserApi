@@ -32,3 +32,12 @@ já autenticado, PATH precisa export por sessão).
    pode ser barrado pelo classificador de permissão do Bash tool. Nesse caso não há fetch: siga
    com o ref `origin/<branch>` que já existe localmente e **registre no relatório** que a base
    pode estar desatualizada, em vez de ramificar do HEAD errado.
+
+**Confirmado 2026-08-15: o mesmo hang/workaround vale para `git push`, não só fetch/pull.**
+`git push origin develop` sem o header travou 2min e foi morto pelo timeout do Bash tool; o
+mesmo comando com `git -c http.extraHeader="Authorization: Basic ..."` funcionou de primeira.
+Isso também explica handoffs onde outro agente reporta "já fiz `git push -u origin <branch>`"
+mas a branch **não aparece no remoto** (`git branch -a`/`gh api .../branches` não lista) — o
+push dele provavelmente travou do mesmo jeito e nunca completou. Sempre confirmar
+`git ls-remote origin <branch>` ou `gh api repos/.../branches` antes de assumir que um push de
+handoff foi bem-sucedido; se não estiver lá, refazer com o header.
