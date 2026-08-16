@@ -31,7 +31,7 @@ que regex sobre `ContentValue` (mencionado como risco na Fase 2 do plano de onte
 insuficiente; é preciso um parser real de expressão/bloco, e é exatamente isso que
 `DslBlockInterpreter.cs` (em `ai/XslSynth.Core/Core/`) já começou a fazer.
 
-## 1.1 Motor de execução: hipótese Roslyn — precisa de confirmação do dono antes da Fase 1-2
+## 1.1 Motor de execução: hipótese Roslyn — REFUTADA por investigação nas DLLs (2026-08-16), mecanismo real ainda inconclusivo
 
 O dono indicou que o low-code interpreta `if/else/for/foreach/while` via Roslyn
 (`Microsoft.CodeAnalysis.CSharp.Scripting`), sugerindo trocar o parser regex do
@@ -80,6 +80,34 @@ Se a resposta for (A) com uma referência de tradução disponível, isso vira i
 pra Fase 1 do plano de ontem (ainda não fechada); se for "não sei, é só o que está
 gravado mesmo", `DslBlockInterpreter` (parser dedicado) segue sendo a aposta certa e o
 achado do dono ainda valida que **é uma gramática determinística real**, não freestyle.
+
+### Atualização 2026-08-16 — investigação direta nas DLLs do Sysmiddle
+
+O dono disponibilizou os binários reais (`.claude/tmp/sysmiddle/`, 10 DLLs: `SysMiddle.
+Base`, `SysMiddle.MapControl.Core/Interface/APIConnector`, `SysMiddle.ConnectUs.*`,
+`SysMiddle.SmartDb`). Investigação com `ilspycmd` (decompilação) + grep binário direto
+nos assemblies.
+
+**CONFIRMADO (evidência concreta):** nenhuma das 10 DLLs referencia `Microsoft.
+CodeAnalysis`/`Roslyn`/`CSharpScript`/`CSharpSyntaxTree`, nem `CSharpCodeProvider`/
+`CodeDom`/engines de script alternativos (NCalc, Jint, IronPython). A dependência que a
+hipótese (A) exigiria simplesmente não existe nos binários — **hipótese Roslyn
+REFUTADA** como mecanismo específico.
+
+**INCONCLUSIVO (limite da investigação):** os assemblies estão fortemente ofuscados
+(control-flow flattening, nomes substituídos por caracteres de controle Unicode, strings
+criptografadas em runtime). Decompilar a classe mais candidata pelo nome
+(`SysMiddle.MapControl.Core.Controller.General.TransformerHelper`) devolveu só
+assinaturas — todo corpo de método aparece como `return null;`. Não foi possível
+localizar/confirmar qual mecanismo real interpreta `begin/end`/`=` simples. Confirmar
+isso exigiria deobfuscation completa ou instrumentação em runtime — fora de escopo.
+
+**Decisão final para a Fase 1-2:** manter `DslBlockInterpreter` (parser dedicado da
+gramática Sysmiddle). Não adotar `Microsoft.CodeAnalysis.CSharp.SyntaxTree` — não há
+evidência de que o texto do `ContentValue` seja C# real em ponto algum do pipeline, e a
+sintaxe (`begin/end`, `=`) segue sintaticamente incompatível com C#. Este achado fecha a
+pergunta que bloqueava a Fase 1-2: pode prosseguir com o parser dedicado sem esperar mais
+confirmação do dono.
 
 ## 2. Estrutura do prompt/contexto — camada estruturada primeiro, DSL bruta NUNCA vai pro Ollama
 

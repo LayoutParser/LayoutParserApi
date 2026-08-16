@@ -33,3 +33,40 @@ só não decide a ferramenta de parsing ainda.
 
 Ver também [[track-a2-a5-spec]] (Fase 1-2 do plano de mapeamento, onde essa decisão
 encaixa).
+
+## Atualização 2026-08-16 — investigação nas DLLs reais: REFUTADO o mecanismo específico, mas INCONCLUSIVO no todo
+
+Dono disponibilizou os binários reais em `.claude/tmp/sysmiddle/` (10 DLLs:
+`SysMiddle.Base`, `SysMiddle.MapControl.Core/Interface/APIConnector`,
+`SysMiddle.ConnectUs.*`, `SysMiddle.SmartDb`). Investiguei com `ilspycmd` (instalado via
+`dotnet tool install -g ilspycmd`) + `Grep` binário nos 10 arquivos.
+
+**Confirmado (evidência concreta):**
+- Nenhuma referência a `Microsoft.CodeAnalysis`/`Roslyn`/`CSharpScript`/`CSharpSyntaxTree`
+  em nenhuma das 10 DLLs (grep de string literal, zero ocorrências).
+- Nenhuma referência a `CSharpCodeProvider`/`CodeDom`/`ICodeCompiler`/engines de script
+  alternativos conhecidos (NCalc, Jint, IronPython) tampouco.
+- Os assemblies estão **fortemente ofuscados** (confirmado decompilando
+  `SysMiddle.MapControl.Core.Controller.General.TransformerHelper`, classe candidata mais
+  óbvia pelo nome/namespace): control-flow flattening (switch numérico artificial no
+  `cctor`), nomes de método/campo substituídos por sequências Unicode de controle,
+  strings criptografadas resolvidas em runtime via chamada a um decoder
+  (`...RtBOLGdGx(...)`), e **corpo de método inteiro stripado para `return null;`** pelo
+  decompilador — o IL real não é recuperável com decompilação estática simples.
+
+**Não confirmado / inconclusivo:**
+- Por causa da ofuscação, não dá pra ver a lógica real de nenhum método candidato a
+  interpretar `ContentValue`/`begin`/`end`. `TransformerHelper` é candidata forte pelo
+  nome mas o corpo está invisível — não achei (nem é viável achar sem ferramenta de
+  deobfuscation dedicada) a classe que efetivamente traduz/executa o DSL.
+
+**Veredito:** a hipótese específica do dono ("Roslyn Scripting compila o `ContentValue`
+como C#") está **REFUTADA por ausência de evidência** — não existe a dependência
+`Microsoft.CodeAnalysis` que isso exigiria em nenhuma das 10 DLLs. Isso não prova qual É
+o mecanismo real (mais provável: parser/interpretador proprietário próprio, escrito à
+mão — coerente com `begin/end` e `=` simples não serem C# válido de qualquer forma).
+**Recomendação para a Fase 1-2 inalterada e reforçada:** manter o parser dedicado
+(`DslBlockInterpreter`), não adotar `Microsoft.CodeAnalysis.CSharp.SyntaxTree`.
+Confirmar o mecanismo real exigiria deobfuscation completa ou instrumentação em runtime
+do processo Sysmiddle — fora de escopo, e não muda a decisão de engenharia mesmo se
+feito.
