@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Testes da Camada 0/1/2 do desenho de contexto/prompt (design-dsl-mapper-prompt-ia-2026-08-16.md):
+       DslStructuredParser (parser determinístico ContentValue→JSON), FunctionCatalog (extração de
+       assinaturas da DLL Sysmiddle) e FewShotIndex.RetrieveStructured. Projeto standalone (não entra
+       na LayoutParserApi.sln) — mesmo raciocínio do XslSynth.Core: ferramenta de síntese offline,
+       desacoplada do runtime Windows-only da API. Rodar com:
+         dotnet test ai\XslSynth.Core.Tests\XslSynth.Core.Tests.csproj -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>preview</LangVersion>
+    <IsPackable>false</IsPackable>
+    <UseAppHost>false</UseAppHost>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="10.0.1" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.8.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\XslSynth.Core\XslSynth.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+</Project>
