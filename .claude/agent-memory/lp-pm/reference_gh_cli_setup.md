@@ -14,5 +14,6 @@ metadata:
 - Adicionar item novo ao board: `gh project item-add 2 --owner LayoutParser --url <issue-url> --format json` retorna o `id` do item (`PVTI_...`) direto, sem precisar de `item-list` depois. **Usar sempre esse `--format json`** — evita o problema abaixo.
 - `gh project item-list 2 --owner LayoutParser --format json` **sem `--limit` retorna só os 30 itens mais recentes por padrão** — um item recém-criado pode não aparecer se o board já tiver >30 itens à frente dele. Usar `--limit 200` (ou maior) ao precisar localizar o `item-id` de uma issue específica por `content.number`. Python para parsear o JSON: `"/c/Program Files/PyManager/python"` (não está como `python`/`python3` no PATH do bash).
 - Issue #122 (2026-08-15): `gate: PRs de branch fix/** -> develop não rodam dotnet build/test (só CodeQL)`, achado por `@lp-devops`, adicionada ao Project #2 (Status=Todo, Tipo=gate, Dono=lp-devops) — criada direta (item único e claro), sem duplicata encontrada na busca prévia.
+- Issues #137-#141 (2026-08-16): lote "mapeamento campo TXT↔XML" via missão `story-from-decision`, rascunhado e confirmado pelo dono antes de criar (5 itens relacionados). Ver [[project-mapeamento-campo-txt-xml-2026-08-16]].
 
 Related: [[project-execute-candidates-cnhi-gap]]

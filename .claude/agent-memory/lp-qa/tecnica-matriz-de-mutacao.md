@@ -38,3 +38,14 @@ substitui execução.
 (regex, `Replace("\r\n", ...)`) chegam errados ao script e a mutação vira "pattern não encontrado"
 silencioso. Monte esses literais com `chr(92)` no Python, e sempre trate `[SKIP-PATTERN]` como
 falha da ferramenta, não como "não pegou".
+
+**Armadilha nova (gate do fallback de IA, 2026-08-16):** ao usar `git worktree add --detach
+<sha>` num diretório fora do repo (variante desta técnica quando `git archive` não é viável —
+aqui precisei rodar `dotnet build`/`test` de verdade, não só mutar texto), `dotnet build`
+incremental às vezes **não recompila** um arquivo restaurado ao original por `Move-Item`/`cp` de
+um `.bak` — o timestamp do restore engana o MSBuild e o teste de mutação continua "falhando" com
+o código já revertido (falso positivo de regressão). Sintoma: `dotnet build` reporta sucesso mas
+`dotnet test` continua reproduzindo o comportamento mutado. Fix: `dotnet clean && dotnet build`
+completo antes de reconfiar no resultado — não custa muito (~15s) e elimina o falso alarme. Vale
+tanto para reverter mutação quanto para qualquer troca rápida de branch/checkout num worktree
+escaneado antes.
