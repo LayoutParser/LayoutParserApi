@@ -65,7 +65,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
             Guid layoutGuid,
             string mapperGuid,
             string inputContent,
-            string groundTruthXml,
+            string? groundTruthXml,
             CancellationToken cancellationToken)
         {
             if (string.IsNullOrWhiteSpace(ticket))
@@ -73,7 +73,15 @@ namespace LayoutParserApi.Services.Transformation.Ai
 
             if (string.IsNullOrWhiteSpace(groundTruthXml))
             {
-                // Reforça 2.1 do desenho: sem gabarito sysmiddle, o pathway IA não é aplicável.
+                // TODO(@lp-parser-llm, feat/ai-fallback-automatico): este early-return preserva o
+                // comportamento do Issue #40 (sem gabarito = "not-applicable"). O fallback automático
+                // de IA (Estado A, design-fallback-ia-automatico-2026-08-16.md §6) precisa substituir
+                // este branch pelo modo "sem gabarito": mesmo loop gerar→validar, mas critério de
+                // convergência = XSD válido + validação de negócio (sem diff canônico), teto
+                // MaxIterationsFallback, HasGroundTruth=false nos diagnostics, e integração com
+                // IAiFallbackSuppressionGate (RegisterFailure ao esgotar iterações, ClearCooldown ao
+                // convergir). O controller (TransformationExecutionController.TryEnqueueAiFallback)
+                // já chama EnqueueAsync com groundTruthXml=null nesse caso.
                 _store.Set(userId, ticket, new AiCandidateStatus { Status = AiCandidateStatus.StatusNotApplicable });
                 return Task.CompletedTask;
             }
