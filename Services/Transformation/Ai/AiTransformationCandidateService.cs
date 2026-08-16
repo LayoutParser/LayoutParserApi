@@ -3,6 +3,7 @@ using System.Text.Json;
 
 using LayoutParserApi.Models.Transformation;
 using LayoutParserApi.Services.XmlAnalysis;
+using LayoutParserApi.Services.XmlAnalysis.Models;
 
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -36,19 +37,22 @@ namespace LayoutParserApi.Services.Transformation.Ai
         private readonly AiTransformationCandidateOptions _options;
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly AiCandidateStore _store;
+        private readonly IAiFallbackSuppressionGate _suppressionGate;
         private readonly CanonicalDiffer _differ = new();
 
-        // ✅ XsdValidationService é Scoped (dotnet-standards.md). O job roda em Task.Run
-        // fire-and-forget que sobrevive ao fim do scope da request HTTP — capturar diretamente a
-        // instância injetada aqui seria usar um serviço Scoped fora do seu ciclo de vida. Por isso
-        // recebemos IServiceScopeFactory e abrimos um scope novo dentro do loop (RunLoopAsync).
+        // ✅ XsdValidationService/XmlAnalysisService são Scoped (dotnet-standards.md). O job roda em
+        // Task.Run fire-and-forget que sobrevive ao fim do scope da request HTTP — capturar
+        // diretamente a instância injetada aqui seria usar um serviço Scoped fora do seu ciclo de
+        // vida. Por isso recebemos IServiceScopeFactory e abrimos um scope novo dentro do loop
+        // (RunLoopAsync/RunFallbackLoopAsync).
         public AiTransformationCandidateService(
             ILogger<AiTransformationCandidateService> logger,
             HttpClient httpClient,
             IOptions<OllamaOptions> ollamaOptions,
             IOptions<AiTransformationCandidateOptions> options,
             IServiceScopeFactory scopeFactory,
-            AiCandidateStore store)
+            AiCandidateStore store,
+            IAiFallbackSuppressionGate suppressionGate)
         {
             _logger = logger;
             _httpClient = httpClient;
@@ -56,6 +60,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
             _options = options.Value;
             _scopeFactory = scopeFactory;
             _store = store;
+            _suppressionGate = suppressionGate;
         }
 
         public Task EnqueueAsync(
@@ -65,18 +70,18 @@ namespace LayoutParserApi.Services.Transformation.Ai
             Guid layoutGuid,
             string mapperGuid,
             string inputContent,
-            string groundTruthXml,
+            string? groundTruthXml,
             CancellationToken cancellationToken)
         {
             if (string.IsNullOrWhiteSpace(ticket))
                 return Task.CompletedTask;
 
-            if (string.IsNullOrWhiteSpace(groundTruthXml))
-            {
-                // Reforça 2.1 do desenho: sem gabarito sysmiddle, o pathway IA não é aplicável.
-                _store.Set(userId, ticket, new AiCandidateStatus { Status = AiCandidateStatus.StatusNotApplicable });
-                return Task.CompletedTask;
-            }
+            // Sem gabarito: não é mais "não aplicável" por definição — é o fallback automático
+            // (Estado A, docs/architecture/design-fallback-ia-automatico-2026-08-16.md). A decisão
+            // de SE disparar (cooldown do gate, FailureKind do lado sysmiddle/tcl-xsl) já foi tomada
+            // pelo chamador (TransformationExecutionController.TryEnqueueAiFallback) — aqui só
+            // executamos o modo certo do loop.
+            var hasGroundTruth = !string.IsNullOrWhiteSpace(groundTruthXml);
 
             _store.Set(userId, ticket, new AiCandidateStatus { Status = AiCandidateStatus.StatusRunning });
 
@@ -91,7 +96,10 @@ namespace LayoutParserApi.Services.Transformation.Ai
 
                 try
                 {
-                    await RunLoopAsync(userId, ticket, layoutName, layoutGuid, mapperGuid, inputContent, groundTruthXml, linkedCts.Token);
+                    if (hasGroundTruth)
+                        await RunLoopAsync(userId, ticket, layoutName, layoutGuid, mapperGuid, inputContent, groundTruthXml!, linkedCts.Token);
+                    else
+                        await RunFallbackLoopAsync(userId, ticket, layoutName, layoutGuid, mapperGuid, inputContent, linkedCts.Token);
                 }
                 catch (OperationCanceledException)
                 {
@@ -101,8 +109,10 @@ namespace LayoutParserApi.Services.Transformation.Ai
                     _store.Set(userId, ticket, new AiCandidateStatus
                     {
                         Status = AiCandidateStatus.StatusFailed,
-                        Diagnostics = new AiCandidateDiagnostics { LastError = "Teto de sanidade excedido" }
+                        Diagnostics = new AiCandidateDiagnostics { LastError = "Teto de sanidade excedido", HasGroundTruth = hasGroundTruth }
                     });
+                    if (!hasGroundTruth)
+                        _suppressionGate.RegisterFailure(layoutGuid, TimeSpan.FromMinutes(_options.CooldownMinutes));
                 }
                 catch (Exception ex)
                 {
@@ -110,8 +120,10 @@ namespace LayoutParserApi.Services.Transformation.Ai
                     _store.Set(userId, ticket, new AiCandidateStatus
                     {
                         Status = AiCandidateStatus.StatusFailed,
-                        Diagnostics = new AiCandidateDiagnostics { LastError = "Falha interna no job de geração via IA" }
+                        Diagnostics = new AiCandidateDiagnostics { LastError = "Falha interna no job de geração via IA", HasGroundTruth = hasGroundTruth }
                     });
+                    if (!hasGroundTruth)
+                        _suppressionGate.RegisterFailure(layoutGuid, TimeSpan.FromMinutes(_options.CooldownMinutes));
                 }
             }, CancellationToken.None); // O próprio Task.Run não deve morrer com a request HTTP.
 
@@ -217,6 +229,228 @@ namespace LayoutParserApi.Services.Transformation.Ai
                     });
                 }
             }
+        }
+
+        /// <summary>
+        /// Loop do fallback automático (Estado A — sem gabarito sysmiddle,
+        /// docs/architecture/design-fallback-ia-automatico-2026-08-16.md §6): gerar → validar
+        /// XSD → validar regra de negócio (<see cref="XmlAnalysisService"/>, reaproveitado — não
+        /// inventa um terceiro validador) → corrigir. Sem diff canônico (não há gabarito): o loop
+        /// convergir significa "estruturalmente e semanticamente plausível", não "idêntico ao que a
+        /// Sysmiddle geraria". Por isso o candidato resultante sai marcado
+        /// <see cref="AiCandidateDiagnostics.HasGroundTruth"/> == false, com
+        /// <see cref="AiTransformationCandidateOptions.MaxIterationsFallback"/> (2, mais
+        /// conservador que o modo com gabarito) — iterações extras sem gabarito não aumentam a
+        /// confiança do resultado, só o custo de Ollama.
+        /// </summary>
+        private async Task RunFallbackLoopAsync(
+            string userId, string ticket, string layoutName, Guid layoutGuid, string mapperGuid,
+            string inputContent, CancellationToken cancellationToken)
+        {
+            var maxIterations = _options.MaxIterationsFallback > 0 ? _options.MaxIterationsFallback : 2;
+            string? lastCandidateXml = null;
+            string? lastError = null;
+
+            for (var iteration = 1; iteration <= maxIterations; iteration++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                string candidateXml;
+                try
+                {
+                    candidateXml = await GenerateFallbackCandidateAsync(
+                        layoutName, mapperGuid, inputContent, lastCandidateXml, lastError, cancellationToken);
+                }
+                catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+                {
+                    _logger.LogWarning(ex, "Ollama indisponível/timeout no fallback IA (ticket={Ticket}, iteração={Iteration})", ticket, iteration);
+                    _store.Set(userId, ticket, new AiCandidateStatus
+                    {
+                        Status = AiCandidateStatus.StatusFailed,
+                        Diagnostics = new AiCandidateDiagnostics
+                        {
+                            Iterations = iteration - 1,
+                            LastError = "Ollama indisponível ou excedeu o tempo limite",
+                            HasGroundTruth = false
+                        }
+                    });
+                    _suppressionGate.RegisterFailure(layoutGuid, TimeSpan.FromMinutes(_options.CooldownMinutes));
+                    return;
+                }
+
+                if (string.IsNullOrWhiteSpace(candidateXml))
+                {
+                    lastError = "Modelo não retornou XML válido";
+                    lastCandidateXml = null;
+                    continue;
+                }
+
+                lastCandidateXml = candidateXml;
+
+                var xsdValid = await TryValidateXsdAsync(candidateXml, cancellationToken);
+                var businessValidation = await TryValidateBusinessRulesAsync(candidateXml, cancellationToken);
+
+                if (xsdValid && businessValidation.Success)
+                {
+                    _store.Set(userId, ticket, new AiCandidateStatus
+                    {
+                        Status = AiCandidateStatus.StatusConverged,
+                        Candidate = new TransformationCandidate
+                        {
+                            CandidateId = $"ia-{mapperGuid}",
+                            Pathway = "ia",
+                            TransformedXml = candidateXml
+                        },
+                        Diagnostics = new AiCandidateDiagnostics
+                        {
+                            Iterations = iteration,
+                            RemainingDiffs = 0,
+                            XsdValid = true,
+                            HasGroundTruth = false
+                        }
+                    });
+                    // Convergiu sem gabarito: se um dia o layout tiver mapper cadastrado, a próxima
+                    // tentativa de fallback não deve ficar presa num cooldown de uma falha antiga.
+                    _suppressionGate.ClearCooldown(layoutGuid);
+                    return;
+                }
+
+                // Realimenta o motivo concreto (XSD inválido e/ou quais regras de negócio falharam)
+                // no prompt de correção — mesmo espírito do diff canônico no modo com gabarito.
+                lastError = FormatFallbackErrorsForPrompt(xsdValid, businessValidation);
+
+                if (iteration == maxIterations)
+                {
+                    _store.Set(userId, ticket, new AiCandidateStatus
+                    {
+                        Status = AiCandidateStatus.StatusFailed,
+                        Diagnostics = new AiCandidateDiagnostics
+                        {
+                            Iterations = iteration,
+                            RemainingDiffs = 0,
+                            XsdValid = xsdValid,
+                            HasGroundTruth = false,
+                            LastError = $"Não convergiu em {maxIterations} iteração(ões) (fallback sem gabarito): {lastError}"
+                        }
+                    });
+                    _suppressionGate.RegisterFailure(layoutGuid, TimeSpan.FromMinutes(_options.CooldownMinutes));
+                }
+            }
+        }
+
+        private async Task<string?> GenerateFallbackCandidateAsync(
+            string layoutName, string mapperGuid, string inputContent,
+            string? previousCandidateXml, string? previousError, CancellationToken cancellationToken)
+        {
+            var prompt = BuildFallbackPrompt(layoutName, mapperGuid, inputContent, previousCandidateXml, previousError);
+
+            var payload = new
+            {
+                model = _ollamaOptions.Model,
+                prompt,
+                stream = false,
+                options = new { temperature = 0.0 }
+            };
+
+            using var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+            var response = await _httpClient.PostAsync($"{_ollamaOptions.Url.TrimEnd('/')}/api/generate", content, cancellationToken);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var body = await SafeReadBodyAsync(response);
+                _logger.LogWarning("Ollama respondeu {StatusCode} ao gerar candidato do fallback IA: {Body}", response.StatusCode, body);
+                return null;
+            }
+
+            var raw = await response.Content.ReadAsStringAsync(cancellationToken);
+            using var doc = JsonDocument.Parse(raw);
+            var modelText = doc.RootElement.TryGetProperty("response", out var r) ? r.GetString() ?? "" : "";
+
+            return ExtractXml(modelText);
+        }
+
+        /// <summary>
+        /// Prompt do fallback automático: sem gabarito sysmiddle para copiar a estrutura, o modelo
+        /// precisa gerar o XML final a partir só do conhecimento de domínio (NFe/CTe SEFAZ) e do
+        /// documento de entrada — por isso é mais explícito sobre o schema-alvo do que
+        /// <see cref="BuildPrompt"/> (modo com gabarito).
+        /// </summary>
+        private static string BuildFallbackPrompt(
+            string layoutName, string mapperGuid, string inputContent,
+            string? previousCandidateXml, string? previousError)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("Você é um especialista em transformação de documentos fiscais (NFe/CTe) do");
+            sb.AppendLine("ecossistema Sysmiddle. NÃO existe um gabarito de referência para este layout —");
+            sb.AppendLine("ele ainda não tem mapeador cadastrado. Gere o XML final mais plausível a partir");
+            sb.AppendLine("do documento de entrada, seguindo a estrutura padrão SEFAZ (NFe/CTe, conforme o");
+            sb.AppendLine("conteúdo indicar) e as convenções usuais do ecossistema Sysmiddle. Responda");
+            sb.AppendLine("SOMENTE com o XML final, sem markdown, sem explicações.");
+            sb.AppendLine();
+            sb.AppendLine($"LAYOUT: {layoutName}");
+            sb.AppendLine($"MAPEADOR (referência, sem regras cadastradas): {mapperGuid}");
+            sb.AppendLine();
+            sb.AppendLine("ENTRADA (documento original):");
+            sb.AppendLine(Truncate(inputContent, 4000));
+
+            if (!string.IsNullOrWhiteSpace(previousCandidateXml))
+            {
+                sb.AppendLine();
+                sb.AppendLine("SUA TENTATIVA ANTERIOR (ainda com problema estrutural/de negócio):");
+                sb.AppendLine(Truncate(previousCandidateXml, 4000));
+            }
+
+            if (!string.IsNullOrWhiteSpace(previousError))
+            {
+                sb.AppendLine();
+                sb.AppendLine($"MOTIVO DA REJEIÇÃO: {previousError}");
+                sb.AppendLine("Corrija a tentativa anterior para eliminar esse problema.");
+            }
+
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// Validação de regra de negócio do fallback (§6 do desenho) — reaproveita
+        /// <see cref="XmlAnalysisService"/> (o mesmo validador de negócio já usado no pipeline de
+        /// análise de XML), não inventa um terceiro verificador. Sem <c>Layout</c> resolvido aqui
+        /// (o fallback roda antes de qualquer mapper existir para o layout), a validação de
+        /// estrutura contra layout é pulada — só regras de negócio genéricas (<c>ValidateBusinessRules</c>
+        /// internamente) se aplicam.
+        /// </summary>
+        private async Task<XmlAnalysisResult> TryValidateBusinessRulesAsync(string candidateXml, CancellationToken cancellationToken)
+        {
+            try
+            {
+                using var scope = _scopeFactory.CreateScope();
+                var xmlAnalysis = scope.ServiceProvider.GetRequiredService<XmlAnalysisService>();
+                return await xmlAnalysis.AnalyzeXmlAsync(candidateXml, layout: null);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Falha ao validar regra de negócio do candidato do fallback IA — tratado como inválido");
+                return new XmlAnalysisResult { Success = false, Errors = { "Falha interna ao validar regra de negócio" } };
+            }
+        }
+
+        private static string FormatFallbackErrorsForPrompt(bool xsdValid, XmlAnalysisResult businessValidation)
+        {
+            const int maxErrorsInPrompt = 20;
+            var parts = new List<string>();
+
+            if (!xsdValid)
+                parts.Add("XML não passou na validação estrutural contra o schema SEFAZ (XSD)");
+
+            if (businessValidation.Errors.Count > 0)
+            {
+                var shown = businessValidation.Errors.Take(maxErrorsInPrompt);
+                var suffix = businessValidation.Errors.Count > maxErrorsInPrompt
+                    ? $" (+{businessValidation.Errors.Count - maxErrorsInPrompt} outro(s))"
+                    : "";
+                parts.Add($"Regra(s) de negócio violada(s): {string.Join("; ", shown)}{suffix}");
+            }
+
+            return parts.Count > 0 ? string.Join(" | ", parts) : "Falha de validação não especificada";
         }
 
         private async Task<string?> GenerateCandidateAsync(

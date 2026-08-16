@@ -179,6 +179,30 @@ LayoutParserDecrypt.exe  (descriptografia Sysmiddle)
 
 > Os serviços que já materializam essa visão: `TransformationLearningService`, `ImprovedXslGeneratorService`, `ImprovedTclGeneratorService`, `RAGService`, `AutomatedTransformationTestService`, `XsdValidationService`.
 
+### Fallback automático de IA em produção / Automatic AI fallback in production
+
+**🇧🇷** Esse loop já roda **automaticamente em produção**, não só via CLI offline: `POST /api/transformationexecution/execute-candidates` (o pathway que o front-end de fato chama) dispara a IA local (Ollama) em background quando os dois pathways síncronos (`sysmiddle`, `tcl-xsl`) não produzem **nenhum** candidato. A resposta síncrona (200) não espera o job — ela devolve um *warning* com o *ticket* do job assíncrono, consultável em `GET /api/transformationexecution/execute-candidates/{ticket}/ia-status` (mesmo endpoint/mecanismo do pathway com gabarito, particionado por usuário).
+
+O gatilho distingue dois estados para não desperdiçar geração num problema que não é de transformação:
+
+| Estado | Sintoma | Dispara IA? |
+|--------|---------|-------------|
+| **A — não encontrado/não modelado** | Não existe mapper cadastrado para o layout, ou nenhuma heurística `tcl-xsl` se aplica | **Sim** — gap real de cobertura |
+| **B — encontrado, falhou por infra** | O mapper existe (`sysmiddle` reconhece o layout) mas a execução falhou por config/runner/timeout | **Não** — a transformação já existe e está correta; o problema é operacional, não de geração |
+
+Sem `groundTruthXml` (Estado A, "gerar do zero"), o critério de convergência muda de *diff canônico == 0* para **XSD válido + validação de negócio** (mais fraco), o teto de iterações é mais conservador (`MaxIterationsFallback`, default 2, contra 3 do modo com gabarito), e um **cooldown de 4h por `LayoutGuid`** (`AiFallbackSuppressionGate`, cross-usuário) evita reprocessar o Ollama repetidamente para um layout que a IA já tentou e não resolveu sozinha. O candidato resultante vem marcado com `HasGroundTruth: false` em `AiCandidateStatus.Diagnostics` — **é sugestão para revisão humana, nunca aplicado à produção sem validação**. Design completo: [`docs/architecture/design-fallback-ia-automatico-2026-08-16.md`](docs/architecture/design-fallback-ia-automatico-2026-08-16.md).
+
+**🇺🇸** This loop already runs **automatically in production**, not only via the offline CLI: `POST /api/transformationexecution/execute-candidates` (the pathway the front-end actually calls) dispatches the local AI (Ollama) in the background when neither synchronous pathway (`sysmiddle`, `tcl-xsl`) produces **any** candidate. The synchronous (200) response doesn't wait on the job — it returns a warning with the async job's *ticket*, pollable via `GET /api/transformationexecution/execute-candidates/{ticket}/ia-status` (same endpoint/mechanism as the ground-truth pathway, partitioned per user).
+
+The trigger distinguishes two states so generation isn't wasted on a problem that isn't a transformation gap:
+
+| State | Symptom | Triggers AI? |
+|-------|---------|---------------|
+| **A — not found / not modeled** | No mapper registered for the layout, or no `tcl-xsl` heuristic applies | **Yes** — genuine coverage gap |
+| **B — found, failed due to infra** | The mapper exists (`sysmiddle` recognizes the layout) but execution failed due to config/runner/timeout | **No** — the transformation already exists and is correct; the problem is operational, not generation |
+
+Without a `groundTruthXml` (State A, "generate from scratch"), the convergence criterion shifts from *canonical diff == 0* to **valid XSD + business validation** (weaker), the iteration cap is more conservative (`MaxIterationsFallback`, default 2, vs. 3 for the ground-truth mode), and a **4h cooldown per `LayoutGuid`** (`AiFallbackSuppressionGate`, cross-user) prevents repeatedly re-hitting Ollama for a layout the AI already tried and failed to solve on its own. The resulting candidate is marked `HasGroundTruth: false` in `AiCandidateStatus.Diagnostics` — **it is a suggestion for human review, never applied to production without validation**. Full design: [`docs/architecture/design-fallback-ia-automatico-2026-08-16.md`](docs/architecture/design-fallback-ia-automatico-2026-08-16.md).
+
 ---
 
 ## 6. Stack tecnológica / Tech stack
@@ -417,8 +441,8 @@ LayoutParserApi/
 
 - [ ] **Segurança:** remover segredos do `appsettings.json`, rotacionar chaves, migrar para secrets/env.
 - [ ] **RAG vetorial:** indexar pares (layout → XSLT) num vector store (Redis Stack / RediSearch).
-- [ ] **Loop de auto-correção XSLT:** fechar o ciclo gerar → validar (XSD) → corrigir com o Llama local.
-- [ ] **Eliminar o XML low-code:** validar a geração autônoma de XSLT contra os XMLs finais esperados.
+- [x] **Loop de auto-correção XSLT:** fechado em produção — com gabarito (Issue #40, `sysmiddle` bem-sucedido) e sem gabarito (fallback automático Estado A, [§5](#5-a-visão-de-ia--the-ai-vision)). Falta ampliar a base de exemplos/RAG acima.
+- [ ] **Eliminar o XML low-code:** validar a geração autônoma de XSLT contra os XMLs finais esperados — hoje a IA só entra quando o low-code falha (fallback), ainda não substitui o pathway sysmiddle bem-sucedido.
 - [ ] **Testes automatizados:** ampliar cobertura de `Services/Testing`.
 - [ ] **MCP Server:** expandir o conjunto de *tools* e publicar o registro em `.mcp.json`.
 

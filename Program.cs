@@ -402,6 +402,11 @@ try
     builder.Services.Configure<LayoutParserApi.Services.Transformation.Ai.AiTransformationCandidateOptions>(
         builder.Configuration.GetSection("AiTransformationCandidate"));
     builder.Services.AddSingleton<LayoutParserApi.Services.Transformation.Ai.AiCandidateStore>();
+    // ✅ Fallback automático de IA (design-fallback-ia-automatico-2026-08-16.md §5) — circuito de
+    // proteção cross-usuário por LayoutGuid, estado em memória (Singleton, mesmo padrão de
+    // LowCodeTransformationService/IConnectionMultiplexer em dotnet-standards.md).
+    builder.Services.AddSingleton<LayoutParserApi.Services.Transformation.Ai.IAiFallbackSuppressionGate,
+        LayoutParserApi.Services.Transformation.Ai.AiFallbackSuppressionGate>();
     // ✅ Issue #51: a store não tinha expiração — cada ticket ficava para sempre em memória e em
     // disco. A poda roda em BackgroundService (previsível e independente de tráfego) justamente
     // para o polling de status não pagar por varredura de diretório no caminho de request.

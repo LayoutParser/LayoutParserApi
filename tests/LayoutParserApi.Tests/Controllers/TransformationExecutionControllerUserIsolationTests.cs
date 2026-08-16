@@ -50,7 +50,7 @@ namespace LayoutParserApi.Tests.Controllers
 
             public Task EnqueueAsync(
                 string userId, string ticket, string layoutName, Guid layoutGuid, string mapperGuid,
-                string inputContent, string groundTruthXml, CancellationToken cancellationToken)
+                string inputContent, string? groundTruthXml, CancellationToken cancellationToken)
             {
                 LastEnqueueUserId = userId;
                 return Task.CompletedTask;
@@ -62,6 +62,20 @@ namespace LayoutParserApi.Tests.Controllers
                 LastGetStatusTicket = ticket;
                 return Task.FromResult(new AiCandidateStatus { Status = AiCandidateStatus.StatusNotFound });
             }
+        }
+
+        /// <summary>Spy do circuito de proteção do fallback automático de IA (nunca em cooldown por padrão).</summary>
+        private sealed class SpyAiFallbackSuppressionGate : IAiFallbackSuppressionGate
+        {
+            public bool IsInCooldown(Guid layoutGuid, out DateTimeOffset retryAt)
+            {
+                retryAt = default;
+                return false;
+            }
+
+            public void RegisterFailure(Guid layoutGuid, TimeSpan cooldown) { }
+
+            public void ClearCooldown(Guid layoutGuid) { }
         }
 
         /// <summary>
@@ -87,6 +101,7 @@ namespace LayoutParserApi.Tests.Controllers
                 layoutDb: null!,
                 lowCodeOptions: Options.Create(new LowCodeRunnerOptions()),
                 aiCandidateService: spy,
+                aiFallbackGate: new SpyAiFallbackSuppressionGate(),
                 currentUser: user);
 
             return (controller, spy, user);
@@ -169,6 +184,76 @@ namespace LayoutParserApi.Tests.Controllers
             method.Invoke(controller, new object?[] { request, layoutRecord, candidates, false, currentUserId });
 
             Assert.Equal("carol", spy.LastEnqueueUserId);
+        }
+
+        // --- Fallback automático de IA (design-fallback-ia-automatico-2026-08-16.md) ---
+        // TryEnqueueAiFallback é privado — mesma técnica de reflection do teste acima, pelo mesmo
+        // motivo (exercitar o pathway sysmiddle real fugiria do escopo de um teste unitário).
+
+        private static void InvokeTryEnqueueAiFallback(
+            TransformationExecutionController controller, TransformationRequest request, LayoutRecord layoutRecord,
+            bool isXmlInput, IEnumerable<FailureKind> failureKinds, List<string> warnings, string userId)
+        {
+            var bag = new System.Collections.Concurrent.ConcurrentBag<FailureKind>(failureKinds);
+            var method = typeof(TransformationExecutionController)
+                .GetMethod("TryEnqueueAiFallback", BindingFlags.NonPublic | BindingFlags.Instance)
+                ?? throw new InvalidOperationException("Método TryEnqueueAiFallback não encontrado — o controller mudou de forma incompatível com este teste.");
+
+            method.Invoke(controller, new object?[] { request, layoutRecord, isXmlInput, bag, warnings, userId });
+        }
+
+        [Fact]
+        public void TryEnqueueAiFallback_EstadoA_nao_modelado_dispara_o_fallback()
+        {
+            var (controller, spy, user) = BuildController();
+            user.Name = "dave";
+
+            var layoutGuid = Guid.NewGuid();
+            var request = new TransformationRequest
+            {
+                InputContent = "linha-posicional-sem-mapper",
+                LayoutName = "LAYOUT_SEM_MAPPER",
+                LayoutGuid = layoutGuid.ToString()
+            };
+            var layoutRecord = new LayoutRecord { LayoutGuid = layoutGuid, Name = request.LayoutName };
+            var warnings = new List<string>();
+
+            // Estado A: nenhum pathway falhou por infra — só "não aplicável"/"sem heurística".
+            InvokeTryEnqueueAiFallback(
+                controller, request, layoutRecord, isXmlInput: false,
+                failureKinds: new[] { FailureKind.NotApplicable, FailureKind.NotApplicable },
+                warnings, "dave");
+
+            Assert.Equal("dave", spy.LastEnqueueUserId);
+            Assert.Contains(warnings, w => w.Contains("fallback automático de IA enfileirado", StringComparison.OrdinalIgnoreCase));
+        }
+
+        [Fact]
+        public void TryEnqueueAiFallback_EstadoB_falha_de_infra_NAO_dispara_o_fallback()
+        {
+            var (controller, spy, user) = BuildController();
+            user.Name = "erin";
+
+            var layoutGuid = Guid.NewGuid();
+            var request = new TransformationRequest
+            {
+                InputContent = "linha-posicional-com-mapper-mas-runner-fora-do-ar",
+                LayoutName = "LAYOUT_COM_MAPPER",
+                LayoutGuid = layoutGuid.ToString()
+            };
+            var layoutRecord = new LayoutRecord { LayoutGuid = layoutGuid, Name = request.LayoutName };
+            var warnings = new List<string>();
+
+            // Estado B: pelo menos um pathway falhou por infra — mapper existe, IA não deve tentar
+            // recriar algo que já é a fonte de verdade (regressão explícita do caso já diagnosticado
+            // em diagnostico-mapper-nao-encontrado-producao-2026-08-15.md).
+            InvokeTryEnqueueAiFallback(
+                controller, request, layoutRecord, isXmlInput: false,
+                failureKinds: new[] { FailureKind.ExecutionInfraError, FailureKind.NotApplicable },
+                warnings, "erin");
+
+            Assert.Null(spy.LastEnqueueUserId);
+            Assert.DoesNotContain(warnings, w => w.Contains("fallback automático de IA enfileirado", StringComparison.OrdinalIgnoreCase));
         }
 
         // --- TAREFA 3 (regressão geral): os 3 endpoints deixaram de exigir o papel "admin" ---
