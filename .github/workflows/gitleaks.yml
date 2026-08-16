@@ -43,16 +43,34 @@ jobs:
         with:
           fetch-depth: 0
 
-      # gitleaks-action e gratuito para repositorio publico (a org LayoutParser esta publica
-      # desde 2026-08-15 - ver .claude/rules/agent-authority.md). Sem licenca nova, mesmo
-      # espirito do SecurityCodeScan (SAST gratuito) ja usado em ci-dev.yml.
-      #
-      # Comportamento padrao em evento pull_request: escaneia os commits introduzidos pelo PR
-      # (o diff contra a base), nao o historico inteiro do repo - e exatamente o "diff do PR"
-      # pedido. Bloqueia o job (e portanto o merge, se marcado como required check) se achar
-      # padrao de segredo: connection string com senha, API key, token, chave privada etc.
+      # gitleaks/gitleaks-action@v2 (a Action oficial "wrapper") passou a exigir
+      # GITLEAKS_LICENSE para repositorios de ORGANIZACAO - so e gratuita para conta
+      # pessoal/individual, independente do repo ser publico ou privado. Mesma classe de
+      # problema resolvida hoje com o CodeQL (trocado por SecurityCodeScan, gratuito):
+      # aqui trocamos a Action pelo BINARIO gitleaks direto via CLI, que nao tem essa
+      # exigencia - e so o scanner open-source, sem telemetria/licenca nenhuma.
+      - name: Instalar gitleaks (binario oficial, sem licenca)
+        run: |
+          set -euo pipefail
+          GITLEAKS_VERSION="8.21.2"
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o /tmp/gitleaks.tar.gz
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          chmod +x /tmp/gitleaks
+          sudo mv /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      # Comportamento equivalente ao da Action: escaneia apenas os commits introduzidos
+      # pelo PR (diff contra a base), nao o historico inteiro do repo. Bloqueia o job (e
+      # portanto o merge, se marcado como required check) se achar padrao de segredo:
+      # connection string com senha, API key, token, chave privada etc. Usa o mesmo
+      # .gitleaks.toml (PR #123).
       - name: Gitleaks - scan do diff do PR
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_ENABLE_COMMENTS: false
+        run: |
+          set -euo pipefail
+          git fetch origin "${{ github.event.pull_request.base.ref }}" --depth=1
+          gitleaks detect \
+            --source . \
+            --log-opts="--no-merges --first-parent origin/${{ github.event.pull_request.base.ref }}..HEAD" \
+            --config .gitleaks.toml \
+            --redact \
+            --verbose
