@@ -2,6 +2,7 @@ using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using XslSynth.Core;
 using XslSynth.Model;
+using XslSynth.Prompting;
 
 namespace XslSynth.Synthesis;
 
@@ -35,7 +36,14 @@ public sealed record FewShotExample(
     DslTraits Traits,   // traços detectados
     string? Dsl,        // DSL Sysmiddle de origem (quando houver)
     string? Xslt,       // fragmento XSLT alvo/estilo (quando houver)
-    string Origem)      // arquivo de onde o exemplo veio
+    string Origem,       // arquivo de onde o exemplo veio
+    /// <summary>
+    /// Camada 0 (design-dsl-mapper-prompt-ia-2026-08-16.md §2): representação JSON estruturada
+    /// da regra (quando <see cref="Dsl"/> existir e o parser conseguir produzi-la). É o que
+    /// alimenta <see cref="FewShotIndex.RetrieveStructured"/> — recuperação por traço estrutural
+    /// do JSON, não mais por regex sobre o texto bruto da DSL.
+    /// </summary>
+    StructuredRule? Structured = null)
 {
     /// <summary>Chave de indexação: tipo × versão × padrão-primário.</summary>
     public string Chave => $"{Tipo}|{Versao}|{FewShotIndex.Rotulo(FewShotIndex.Primario(Traits))}";
@@ -159,7 +167,11 @@ public sealed class FewShotIndex
                 if (xslt is { Length: > MaxSnippetChars }) xslt = null; // par gigante não cabe no prompt
             }
 
-            Adiciona(new FewShotExample(tipo, "4.00", traits, dsl, xslt, origem), exemplos, vistos, porChave);
+            StructuredRule? structured = null;
+            try { structured = new DslStructuredParser().Parse(rule); }
+            catch { /* Camada 0 é best-effort para o índice — exemplo ainda entra sem JSON estruturado. */ }
+
+            Adiciona(new FewShotExample(tipo, "4.00", traits, dsl, xslt, origem, structured), exemplos, vistos, porChave);
         }
     }
 
@@ -315,6 +327,66 @@ public sealed class FewShotIndex
             .Take(k)
             .Select(c => c.Ex)
             .ToList();
+    }
+
+    /// <summary>
+    /// Recuperação por JSON estruturado (design doc §2, "Extensão do FewShotIndex"): dado o
+    /// <see cref="StructuredRule"/> de uma regra (Camada 0 já rodou), recupera até <paramref name="k"/>
+    /// exemplos cujo <see cref="FewShotExample.Structured"/> é mais parecido — sobreposição de nomes
+    /// de função, semelhança na quantidade/forma dos ramos e no caminho de destino. Não depende de
+    /// regex sobre o texto da DSL; é o caminho preferido quando o chamador já tem o JSON (o
+    /// <see cref="Retrieve"/> baseado em <c>MapperRule</c>/regex continua existindo para quem só
+    /// tem a DSL bruta). Determinístico, mesmo critério de desempate por ordem de indexação.
+    /// </summary>
+    public IReadOnlyList<FewShotExample> RetrieveStructured(StructuredRule query, int k = 3,
+        string tipo = "NFe", string versao = "4.00")
+    {
+        if (k <= 0) return Array.Empty<FewShotExample>();
+        var queryFunctions = new HashSet<string>(query.AllFunctions, StringComparer.OrdinalIgnoreCase);
+        var queryTarget = query.Target ?? "";
+
+        return _exemplos
+            .Select((ex, i) => (Ex: ex, Ordem: i, Score: ScoreStructured(ex, query, queryFunctions, queryTarget, tipo, versao)))
+            .Where(c => c.Score > 0 && c.Ex.Structured != ExemploIgualA(query, c.Ex))
+            .OrderByDescending(c => c.Score)
+            .ThenBy(c => c.Ordem)
+            .Take(k)
+            .Select(c => c.Ex)
+            .ToList();
+    }
+
+    /// <summary>Evita recuperar a própria regra de consulta quando ela já está indexada (mesmo GUID).</summary>
+    private static StructuredRule? ExemploIgualA(StructuredRule query, FewShotExample ex) =>
+        ex.Structured?.RuleId is not null && ex.Structured.RuleId == query.RuleId ? ex.Structured : null;
+
+    private static double ScoreStructured(FewShotExample ex, StructuredRule query,
+        IReadOnlySet<string> queryFunctions, string queryTarget, string tipo, string versao)
+    {
+        if (ex.Structured is null) return 0;
+        var s = ex.Structured;
+
+        var funcOverlap = s.AllFunctions.Count(f => queryFunctions.Contains(f));
+        if (funcOverlap == 0 && s.Branches.Count != query.Branches.Count && ex.Traits == DslTraits.None) return 0;
+
+        double score = funcOverlap * 10;
+        score += 5.0 * Jaccard(queryFunctions, new HashSet<string>(s.AllFunctions, StringComparer.OrdinalIgnoreCase));
+
+        // mesma "forma" de árvore de decisão (nº de ramos) pesa — regra parecida tende a ter
+        // o mesmo número de caminhos de decisão (ex.: fallback em 3 camadas como a chave de acesso).
+        if (s.Branches.Count == query.Branches.Count) score += 4;
+        else score -= Math.Abs(s.Branches.Count - query.Branches.Count);
+
+        if (!string.IsNullOrEmpty(queryTarget) && !string.IsNullOrEmpty(s.Target))
+        {
+            var queryLeaf = queryTarget[(queryTarget.LastIndexOf('/') + 1)..];
+            var exLeaf = s.Target![(s.Target.LastIndexOf('/') + 1)..];
+            if (string.Equals(queryLeaf, exLeaf, StringComparison.OrdinalIgnoreCase)) score += 3;
+        }
+
+        if (string.Equals(ex.Tipo, tipo, StringComparison.OrdinalIgnoreCase)) score += 2;
+        if (string.Equals(ex.Versao, versao, StringComparison.OrdinalIgnoreCase)) score += 1;
+
+        return Math.Max(score, 0);
     }
 
     private static double Score(FewShotExample ex, DslTraits ruleTraits,
