@@ -1,9 +1,22 @@
 ---
 name: gh-cli-desapareceu-2026-08-16
-description: gh CLI e credencial GitHub em cache sumiram da workstation em 2026-08-16 — push via HTTPS trava sem alternativa disponível nesta sessão
+description: gh CLI sumiu do PATH/locais padrão em 2026-08-16 (episódio 1); RESOLVIDO no mesmo dia (episódio 2) — binário existia num local não padrão. Ver [[gh-cli-nao-autenticado]] para o local atual.
 metadata:
   type: project
 ---
+
+**Atualização (mesmo dia, 2026-08-16, episódio 2):** em outra sessão desse mesmo dia, `gh` foi
+localizado com sucesso em `C:\Users\elson.lopes\AppData\Local\Temp\gh_extract\bin\gh.exe`
+(fora de qualquer local padrão de instalação, por isso a busca original em `Program Files`/
+`%LOCALAPPDATA%\Programs` não achou nada) e estava **autenticado e funcional** — usado para
+criar, editar e mergear a PR #143 sem fricção. Ou seja, o "sumiço" do episódio 1 não era ausência
+real de `gh`, era busca em locais errados. Detalhe: [[gh-cli-nao-autenticado]]. **Antes de escalar
+ao usuário por `gh` ausente, rodar uma busca ampla (`find`/`Get-ChildItem -Recurse` a partir de
+`AppData\Local\Temp`) além dos locais padrão.**
+
+---
+
+Registro original do episódio 1, mantido como histórico:
 
 Em 2026-08-16, ao tentar `git push origin develop` (commit `d70934b`), confirmei que o
 workaround documentado em [[git-fetch-hang-gcm-workaround]] (usar `gh auth token` para montar
