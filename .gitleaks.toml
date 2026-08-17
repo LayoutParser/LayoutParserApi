@@ -22,8 +22,20 @@ tags = ["secret", "config"]
 
 # appsettings*.json legítimos deste repo usam placeholders vazios ("") —
 # a regra acima só dispara com valor não vazio, então não conflita com eles.
+#
+# Falsos positivos confirmados na triagem de 2026-08-17
+# (docs/architecture/triagem-gitleaks-segredos-historicos-2026-08-17.md):
+# 1) o marcador ***SENHA_REMOVIDA*** usado pelo git filter-repo de 2026-08-15 para
+#    substituir o segredo real no histórico — é o próprio remédio, não o segredo.
+# 2) "localhost:6379" — connection string do Redis local, sem senha nenhuma.
+# Regexes restritas a esses 2 padrões específicos — não enfraquece
+# generic-password-assignment de forma ampla.
 [allowlist]
 paths = [
     '''\.githooks/pre-commit''',
     '''\.gitleaks\.toml''',
+]
+regexes = [
+    '''\*\*\*SENHA_REMOVIDA\*\*\*''',
+    '''localhost:6379''',
 ]
