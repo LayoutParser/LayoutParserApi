@@ -146,13 +146,18 @@ namespace LayoutParserApi.Services.Database
             var processStartInfo = new ProcessStartInfo
             {
                 FileName = _layoutParserDecryptPath,
-                Arguments = BuildArgs(inputFile, outputFile, corr),
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 CreateNoWindow = true,
                 WindowStyle = ProcessWindowStyle.Hidden
             };
+            // ✅ ArgumentList evita reinterpretação de shell (cs/command-line-injection) — cada item
+            // vai como argumento literal pro processo filho, sem concatenar/escapar string manualmente.
+            processStartInfo.ArgumentList.Add(inputFile);
+            processStartInfo.ArgumentList.Add(outputFile);
+            processStartInfo.ArgumentList.Add(corr);
+            processStartInfo.ArgumentList.Add(_logDirFromApi);
 
             // ✅ Propagar correlation e log dir para o Decrypt/Lib
             processStartInfo.Environment["LAYOUTPARSER_CORRELATION_ID"] = corr;
@@ -206,10 +211,5 @@ namespace LayoutParserApi.Services.Database
             _logger.LogDebug("Processo legado finalizado: {Output}", stdoutTask.Result);
         }
 
-        private string BuildArgs(string inputFile, string outputFile, string corr)
-        {
-            // args: input output correlationId logDir
-            return $"\"{inputFile}\" \"{outputFile}\" \"{corr}\" \"{_logDirFromApi}\"";
-        }
     }
 }
