@@ -15,13 +15,17 @@
       (Services/Transformation/Ai), sem duplicar o loop RAG (RepairOrchestrator).
       Ver docs/architecture/pathway-ia-execute-candidates.md §4.1, opção (a).
       100% .NET puro — sem dependência de cripto Sysmiddle nem de Windows.
+
+      O núcleo determinístico sem I/O (parser DSL→JSON, schema, catálogo de funções, catálogo
+      GUID→XPath, MapperVo) foi extraído para XslSynth.Contracts (design
+      docs/architecture/design-xslsynth-runtime-e-reversibilidade-2026-08-16.md §1) — este
+      projeto continua com o lado generativo (Ollama, RAG/FewShot, XSD validator, diff canônico,
+      RepairOrchestrator) e referencia Contracts em vez de conter essas classes.
     -->
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Camada 2 (Prompting/FunctionCatalog.cs): reflection-only (MetadataLoadContext) sobre
-         SysMiddle.ConnectUs.Functions.dll — lê metadata pública, NÃO executa o assembly. -->
-    <PackageReference Include="System.Reflection.MetadataLoadContext" Version="10.0.11" />
+    <ProjectReference Include="..\XslSynth.Contracts\XslSynth.Contracts.csproj" />
   </ItemGroup>
 
 </Project>
