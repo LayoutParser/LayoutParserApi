@@ -24,6 +24,12 @@ on:
       - '.github/workflows/ci-dev.yml'
   workflow_dispatch: # Permite executar manualmente
 
+# Minimo necessario: checkout deste repo + LayoutParserLib/LayoutParserDecrypt (via
+# GH_PAT_TOKEN, fora do escopo do GITHUB_TOKEN) - nenhum step comenta PR, cria release ou
+# escreve outro recurso do GitHub. GITHUB_TOKEN so participa do proprio checkout.
+permissions:
+  contents: read
+
 # Serializa deploys de producao. cancel-in-progress: false de PROPOSITO - cancelar um deploy
 # no meio (durante a troca de binario / Stop-Service -> copia -> Start-Service) deixaria a
 # instalacao pela metade. Runs concorrentes ENFILEIRAM; nenhum e abortado no meio do caminho.
@@ -77,7 +83,9 @@ jobs:
         dotnet-version: '10.0.x'
     
     - name: Setup MSBuild for .NET Framework
-      uses: microsoft/setup-msbuild@v1.3
+      # Pinado por SHA (tag mutavel proibida p/ Action de terceiro nao-imutavel - CodeQL
+      # actions/unpinned-tag). SHA corresponde a tag v1.3.
+      uses: microsoft/setup-msbuild@ede762b26a2de8d110bb5a3db4d7e0e080c0e917
     
     - name: Build LayoutParserLib (.NET Framework 4.8.1)
       run: |
