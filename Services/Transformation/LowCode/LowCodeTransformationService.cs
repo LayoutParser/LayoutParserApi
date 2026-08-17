@@ -83,36 +83,39 @@ namespace LayoutParserApi.Services.Transformation.LowCode
 
             var args = new List<string>
             {
-                "--sysmiddleDir", Quote(sysmiddleDir),
-                "--globalFolder", Quote(globalFolder),
-                "--package", Quote(package ?? ""),
-                "--inputFile", Quote(inputPath),
-                "--outputFile", Quote(outputPath),
-                "--fileName", Quote(fileName ?? Path.GetFileName(inputPath)),
-                "--correlationId", Quote(correlationId),
-                "--runnerLogFile", Quote(runnerLogFile)
+                "--sysmiddleDir", sysmiddleDir,
+                "--globalFolder", globalFolder,
+                "--package", package ?? "",
+                "--inputFile", inputPath,
+                "--outputFile", outputPath,
+                "--fileName", fileName ?? Path.GetFileName(inputPath),
+                "--correlationId", correlationId,
+                "--runnerLogFile", runnerLogFile
             };
 
             if (!string.IsNullOrWhiteSpace(mapperId))
             {
                 args.Add("--mapperId");
-                args.Add(Quote(mapperId));
+                args.Add(mapperId);
             }
             else
             {
                 args.Add("--mapperName");
-                args.Add(Quote(mapperName!));
+                args.Add(mapperName!);
             }
 
             var psi = new ProcessStartInfo
             {
                 FileName = _opt.RunnerPath,
-                Arguments = string.Join(" ", args),
                 RedirectStandardError = true,
                 RedirectStandardOutput = true,
                 UseShellExecute = false,
                 CreateNoWindow = true
             };
+            // ✅ ArgumentList evita reinterpretação de shell (cs/command-line-injection) — cada item
+            // vai como argumento literal pro processo filho, sem parsing/escaping manual de string.
+            foreach (var arg in args)
+                psi.ArgumentList.Add(arg);
 
             _logger.LogInformation("Executando transformação low-code: corr={CorrelationId} mapperId={MapperId}, mapperName={MapperName}, runnerLog={RunnerLogFile}",
                 correlationId, mapperId, mapperName, runnerLogFile);
@@ -243,9 +246,6 @@ namespace LayoutParserApi.Services.Transformation.LowCode
             await allTask;
             return new LowCodeRunnerExecution(p.ExitCode, stdoutTask.Result, stderrTask.Result);
         }
-
-        private static string Quote(string s)
-            => $"\"{s?.Replace("\"", "\\\"")}\"";
 
         private static void TryDelete(string path)
         {
