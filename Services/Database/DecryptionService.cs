@@ -146,18 +146,43 @@ namespace LayoutParserApi.Services.Database
             var processStartInfo = new ProcessStartInfo
             {
                 FileName = _layoutParserDecryptPath,
-                Arguments = BuildArgs(inputFile, outputFile, corr),
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 CreateNoWindow = true,
                 WindowStyle = ProcessWindowStyle.Hidden
             };
+            // ✅ ArgumentList evita reinterpretação de shell (cs/command-line-injection) — cada item
+            // vai como argumento literal pro processo filho, sem concatenar/escapar string manualmente.
+            processStartInfo.ArgumentList.Add(inputFile);
+            processStartInfo.ArgumentList.Add(outputFile);
+            processStartInfo.ArgumentList.Add(corr);
+            processStartInfo.ArgumentList.Add(_logDirFromApi);
 
             // ✅ Propagar correlation e log dir para o Decrypt/Lib
             processStartInfo.Environment["LAYOUTPARSER_CORRELATION_ID"] = corr;
             processStartInfo.Environment["LAYOUTPARSER_LOG_DIR"] = _logDirFromApi;
 
+            var execucao = await ExecuteDecryptorProcessAsync(processStartInfo, corr);
+
+            if (execucao.ExitCode != 0)
+                throw new DecryptionException($"Legacy decryptor failed (Exit code: {execucao.ExitCode}, corr={corr}): {execucao.Stderr}");
+
+            _logger.LogDebug("Processo legado finalizado: {Output}", execucao.Stdout);
+        }
+
+        /// <summary>
+        /// Ciclo de vida do processo externo (start, leitura de stdout/stderr, timeout, kill).
+        ///
+        /// <para><c>protected virtual</c> para que os testes possam capturar o <see cref="ProcessStartInfo"/>
+        /// real construído (inclusive <see cref="ProcessStartInfo.ArgumentList"/>) sem depender do
+        /// <c>.exe</c> legado — mesmo padrão de
+        /// <c>LowCodeTransformationService.ExecuteRunnerProcessAsync</c>.</para>
+        /// </summary>
+        protected virtual async Task<(int ExitCode, string Stdout, string Stderr)> ExecuteDecryptorProcessAsync(
+            ProcessStartInfo processStartInfo,
+            string correlationId)
+        {
             using var process = new Process();
             process.StartInfo = processStartInfo;
 
@@ -182,15 +207,15 @@ namespace LayoutParserApi.Services.Database
             {
                 _logger.LogError(
                     "Legacy decryptor excedeu o timeout de {TimeoutMs}ms (corr={CorrelationId}) — matando processo",
-                    TimeoutMs, corr);
+                    TimeoutMs, correlationId);
 
                 try { if (!process.HasExited) process.Kill(entireProcessTree: true); }
-                catch (Exception killEx) { _logger.LogWarning(killEx, "Falha ao matar processo do decryptor (corr={CorrelationId})", corr); }
+                catch (Exception killEx) { _logger.LogWarning(killEx, "Falha ao matar processo do decryptor (corr={CorrelationId})", correlationId); }
 
                 // Best effort: janela curta para o kill liberar os streams antes de desistir.
                 try { await Task.WhenAny(allTask, Task.Delay(TimeSpan.FromSeconds(2))); } catch { }
 
-                throw new DecryptionException($"Legacy decryptor timeout ({TimeoutMs / 1000} segundos, corr={corr})");
+                throw new DecryptionException($"Legacy decryptor timeout ({TimeoutMs / 1000} segundos, corr={correlationId})");
             }
 
             // Encerra o Task.Delay pendente (senão o timer fica vivo até o fim do timeout).
@@ -199,17 +224,8 @@ namespace LayoutParserApi.Services.Database
             // allTask concluída — propaga eventual exceção real de leitura/exit, se houver.
             await allTask;
 
-            var error = stderrTask.Result;
-            if (process.ExitCode != 0)
-                throw new DecryptionException($"Legacy decryptor failed (Exit code: {process.ExitCode}, corr={corr}): {error}");
-
-            _logger.LogDebug("Processo legado finalizado: {Output}", stdoutTask.Result);
+            return (process.ExitCode, stdoutTask.Result, stderrTask.Result);
         }
 
-        private string BuildArgs(string inputFile, string outputFile, string corr)
-        {
-            // args: input output correlationId logDir
-            return $"\"{inputFile}\" \"{outputFile}\" \"{corr}\" \"{_logDirFromApi}\"";
-        }
     }
 }
