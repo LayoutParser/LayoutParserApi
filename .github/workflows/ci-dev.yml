@@ -12,6 +12,13 @@ on:
       - 'feat/**'
   workflow_dispatch:
 
+# Minimo necessario: so faz checkout deste repo e de LayoutParserLib/LayoutParserDecrypt
+# (via GH_PAT_TOKEN, fora do escopo do GITHUB_TOKEN) - nenhum step comenta PR, cria release
+# ou escreve outro recurso do GitHub. GITHUB_TOKEN nao e usado no self-hosted runner alem
+# do proprio checkout.
+permissions:
+  contents: read
+
 # Um push novo na mesma branch cancela o run anterior ainda em andamento
 # (o runner de dev e unico - evita fila desnecessaria).
 concurrency:

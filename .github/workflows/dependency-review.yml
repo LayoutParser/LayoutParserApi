@@ -1,0 +1,24 @@
+name: Dependency review
+
+# Bloqueia PR que introduz dependencia (NuGet/npm/etc.) com vulnerabilidade conhecida de
+# severidade alta ou critica. Cobre master E develop porque e o nosso fluxo real de PR
+# (feat/** -> develop -> master), nao so a branch de release.
+on:
+  pull_request:
+    branches: [ "master", "develop" ]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  dependency-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v5
+        with:
+          comment-summary-in-pr: always
+          fail-on-severity: high
