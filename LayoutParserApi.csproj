@@ -54,8 +54,16 @@
   <ItemGroup>
     <!-- Loop RAG (RepairOrchestrator etc.) extraído de ai/XslSynth para classlib compartilhada
          — evita duplicar o loop dentro da API (Issue #40, pathway IA de execute-candidates).
-         ai\** continua excluído do glob padrão acima; esta referência é explícita. -->
+         ai\** continua excluído do glob padrão acima; esta referência é explícita.
+         XslSynth.Core ainda é referenciado inteiro (CanonicalDiffer é usado diretamente por
+         AiTransformationCandidateService) — puxar Ollama/RAG junto no publish é uma dívida
+         conhecida, não corrigida nesta extração (ver
+         docs/architecture/design-xslsynth-runtime-e-reversibilidade-2026-08-16.md §1). -->
     <ProjectReference Include="ai\XslSynth.Core\XslSynth.Core.csproj" />
+    <!-- Núcleo determinístico (parser DSL→JSON, schema, catálogo de funções, catálogo
+         GUID→XPath) sem I/O externo — referência explícita e independente do XslSynth.Core
+         acima, para deixar claro que Services/ pode consumir isto sem precisar de Ollama/RAG. -->
+    <ProjectReference Include="ai\XslSynth.Contracts\XslSynth.Contracts.csproj" />
   </ItemGroup>
 
   <ItemGroup>

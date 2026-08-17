@@ -179,6 +179,31 @@ LayoutParserDecrypt.exe  (descriptografia Sysmiddle)
 
 > Os serviços que já materializam essa visão: `TransformationLearningService`, `ImprovedXslGeneratorService`, `ImprovedTclGeneratorService`, `RAGService`, `AutomatedTransformationTestService`, `XsdValidationService`.
 
+### Contexto estruturado para a IA — a DSL bruta nunca chega ao Ollama / Structured context for the AI — the raw DSL never reaches Ollama
+
+**🇧🇷** O mapeamento do Mapper Sysmiddle (`ContentValue` de cada `Rule`) usa uma DSL proprietária com prefixos (`#.` variável local, `$.` variável global, `I.` campo de origem, `T.` campo de destino, `F.` função, `N.`/`S.` menos comuns) e estruturas de controle (`if/else`, `for/foreach/while`) com sintaxe própria (ex.: `begin/end`, `=` como comparação — **não é C#/Roslyn válido**, hipótese investigada e refutada nas DLLs do Sysmiddle). Decisão estratégica do dono: reduzir a carga de interpretação da IA e viabilizar fine-tuning futuro do Ollama, evitando que o modelo precise aprender a gramática Sysmiddle inteira a cada chamada.
+
+Por isso existe uma **Camada 0**, determinística e sem IA, que traduz `ContentValue` bruto para um JSON estruturado (`branches`/`condition`/`sources`/`target`/`functions`) **antes** de qualquer coisa chegar ao prompt:
+
+```
+ContentValue (DSL bruta) ──► DslStructuredParser (Camada 0, 100% código) ──► StructuredRule (JSON)
+                                                                                    │
+                                                                                    ▼
+                                                        Ollama só vê o JSON — nunca a DSL bruta
+```
+
+- `DslStructuredParser` interpreta a árvore de decisão real (`if/else` aninhado, funções como `ConcatString`/`CalculateVerifierDigit`) e produz um `StructuredRule` (`SchemaVersion`, `Target`, `Branches`, `AllSources`, `AllFunctions`).
+- Esse trabalho pesado vive hoje em **`ai/XslSynth.Contracts`** — um projeto novo, extraído de `ai/XslSynth.Core`, que contém só o núcleo determinístico e sem I/O externo (`DslStructuredParser`, `StructuredRuleSchema`, `FunctionCatalog`, `GuidXPathCatalog`, `RealMapperParser`). É referenciado tanto pelo lado de pesquisa (`ai/XslSynth.Core`, que mantém Ollama/RAG/XSD validator isolados) quanto pela **API em runtime**, via `Services/Transformation/MappingStructureService.cs` (registrado `Scoped` em `Program.cs`) — ou seja, uma parte real desse trabalho **já conecta ao runtime da API**, não é mais só ferramenta offline/CLI.
+- **Estado atual, sem exagero:** `MappingStructureService` está com o "cano ligado" no DI (`ParseRule`, `TryExtractFunctionCatalog`), mas ainda **sem consumidor no pipeline HTTP** — a exposição via `/fieldMappings` para o front-end é escopo das próximas fases (issues #140/#141).
+
+**🇧🇷 Visão de longo prazo (declarada, não entregue):** a meta de fundo continua sendo eliminar a dependência do XML low-code Sysmiddle. O plano de mapeamento campo TXT↔XML (issues #137-141) usa essa camada estruturada tanto para **extração** (interpretar `ContentValue` real, com a IA só ajudando em ambiguidades — nunca decidindo a lógica condicional) quanto, no futuro, para **geração** (a IA aprender a produzir o JSON estruturado, com um transpilador determinístico convertendo de volta para `ContentValue`/XSLT). Reversibilidade (XML SEFAZ → TXT original) é **investigação em fase de desenho** (Fase 4, ver roadmap) — não é capacidade real hoje: funções como dígito verificador têm perda e não são inversíveis sem heurística.
+
+**🇺🇸** The Sysmiddle Mapper's `ContentValue` uses a proprietary DSL with prefixes (`#.` local var, `$.` global var, `I.` source field, `T.` target field, `F.` function) and control structures with their own syntax (`begin/end`, `=` as comparison — confirmed **not** valid C#/Roslyn, a hypothesis investigated and refuted against the Sysmiddle DLLs). Strategic decision: reduce the AI's interpretation burden and enable future Ollama fine-tuning by never asking the model to learn the full Sysmiddle grammar per call.
+
+A deterministic, AI-free **Layer 0** translates raw `ContentValue` into structured JSON (`branches`/`condition`/`sources`/`target`/`functions`) before anything reaches the prompt. That logic now lives in **`ai/XslSynth.Contracts`**, a new project extracted from `ai/XslSynth.Core` containing only the deterministic, I/O-free core (`DslStructuredParser`, `StructuredRuleSchema`, `FunctionCatalog`, `GuidXPathCatalog`, `RealMapperParser`). It's referenced by both the research side (`ai/XslSynth.Core`, which keeps Ollama/RAG/XSD validation isolated) and the **API at runtime**, via `Services/Transformation/MappingStructureService.cs` (`Scoped` in `Program.cs`) — a real slice of this work now connects to the API's actual runtime, not just an offline/CLI tool. Today the service is wired into DI but has **no HTTP consumer yet** (`/fieldMappings` exposure is future work, issues #140/#141). The long-term goal of retiring the low-code XML is a declared vision, not a shipped capability — reversibility (XML → original TXT) is early-stage design investigation, not a real feature, since lossy functions (check digits) aren't cleanly invertible.
+
+Design completo: [`docs/architecture/design-dsl-mapper-prompt-ia-2026-08-16.md`](docs/architecture/design-dsl-mapper-prompt-ia-2026-08-16.md) e [`docs/architecture/design-xslsynth-runtime-e-reversibilidade-2026-08-16.md`](docs/architecture/design-xslsynth-runtime-e-reversibilidade-2026-08-16.md).
+
 ### Fallback automático de IA em produção / Automatic AI fallback in production
 
 **🇧🇷** Esse loop já roda **automaticamente em produção**, não só via CLI offline: `POST /api/transformationexecution/execute-candidates` (o pathway que o front-end de fato chama) dispara a IA local (Ollama) em background quando os dois pathways síncronos (`sysmiddle`, `tcl-xsl`) não produzem **nenhum** candidato. A resposta síncrona (200) não espera o job — ela devolve um *warning* com o *ticket* do job assíncrono, consultável em `GET /api/transformationexecution/execute-candidates/{ticket}/ia-status` (mesmo endpoint/mecanismo do pathway com gabarito, particionado por usuário).
@@ -443,6 +468,9 @@ LayoutParserApi/
 - [ ] **RAG vetorial:** indexar pares (layout → XSLT) num vector store (Redis Stack / RediSearch).
 - [x] **Loop de auto-correção XSLT:** fechado em produção — com gabarito (Issue #40, `sysmiddle` bem-sucedido) e sem gabarito (fallback automático Estado A, [§5](#5-a-visão-de-ia--the-ai-vision)). Falta ampliar a base de exemplos/RAG acima.
 - [ ] **Eliminar o XML low-code:** validar a geração autônoma de XSLT contra os XMLs finais esperados — hoje a IA só entra quando o low-code falha (fallback), ainda não substitui o pathway sysmiddle bem-sucedido.
+- [x] **`XslSynth.Contracts` extraído:** núcleo determinístico (parser DSL→JSON, catálogo de funções) isolado de `ai/XslSynth.Core` e referenciado pela API em runtime via `MappingStructureService` — ver [§5](#5-a-visão-de-ia--the-ai-vision). Ainda sem consumidor HTTP.
+- [ ] **Mapeamento campo TXT↔XML (issues #137-141):** Fase 1 (`XslSynth.Contracts`, feita) → Fase 2 (catálogo GUID→XPath em runtime) → Fase 3 (expor `/fieldMappings` para o front). Design: [`docs/architecture/design-xslsynth-runtime-e-reversibilidade-2026-08-16.md`](docs/architecture/design-xslsynth-runtime-e-reversibilidade-2026-08-16.md).
+- [ ] **Fase 4 — reconstrução reversa best-effort (XML→TXT):** investigação de desenho apenas, escopo ainda não confirmado com o dono; funções com perda (dígito verificador) não são inversíveis sem heurística — não prometer "reversão garantida".
 - [ ] **Testes automatizados:** ampliar cobertura de `Services/Testing`.
 - [ ] **MCP Server:** expandir o conjunto de *tools* e publicar o registro em `.mcp.json`.
 

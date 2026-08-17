@@ -379,6 +379,11 @@ try
     builder.Services.AddScoped<TclGeneratorService>();
     builder.Services.AddScoped<XslGeneratorService>();
     builder.Services.AddScoped<AutoTransformationGeneratorService>();
+    // ✅ Cano de ligação com XslSynth.Contracts (núcleo determinístico extraído — parser DSL→JSON,
+    // catálogo de funções) para o resto da API usar, sem trazer Ollama/RAG (ver
+    // docs/architecture/design-xslsynth-runtime-e-reversibilidade-2026-08-16.md §1). Ainda sem
+    // consumidor no pipeline HTTP — conexão final ao /fieldMappings é escopo de #140/#141.
+    builder.Services.AddScoped<LayoutParserApi.Services.Transformation.MappingStructureService>();
 
     // ✅ Diagnóstico de erro de validação via Ollama (LLM local) — Gap 2 do contrato
     // docs/architecture/multi-candidato-e-diagnostico-ia-contrato.md. Não usa GeminiAIService
