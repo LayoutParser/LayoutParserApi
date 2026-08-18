@@ -339,8 +339,13 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 var xslt = new XslCompiledTransform();
                 xslt.Load(xslPath, new XsltSettings { EnableDocumentFunction = true }, new XmlUrlResolver());
 
-                // Carregar XML de entrada
-                using (var xmlReader = XmlReader.Create(new StringReader(xmlContent)))
+                // Carregar XML de entrada — DTD proibido e sem resolver externo para evitar XXE (CodeQL #4)
+                var xmlReaderSettings = new XmlReaderSettings
+                {
+                    DtdProcessing = DtdProcessing.Prohibit,
+                    XmlResolver = null
+                };
+                using (var xmlReader = XmlReader.Create(new StringReader(xmlContent), xmlReaderSettings))
                 using (var stringWriter = new StringWriter())
                 using (var xmlWriter = XmlWriter.Create(stringWriter, new XmlWriterSettings
                 {

@@ -248,7 +248,10 @@ namespace LayoutParserApi.Services.XmlAnalysis
                     Schemas = schemas,
                     ValidationFlags = XmlSchemaValidationFlags.ProcessInlineSchema |
                                      XmlSchemaValidationFlags.ProcessSchemaLocation |
-                                     XmlSchemaValidationFlags.ReportValidationWarnings
+                                     XmlSchemaValidationFlags.ReportValidationWarnings,
+                    // DTD proibido e sem resolver externo para evitar XXE (CodeQL #5)
+                    DtdProcessing = DtdProcessing.Prohibit,
+                    XmlResolver = null
                 };
 
                 // 6. Coletar erros de validação
