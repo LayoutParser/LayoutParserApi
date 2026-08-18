@@ -5,10 +5,16 @@ reconstruir contexto. Owner e passos concretos em cada uma.
 
 ---
 
-## 1. Alerta ativo de deploy quebrado
+## 1. Alerta ativo de deploy quebrado — IMPLEMENTADO (2026-08-18) ✅
 
 **Owner:** `@lp-devops`
 **Arquivo:** `.github/workflows/deploy.yml`
+
+Canal decidido pelo dono: **e-mail** (Opção B abaixo). Implementado via
+`dawidd6/action-send-mail@v3` em dois steps (smoke test/rollback + fallback "deploy abortado").
+Secrets (`SMTP_SERVER`/`SMTP_PORT`/`SMTP_USERNAME`/`SMTP_PASSWORD`/`ALERT_EMAIL_TO`) ainda não
+preenchidos pelo dono — os steps pulam graciosamente até lá. Passo a passo de configuração:
+`.claude/rules/security.md`, seção "Alerta de deploy por e-mail (2026-08-18)".
 
 A lógica de detecção já existe (linhas ~1075-1224): smoke test de readiness com
 retry/backoff em `/health/ready`, rollback automático do backup pré-deploy (PR #129),
