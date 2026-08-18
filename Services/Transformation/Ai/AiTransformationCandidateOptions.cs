@@ -48,6 +48,21 @@ namespace LayoutParserApi.Services.Transformation.Ai
         /// </summary>
         public int CleanupIntervalMinutes { get; set; } = DefaultCleanupIntervalMinutes;
 
+        /// <summary>Teto default de tickets retidos na store (issue #51 — parte "limite de tamanho").</summary>
+        public const int DefaultMaxStoredTickets = 500;
+
+        /// <summary>
+        /// Limite global (todos os usuários somados) de tickets simultâneos na store — segunda
+        /// metade da issue #51: TTL sozinho não protege contra um pico de volume que ainda não
+        /// venceu (ex.: um usuário disparando <c>execute-candidates</c> em loop). Ao estourar, o
+        /// <see cref="AiCandidateStore"/> descarta os tickets mais antigos (por
+        /// <c>LastWriteTimeUtc</c> em disco) até voltar ao limite — mesmo espírito best-effort do
+        /// <c>RemoveExpired</c>, só que disparado no caminho de escrita (<c>Set</c>) em vez de
+        /// esperar o próximo ciclo do <c>AiCandidateStoreCleanupBackgroundService</c>. Valor
+        /// &lt;= 0 cai no default (<see cref="DefaultMaxStoredTickets"/>).
+        /// </summary>
+        public int MaxStoredTickets { get; set; } = DefaultMaxStoredTickets;
+
         /// <summary>
         /// Fallback automático de IA (Estado A — "não encontrado/não modelado", ver
         /// docs/architecture/design-fallback-ia-automatico-2026-08-16.md §5): cooldown do

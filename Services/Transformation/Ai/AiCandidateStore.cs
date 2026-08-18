@@ -31,8 +31,14 @@ namespace LayoutParserApi.Services.Transformation.Ai
         private readonly ILogger<AiCandidateStore> _logger;
         private readonly string _storePath;
         private readonly TimeSpan _ttl;
+        private readonly int _maxStoredTickets;
         private readonly Func<DateTimeOffset> _clock;
         private readonly ConcurrentDictionary<string, StoredEntry> _memory = new();
+
+        // Serializa a poda por limite de tamanho: Set() concorrente de tickets diferentes não
+        // precisa disputar I/O de enumeração/deleção ao mesmo tempo — best-effort, não é um lock
+        // de correção (perder uma corrida aqui só adia a poda para o próximo Set()).
+        private readonly object _sizeLimitGate = new();
 
         // Separador de controle (US, ) para compor a chave de memória userId+ticket sem
         // ambiguidade — não é digitável e não deve vir de um header HTTP/nome de usuário normal.
@@ -68,6 +74,8 @@ namespace LayoutParserApi.Services.Transformation.Ai
             _clock = clock ?? (() => DateTimeOffset.UtcNow);
             var ttlHoras = options.Value.TicketTtlHours;
             _ttl = TimeSpan.FromHours(ttlHoras > 0 ? ttlHoras : AiTransformationCandidateOptions.DefaultTicketTtlHours);
+            var maxTickets = options.Value.MaxStoredTickets;
+            _maxStoredTickets = maxTickets > 0 ? maxTickets : AiTransformationCandidateOptions.DefaultMaxStoredTickets;
             _storePath = options.Value.StorePath
                 ?? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "MLData", "AiTransformationCandidates");
 
@@ -134,6 +142,73 @@ namespace LayoutParserApi.Services.Transformation.Ai
             }
 
             _memory[memoryKey] = new StoredEntry(status, agoraUtc);
+
+            EnforceSizeLimit();
+        }
+
+        /// <summary>
+        /// Poda os tickets mais antigos quando a store estoura <see cref="_maxStoredTickets"/>
+        /// (issue #51 — limite de tamanho, complementar ao TTL). Best-effort: qualquer falha de
+        /// I/O aqui é uma limpeza perdida, não um erro de escrita — o ticket que acabou de ser
+        /// gravado pelo <c>Set</c> já está persistido antes deste ponto.
+        /// </summary>
+        private void EnforceSizeLimit()
+        {
+            if (!Monitor.TryEnter(_sizeLimitGate))
+                return; // Outra thread já está podando; não vale a pena esperar no caminho de escrita.
+
+            try
+            {
+                if (!Directory.Exists(_storePath))
+                    return;
+
+                // Arquivo é a fonte de verdade da idade (mesmo critério do RemoveExpired): mais
+                // barato que manter um segundo índice em memória só para isso.
+                var arquivos = Directory.EnumerateFiles(_storePath, "*.json", SearchOption.AllDirectories)
+                    .Select(caminho =>
+                    {
+                        try { return (Caminho: caminho, EscritoEmUtc: File.GetLastWriteTimeUtc(caminho)); }
+                        catch { return (Caminho: caminho, EscritoEmUtc: DateTime.MaxValue); }
+                    })
+                    .OrderBy(item => item.EscritoEmUtc)
+                    .ToList();
+
+                var excedente = arquivos.Count - _maxStoredTickets;
+                if (excedente <= 0)
+                    return;
+
+                foreach (var (caminho, _) in arquivos.Take(excedente))
+                {
+                    try
+                    {
+                        // userId/ticket vêm da própria estrutura de pasta (ResolvePath): subpasta =
+                        // usuário, nome do arquivo sem extensão = ticket — reconstrói a chave de
+                        // memória sem precisar guardar um índice à parte.
+                        var ticket = Path.GetFileNameWithoutExtension(caminho);
+                        var userId = Path.GetFileName(Path.GetDirectoryName(caminho)) ?? AnonymousBucket;
+
+                        File.Delete(caminho);
+                        _memory.TryRemove(BuildMemoryKey(userId, ticket), out _);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogDebug(ex, "Falha ao podar ticket excedente do pathway IA (limite={Limite}): {Arquivo}",
+                            _maxStoredTickets, caminho);
+                    }
+                }
+
+                _logger.LogInformation(
+                    "Limite de tamanho da store do pathway IA excedido — {Removidos} ticket(s) mais antigo(s) removido(s) (limite={Limite})",
+                    excedente, _maxStoredTickets);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Falha ao aplicar o limite de tamanho da store do pathway IA");
+            }
+            finally
+            {
+                Monitor.Exit(_sizeLimitGate);
+            }
         }
 
         public AiCandidateStatus? Get(string userId, string ticket)
