@@ -1089,6 +1089,7 @@ jobs:
     # O ApiKeyGateFilter foi REMOVIDO do codigo (2026-08-12, `feat/identidade-do-bff`) - a
     # defesa BFF->API passou a ser rede (bind em loopback), nao chave compartilhada.
     - name: Smoke test de readiness (pos-deploy)
+      id: smoke_test
       env:
         API_URL_PROD: ${{ vars.API_URL_PROD }}
       run: |
@@ -1232,9 +1233,57 @@ jobs:
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $resumoLinhas
           }
 
+          # -- Outputs para o step de notificacao por e-mail (abaixo) ---------------------
+          #
+          # Precisam ser escritos ANTES do exit 1: Add-Content em $env:GITHUB_OUTPUT persiste
+          # mesmo que o step termine com falha logo em seguida - e o unico jeito de repassar
+          # o resumo (multilinha) para um step subsequente sem reconstrui-lo do zero.
+          if ($env:GITHUB_OUTPUT) {
+            $assunto = if ($rollbackOk) { "ROLLBACK OK" } else { "ROLLBACK FALHOU" }
+            Add-Content -Path $env:GITHUB_OUTPUT -Value "alert_status=$assunto"
+            $delimiter = "EOF_ALERT_BODY_$([guid]::NewGuid().ToString('N'))"
+            Add-Content -Path $env:GITHUB_OUTPUT -Value "alert_body<<$delimiter"
+            Add-Content -Path $env:GITHUB_OUTPUT -Value ($resumoLinhas -join "`n")
+            Add-Content -Path $env:GITHUB_OUTPUT -Value ""
+            Add-Content -Path $env:GITHUB_OUTPUT -Value "Run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+            Add-Content -Path $env:GITHUB_OUTPUT -Value "Commit: $env:GITHUB_SHA (ref $env:GITHUB_REF)"
+            Add-Content -Path $env:GITHUB_OUTPUT -Value $delimiter
+          }
+
           exit 1
         }
         Write-Host "Deploy de producao validado: API servindo (readiness 200)."
+
+    # -- Alerta ativo por e-mail: smoke test falhou (rollback OK/FALHOU) -------------
+    #
+    # Item 1 do raio-X de maturidade (docs/architecture/specs-execucao-maturidade-2026-08-16.md).
+    # Canal escolhido pelo dono: e-mail (Teams/Slack ficaram de fora - pago). Provedor SMTP
+    # ainda NAO foi escolhido pelo dono - este step referencia os secrets esperados e PULA
+    # graciosamente (nao falha o workflow) enquanto eles nao existirem. Ver
+    # `.claude/rules/security.md` -> secao "Alerta de deploy por e-mail" para o passo a passo
+    # de como o dono cria os secrets quando decidir o provedor (ex.: Gmail + senha de app).
+    #
+    # Dispara so quando o step "Smoke test de readiness" FALHOU (steps.smoke_test.outcome ==
+    # 'failure') - cobre os 2 primeiros casos do raio-X: rollback executado com sucesso OU
+    # rollback tambem falhou/nao foi possivel (o texto exato vem em steps.smoke_test.outputs.alert_body).
+    - name: Notificar falha de deploy por e-mail (smoke test / rollback)
+      if: >-
+        always() && steps.smoke_test.outcome == 'failure' &&
+        steps.smoke_test.outputs.alert_body != '' && secrets.SMTP_SERVER != ''
+      continue-on-error: true
+      uses: dawidd6/action-send-mail@v3
+      with:
+        # Secrets ainda NAO preenchidos pelo dono (provedor SMTP em aberto). Enquanto
+        # secrets.SMTP_SERVER estiver vazio, a Action falha rapido - por isso o step inteiro
+        # tem continue-on-error: true acima: nao pode derrubar o workflow so por falta de config.
+        server_address: ${{ secrets.SMTP_SERVER }}
+        server_port: ${{ secrets.SMTP_PORT }}
+        username: ${{ secrets.SMTP_USERNAME }}
+        password: ${{ secrets.SMTP_PASSWORD }}
+        subject: "[LayoutParserApi] Deploy de producao FALHOU - ${{ steps.smoke_test.outputs.alert_status }}"
+        to: ${{ secrets.ALERT_EMAIL_TO }}
+        from: "LayoutParserApi Deploy <${{ secrets.SMTP_USERNAME }}>"
+        body: ${{ steps.smoke_test.outputs.alert_body }}
 
     # -- Diagnostico de pre-requisitos (NAO-FATAL) -----------------------------------
     #
@@ -1331,3 +1380,37 @@ jobs:
           Write-Warning "Diagnostico falhou (nao bloqueia o deploy): $($_.Exception.Message)"
         }
         exit 0
+
+    # -- Alerta ativo por e-mail: fallback generico (DEPLOY ABORTADO) -----------------
+    #
+    # Cobre o 3o caso do raio-X (menor prioridade): o job falhou ANTES do smoke test rodar
+    # (build/publish/backup quebrou, por exemplo) - nesse caso steps.smoke_test nem chegou a
+    # existir ou terminou com outcome 'skipped'/'cancelled', entao o step de e-mail acima
+    # (que exige outcome == 'failure') nao dispara. Este step e o catch-all: `if: failure()`
+    # cobre qualquer falha do job inteiro; a condicao `steps.smoke_test.outcome != 'failure'`
+    # evita e-mail DUPLICADO quando quem falhou foi o smoke test (esse caso ja foi notificado
+    # acima, com o resumo detalhado do rollback).
+    #
+    # Mesmos secrets do step anterior (ver `.claude/rules/security.md`). Enquanto
+    # secrets.SMTP_SERVER estiver vazio, este step tambem pula sem quebrar o workflow.
+    - name: Notificar falha de deploy por e-mail (fallback - deploy abortado antes do smoke test)
+      if: >-
+        failure() && steps.smoke_test.outcome != 'failure' && secrets.SMTP_SERVER != ''
+      continue-on-error: true
+      uses: dawidd6/action-send-mail@v3
+      with:
+        server_address: ${{ secrets.SMTP_SERVER }}
+        server_port: ${{ secrets.SMTP_PORT }}
+        username: ${{ secrets.SMTP_USERNAME }}
+        password: ${{ secrets.SMTP_PASSWORD }}
+        subject: "[LayoutParserApi] Deploy de producao ABORTADO antes do smoke test"
+        to: ${{ secrets.ALERT_EMAIL_TO }}
+        from: "LayoutParserApi Deploy <${{ secrets.SMTP_USERNAME }}>"
+        body: |
+          O job de deploy de producao falhou ANTES do smoke test de readiness rodar
+          (provavel falha de build/publish/backup - ver o run para o step exato que falhou).
+
+          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          Commit: ${{ github.sha }} (ref ${{ github.ref }})
+
+          Investigue a causa raiz antes de tentar um novo deploy.

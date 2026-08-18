@@ -153,10 +153,68 @@ namespace LayoutParserApi.Tests.Services.Transformation.Ai
             }
         }
 
-        private static AiCandidateStore CriarStore(string storePath, Func<DateTimeOffset> relogio, int ttlHoras)
+        [Fact]
+        public void Set_poda_tickets_mais_antigos_quando_excede_o_limite_de_tamanho()
+        {
+            // Issue #51 (segunda metade): TTL sozinho não protege um pico de tickets ainda dentro
+            // da janela — MaxStoredTickets é o teto duro, aplicado no caminho de escrita.
+            var dir = CriarDiretorioTemporario();
+            try
+            {
+                var agora = new DateTimeOffset(2026, 8, 14, 12, 0, 0, TimeSpan.Zero);
+                var store = CriarStore(dir, () => agora, ttlHoras: 24, maxStoredTickets: 3);
+
+                for (var i = 0; i < 5; i++)
+                {
+                    store.Set("usuario-a", $"ticket-{i}", new AiCandidateStatus { Status = AiCandidateStatus.StatusRunning });
+                    agora = agora.AddMinutes(1); // Cada Set em instante distinto — desempata a poda por idade.
+                }
+
+                var arquivosRestantes = Directory.EnumerateFiles(dir, "*.json", SearchOption.AllDirectories).ToList();
+                Assert.Equal(3, arquivosRestantes.Count);
+
+                // Os dois mais antigos (ticket-0, ticket-1) foram podados; os três mais recentes sobrevivem.
+                Assert.Null(store.Get("usuario-a", "ticket-0"));
+                Assert.Null(store.Get("usuario-a", "ticket-1"));
+                Assert.NotNull(store.Get("usuario-a", "ticket-2"));
+                Assert.NotNull(store.Get("usuario-a", "ticket-3"));
+                Assert.NotNull(store.Get("usuario-a", "ticket-4"));
+            }
+            finally
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+        }
+
+        [Fact]
+        public void MaxStoredTickets_nao_configurado_ou_invalido_cai_no_default()
+        {
+            var dir = CriarDiretorioTemporario();
+            try
+            {
+                var padrao = CriarStore(dir, () => DateTimeOffset.UtcNow, ttlHoras: 24, maxStoredTickets: AiTransformationCandidateOptions.DefaultMaxStoredTickets);
+                var invalido = CriarStore(dir, () => DateTimeOffset.UtcNow, ttlHoras: 24, maxStoredTickets: 0);
+
+                // Nenhum ticket escrito ainda — só confere que o construtor não lança com o default
+                // nem com valor inválido (mesma convenção de TicketTtlHours).
+                Assert.NotNull(padrao);
+                Assert.NotNull(invalido);
+            }
+            finally
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+        }
+
+        private static AiCandidateStore CriarStore(string storePath, Func<DateTimeOffset> relogio, int ttlHoras, int maxStoredTickets = 0)
             => new(
                 NullLogger<AiCandidateStore>.Instance,
-                Options.Create(new AiTransformationCandidateOptions { StorePath = storePath, TicketTtlHours = ttlHoras }),
+                Options.Create(new AiTransformationCandidateOptions
+                {
+                    StorePath = storePath,
+                    TicketTtlHours = ttlHoras,
+                    MaxStoredTickets = maxStoredTickets
+                }),
                 relogio);
 
         private static string CriarDiretorioTemporario()

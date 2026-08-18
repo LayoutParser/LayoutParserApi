@@ -11,7 +11,7 @@ hardcoded no código (`GeminiAIService`, `LayoutDatabaseService`, `ElasticSearch
 
 | Segredo | Onde | Status |
 |---------|------|--------|
-| API key do **Gemini** | `Gemini:ApiKey` | Removido do código/JSON ✅ · **Gemini decomissionado (2026-07-21) — revogar/desprovisionar, não rotacionar** 🔴 |
+| API key do **Gemini** | `Gemini:ApiKey` | Removido do código/JSON ✅ · Gemini decomissionado (2026-07-21) · **Revogada e deletada pelo dono em 2026-08-17** ✅ |
 | Senha do **SQL Server** | `Database:Password` | **REGRESSÃO em 2026-07-18** (ver abaixo) · removido de novo ✅ · repositórios da org PÚBLICOS desde 2026-08-15 · **ROTAÇÃO NÃO É OPÇÃO (ver 2026-08-15 abaixo) — mitigação é limpeza de histórico + hardening em repouso + prevenção de reincidência** 🔴🔴 |
 | Credenciais do **Elastic** | `ElasticSearch:Username/Password` | ✅ Removido — mecanismo nunca foi conectado ao pipeline real (Serilog é o logging efetivo); código morto (`ILoggingStrategy`/`ElasticSearch*`) e config removidos em 2026-07-27 |
 
@@ -94,7 +94,7 @@ mas o valor está de novo em commits públicos do histórico.
 - [x] **Step de CI** anti-reincidência (`gitleaks`) — `.github/workflows/gitleaks.yml`, roda em
       todo PR contra `develop`/`master`/`main`, escaneando o diff introduzido pelo PR
       (`@lp-devops`). Falta a metade de `@lp-backend-dev`: hook de pre-commit local.
-- [ ] **Revogar/desprovisionar** (não rotacionar) a API key do Gemini exposta — Gemini foi decomissionado, sem consumidor previsto. **Ação do dono do projeto** — ver runbook abaixo 🔴.
+- [x] **Revogar/desprovisionar** (não rotacionar) a API key do Gemini exposta — **revogada e deletada pelo dono em 2026-08-17** ✅.
 
 ### Como configurar os segredos (dev)
 
@@ -140,7 +140,10 @@ próprio no futuro):
    `Environment` do serviço e reinicia a API com a senha nova.
 4. Validar smoke test verde e conexão SQL nos logs (sem imprimir a senha).
 
-### Revogação da API key do Gemini — Gemini decomissionado (2026-07-21)
+### Revogação da API key do Gemini — CONCLUÍDA em 2026-08-17 ✅
+
+O dono revogou e deletou a chave no console do provedor. Item fechado — texto abaixo preservado
+como registro histórico da decisão e do runbook seguido.
 
 Decisão de arquitetura: Gemini e OpenAI foram **abandonados por completo** como provedores de LLM
 neste projeto — Ollama local assume 100% do papel (loop RAG gerar → validar → corrigir, sem
@@ -213,6 +216,59 @@ Os segredos antigos **persistem nos commits anteriores** mesmo após este commit
 > deixa de ser publicamente acessível via GitHub. Para a API key do Gemini, revogação continua
 > sendo a ação que efetivamente invalida o segredo — a limpeza de histórico é complementar,
 > não substitui a revogação.
+
+## Alerta de deploy por e-mail (2026-08-18)
+
+Item 1 do raio-X de maturidade (`docs/architecture/specs-execucao-maturidade-2026-08-16.md`).
+Canal decidido pelo dono: **e-mail** (Teams/Slack ficaram de fora — pago). Implementado em
+`.github/workflows/deploy.yml`, usando a Action gratuita `dawidd6/action-send-mail@v3`, disparada
+em 2 pontos do job de deploy:
+
+1. Logo após o step **Smoke test de readiness (pos-deploy)** — dispara quando esse step falha
+   (`steps.smoke_test.outcome == 'failure'`), cobrindo os casos "ROLLBACK OK" e "ROLLBACK FALHOU".
+   O corpo do e-mail reaproveita o mesmo resumo que já vai pro `$GITHUB_STEP_SUMMARY`.
+2. No fim do job — fallback genérico para "DEPLOY ABORTADO" (falha antes do smoke test rodar,
+   ex.: build/publish quebrou). Só dispara se o smoke test **não** foi quem falhou, pra não
+   duplicar o e-mail do caso 1.
+
+**Provedor SMTP ainda não escolhido pelo dono.** Os dois steps checam `secrets.SMTP_SERVER != ''`
+na condição `if:` — enquanto os secrets abaixo não existirem, os steps são **pulados**
+silenciosamente (não fazem o workflow falhar). Nenhuma ação é necessária até o dono decidir o
+provedor.
+
+### Secrets a criar quando o provedor for escolhido
+
+Em GitHub → repo `LayoutParserApi` → **Settings → Secrets and variables → Actions → New repository secret**:
+
+| Secret | Descrição |
+|--------|-----------|
+| `SMTP_SERVER` | Host do servidor SMTP (ex.: `smtp.gmail.com`) |
+| `SMTP_PORT` | Porta (ex.: `587` para TLS) |
+| `SMTP_USERNAME` | Usuário/e-mail de envio |
+| `SMTP_PASSWORD` | Senha/senha de app (nunca a senha normal da conta, se o provedor suportar senha de app) |
+| `ALERT_EMAIL_TO` | Endereço de destino dos alertas (só o dono, um endereço) |
+
+### Passo a passo — Gmail + senha de app (opção mais acessível)
+
+1. Acessar [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords) com a
+   conta Google que vai enviar os alertas (exige verificação em 2 etapas ativada na conta).
+2. Gerar uma **senha de app** nova (ex.: nome "LayoutParserApi Deploy Alert") — copiar o valor de
+   16 caracteres exibido (só aparece uma vez).
+3. Criar os secrets no GitHub com:
+   - `SMTP_SERVER` = `smtp.gmail.com`
+   - `SMTP_PORT` = `587`
+   - `SMTP_USERNAME` = o e-mail Gmail usado para gerar a senha de app
+   - `SMTP_PASSWORD` = a senha de app gerada no passo 2 (não a senha normal da conta)
+   - `ALERT_EMAIL_TO` = e-mail do dono que deve receber os alertas
+4. Não é preciso redisparar nada manualmente — os steps já existentes no `deploy.yml` passam a
+   disparar automaticamente no próximo deploy que falhar o smoke test (ou abortar antes dele).
+5. Não há como validar o envio real sem um deploy que falhe de propósito — se quiser confirmar o
+   mecanismo, `workflow_dispatch` não cobre isso hoje (o gatilho é sempre push a `master`); o
+   caminho mais seguro é revisar a sintaxe do step e confiar no smoke test real do próximo deploy.
+
+Se o provedor escolhido não for Gmail (Outlook/Office 365, SendGrid etc.), os nomes dos 5 secrets
+continuam os mesmos — só os valores de `SMTP_SERVER`/`SMTP_PORT`/`SMTP_USERNAME`/`SMTP_PASSWORD`
+mudam conforme a documentação do provedor.
 
 ## CodeQL desativado — Dependabot mantido (2026-08-15)
 
