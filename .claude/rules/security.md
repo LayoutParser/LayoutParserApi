@@ -11,7 +11,7 @@ hardcoded no código (`GeminiAIService`, `LayoutDatabaseService`, `ElasticSearch
 
 | Segredo | Onde | Status |
 |---------|------|--------|
-| API key do **Gemini** | `Gemini:ApiKey` | Removido do código/JSON ✅ · **Gemini decomissionado (2026-07-21) — revogar/desprovisionar, não rotacionar** 🔴 |
+| API key do **Gemini** | `Gemini:ApiKey` | Removido do código/JSON ✅ · Gemini decomissionado (2026-07-21) · **Revogada e deletada pelo dono em 2026-08-17** ✅ |
 | Senha do **SQL Server** | `Database:Password` | **REGRESSÃO em 2026-07-18** (ver abaixo) · removido de novo ✅ · repositórios da org PÚBLICOS desde 2026-08-15 · **ROTAÇÃO NÃO É OPÇÃO (ver 2026-08-15 abaixo) — mitigação é limpeza de histórico + hardening em repouso + prevenção de reincidência** 🔴🔴 |
 | Credenciais do **Elastic** | `ElasticSearch:Username/Password` | ✅ Removido — mecanismo nunca foi conectado ao pipeline real (Serilog é o logging efetivo); código morto (`ILoggingStrategy`/`ElasticSearch*`) e config removidos em 2026-07-27 |
 
@@ -94,7 +94,7 @@ mas o valor está de novo em commits públicos do histórico.
 - [x] **Step de CI** anti-reincidência (`gitleaks`) — `.github/workflows/gitleaks.yml`, roda em
       todo PR contra `develop`/`master`/`main`, escaneando o diff introduzido pelo PR
       (`@lp-devops`). Falta a metade de `@lp-backend-dev`: hook de pre-commit local.
-- [ ] **Revogar/desprovisionar** (não rotacionar) a API key do Gemini exposta — Gemini foi decomissionado, sem consumidor previsto. **Ação do dono do projeto** — ver runbook abaixo 🔴.
+- [x] **Revogar/desprovisionar** (não rotacionar) a API key do Gemini exposta — **revogada e deletada pelo dono em 2026-08-17** ✅.
 
 ### Como configurar os segredos (dev)
 
@@ -140,7 +140,10 @@ próprio no futuro):
    `Environment` do serviço e reinicia a API com a senha nova.
 4. Validar smoke test verde e conexão SQL nos logs (sem imprimir a senha).
 
-### Revogação da API key do Gemini — Gemini decomissionado (2026-07-21)
+### Revogação da API key do Gemini — CONCLUÍDA em 2026-08-17 ✅
+
+O dono revogou e deletou a chave no console do provedor. Item fechado — texto abaixo preservado
+como registro histórico da decisão e do runbook seguido.
 
 Decisão de arquitetura: Gemini e OpenAI foram **abandonados por completo** como provedores de LLM
 neste projeto — Ollama local assume 100% do papel (loop RAG gerar → validar → corrigir, sem
