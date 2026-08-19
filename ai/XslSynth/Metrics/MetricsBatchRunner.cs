@@ -83,12 +83,13 @@ public static class MetricsBatchRunner
             .MinimumLevel.Information()
             .Enrich.FromLogContext()
             .WriteTo.Console(outputTemplate:
-                "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff}] [{Level:u3}] [Src:{Source}] {Message:lj}{NewLine}{Exception}")
+                "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff}] [{Level:u3}] [Src:{Source}] [Corr:{CorrelationId}] {Message:lj}{NewLine}{Exception}")
             .WriteTo.File(
                 Path.Combine(opts.LogDirectory, opts.LogFileName),
-                rollingInterval: Serilog.RollingInterval.Infinite,
+                rollingInterval: Serilog.RollingInterval.Day,
+                rollOnFileSizeLimit: true,
                 outputTemplate:
-                    "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff}] [{Level:u3}] [Src:{Source}] {Message:lj}{NewLine}{Exception}",
+                    "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff}] [{Level:u3}] [Src:{Source}] [Corr:{CorrelationId}] {Message:lj}{NewLine}{Exception}",
                 shared: true)
             .CreateLogger();
 
