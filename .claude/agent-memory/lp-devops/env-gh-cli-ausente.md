@@ -1,9 +1,17 @@
 ---
 name: env-gh-cli-ausente
-description: gh CLI NÃO está instalado na workstation de dev — status de runs do CI dev sai do log local do runner (_diag/Worker_*.log); PRs só via browser
+description: gh CLI ATUALMENTE instalado em C:\Users\elson.lopes\.local\bin\gh.exe (não no PATH por padrão) — histórico de "ausência" abaixo é anterior a essa instalação
 metadata:
   type: project
 ---
+
+**Atualização 2026-08-17:** `gh.exe` está presente em `C:\Users\elson.lopes\.local\bin\gh.exe`
+(v2.97.0, autenticado como `elson-vinicius-lopes`, token com escopos `gist, project, read:org,
+repo, workflow`) — não aparece com `which gh` porque essa pasta não está no `$PATH` padrão da
+sessão Bash. Para usar: `export PATH="$PATH:/c/Users/elson.lopes/.local/bin"` no início da
+sessão. Usado com sucesso para `gh api .../code-scanning/alerts` (dismissal em massa de alertas
+CodeQL). O relato de "ausência" abaixo é histórico (2026-07-18/30) e pode estar desatualizado —
+sempre checar esse caminho primeiro antes de assumir que `gh` não existe.
 
 O GitHub CLI (`gh`) não está instalado na workstation de dev (verificado em 2026-07-18:
 ausente do PATH, de `C:\Program Files\GitHub CLI\` e de `%LOCALAPPDATA%\Programs\GitHub CLI\`).
