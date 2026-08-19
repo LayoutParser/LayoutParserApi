@@ -71,7 +71,10 @@ try
     var logDirectory = builder.Configuration["Logging:File:Directory"] ?? "Logs";
     // Nome base do arquivo (conforme requisito)
     var logFileName = builder.Configuration["Logging:File:FileName"] ?? "layoutparserapi.log";
-    var retainedFileCountLimit = int.TryParse(builder.Configuration["Logging:File:RetainedFileCountLimit"], out var r) ? r : 10;
+    // ✅ Default subiu de 10 para 30: com RollingInterval.Day a unidade de retenção passa a ser
+    // "dias" (antes eram ~10 arquivos de fileSizeLimitBytes cada); 30 dias é retenção razoável
+    // e barata em disco pro volume de log desta API.
+    var retainedFileCountLimit = int.TryParse(builder.Configuration["Logging:File:RetainedFileCountLimit"], out var r) ? r : 30;
     var fileSizeLimitKb = int.TryParse(builder.Configuration["Logging:File:FileSizeLimitKB"], out var kb) ? kb : 2049;
     var fileSizeLimitBytes = (long)fileSizeLimitKb * 1024L;
 
@@ -150,7 +153,14 @@ try
             .WriteTo.Console(outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff}] [{Level:u3}] [Corr:{CorrelationId}] [Src:{Source}] {Message:lj}{NewLine}{Exception}")
             .WriteTo.File(
                 Path.Combine(logDirectory, logFileName),
-                rollingInterval: RollingInterval.Infinite,
+                // ✅ FIX (diagnóstico Aria): antes era RollingInterval.Infinite + rollOnFileSizeLimit,
+                // que rotaciona só por tamanho e gera sufixo numérico sequencial (ex.: "..._150.log"),
+                // sem nenhum timestamp no nome — o que estava sendo confundido com data errada.
+                // RollingInterval.Day nomeia o arquivo com a data (ex.: "layoutparserapi20260819.log")
+                // nativamente, e continua combinável com rollOnFileSizeLimit (protege contra arquivo
+                // gigante dentro do mesmo dia). UnifiedLogReaderService já lê por glob de prefixo,
+                // então tolera múltiplos arquivos rotacionados por data sem alteração.
+                rollingInterval: RollingInterval.Day,
                 retainedFileCountLimit: retainedFileCountLimit,
                 fileSizeLimitBytes: fileSizeLimitBytes,
                 rollOnFileSizeLimit: true,

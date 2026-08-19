@@ -2,7 +2,9 @@ using System.ComponentModel;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
+using Serilog.Context;
 
 namespace LayoutParserMcp.Tools;
 
@@ -22,11 +24,17 @@ public static class ApiTools
                  "Lists the API endpoints from the live Swagger/OpenAPI document.")]
     public static async Task<string> ListEndpointsAsync(
         IHttpClientFactory httpClientFactory,
+        ILogger<ApiToolsLog> logger,
         CancellationToken cancellationToken = default)
     {
+        var correlationId = CorrelationContext.NewId();
+        using var _ = LogContext.PushProperty("CorrelationId", correlationId);
+
         var client = httpClientFactory.CreateClient("api");
+        client.DefaultRequestHeaders.TryAddWithoutValidation(CorrelationContext.HeaderName, correlationId);
         try
         {
+            logger.LogInformation("Tool list_endpoints: lendo Swagger de {BaseAddress}", client.BaseAddress);
             var json = await client.GetStringAsync("/swagger/v1/swagger.json", cancellationToken);
             using var doc = JsonDocument.Parse(json);
 
@@ -47,6 +55,7 @@ public static class ApiTools
         }
         catch (Exception ex)
         {
+            logger.LogWarning(ex, "Tool list_endpoints falhou ao ler Swagger de {BaseAddress}", client.BaseAddress);
             return $"ERRO ao ler o Swagger em {client.BaseAddress}swagger/v1/swagger.json: {ex.Message} " +
                    "(a API está rodando em Development?)";
         }
@@ -60,18 +69,27 @@ public static class ApiTools
                  "Performs a GET on an API path and returns the response body.")]
     public static async Task<string> ApiGetAsync(
         IHttpClientFactory httpClientFactory,
+        ILogger<ApiToolsLog> logger,
         [Description("Caminho relativo do endpoint, ex.: /api/LayoutDatabase")] string path,
         CancellationToken cancellationToken = default)
     {
+        var correlationId = CorrelationContext.NewId();
+        using var _ = LogContext.PushProperty("CorrelationId", correlationId);
+
         var client = httpClientFactory.CreateClient("api");
+        client.DefaultRequestHeaders.TryAddWithoutValidation(CorrelationContext.HeaderName, correlationId);
         try
         {
+            logger.LogInformation("Tool api_get: {Path}", path);
             var response = await client.GetAsync(NormalizePath(path), cancellationToken);
             var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (!response.IsSuccessStatusCode)
+                logger.LogWarning("Tool api_get: {Path} retornou HTTP {StatusCode}", path, (int)response.StatusCode);
             return response.IsSuccessStatusCode ? body : $"ERRO HTTP {(int)response.StatusCode}: {body}";
         }
         catch (Exception ex)
         {
+            logger.LogWarning(ex, "Tool api_get: falha ao chamar {Path}", path);
             return $"ERRO ao chamar GET {path}: {ex.Message}";
         }
     }
@@ -84,20 +102,29 @@ public static class ApiTools
                  "Performs a POST with a JSON body on an API path.")]
     public static async Task<string> ApiPostAsync(
         IHttpClientFactory httpClientFactory,
+        ILogger<ApiToolsLog> logger,
         [Description("Caminho relativo do endpoint, ex.: /api/Transformation/generate")] string path,
         [Description("Corpo da requisição em JSON (string). Use '{}' se não houver corpo.")] string jsonBody,
         CancellationToken cancellationToken = default)
     {
+        var correlationId = CorrelationContext.NewId();
+        using var _ = LogContext.PushProperty("CorrelationId", correlationId);
+
         var client = httpClientFactory.CreateClient("api");
+        client.DefaultRequestHeaders.TryAddWithoutValidation(CorrelationContext.HeaderName, correlationId);
         try
         {
+            logger.LogInformation("Tool api_post: {Path}", path);
             using var content = new StringContent(jsonBody ?? "{}", Encoding.UTF8, "application/json");
             var response = await client.PostAsync(NormalizePath(path), content, cancellationToken);
             var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (!response.IsSuccessStatusCode)
+                logger.LogWarning("Tool api_post: {Path} retornou HTTP {StatusCode}", path, (int)response.StatusCode);
             return response.IsSuccessStatusCode ? body : $"ERRO HTTP {(int)response.StatusCode}: {body}";
         }
         catch (Exception ex)
         {
+            logger.LogWarning(ex, "Tool api_post: falha ao chamar {Path}", path);
             return $"ERRO ao chamar POST {path}: {ex.Message}";
         }
     }

@@ -33,6 +33,23 @@ A lógica de negócio **não** é duplicada aqui; cada tool apenas chama um endp
 | Env var | Default | Descrição |
 |---------|---------|-----------|
 | `LAYOUTPARSER_API_URL` | `http://localhost:5000` | Base URL da API. |
+| `LAYOUTPARSER_LOG_DIR` | `Logs` (relativo ao cwd do processo MCP) | Diretório do arquivo `layoutparsermcp.log`. Aponte para o mesmo diretório de `Logging:File:Directory` da API se quiser que o endpoint de log unificado (`UnifiedLogReaderService`) enxergue os logs do MCP. |
+
+## Logging
+
+O MCP usa **Serilog** com o mesmo `outputTemplate` da API (`[Timestamp] [Level] [Corr:...] [Src:MCP] mensagem`),
+rotação diária (`RollingInterval.Day`) + proteção por tamanho, retenção de 30 dias. Cada chamada
+de tool gera um `CorrelationId` novo (`CorrelationContext.NewId()`), que é propagado:
+
+1. No header HTTP `X-Correlation-ID` enviado à API — a API já aceita/devolve esse header.
+2. No `LogContext` do Serilog local, via `Serilog.Context.LogContext.PushProperty`.
+
+Isso permite correlacionar uma entrada de log do MCP com as entradas que a mesma chamada gerou
+do lado da API, mesmo sendo processos e arquivos de log diferentes.
+
+> ⚠️ **stdout é o canal do protocolo MCP.** O sink de console do Serilog é configurado com
+> `standardErrorFromLevel: LogEventLevel.Verbose` (força TODO log — não só acima de um nível —
+> para stderr). Não adicione um sink de console "cru" sem essa opção: corrompe o protocolo.
 
 ## Build & run
 
@@ -76,8 +93,9 @@ Copie [`../../.mcp.json.example`](../../.mcp.json.example) para `.mcp.json` na r
 
 ```
 mcp/LayoutParserMcp/
-├── LayoutParserMcp.csproj   # net10.0, ModelContextProtocol 1.0.0
-├── Program.cs               # host stdio + HttpClient("api") + log em stderr
+├── LayoutParserMcp.csproj   # net10.0, ModelContextProtocol 1.0.0, Serilog
+├── Program.cs               # host stdio + HttpClient("api") + Serilog (console em stderr + arquivo)
+├── CorrelationContext.cs    # gera/propaga o CorrelationId por chamada de tool
 ├── Tools/
 │   ├── ParseTools.cs        # parse_document
 │   └── ApiTools.cs          # list_endpoints, api_get, api_post
