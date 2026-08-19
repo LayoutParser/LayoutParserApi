@@ -2,7 +2,7 @@
 
 - [Limpeza de branches 2026-08-16](branch-cleanup-2026-08-16.md) — 41 branches remotas deletadas (`git cherry`, não hash, por causa do filter-repo); `worktree-agent-a1403e675beb9d14f` NÃO deletada — tem doc real não mergeada sobre credencial SQL org-wide.
 - [Runner isolation rollout](runner-isolation-rollout.md) — ci-dev FAZ deploy (serviço nativo, 5100); criar vars/secrets DEV antes de push feat/**; rotação SQL BLOQUEADA (DBA); prod com paths-ignore.
-- [gh CLI ausente](env-gh-cli-ausente.md) — sem gh na workstation; status do CI dev sai de `C:\actions-runner\_diag\Worker_*.log`; datar deploy de prod via `/api/logs?search=`.
+- [gh CLI ausente](env-gh-cli-ausente.md) — ATUALIZADO 2026-08-17: gh.exe existe em `~/.local/bin`, só falta no PATH; status do CI dev sai de `_diag/Worker_*.log`; datar deploy via `/api/logs?search=`.
 - [Prod .42 sem acesso admin](prod-42-acesso-bloqueado.md) — SSH/WinRM/SMB/RPC todos negados no 172.25.32.42; desbloqueio = pub key no administrators_authorized_keys.
 - [Topologia do job de métricas](metrics-job-topology-vm.md) — VM Ubuntu (IP mudou por DHCP, ver [[vm-windows-connectivity-diagnostico-2026-08-13]] pro atual) roda Ollama E o cron do metrics-batch (sáb 00:00); ponte de log é necessária; cuidado com `logs/` vs `Logs/`.
 - [Gemini/OpenAI decommission](gemini-decommission-secrets.md) — Gemini: revogar (não rotacionar), ação manual do usuário; SQL rotation segue à parte/bloqueada.

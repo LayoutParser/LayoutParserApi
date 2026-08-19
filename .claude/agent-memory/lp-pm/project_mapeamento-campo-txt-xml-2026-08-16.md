@@ -34,4 +34,17 @@ comportamental da Fase 2 assume esse papel de "fonte de confiança" no lugar do 
 mudança de escopo), atualizar/comentar a issue existente em vez de abrir nova — não duplicar
 o plano. Se o dono perguntar por "o board da Lia/Dex para isso", são #138-#141.
 
+**Extensão 2026-08-17** (`docs/architecture/design-xslsynth-runtime-e-reversibilidade-2026-08-16.md`,
+`@lp-architect`): a Fase 1 (#139) ganhou o "como" concreto via comentário técnico direto na
+issue (não issue nova) — extrair `XslSynth.Contracts.csproj` (classlib sem I/O externo/Ollama)
+com `DslStructuredParser`/`StructuredRuleSchema`/`FunctionCatalog`/`GuidXPathCatalog`/
+`RealMapperParser`/`MapperVo`, referenciado por `Services/Transformation/` da API via
+`ProjectReference` — sem puxar `ai/XslSynth.Core` inteiro (Ollama/RAG) pro caminho crítico
+HTTP. Além disso, **#151** (`investigação`, Dono=lp-parser-llm, Status=Todo) formaliza a
+Fase 4: reconstrução reversa best-effort XML→TXT. Veredito honesto registrado no corpo da
+issue — reversão automática genérica NÃO é prometida (3 riscos: funções não-bijetoras tipo
+dígito verificador, agregações N:1 ambíguas, condições que dependem de dado de origem que
+some no output). Depende de #139+#140; critério de aceite foca em sinalizar campos
+não-reversíveis, não em "sempre funciona".
+
 Related: [[reference-gh-cli-setup]]
