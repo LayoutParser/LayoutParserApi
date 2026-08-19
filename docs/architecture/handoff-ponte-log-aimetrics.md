@@ -93,7 +93,25 @@ Correção de detalhe em relação à proposta original ("script na VM faz `scp`
 usados no deploy (§6 do plano); o inverso exigiria provisionar servidor SSH no Windows Server —
 trabalho novo, superfície nova, sem ganho.
 
-Tarefa agendada no `WINSRV2022-LIB` (de hora em hora, arquivo de poucos KB):
+**Atualização (2026-08-19):** o comando original abaixo usava caminho **fixo**
+(`layoutparserapi.log`), que quebra assim que o `MetricsBatchRunner.cs` for corrigido de
+`RollingInterval.Infinite` para `RollingInterval.Day` (o nome do arquivo de origem passa a variar
+por data). Agora versionado e corrigido para glob em
+[`Scripts/windows/sync-ai-metrics-log.ps1`](../../Scripts/windows/sync-ai-metrics-log.ps1):
+baixa todo `layoutparserapi*.log` via `scp` (glob expandido no shell remoto), escolhe o mais
+recente por `LastWriteTime` entre os baixados, e só então faz a cópia atômica (`.tmp` +
+`Move-Item -Force`) para `layoutparserai.log`. Parâmetros (chave SSH, host remoto, diretório
+remoto/local) são todos configuráveis via `param()`, com os mesmos defaults do comando antigo.
+
+> ⚠️ **Ação manual pendente (fora do alcance de qualquer agente via terminal):** a tarefa
+> agendada no Task Scheduler do `WINSRV2022-LIB` precisa ser **reapontada** para chamar o script
+> versionado (`powershell -ExecutionPolicy Bypass -File
+> <caminho-do-clone>\Scripts\windows\sync-ai-metrics-log.ps1`) em vez do comando `scp` embutido
+> diretamente na definição da tarefa. Isso exige RDP/acesso ao host — dono do projeto ou quem
+> tiver acesso ao Task Scheduler do `WINSRV2022-LIB`.
+
+Comando original (histórico — mantido apenas como referência do que a tarefa agendada executava
+antes desta correção; **não usar mais**, foi substituído pelo script acima):
 
 ```powershell
 # Cópia atômica: baixa em .tmp e só então substitui — evita a API ler arquivo pela metade.

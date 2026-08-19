@@ -103,12 +103,19 @@ namespace LayoutParserApi.Services.Logging
                 // servidor (o ci-dev.yml preserva o appsettings do destino).
                 var aiTask = ReadSourceAsync(logDirectory, "layoutparserai.log", fixedSource: null, ApiLinePattern);
 
-                await Task.WhenAll(apiTask, libTask, decryptTask, aiTask);
+                // ✅ 5ª fonte: MCP Server (mcp/LayoutParserMcp), agora com logging estruturado
+                // Serilog no mesmo outputTemplate da API (ver Program.cs do MCP). fixedSource:
+                // "MCP" porque o MCP roda como processo separado e sempre grava com esse Source
+                // fixo — não há sub-fontes a distinguir como no caso do log de AiMetrics.
+                var mcpTask = ReadSourceAsync(logDirectory, "layoutparsermcp.log", fixedSource: "MCP", ApiLinePattern);
+
+                await Task.WhenAll(apiTask, libTask, decryptTask, aiTask, mcpTask);
 
                 IEnumerable<UnifiedLogEntry> all = apiTask.Result
                     .Concat(libTask.Result)
                     .Concat(decryptTask.Result)
-                    .Concat(aiTask.Result);
+                    .Concat(aiTask.Result)
+                    .Concat(mcpTask.Result);
 
                 all = ApplyFilters(all, filter);
 
