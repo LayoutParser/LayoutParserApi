@@ -124,14 +124,17 @@ namespace LayoutParserApi.Controllers
             {
                 _logger.LogInformation("Buscando resumo de métricas de aprendizado");
 
-                // TODO: Implementar busca de todos os modelos aprendidos
-                // Por enquanto, retornar estrutura básica
+                // Fonte de dado: arquivos tcl_*.json/xsl_*.json em LearningModelsPath — mesmo
+                // local usado por GetLearningMetrics (LoadTclModelAsync/LoadXslModelAsync), não
+                // há SQL/cache para modelos aprendidos.
+                var aggregated = await _learningService.GetAllModelsSummaryAsync();
+
                 var summary = new
                 {
-                    totalModels = 0,
-                    totalPatterns = 0,
-                    totalExamples = 0,
-                    averageConfidence = 0.0
+                    totalModels = aggregated.TotalModels,
+                    totalPatterns = aggregated.TotalPatterns,
+                    totalExamples = aggregated.TotalExamples,
+                    averageConfidence = aggregated.AverageConfidence
                 };
 
                 return Ok(summary);

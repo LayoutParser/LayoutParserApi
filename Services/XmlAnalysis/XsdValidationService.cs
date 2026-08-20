@@ -5,6 +5,8 @@ using System.Xml;
 using System.Xml.Linq;
 using System.Xml.Schema;
 
+using UglyToad.PdfPig;
+
 namespace LayoutParserApi.Services.XmlAnalysis
 {
     /// <summary>
@@ -375,8 +377,20 @@ namespace LayoutParserApi.Services.XmlAnalysis
                     return result;
                 }
 
-                // Por enquanto, retornar mensagem genérica
-                // TODO: Implementar leitura de PDF (usar biblioteca como PdfSharp ou iTextSharp)
+                // Lê o(s) PDF(s) da pasta da versão e extrai trechos relevantes aos códigos de
+                // erro informados (ex.: "E001", "rejeição 215"). Se não houver PDF, ou a
+                // extração não achar nada relevante, cai no fallback genérico abaixo — nunca
+                // deixa o endpoint sem resposta (degrade gracioso).
+                var pdfOrientations = await ExtractOrientationsFromPdfAsync(pdfPath, errorCodes);
+
+                if (pdfOrientations.Count > 0)
+                {
+                    result.Orientations.AddRange(pdfOrientations);
+                    result.Success = true;
+                    return result;
+                }
+
+                // Fallback genérico — nenhum PDF encontrado/legível ou nenhum trecho relevante.
                 result.Orientations.Add("Para corrigir os erros de validação XSD:");
                 result.Orientations.Add("1. Verifique se todos os campos obrigatórios estão preenchidos");
                 result.Orientations.Add("2. Confirme que os valores estão nos formatos corretos (CNPJ, CPF, datas, etc.)");
@@ -394,6 +408,80 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 _logger.LogError(ex, "Erro ao obter orientações do PDF");
                 result.Orientations.Add($"Erro ao ler orientações: {ex.Message}");
                 return result;
+            }
+        }
+
+        /// <summary>
+        /// Extrai texto de PDFs de orientação (manual/nota técnica SEFAZ) na pasta da versão
+        /// e retorna os parágrafos relevantes aos códigos de erro informados. Roda em thread
+        /// separada (PdfPig é síncrono) para não bloquear o pipeline async.
+        /// Limitação conhecida: PdfPig só extrai texto real do PDF — não faz OCR, então PDFs
+        /// escaneados como imagem (sem camada de texto) retornam lista vazia e o chamador cai
+        /// no fallback genérico. Isso é aceitável para o escopo atual (documentação oficial da
+        /// SEFAZ é distribuída como PDF nativo/texto, não scan).
+        /// </summary>
+        private async Task<List<string>> ExtractOrientationsFromPdfAsync(string pdfPath, List<string> errorCodes)
+        {
+            var orientations = new List<string>();
+
+            try
+            {
+                var pdfFiles = Directory.GetFiles(pdfPath, "*.pdf", SearchOption.AllDirectories);
+                if (pdfFiles.Length == 0)
+                {
+                    _logger.LogWarning("Nenhum PDF encontrado em: {Path}", pdfPath);
+                    return orientations;
+                }
+
+                // Dependência externa (leitura de arquivo em disco, parsing de PDF) — nunca pode
+                // derrubar o endpoint; qualquer falha aqui degrada para o fallback genérico.
+                return await Task.Run(() =>
+                {
+                    foreach (var pdfFile in pdfFiles)
+                    {
+                        try
+                        {
+                            using var document = PdfDocument.Open(pdfFile);
+
+                            foreach (var page in document.GetPages())
+                            {
+                                var pageText = page.Text;
+                                if (string.IsNullOrWhiteSpace(pageText))
+                                    continue;
+
+                                // Quebra o texto da página em parágrafos aproximados (por linha em
+                                // branco não existe no PdfPig — usa sentenças/quebras de linha).
+                                var paragraphs = pageText
+                                    .Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries)
+                                    .Where(p => !string.IsNullOrWhiteSpace(p))
+                                    .ToList();
+
+                                if (errorCodes != null && errorCodes.Any())
+                                {
+                                    // Filtra só parágrafos que mencionam algum dos códigos de erro.
+                                    orientations.AddRange(paragraphs.Where(p =>
+                                        errorCodes.Any(code => p.Contains(code, StringComparison.OrdinalIgnoreCase))));
+                                }
+                                else
+                                {
+                                    orientations.AddRange(paragraphs);
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "Erro ao extrair texto do PDF: {Path}", pdfFile);
+                        }
+                    }
+
+                    // Evita respostas absurdamente grandes quando não há filtro por código de erro.
+                    return orientations.Take(50).ToList();
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Erro ao ler orientações do PDF em: {Path}", pdfPath);
+                return new List<string>();
             }
         }
 

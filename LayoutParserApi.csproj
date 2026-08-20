@@ -23,6 +23,10 @@
     <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.11" />
     <PackageReference Include="Microsoft.VisualStudio.Azure.Containers.Tools.Targets" Version="1.23.0" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+    <!-- Extração de texto de PDF (orientações de correção de erro XSD) - PdfPig é gerenciado
+         puro (sem dependência nativa), MIT, amplamente usado. Não faz OCR (PDFs escaneados como
+         imagem não são cobertos - ver comentário no XsdValidationService). -->
+    <PackageReference Include="UglyToad.PdfPig" Version="1.7.0-custom-5" />
     <!-- Analyzer Roslyn de seguranca estatica (SAST), gratuito e sem infra extra - roda dentro
          do dotnet build normal. Alternativa ao CodeQL/GitHub Advanced Security, que exige
          repo publico ou licenca paga (este repo e privado por decisao de seguranca -
