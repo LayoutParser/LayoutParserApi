@@ -18,6 +18,12 @@ on:
     branches:
       - develop
 
+# Minimo necessario: checkout deste repo + LayoutParserLib/LayoutParserDecrypt (via
+# GH_PAT_TOKEN, fora do escopo do GITHUB_TOKEN) - nenhum step comenta PR, cria release ou
+# escreve outro recurso do GitHub. GITHUB_TOKEN so participa do proprio checkout.
+permissions:
+  contents: read
+
 concurrency:
   group: pr-validate-${{ github.event.pull_request.number }}
   cancel-in-progress: true
