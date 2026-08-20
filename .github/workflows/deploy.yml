@@ -1277,7 +1277,9 @@ jobs:
         always() && steps.smoke_test.outcome == 'failure' &&
         steps.smoke_test.outputs.alert_body != '' && env.SMTP_CONFIGURADO == 'true'
       continue-on-error: true
-      uses: dawidd6/action-send-mail@v3
+      # Pinado por SHA (tag mutavel proibida p/ Action de terceiro nao-imutavel - CodeQL
+      # actions/unpinned-tag). SHA corresponde a tag v3.
+      uses: dawidd6/action-send-mail@4226df7daafa6fc901a43789c49bf7ab309066e7
       with:
         # Secrets ainda NAO preenchidos pelo dono (provedor SMTP em aberto). Enquanto
         # secrets.SMTP_SERVER estiver vazio, a Action falha rapido - por isso o step inteiro
@@ -1403,7 +1405,9 @@ jobs:
       if: >-
         failure() && steps.smoke_test.outcome != 'failure' && env.SMTP_CONFIGURADO == 'true'
       continue-on-error: true
-      uses: dawidd6/action-send-mail@v3
+      # Pinado por SHA (tag mutavel proibida p/ Action de terceiro nao-imutavel - CodeQL
+      # actions/unpinned-tag). SHA corresponde a tag v3.
+      uses: dawidd6/action-send-mail@4226df7daafa6fc901a43789c49bf7ab309066e7
       with:
         server_address: ${{ secrets.SMTP_SERVER }}
         server_port: ${{ secrets.SMTP_PORT }}
