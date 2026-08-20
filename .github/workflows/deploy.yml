@@ -54,6 +54,12 @@ jobs:
     # obrigatorio - config de UI, fora deste arquivo (ver pendencia repassada ao dono do repo).
     environment: production
     timeout-minutes: 60
+    # SMTP_CONFIGURADO existe porque a context `secrets` NAO pode ser referenciada direto
+    # dentro de uma expressao `if:` de step (restricao de plataforma do GitHub Actions,
+    # ver actions/runner#520) - so e valida dentro de `env:`/`with:`. Os dois steps de
+    # alerta por e-mail abaixo leem esta env var em vez de `secrets.SMTP_SERVER` no `if:`.
+    env:
+      SMTP_CONFIGURADO: ${{ secrets.SMTP_SERVER != '' }}
 
     steps:
     - name: Checkout LayoutParserApi
@@ -1269,7 +1275,7 @@ jobs:
     - name: Notificar falha de deploy por e-mail (smoke test / rollback)
       if: >-
         always() && steps.smoke_test.outcome == 'failure' &&
-        steps.smoke_test.outputs.alert_body != '' && secrets.SMTP_SERVER != ''
+        steps.smoke_test.outputs.alert_body != '' && env.SMTP_CONFIGURADO == 'true'
       continue-on-error: true
       uses: dawidd6/action-send-mail@v3
       with:
@@ -1395,7 +1401,7 @@ jobs:
     # secrets.SMTP_SERVER estiver vazio, este step tambem pula sem quebrar o workflow.
     - name: Notificar falha de deploy por e-mail (fallback - deploy abortado antes do smoke test)
       if: >-
-        failure() && steps.smoke_test.outcome != 'failure' && secrets.SMTP_SERVER != ''
+        failure() && steps.smoke_test.outcome != 'failure' && env.SMTP_CONFIGURADO == 'true'
       continue-on-error: true
       uses: dawidd6/action-send-mail@v3
       with:
