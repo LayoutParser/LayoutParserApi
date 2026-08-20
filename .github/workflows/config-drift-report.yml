@@ -21,6 +21,11 @@ name: Config Drift Report (repo x producao)
 on:
   workflow_dispatch:
 
+# Minimo necessario: so faz checkout deste repo e le o filesystem do runner (DEPLOY_PATH) -
+# nenhum step comenta PR, cria release ou escreve outro recurso do GitHub.
+permissions:
+  contents: read
+
 concurrency:
   group: config-drift-report
   cancel-in-progress: false
