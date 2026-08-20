@@ -19,6 +19,7 @@ namespace LayoutParserApi.Services.Testing
         private readonly MapperDatabaseService _mapperDatabaseService;
         private readonly TransformationPipelineService _pipelineService;
         private readonly TransformationValidatorService _validatorService;
+        private readonly XmlDocumentTypeDetector _documentTypeDetector;
         private readonly string _examplesBasePath;
         private readonly string _expectedOutputsPath;
 
@@ -28,6 +29,7 @@ namespace LayoutParserApi.Services.Testing
             MapperDatabaseService mapperDatabaseService,
             TransformationPipelineService pipelineService,
             TransformationValidatorService validatorService,
+            XmlDocumentTypeDetector documentTypeDetector,
             IConfiguration configuration)
         {
             _logger = logger;
@@ -35,6 +37,7 @@ namespace LayoutParserApi.Services.Testing
             _mapperDatabaseService = mapperDatabaseService;
             _pipelineService = pipelineService;
             _validatorService = validatorService;
+            _documentTypeDetector = documentTypeDetector;
             _examplesBasePath = configuration["Examples:Path"] ?? @"C:\inetpub\wwwroot\layoutparser\Exemplo";
             _expectedOutputsPath = configuration["TransformationPipeline:ExpectedOutputsPath"] ?? @"C:\inetpub\wwwroot\layoutparser\ExpectedOutputs";
 
@@ -185,8 +188,22 @@ namespace LayoutParserApi.Services.Testing
                 // Ler conteúdo do arquivo de exemplo
                 var inputTxt = await File.ReadAllTextAsync(exampleFilePath);
 
+                // Detectar tipo de documento (NFe/CTe/NFCom/MDFe) a partir do nome do layout.
+                // Sem indicador mais forte no pipeline hoje (namespace só existe DEPOIS da
+                // transformação); fallback para "NFe" com warning quando não reconhecido,
+                // preservando o comportamento anterior mas sem assumir silenciosamente.
+                var documentTypeInfo = _documentTypeDetector.DetectFromLayoutName(layoutName);
+                var documentType = documentTypeInfo.Type;
+                if (string.IsNullOrEmpty(documentType) || documentType == "UNKNOWN")
+                {
+                    documentType = "NFe";
+                    _logger.LogWarning(
+                        "Não foi possível detectar o tipo de documento a partir do layout {LayoutName}; usando fallback {FallbackType}",
+                        layoutName, documentType);
+                }
+
                 // Executar transformação
-                var transformationResult = await _pipelineService.TransformTxtToXmlAsync(inputTxt,layoutName,"NFe"); // TODO: Detectar tipo de documento automaticamente
+                var transformationResult = await _pipelineService.TransformTxtToXmlAsync(inputTxt, layoutName, documentType);
 
                 if (!transformationResult.Success)
                 {
