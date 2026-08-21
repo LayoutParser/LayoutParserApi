@@ -702,18 +702,26 @@ jobs:
         # subindo). 503 NAO e sucesso e tambem NAO e falha definitiva: e "ainda nao pronto" - por
         # isso o laco RETENTA ate 200 ou esgotar. So 200 encerra com sucesso.
         #
-        # [ATENCAO] Causa raiz investigada em 2026-08-13 (run 31687154272): o warm-up do catalogo
-        # (CachePermanentWarmupBackgroundService) roda UMA UNICA VEZ apos o app subir - nao ha
-        # retry. Se o SQL estiver com um blip de rede TRANSITORIO exatamente nesse instante
-        # (confirmado no log do host: "SqlException... error: 40 - Nao foi possivel abrir uma
-        # conexao com o SQL Server", recuperado segundos depois), o catalogo fica marcado com 0
-        # layouts PARA SEMPRE (CatalogHealthCheck Unhealthy -> /health/ready 503 permanente) ate
-        # o servico ser reiniciado manualmente - mesmo com o SQL saudavel de novo. O laco de
-        # retentativas abaixo nao ajuda nesse caso porque a sonda em si e reexecutada, mas o
-        # ESTADO do warm-up (CatalogWarmupState) nunca e recalculado. Por isso: se a janela
-        # inicial esgotar, tenta UM restart do servico (reexecuta o warm-up do zero) antes de
-        # desistir. Corrigir a causa raiz de verdade (retry no warm-up em si) e codigo de negocio
-        # -> @lp-backend-dev; aqui so mitigamos no nivel de deploy.
+        # [ATUALIZADO 2026-08-21] Causa raiz original investigada em 2026-08-13 (run 31687154272):
+        # o warm-up do catalogo (CachePermanentWarmupBackgroundService) rodava UMA UNICA VEZ apos
+        # o app subir, sem retry - um blip TRANSITORIO de rede no SQL nesse instante deixava o
+        # catalogo marcado com 0 layouts PARA SEMPRE (CatalogHealthCheck Unhealthy -> 503
+        # permanente), mesmo com o SQL saudavel segundos depois. Corrigido em `develop` pelos
+        # commits 2106075 (fix(catalog-warmup): retry com backoff no warm-up do cache, issue #67)
+        # e d6532e3 (fix: classifica warm-up do catalogo em tres estados na readiness), PR #178 -
+        # CatalogHealthCheck/CachePermanentWarmupBackgroundService agora distinguem estado
+        # transitorio ("Aquecendo", recuperavel com retry/backoff progressivo dentro do proprio
+        # warm-up) de definitivo ("Vazio", decryptor quebrado/config invalida - nao adianta retry).
+        # O restart abaixo continua como rede de seguranca: mesmo com retry no warm-up, um SQL
+        # fora do ar por tempo MAIOR que a janela de retry ainda deixa o estado definitivo ate
+        # reiniciar o processo. [VALIDACAO PENDENTE 2026-08-21] runs de CI apos o merge do fix
+        # (ex.: 32433130012, headSha 7245825, ancestral confirmado de d6532e3) AINDA falharam com
+        # 503 persistente e "SqlException... error: 40" no host, mesmo apos o restart automatico -
+        # ou seja, o retry/backoff nao cobre uma indisponibilidade de SQL mais longa que a janela
+        # de tentativas. Isso pode ser um SQL genuinamente fora do ar (infra), nao um gap no fix -
+        # investigar o log do host antes de assumir regressao. Se a causa raiz aqui precisar de
+        # mudanca de codigo (ex.: janela de retry maior, ou distinguir "SQL fora" de "catalogo
+        # vazio" na mensagem) -> @lp-backend-dev; aqui so mitigamos no nivel de deploy.
         function Test-Readiness {
           param([int]$Tentativas, [int]$EsperaSegundos)
           $statusLocal = $null
@@ -756,7 +764,8 @@ jobs:
           Write-Warning ("Readiness nao ficou 200 na janela inicial (ultimo: " +
             $(if ($null -eq $status) { "sem resposta" } else { "HTTP $status" }) +
             "). Tentando UM restart do servico para reexecutar o warm-up do catalogo " +
-            "(mitigacao de blip transitorio de rede no SQL durante o warm-up unico) e retestando...")
+            "(rede de seguranca alem do retry/backoff ja embutido no warm-up - cobre SQL fora do ar " +
+            "por mais tempo que a janela de retry) e retestando...")
           Restart-Service -Name $serviceName -ErrorAction SilentlyContinue
           $svc = Get-Service -Name $serviceName
           $svc.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
