@@ -55,7 +55,11 @@ namespace LayoutParserApi.Services.Transformation
                 _logger.LogInformation("Iniciando validação de transformação para layout: {LayoutName}", layoutName);
 
                 // Passo 1: Validar TCL (se fornecido)
-                if (!string.IsNullOrEmpty(tclPath) && File.Exists(tclPath))
+                // ✅ SCS0018: tclPath é gerado internamente pelo pipeline (TransformationPipelineService,
+                // a partir de TclPath base + layoutName), não é digitado livremente pelo chamador — mas
+                // como layoutName chega da requisição, confinamos o caminho ao diretório de TCL configurado
+                // antes de ler o arquivo.
+                if (!string.IsNullOrEmpty(tclPath) && IsWithinBasePath(tclPath, _configuration["TransformationPipeline:TclPath"] ?? @"C:\inetpub\wwwroot\layoutparser\TCL") && File.Exists(tclPath))
                 {
                     var tclValidation = await ValidateTclAsync(tclPath, inputTxt);
                     result.ValidationSteps.Add(new ValidationStep
@@ -145,11 +149,14 @@ namespace LayoutParserApi.Services.Transformation
                         result.Warnings.AddRange(comparisonResult.Differences);
 
                 }
-                else
+                else if (IsValidLayoutName(layoutName))
                 {
                     // Tentar carregar saída esperada do diretório
+                    // ✅ SCS0018: layoutName vem da requisição (TransformationExecutionController) sem
+                    // sanitização; IsValidLayoutName barra separadores/".." antes do Path.Combine e o
+                    // IsWithinBasePath confirma que o caminho final não escapou de _expectedOutputsPath.
                     var expectedPath = Path.Combine(_expectedOutputsPath, $"{layoutName}_expected.xml");
-                    if (File.Exists(expectedPath))
+                    if (IsWithinBasePath(expectedPath, _expectedOutputsPath) && File.Exists(expectedPath))
                     {
                         var expectedXml = await File.ReadAllTextAsync(expectedPath);
                         var comparisonResult = await CompareWithExpectedAsync(
@@ -183,6 +190,30 @@ namespace LayoutParserApi.Services.Transformation
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// Valida que o nome do layout é um identificador simples (sem separadores de caminho
+        /// ou sequências de path traversal). Usado como barreira anti-SCS0018 antes de qualquer
+        /// combinação com caminhos de arquivo.
+        /// </summary>
+        private static bool IsValidLayoutName(string layoutName)
+        {
+            return !string.IsNullOrWhiteSpace(layoutName)
+                && layoutName.IndexOfAny(Path.GetInvalidFileNameChars()) < 0
+                && !layoutName.Contains("..")
+                && !Path.IsPathRooted(layoutName);
+        }
+
+        /// <summary>
+        /// Confirma que o caminho resolvido permanece dentro do diretório base permitido,
+        /// impedindo que um caminho controlado externamente escape via "..".
+        /// </summary>
+        private static bool IsWithinBasePath(string candidatePath, string basePath)
+        {
+            var fullCandidate = Path.GetFullPath(candidatePath);
+            var fullBase = Path.GetFullPath(basePath);
+            return fullCandidate.StartsWith(fullBase, StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>

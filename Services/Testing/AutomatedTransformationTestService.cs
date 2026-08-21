@@ -109,8 +109,29 @@ namespace LayoutParserApi.Services.Testing
 
             try
             {
+                // ✅ SCS0018: layoutName e examplesDirectory chegam do corpo da requisição (TestingController)
+                // sem sanitização. Validamos layoutName como identificador simples e confinamos
+                // examplesDirectory dentro de _examplesBasePath para impedir path traversal
+                // (ex.: layoutName="..\..\Windows" ou examplesDirectory="C:\dados-sensiveis").
+                if (!IsValidLayoutName(layoutName))
+                {
+                    result.Success = false;
+                    result.Errors.Add($"Nome de layout inválido: {layoutName}");
+                    return result;
+                }
+
                 if (string.IsNullOrEmpty(examplesDirectory))
                     examplesDirectory = Path.Combine(_examplesBasePath, layoutName);
+
+                if (!IsWithinBasePath(examplesDirectory, _examplesBasePath))
+                {
+                    _logger.LogWarning(
+                        "Tentativa de acessar diretório de exemplos fora da base permitida: {ExamplesDirectory}",
+                        examplesDirectory);
+                    result.Success = false;
+                    result.Errors.Add("Diretório de exemplos fora da área permitida.");
+                    return result;
+                }
 
                 if (!Directory.Exists(examplesDirectory))
                 {
@@ -169,6 +190,30 @@ namespace LayoutParserApi.Services.Testing
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// Valida que o nome do layout é um identificador simples (sem separadores de caminho
+        /// ou sequências de path traversal). Usado como barreira anti-SCS0018 antes de qualquer
+        /// combinação com caminhos de arquivo.
+        /// </summary>
+        private static bool IsValidLayoutName(string layoutName)
+        {
+            return !string.IsNullOrWhiteSpace(layoutName)
+                && layoutName.IndexOfAny(Path.GetInvalidFileNameChars()) < 0
+                && !layoutName.Contains("..")
+                && !Path.IsPathRooted(layoutName);
+        }
+
+        /// <summary>
+        /// Confirma que o caminho resolvido permanece dentro do diretório base permitido,
+        /// impedindo que um caminho controlado externamente escape via "..".
+        /// </summary>
+        private static bool IsWithinBasePath(string candidatePath, string basePath)
+        {
+            var fullCandidate = Path.GetFullPath(candidatePath);
+            var fullBase = Path.GetFullPath(basePath);
+            return fullCandidate.StartsWith(fullBase, StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>
