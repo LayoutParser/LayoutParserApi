@@ -19,6 +19,7 @@ namespace LayoutParserApi.Services.Testing
         private readonly MapperDatabaseService _mapperDatabaseService;
         private readonly TransformationPipelineService _pipelineService;
         private readonly TransformationValidatorService _validatorService;
+        private readonly XmlDocumentTypeDetector _documentTypeDetector;
         private readonly string _examplesBasePath;
         private readonly string _expectedOutputsPath;
 
@@ -28,6 +29,7 @@ namespace LayoutParserApi.Services.Testing
             MapperDatabaseService mapperDatabaseService,
             TransformationPipelineService pipelineService,
             TransformationValidatorService validatorService,
+            XmlDocumentTypeDetector documentTypeDetector,
             IConfiguration configuration)
         {
             _logger = logger;
@@ -35,6 +37,7 @@ namespace LayoutParserApi.Services.Testing
             _mapperDatabaseService = mapperDatabaseService;
             _pipelineService = pipelineService;
             _validatorService = validatorService;
+            _documentTypeDetector = documentTypeDetector;
             _examplesBasePath = configuration["Examples:Path"] ?? @"C:\inetpub\wwwroot\layoutparser\Exemplo";
             _expectedOutputsPath = configuration["TransformationPipeline:ExpectedOutputsPath"] ?? @"C:\inetpub\wwwroot\layoutparser\ExpectedOutputs";
 
@@ -106,8 +109,29 @@ namespace LayoutParserApi.Services.Testing
 
             try
             {
+                // ✅ SCS0018: layoutName e examplesDirectory chegam do corpo da requisição (TestingController)
+                // sem sanitização. Validamos layoutName como identificador simples e confinamos
+                // examplesDirectory dentro de _examplesBasePath para impedir path traversal
+                // (ex.: layoutName="..\..\Windows" ou examplesDirectory="C:\dados-sensiveis").
+                if (!IsValidLayoutName(layoutName))
+                {
+                    result.Success = false;
+                    result.Errors.Add($"Nome de layout inválido: {layoutName}");
+                    return result;
+                }
+
                 if (string.IsNullOrEmpty(examplesDirectory))
                     examplesDirectory = Path.Combine(_examplesBasePath, layoutName);
+
+                if (!IsWithinBasePath(examplesDirectory, _examplesBasePath))
+                {
+                    _logger.LogWarning(
+                        "Tentativa de acessar diretório de exemplos fora da base permitida: {ExamplesDirectory}",
+                        examplesDirectory);
+                    result.Success = false;
+                    result.Errors.Add("Diretório de exemplos fora da área permitida.");
+                    return result;
+                }
 
                 if (!Directory.Exists(examplesDirectory))
                 {
@@ -169,6 +193,30 @@ namespace LayoutParserApi.Services.Testing
         }
 
         /// <summary>
+        /// Valida que o nome do layout é um identificador simples (sem separadores de caminho
+        /// ou sequências de path traversal). Usado como barreira anti-SCS0018 antes de qualquer
+        /// combinação com caminhos de arquivo.
+        /// </summary>
+        private static bool IsValidLayoutName(string layoutName)
+        {
+            return !string.IsNullOrWhiteSpace(layoutName)
+                && layoutName.IndexOfAny(Path.GetInvalidFileNameChars()) < 0
+                && !layoutName.Contains("..")
+                && !Path.IsPathRooted(layoutName);
+        }
+
+        /// <summary>
+        /// Confirma que o caminho resolvido permanece dentro do diretório base permitido,
+        /// impedindo que um caminho controlado externamente escape via "..".
+        /// </summary>
+        private static bool IsWithinBasePath(string candidatePath, string basePath)
+        {
+            var fullCandidate = Path.GetFullPath(candidatePath);
+            var fullBase = Path.GetFullPath(basePath);
+            return fullCandidate.StartsWith(fullBase, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
         /// Executa um caso de teste individual
         /// </summary>
         private async Task<TestCaseResult> RunTestCaseAsync(string layoutName, string exampleFilePath, string expectedXml = null)
@@ -185,8 +233,22 @@ namespace LayoutParserApi.Services.Testing
                 // Ler conteúdo do arquivo de exemplo
                 var inputTxt = await File.ReadAllTextAsync(exampleFilePath);
 
+                // Detectar tipo de documento (NFe/CTe/NFCom/MDFe) a partir do nome do layout.
+                // Sem indicador mais forte no pipeline hoje (namespace só existe DEPOIS da
+                // transformação); fallback para "NFe" com warning quando não reconhecido,
+                // preservando o comportamento anterior mas sem assumir silenciosamente.
+                var documentTypeInfo = _documentTypeDetector.DetectFromLayoutName(layoutName);
+                var documentType = documentTypeInfo.Type;
+                if (string.IsNullOrEmpty(documentType) || documentType == "UNKNOWN")
+                {
+                    documentType = "NFe";
+                    _logger.LogWarning(
+                        "Não foi possível detectar o tipo de documento a partir do layout {LayoutName}; usando fallback {FallbackType}",
+                        layoutName, documentType);
+                }
+
                 // Executar transformação
-                var transformationResult = await _pipelineService.TransformTxtToXmlAsync(inputTxt,layoutName,"NFe"); // TODO: Detectar tipo de documento automaticamente
+                var transformationResult = await _pipelineService.TransformTxtToXmlAsync(inputTxt, layoutName, documentType);
 
                 if (!transformationResult.Success)
                 {
