@@ -11,7 +11,7 @@
 
   <ItemGroup>
     <!-- SDK oficial C# do Model Context Protocol (mantido com a Microsoft). -->
-    <PackageReference Include="ModelContextProtocol" Version="1.0.0" />
+    <PackageReference Include="ModelContextProtocol" Version="2.2.0" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
     <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.0" />
     <!-- Logging estruturado (mesmo padrão da API — ver Program.cs). Console vai pra stderr:
