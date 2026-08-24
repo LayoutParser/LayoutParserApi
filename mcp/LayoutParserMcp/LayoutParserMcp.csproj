@@ -12,8 +12,8 @@
   <ItemGroup>
     <!-- SDK oficial C# do Model Context Protocol (mantido com a Microsoft). -->
     <PackageReference Include="ModelContextProtocol" Version="1.0.0" />
-    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
-    <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.11" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.11" />
     <!-- Logging estruturado (mesmo padrão da API — ver Program.cs). Console vai pra stderr:
          o protocolo MCP usa stdout, então stdout não pode ser poluído com log. -->
     <PackageReference Include="Serilog" Version="4.2.0" />
