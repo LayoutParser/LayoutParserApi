@@ -438,6 +438,13 @@ namespace LayoutParserApi.Services.Implementations
                 {
                     var ordered = fieldGroup.OrderBy(f => f.Occurrence).ToList();
                     var first = ordered[0];
+                    int occurrenceCount = ordered.Count;
+
+                    // Propaga a contagem real de ocorrências físicas também para os fragmentos
+                    // brutos (Occurrence >= 1) já existentes em parsedFields — mesma instância por
+                    // referência, então esta atualização é visível na lista final.
+                    foreach (var raw in ordered)
+                        raw.OccurrenceCount = occurrenceCount;
 
                     // Trim por fragmento antes de concatenar (não um trim único no resultado final):
                     // cada ocorrência física já teve TrimEnd aplicado por ApplyAlignment (padding de
@@ -465,6 +472,8 @@ namespace LayoutParserApi.Services.Implementations
                         Status = aggregatedStatus,
                         IsRequired = first.IsRequired,
                         Occurrence = 0,
+                        OccurrenceCount = occurrenceCount,
+                        IsAggregatedOccurrence = true,
                         LineSequence = first.LineSequence
                     });
                 }
@@ -1017,7 +1026,7 @@ namespace LayoutParserApi.Services.Implementations
                     FieldName = field.Name,
                     Sequence = field.Sequence,
                     Start = fieldStart + 1,
-                    Length = field.LengthField,
+                    Length = value.Length, // ✅ Bug A: comprimento REAL do valor extraído, não o declarado no layout (field.LengthField segue usado na comparação de status acima)
                     Value = value,
                     Status = status,
                     IsRequired = field.IsRequired,
