@@ -376,4 +376,7 @@ secrets.json
 # São checkouts de trabalho da própria árvore — versioná-las duplicaria o repo dentro dele.
 .claude/worktrees/
 
+# Arquivos temporários de sessão (amostras/layouts reais colados p/ debug pontual) — nunca versionar.
+.claude/temp/
+
 .codex
