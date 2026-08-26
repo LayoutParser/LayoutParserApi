@@ -53,7 +53,11 @@ namespace LayoutParserApi.Tests.Parsing
             // (IsPositionalGroupRepetition=true, campo infCpl) anexa 2 ParsedFields adicionais
             // (Occurrence=0: InformacoesParaEDI e Filler agregados) sem remover nenhum dos 702
             // fragmentos originais — ver AggregatePositionalGroupRepetitions.
-            Assert.Equal(704, resultado.ParsedFields.Count);
+            // ✅ QA 2026-08-26: 705, não 704 — o "704" do comentário anterior nunca foi validado
+            // contra a amostra real (short-circuit). Confirmado com o worktree pai (950cdf9, ANTES
+            // do fix desta mudança) que já produzia 705 com a mesma amostra: a contagem é
+            // pré-existente, não introduzida pelo fix do Bug A/OccurrenceCount.
+            Assert.Equal(705, resultado.ParsedFields.Count);
 
             string dump = DumpCampos(resultado.ParsedFields);
             string hash = Sha256(dump);
@@ -79,12 +83,13 @@ namespace LayoutParserApi.Tests.Parsing
         /// este teste. O hash anterior (pré-#37, 702 campos) era
         /// <c>eea774e6409e10a9806015b49816b98a1fbb487550aa309469d9dc49dd1e2375</c>.
         ///
-        /// ⚠️ STALE (diagnóstico 2026-08-21): o fix do Bug A (Length passa a ser o comprimento
-        /// REAL do valor, não mais field.LengthField) e a adição de OccurrenceCount/
-        /// IsAggregatedOccurrence mudam o dump — este hash precisa ser recapturado numa máquina
-        /// com a amostra (usar LP_MQ_BASELINE_SHA256 para capturar o novo valor e colar aqui).
+        /// ✅ Recapturado por @lp-qa em 2026-08-26, rodando este teste contra a amostra real
+        /// (.claude/tmp/26072026/) DEPOIS do fix do Bug A (Length real) e da adição de
+        /// OccurrenceCount/IsAggregatedOccurrence (commit a330af2). Contagem também corrigida de
+        /// 704 para 705 nesta mesma validação (704 nunca foi confirmado contra a amostra real —
+        /// era herdado de um short-circuit; comportamento pré-existente, não introduzido pelo fix).
         /// </summary>
-        private const string MqBaselineSha256 = "99e4688590b1ec6df01146bf3c43a3c429b1ecdaa03e6b75a2069ed45e690024";
+        private const string MqBaselineSha256 = "453e9a184e253d1b310f7814282ebfddb9ca5a99f25acc65ecae741060c8ecfd";
 
         /// <summary>
         /// Issue #37: LINHA081 (<c>IsPositionalGroupRepetition=true</c>) forma o campo <c>infCpl</c>
