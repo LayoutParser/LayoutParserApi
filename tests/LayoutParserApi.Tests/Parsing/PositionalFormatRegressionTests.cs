@@ -78,6 +78,11 @@ namespace LayoutParserApi.Tests.Parsing
         /// Recapturado por execução deste commit contra exatamente a mesma amostra usada por
         /// este teste. O hash anterior (pré-#37, 702 campos) era
         /// <c>eea774e6409e10a9806015b49816b98a1fbb487550aa309469d9dc49dd1e2375</c>.
+        ///
+        /// ⚠️ STALE (diagnóstico 2026-08-21): o fix do Bug A (Length passa a ser o comprimento
+        /// REAL do valor, não mais field.LengthField) e a adição de OccurrenceCount/
+        /// IsAggregatedOccurrence mudam o dump — este hash precisa ser recapturado numa máquina
+        /// com a amostra (usar LP_MQ_BASELINE_SHA256 para capturar o novo valor e colar aqui).
         /// </summary>
         private const string MqBaselineSha256 = "99e4688590b1ec6df01146bf3c43a3c429b1ecdaa03e6b75a2069ed45e690024";
 
@@ -110,6 +115,12 @@ namespace LayoutParserApi.Tests.Parsing
 
             Assert.NotNull(agregado);
             Assert.Equal(infCplEsperado, agregado!.Value);
+            // Bug A + contrato novo: Length do agregado é o comprimento REAL do valor lógico
+            // concatenado, e o sinal explícito de "esta é a entrada final" está em
+            // IsAggregatedOccurrence — o front não precisa mais inferir via Occurrence==0.
+            Assert.Equal(infCplEsperado.Length, agregado.Length);
+            Assert.True(agregado.IsAggregatedOccurrence);
+            Assert.Equal(4, agregado.OccurrenceCount);
 
             // Aditivo: os 4 fragmentos físicos (Occurrence 1..4) continuam intactos — é deles que
             // ValidateLineOccurrences deriva o MinimalOccurrence/MaximumOccurrence de LINHA081.
@@ -119,6 +130,11 @@ namespace LayoutParserApi.Tests.Parsing
                 .ToList();
             Assert.Equal(4, fragmentos.Count);
             Assert.Equal(new[] { 1, 2, 3, 4 }, fragmentos.Select(f => f.Occurrence));
+            // Bug A: cada fragmento bruto reporta o comprimento REAL do seu valor, não mais o
+            // tamanho máximo declarado no layout (500) — e nenhum é a entrada agregada.
+            Assert.All(fragmentos, f => Assert.Equal(f.Value.Length, f.Length));
+            Assert.All(fragmentos, f => Assert.False(f.IsAggregatedOccurrence));
+            Assert.All(fragmentos, f => Assert.Equal(4, f.OccurrenceCount));
         }
 
         /// <summary>
@@ -248,6 +264,8 @@ namespace LayoutParserApi.Tests.Parsing
                         f.Status,
                         f.IsRequired,
                         f.Occurrence,
+                        f.OccurrenceCount,
+                        f.IsAggregatedOccurrence,
                         f.LineSequence
                     }),
                 Formatting.Indented);
