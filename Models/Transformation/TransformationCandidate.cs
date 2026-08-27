@@ -33,5 +33,15 @@ namespace LayoutParserApi.Models.Transformation
         public List<TransformationCandidate> Candidates { get; set; } = new();
         public string? RecommendedCandidateId { get; set; }
         public List<string> Warnings { get; set; } = new();
+
+        /// <summary>Diagnóstico estruturado por pathway (Issue LayoutParserReact #86) — ADITIVO,
+        /// não substitui <see cref="Warnings"/>. Vazio hoje: a população dos valores por pathway
+        /// (sysmiddle/tcl-xsl/ai-fallback) é feita em cima desta estrutura, ver
+        /// <see cref="PathwayDiagnostic"/>.</summary>
+        public List<PathwayDiagnostic> PathwayDiagnostics { get; set; } = new();
+
+        /// <summary>CorrelationId da request (<see cref="LayoutParserApi.Services.Logging.CorrelationContext.CurrentId"/>),
+        /// permite ao suporte cruzar com o log estruturado completo (não sanitizado) desta chamada.</summary>
+        public string? CorrelationId { get; set; }
     }
 }

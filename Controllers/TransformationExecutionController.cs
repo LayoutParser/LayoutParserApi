@@ -174,6 +174,15 @@ namespace LayoutParserApi.Controllers
         /// de infra), o fallback automático de IA é disparado em background (loop gerar→validar→
         /// corrigir via Ollama), sujeito a cooldown de 4h por LayoutGuid; ver
         /// <see cref="GetAiCandidateStatus"/> para acompanhar o resultado.
+        ///
+        /// <para>Issue LayoutParserReact #86 (diagnóstico estruturado): a resposta traz, de forma
+        /// ADITIVA (não quebra clientes existentes), <see cref="TransformationExecutionCandidatesResponse.PathwayDiagnostics"/>
+        /// — um <see cref="Models.Transformation.PathwayDiagnostic"/> por pathway avaliado (sysmiddle/tcl-xsl/
+        /// ai-fallback), com <c>status</c>/<c>code</c>/<c>message</c> — e
+        /// <see cref="TransformationExecutionCandidatesResponse.CorrelationId"/>, que permite ao suporte
+        /// cruzar a resposta HTTP com o log estruturado completo (não sanitizado) desta chamada. Toda
+        /// <c>Message</c> nesse array já passou por <see cref="Services.Transformation.LowCode.LowCodeErrorSanitizer"/>
+        /// — nunca contém caminho físico de disco ou detalhe interno cru.</para>
         /// </summary>
         // Issue #32: dispara processos externos (runner x86) e é operação privilegiada — era
         // restrita ao papel "admin". Issue #93: reabre para qualquer usuário autenticado (o
@@ -250,8 +259,9 @@ namespace LayoutParserApi.Controllers
             // failureKinds: classificação interna (§2 do design-fallback-ia-automatico) coletada na
             // ORIGEM de cada pathway — nunca inferida depois por regex sobre warning já sanitizado.
             var failureKinds = new ConcurrentBag<FailureKind>();
-            var sysmiddleTask = ExecuteSysmiddleCandidatesAsync(request, layoutRecord, isXmlInput, warnings, failureKinds, candidatesCts.Token);
-            var tclXslTask = ExecuteTclXslCandidatesAsync(request, isXmlInput, warnings, failureKinds);
+            var pathwayDiagnostics = new ConcurrentBag<Models.Transformation.PathwayDiagnostic>();
+            var sysmiddleTask = ExecuteSysmiddleCandidatesAsync(request, layoutRecord, isXmlInput, warnings, failureKinds, pathwayDiagnostics, candidatesCts.Token);
+            var tclXslTask = ExecuteTclXslCandidatesAsync(request, isXmlInput, warnings, failureKinds, pathwayDiagnostics);
 
             var allTask = Task.WhenAll(sysmiddleTask, tclXslTask);
             var winner = await Task.WhenAny(allTask, Task.Delay(TimeSpan.FromSeconds(overallTimeoutSeconds)));
@@ -285,7 +295,7 @@ namespace LayoutParserApi.Controllers
             // falhou por infra (Estado B) — aí a correção é operacional, não de transformação, e a
             // IA nunca deveria tentar "recriar" um mapper que já existe e está correto.
             if (candidates.Count == 0)
-                TryEnqueueAiFallback(request, layoutRecord, isXmlInput, failureKinds, warnings, CurrentUserId);
+                TryEnqueueAiFallback(request, layoutRecord, isXmlInput, failureKinds, warnings, pathwayDiagnostics, CurrentUserId);
 
             string? recommendedId = null;
             if (candidates.Count > 0)
@@ -299,7 +309,11 @@ namespace LayoutParserApi.Controllers
                 Success = true,
                 Candidates = candidates,
                 RecommendedCandidateId = recommendedId,
-                Warnings = warnings
+                Warnings = warnings,
+                // pathwayDiagnostics (Issue #86): populado na origem por cada pathway (sysmiddle,
+                // tcl-xsl, ai-fallback) — ver docs/architecture/diagnostico-issue-86-*.md §4.
+                PathwayDiagnostics = pathwayDiagnostics.ToList(),
+                CorrelationId = Services.Logging.CorrelationContext.CurrentId
             });
         }
 
@@ -315,22 +329,46 @@ namespace LayoutParserApi.Controllers
         /// </summary>
         private async Task<List<TransformationCandidate>> ExecuteSysmiddleCandidatesAsync(
             TransformationRequest request, LayoutRecord layoutRecord, bool isXmlInput, List<string> warnings,
-            ConcurrentBag<FailureKind> failureKinds, CancellationToken cancellationToken)
+            ConcurrentBag<FailureKind> failureKinds, ConcurrentBag<Models.Transformation.PathwayDiagnostic> pathwayDiagnostics,
+            CancellationToken cancellationToken)
         {
             var result = new List<TransformationCandidate>();
 
             // Sysmiddle/low-code espera texto posicional (TXT), não XML — não é uma falha do
             // pathway, é entrada fora de escopo (a IA não deveria disparar por causa disso).
             if (isXmlInput)
+            {
+                _logger.LogInformation(
+                    "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code} layout={LayoutName} motivo=entrada XML fora do escopo do pathway sysmiddle",
+                    Services.Logging.CorrelationContext.CurrentId, "sysmiddle", "not_applicable", "not_applicable", request.LayoutName);
+                pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
+                {
+                    Pathway = "sysmiddle",
+                    Status = "not_applicable",
+                    Code = "not_applicable",
+                    Message = "Entrada XML — pathway sysmiddle espera texto posicional (TXT)"
+                });
                 return result;
+            }
 
             try
             {
                 var resolvedLayoutGuid = LowCodeLayoutGuidResolver.Resolve(request.LayoutGuid, layoutRecord.LayoutGuid);
                 if (resolvedLayoutGuid == null)
                 {
-                    warnings.Add($"Layout {request.LayoutName} sem LayoutGuid válido no request ou no catálogo — pathway sysmiddle não aplicável");
+                    var msg = $"Layout {request.LayoutName} sem LayoutGuid válido no request ou no catálogo — pathway sysmiddle não aplicável";
+                    warnings.Add(msg);
                     failureKinds.Add(FailureKind.NotApplicable);
+                    _logger.LogInformation(
+                        "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code} layout={LayoutName} fonte=request.LayoutGuid/catalogo (nenhum resolvível)",
+                        Services.Logging.CorrelationContext.CurrentId, "sysmiddle", "not_applicable", "not_applicable", request.LayoutName);
+                    pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
+                    {
+                        Pathway = "sysmiddle",
+                        Status = "not_applicable",
+                        Code = "not_applicable",
+                        Message = msg
+                    });
                     return result;
                 }
 
@@ -348,13 +386,26 @@ namespace LayoutParserApi.Controllers
 
                 if (!autoResult.Applicable)
                 {
-                    warnings.Add($"Nenhum mapeador low-code encontrado para o layout {request.LayoutName} (pathway sysmiddle)");
+                    var msgNoMapper = $"Nenhum mapeador low-code encontrado para o layout {request.LayoutName} (pathway sysmiddle)";
+                    warnings.Add(msgNoMapper);
                     // Estado A (§2 do design-fallback-ia-automatico): não existe mapper cadastrado
                     // para este layout — gap real de cobertura, elegível ao fallback de IA.
                     failureKinds.Add(FailureKind.NotApplicable);
+                    _logger.LogInformation(
+                        "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code} layout={LayoutName} layoutGuid={LayoutGuid} fonte=catalogo (consulta a mapeadores low-code sem resultado)",
+                        Services.Logging.CorrelationContext.CurrentId, "sysmiddle", "not_applicable", "no_mapper", request.LayoutName, resolvedLayoutGuid);
+                    pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
+                    {
+                        Pathway = "sysmiddle",
+                        Status = "not_applicable",
+                        Code = "no_mapper",
+                        Message = msgNoMapper
+                    });
                     return result;
                 }
 
+                var anyCandidateFailed = false;
+                string lastCandidateFailureMessage = null;
                 foreach (var c in autoResult.Candidates)
                 {
                     if (c.Success && !string.IsNullOrEmpty(c.OutputXml))
@@ -372,19 +423,61 @@ namespace LayoutParserApi.Controllers
                         // vira warning (ver tabela de decisão do contrato). Estado B (§2 do design):
                         // o mapper EXISTE (Applicable==true) mas a execução falhou — é infra/config
                         // (runner, timeout, .exe ausente), não gap de cobertura. Nunca dispara IA.
-                        warnings.Add($"Candidato {c.MapperGuid} (pathway sysmiddle) falhou: {c.ErrorMessage ?? "erro desconhecido"}");
+                        var sanitizedCandidateError = LowCodeErrorSanitizer.ForWire(c.ErrorMessage ?? "erro desconhecido");
+                        anyCandidateFailed = true;
+                        lastCandidateFailureMessage = sanitizedCandidateError;
+                        warnings.Add($"Candidato {c.MapperGuid} (pathway sysmiddle) falhou: {sanitizedCandidateError}");
                         failureKinds.Add(FailureKind.ExecutionInfraError);
                     }
+                }
+
+                if (result.Count > 0)
+                {
+                    _logger.LogInformation(
+                        "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} layout={LayoutName} layoutGuid={LayoutGuid} candidatos={CandidateCount} fonte=mapeadores low-code do catalogo",
+                        Services.Logging.CorrelationContext.CurrentId, "sysmiddle", "candidate_generated", request.LayoutName, resolvedLayoutGuid, result.Count);
+                    pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
+                    {
+                        Pathway = "sysmiddle",
+                        Status = "candidate_generated",
+                        Code = null,
+                        Message = $"{result.Count} candidato(s) sysmiddle gerado(s)"
+                    });
+                }
+                else if (anyCandidateFailed)
+                {
+                    // autoResult.Applicable == true (mapper existe) mas TODOS os candidatos
+                    // falharam na execução — infra/runner, não gap de cobertura (§4.3 "runner_unavailable").
+                    _logger.LogWarning(
+                        "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code} layout={LayoutName} layoutGuid={LayoutGuid} fonte=execução do runner (mapper existe, execução falhou)",
+                        Services.Logging.CorrelationContext.CurrentId, "sysmiddle", "failed", "runner_unavailable", request.LayoutName, resolvedLayoutGuid);
+                    pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
+                    {
+                        Pathway = "sysmiddle",
+                        Status = "failed",
+                        Code = "runner_unavailable",
+                        Message = lastCandidateFailureMessage ?? "Todos os candidatos sysmiddle falharam na execução"
+                    });
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Falha estrutural no pathway sysmiddle ao gerar candidatos para layout {LayoutName}", request.LayoutName);
+                _logger.LogWarning(ex,
+                    "Falha estrutural no pathway sysmiddle ao gerar candidatos para layout {LayoutName}. PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code}",
+                    request.LayoutName, Services.Logging.CorrelationContext.CurrentId, "sysmiddle", "failed", "execution_error");
                 // Saneado: exceção de I/O deste pathway carrega caminho de disco do servidor e este
                 // warning sai no payload 200 (mesmo defeito do §3.1 da spec, outro ponto de saída).
-                warnings.Add($"Pathway sysmiddle falhou: {LowCodeErrorSanitizer.ForWire(ex)}");
+                var sanitizedEx = LowCodeErrorSanitizer.ForWire(ex);
+                warnings.Add($"Pathway sysmiddle falhou: {sanitizedEx}");
                 // Falha estrutural (exceção) é sempre infra, não "não modelado" — nunca dispara IA.
                 failureKinds.Add(FailureKind.ExecutionInfraError);
+                pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
+                {
+                    Pathway = "sysmiddle",
+                    Status = "failed",
+                    Code = "execution_error",
+                    Message = sanitizedEx
+                });
             }
 
             return result;
@@ -442,34 +535,71 @@ namespace LayoutParserApi.Controllers
         /// </summary>
         private void TryEnqueueAiFallback(
             TransformationRequest request, LayoutRecord layoutRecord, bool isXmlInput,
-            ConcurrentBag<FailureKind> failureKinds, List<string> warnings, string userId)
+            ConcurrentBag<FailureKind> failureKinds, List<string> warnings,
+            ConcurrentBag<Models.Transformation.PathwayDiagnostic> pathwayDiagnostics, string userId)
         {
             try
             {
                 if (failureKinds.Any(k => k == FailureKind.ExecutionInfraError))
                 {
                     // Estado B: já existe o warning de infra específico emitido pelo pathway que
-                    // falhou — nada a acrescentar aqui, só não disparar a IA (§2 do desenho).
+                    // falhou (e já virou pathwayDiagnostics próprio de sysmiddle/tcl-xsl) — nada a
+                    // acrescentar aqui, só não disparar a IA (§2 do desenho). Não emite um 3º
+                    // diagnóstico "ai-fallback: not_applicable" para não duplicar sinal — o front já
+                    // tem os itens failed de quem realmente quebrou.
                     return;
                 }
 
                 var resolvedLayoutGuidText = LowCodeLayoutGuidResolver.Resolve(request.LayoutGuid, layoutRecord.LayoutGuid);
                 if (resolvedLayoutGuidText == null || !Guid.TryParse(resolvedLayoutGuidText, out var resolvedLayoutGuid))
                 {
-                    warnings.Add($"Layout {request.LayoutName} sem LayoutGuid válido — fallback de IA não aplicável");
+                    var msg = $"Layout {request.LayoutName} sem LayoutGuid válido — fallback de IA não aplicável";
+                    warnings.Add(msg);
+                    _logger.LogInformation(
+                        "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code} layout={LayoutName} fonte=request.LayoutGuid/catalogo (nenhum resolvível)",
+                        Services.Logging.CorrelationContext.CurrentId, "ai-fallback", "not_applicable", "not_applicable", request.LayoutName);
+                    pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
+                    {
+                        Pathway = "ai-fallback",
+                        Status = "not_applicable",
+                        Code = "not_applicable",
+                        Message = msg
+                    });
                     return;
                 }
 
                 if (_aiFallbackGate.IsInCooldown(resolvedLayoutGuid, out var retryAt))
                 {
-                    warnings.Add($"Pathway IA fallback suprimido para este layout até {retryAt:HH:mm} (já tentado sem sucesso)");
+                    var msg = $"Pathway IA fallback suprimido para este layout até {retryAt:HH:mm} (já tentado sem sucesso)";
+                    warnings.Add(msg);
+                    _logger.LogInformation(
+                        "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code} layout={LayoutName} layoutGuid={LayoutGuid} fonte=IAiFallbackSuppressionGate (cooldown ativo até {RetryAt})",
+                        Services.Logging.CorrelationContext.CurrentId, "ai-fallback", "not_applicable", "not_applicable", request.LayoutName, resolvedLayoutGuid, retryAt);
+                    pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
+                    {
+                        Pathway = "ai-fallback",
+                        Status = "not_applicable",
+                        Code = "not_applicable",
+                        Message = msg
+                    });
                     return;
                 }
 
                 var ticket = LowCodeTransformationStore.BuildTicketFromContent(request.InputContent, resolvedLayoutGuidText);
                 if (ticket == null)
                 {
-                    warnings.Add($"Layout {request.LayoutName}: não foi possível compor o ticket do fallback de IA");
+                    var msg = $"Layout {request.LayoutName}: não foi possível compor o ticket do fallback de IA";
+                    warnings.Add(msg);
+                    _logger.LogWarning(
+                        "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code} layout={LayoutName} layoutGuid={LayoutGuid} fonte=LowCodeTransformationStore.BuildTicketFromContent (retornou null)",
+                        Services.Logging.CorrelationContext.CurrentId, "ai-fallback", "failed", "configuration_error", request.LayoutName, resolvedLayoutGuid);
+                    pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
+                    {
+                        Pathway = "ai-fallback",
+                        Status = "failed",
+                        Code = "configuration_error",
+                        Message = msg
+                    });
                     return;
                 }
 
@@ -486,11 +616,35 @@ namespace LayoutParserApi.Controllers
                     groundTruthXml: null,
                     CancellationToken.None);
 
-                warnings.Add($"Nenhum candidato de transformação encontrado — fallback automático de IA enfileirado (ticket {ticket}), consulte GET execute-candidates/{ticket}/ia-status");
+                var enqueuedMsg = $"Nenhum candidato de transformação encontrado — fallback automático de IA enfileirado (ticket {ticket}), consulte GET execute-candidates/{ticket}/ia-status";
+                warnings.Add(enqueuedMsg);
+                // "candidate_generated" no sentido de que o pathway produziu um item consultável
+                // (ticket assíncrono) — não um XML pronto, mas o front tem o que fazer com ele
+                // (§4.2 do desenho: "inclui o ticket assíncrono do fallback de IA, que 'gera' no
+                // sentido de estar em processamento").
+                _logger.LogInformation(
+                    "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} layout={LayoutName} layoutGuid={LayoutGuid} ticket={Ticket} fonte=IAiTransformationCandidateService.EnqueueAsync (sem gabarito)",
+                    Services.Logging.CorrelationContext.CurrentId, "ai-fallback", "candidate_generated", request.LayoutName, resolvedLayoutGuid, ticket);
+                pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
+                {
+                    Pathway = "ai-fallback",
+                    Status = "candidate_generated",
+                    Code = null,
+                    Message = enqueuedMsg
+                });
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Falha ao disparar o fallback automático de IA para layout {LayoutName}", request.LayoutName);
+                _logger.LogWarning(ex,
+                    "Falha ao disparar o fallback automático de IA para layout {LayoutName}. PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code}",
+                    request.LayoutName, Services.Logging.CorrelationContext.CurrentId, "ai-fallback", "failed", "execution_error");
+                pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
+                {
+                    Pathway = "ai-fallback",
+                    Status = "failed",
+                    Code = "execution_error",
+                    Message = LowCodeErrorSanitizer.ForWire(ex)
+                });
             }
         }
 
@@ -526,7 +680,8 @@ namespace LayoutParserApi.Controllers
         /// noção de múltiplos TCL/XSL candidatos para o mesmo layout).
         /// </summary>
         private async Task<List<TransformationCandidate>> ExecuteTclXslCandidatesAsync(
-            TransformationRequest request, bool isXmlInput, List<string> warnings, ConcurrentBag<FailureKind> failureKinds)
+            TransformationRequest request, bool isXmlInput, List<string> warnings, ConcurrentBag<FailureKind> failureKinds,
+            ConcurrentBag<Models.Transformation.PathwayDiagnostic> pathwayDiagnostics)
         {
             var result = new List<TransformationCandidate>();
 
@@ -545,9 +700,32 @@ namespace LayoutParserApi.Controllers
 
                 if (!pipelineResult.Success || string.IsNullOrEmpty(pipelineResult.TransformedXml))
                 {
-                    warnings.Add($"Candidato tcl-xsl falhou: {string.Join("; ", pipelineResult.Errors)}");
+                    // Saneado (§5 do diagnóstico-issue-86): pipelineResult.Errors pode carregar
+                    // caminho de disco cru (IOException/XmlException internos do pipeline).
+                    var sanitizedTclXslError = LowCodeErrorSanitizer.ForWire(string.Join("; ", pipelineResult.Errors));
+                    warnings.Add($"Candidato tcl-xsl falhou: {sanitizedTclXslError}");
                     // "Sem heurística aplicável" para este layout — Estado A (§2 do design).
                     failureKinds.Add(FailureKind.NotApplicable);
+
+                    // Issue #86 §2.4: distingue "arquivo MAP não encontrado" de "arquivo XSL não
+                    // encontrado" pelo ErrorCode populado na origem (TransformationPipelineService),
+                    // não por regex sobre a mensagem já sanitizada.
+                    var code = pipelineResult.ErrorCode switch
+                    {
+                        "map_not_found" => "map_not_found",
+                        "xsl_not_found" => "xsl_not_found",
+                        _ => "map_not_found" // fallback conservador: maioria dos casos "não aplicável" hoje é ausência de MAP
+                    };
+                    _logger.LogWarning(
+                        "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code} layout={LayoutName} fonte=TransformationPipelineService.ErrorCode={ErrorCode}",
+                        Services.Logging.CorrelationContext.CurrentId, "tcl-xsl", "failed", code, request.LayoutName, pipelineResult.ErrorCode);
+                    pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
+                    {
+                        Pathway = "tcl-xsl",
+                        Status = "failed",
+                        Code = code,
+                        Message = sanitizedTclXslError
+                    });
                     return result;
                 }
 
@@ -568,7 +746,8 @@ namespace LayoutParserApi.Controllers
                         // Falha de validação não invalida o candidato em si (o XML transformado existe) —
                         // só fica sem o campo Validation preenchido.
                         _logger.LogWarning(ex, "Falha ao validar candidato tcl-xsl para layout {LayoutName}", request.LayoutName);
-                        warnings.Add($"Validação do candidato tcl-xsl falhou: {ex.Message}");
+                        // Saneado (§5 do diagnóstico-issue-86): mesmo padrão do sysmiddle (linha ~385).
+                        warnings.Add($"Validação do candidato tcl-xsl falhou: {LowCodeErrorSanitizer.ForWire(ex)}");
                     }
                 }
 
@@ -580,13 +759,36 @@ namespace LayoutParserApi.Controllers
                     SegmentMappings = pipelineResult.SegmentMappings?.ToDictionary(kv => kv.Key.ToString(), kv => kv.Value),
                     Validation = validation
                 });
+
+                _logger.LogInformation(
+                    "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} layout={LayoutName} tclPath={TclPath} xslPath={XslPath} fonte=TransformationPipelineService",
+                    Services.Logging.CorrelationContext.CurrentId, "tcl-xsl", "candidate_generated", request.LayoutName,
+                    System.IO.Path.GetFileName(pipelineResult.TclPath), System.IO.Path.GetFileName(pipelineResult.XslPath));
+                pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
+                {
+                    Pathway = "tcl-xsl",
+                    Status = "candidate_generated",
+                    Code = null,
+                    Message = "Candidato tcl-xsl gerado com sucesso"
+                });
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Falha estrutural no pathway tcl-xsl ao gerar candidato para layout {LayoutName}", request.LayoutName);
-                warnings.Add($"Pathway tcl-xsl falhou: {ex.Message}");
+                _logger.LogWarning(ex,
+                    "Falha estrutural no pathway tcl-xsl ao gerar candidato para layout {LayoutName}. PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code}",
+                    request.LayoutName, Services.Logging.CorrelationContext.CurrentId, "tcl-xsl", "failed", "execution_error");
+                // Saneado (§5 do diagnóstico-issue-86): mesmo padrão do sysmiddle (linha ~385).
+                var sanitizedTclXslEx = LowCodeErrorSanitizer.ForWire(ex);
+                warnings.Add($"Pathway tcl-xsl falhou: {sanitizedTclXslEx}");
                 // Exceção estrutural é infra, não "não modelado" — nunca dispara IA.
                 failureKinds.Add(FailureKind.ExecutionInfraError);
+                pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
+                {
+                    Pathway = "tcl-xsl",
+                    Status = "failed",
+                    Code = "execution_error",
+                    Message = sanitizedTclXslEx
+                });
             }
 
             return result;

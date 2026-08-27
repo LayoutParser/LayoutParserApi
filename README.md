@@ -233,6 +233,7 @@ ContentValue (DSL bruta) ──► DslStructuredParser (Camada 0, 100% código) 
 - `DslStructuredParser` interpreta a árvore de decisão real (`if/else` aninhado, funções como `ConcatString`/`CalculateVerifierDigit`) e produz um `StructuredRule` (`SchemaVersion`, `Target`, `Branches`, `AllSources`, `AllFunctions`).
 - Esse trabalho pesado vive hoje em **`ai/XslSynth.Contracts`** — um projeto novo, extraído de `ai/XslSynth.Core`, que contém só o núcleo determinístico e sem I/O externo (`DslStructuredParser`, `StructuredRuleSchema`, `FunctionCatalog`, `GuidXPathCatalog`, `RealMapperParser`). É referenciado tanto pelo lado de pesquisa (`ai/XslSynth.Core`, que mantém Ollama/RAG/XSD validator isolados) quanto pela **API em runtime**, via `Services/Transformation/MappingStructureService.cs` (registrado `Scoped` em `Program.cs`) — ou seja, uma parte real desse trabalho **já conecta ao runtime da API**, não é mais só ferramenta offline/CLI.
 - **Estado atual, sem exagero:** `MappingStructureService` está com o "cano ligado" no DI (`ParseRule`, `TryExtractFunctionCatalog`), mas ainda **sem consumidor no pipeline HTTP** — a exposição via `/fieldMappings` para o front-end é escopo das próximas fases (issues #140/#141).
+- **Consolidação do parser de MapperVO (issue #139):** `XslSynth.Model.MapperVo` + `RealMapperParser` (`ai/XslSynth.Contracts`) é agora o parser canônico em todo o runtime, inclusive no caminho de geração de XSL legado (`Services/XmlAnalysis/XslGeneratorService.cs`, que passou a usá-lo em vez do parser antigo). O parser antigo (`Models/Entities/MapperVo.cs`/`MapperRule.cs`/`LinkMappingItem.cs`) está marcado `[Obsolete]`, mantido apenas por rastreabilidade. Detalhe completo, inclusive a limitação conhecida de que nenhum dos dois parsers captura elementos aninhados: [`docs/architecture/inventario-parsers-mapperVo-issue-139.md`](docs/architecture/inventario-parsers-mapperVo-issue-139.md).
 
 **🇧🇷 Visão de longo prazo (declarada, não entregue):** a meta de fundo continua sendo eliminar a dependência do XML low-code Sysmiddle. O plano de mapeamento campo TXT↔XML (issues #137-141) usa essa camada estruturada tanto para **extração** (interpretar `ContentValue` real, com a IA só ajudando em ambiguidades — nunca decidindo a lógica condicional) quanto, no futuro, para **geração** (a IA aprender a produzir o JSON estruturado, com um transpilador determinístico convertendo de volta para `ContentValue`/XSLT). Reversibilidade (XML SEFAZ → TXT original) é **investigação em fase de desenho** (Fase 4, ver roadmap) — não é capacidade real hoje: funções como dígito verificador têm perda e não são inversíveis sem heurística.
 
@@ -324,6 +325,48 @@ Without a `groundTruthXml` (State A, "generate from scratch"), the convergence c
 | `completed` | Yes | At least one transformation candidate succeeded. |
 | `failed` | Yes — **new in this contract** | Candidates exist, but **none** succeeded — structural failure of the set. Previously this came back as `completed` with every candidate `success=false`, forcing the front to scan the array to infer failure. |
 | `not_applicable` / `error` | Yes (only in `/api/parse/upload`'s synchronous response) | `not_applicable`: pathway not eligible (no mapper, non-positional type, empty input). `error`: structural failure processing transformations (e.g. database down) — does not fail the main parse. |
+
+### Diagnóstico estruturado de `execute-candidates` (Issue LayoutParserReact #86) / Structured diagnostics for `execute-candidates`
+
+**🇧🇷** `POST /api/transformationexecution/execute-candidates` ganhou dois campos **aditivos** na resposta (não quebram clientes existentes que ignoram campos desconhecidos): [`pathwayDiagnostics`](Models/Transformation/PathwayDiagnostic.cs) e `correlationId`. Design completo: [`docs/architecture/diagnostico-issue-86-diagnostico-estruturado-execute-candidates.md`](docs/architecture/diagnostico-issue-86-diagnostico-estruturado-execute-candidates.md).
+
+```jsonc
+{
+  "success": true,
+  "candidates": [],
+  "recommendedCandidateId": null,
+  "warnings": ["..."],
+  "pathwayDiagnostics": [
+    { "pathway": "sysmiddle", "status": "not_applicable", "code": "no_mapper", "message": "..." },
+    { "pathway": "tcl-xsl", "status": "failed", "code": "map_not_found", "message": "..." }
+  ],
+  "correlationId": "..."
+}
+```
+
+**Semântica principal:** `candidates: []` nunca fica sem causa quando a API sabe o motivo — cada pathway avaliado (`sysmiddle`, `tcl-xsl`, e `ai-fallback` quando o fallback automático de IA é disparado) entra em `pathwayDiagnostics` com um veredito, mesmo quando não produz candidato. `warnings` continua populado exatamente como antes, por compatibilidade — `pathwayDiagnostics` é estruturado, não substitui.
+
+| Campo | Valores | Significado |
+|-------|---------|-------------|
+| `pathway` | `sysmiddle` \| `tcl-xsl` \| `ai-fallback` | Qual dos pathways gerou este diagnóstico. |
+| `status` | `candidate_generated` \| `not_applicable` \| `failed` | `candidate_generated`: o pathway produziu ao menos um candidato. `not_applicable`: o pathway não é elegível para este layout/entrada (não é falha). `failed`: o pathway era elegível mas não conseguiu produzir candidato. |
+| `code` | `no_mapper` \| `map_not_found` \| `xsl_not_found` \| `configuration_error` \| `runner_unavailable` \| `timeout` \| `not_applicable` \| `execution_error` | Taxonomia estável (string, não enum — permite adicionar valores sem quebrar o contrato). |
+| `message` | texto livre | Mensagem legível para exibição no front. |
+
+**Regra de sanitização:** toda `message` em `pathwayDiagnostics` passa por [`LowCodeErrorSanitizer`](Services/Transformation/LowCode/LowCodeErrorSanitizer.cs) antes de chegar ao payload HTTP — **nunca** contém caminho físico de disco nem detalhe interno cru. O detalhe completo (não sanitizado) só existe no log estruturado, correlacionável via `correlationId`.
+
+**🇺🇸** `POST /api/transformationexecution/execute-candidates` gained two **additive** response fields (safe for existing clients that ignore unknown fields): [`pathwayDiagnostics`](Models/Transformation/PathwayDiagnostic.cs) and `correlationId`. Full design: [`docs/architecture/diagnostico-issue-86-diagnostico-estruturado-execute-candidates.md`](docs/architecture/diagnostico-issue-86-diagnostico-estruturado-execute-candidates.md).
+
+**Core semantics:** `candidates: []` is never left without a cause when the API knows the reason — every pathway evaluated (`sysmiddle`, `tcl-xsl`, and `ai-fallback` when the automatic AI fallback fires) gets an entry in `pathwayDiagnostics` with a verdict, even when it produces no candidate. `warnings` remains populated exactly as before for backward compatibility — `pathwayDiagnostics` is structured, it doesn't replace it.
+
+| Field | Values | Meaning |
+|-------|--------|---------|
+| `pathway` | `sysmiddle` \| `tcl-xsl` \| `ai-fallback` | Which pathway produced this diagnostic. |
+| `status` | `candidate_generated` \| `not_applicable` \| `failed` | `candidate_generated`: the pathway produced at least one candidate. `not_applicable`: the pathway isn't eligible for this layout/input (not a failure). `failed`: the pathway was eligible but couldn't produce a candidate. |
+| `code` | `no_mapper` \| `map_not_found` \| `xsl_not_found` \| `configuration_error` \| `runner_unavailable` \| `timeout` \| `not_applicable` \| `execution_error` | Stable taxonomy (string, not an exposed enum — new values can be added without breaking the contract). |
+| `message` | free text | Human-readable message for front-end display. |
+
+**Sanitization rule:** every `message` in `pathwayDiagnostics` goes through [`LowCodeErrorSanitizer`](Services/Transformation/LowCode/LowCodeErrorSanitizer.cs) before reaching the HTTP payload — it **never** contains a physical disk path or raw internal detail. The full (unsanitized) detail only exists in the structured log, correlatable via `correlationId`.
 
 ---
 
