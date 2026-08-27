@@ -7,3 +7,4 @@
 - [Técnica: matriz de mutação](tecnica-matriz-de-mutacao.md) — julgue suíte reintroduzindo bugs numa cópia via `git archive` no scratchpad; nunca mutar a árvore compartilhada.
 - [InformacoesParaEDI OccurrenceCount fix QA gate](informacoesparaedi-occurrencecount-fix-qa-gate.md) — PASS a330af2 validado c/ amostra real; baseline 704 era stale, correto é 705 (pré-existente, não regressão).
 - [Cypress alpha emissão normal spec](cypress-alpha-emissao-normal-spec.md) — spec escrita em LayoutParserCypress; ambos pathways (TCL/XSL e LowCode) bloqueados no dev workstation por arquivos que só existem em `C:\inetpub\wwwroot\layoutparser\` de produção.
+- [PR #198 LineInfo signals QA gate](pr198-linhainfo-signals-qa-gate.md) — PASS; achado: IsDeclaredEmpty inalcançável na prática (matcher exige prefixo não-espaço); incidente de commits concorrentes no mesmo checkout.
