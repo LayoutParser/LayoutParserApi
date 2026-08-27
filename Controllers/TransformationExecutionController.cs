@@ -299,7 +299,11 @@ namespace LayoutParserApi.Controllers
                 Success = true,
                 Candidates = candidates,
                 RecommendedCandidateId = recommendedId,
-                Warnings = warnings
+                Warnings = warnings,
+                // pathwayDiagnostics (Issue #86): estrutura aditiva, população dos valores por
+                // pathway fica para etapa seguinte — ver docs/architecture/diagnostico-issue-86-*.md.
+                PathwayDiagnostics = new List<Models.Transformation.PathwayDiagnostic>(),
+                CorrelationId = Services.Logging.CorrelationContext.CurrentId
             });
         }
 
@@ -545,7 +549,9 @@ namespace LayoutParserApi.Controllers
 
                 if (!pipelineResult.Success || string.IsNullOrEmpty(pipelineResult.TransformedXml))
                 {
-                    warnings.Add($"Candidato tcl-xsl falhou: {string.Join("; ", pipelineResult.Errors)}");
+                    // Saneado (§5 do diagnóstico-issue-86): pipelineResult.Errors pode carregar
+                    // caminho de disco cru (IOException/XmlException internos do pipeline).
+                    warnings.Add($"Candidato tcl-xsl falhou: {LowCodeErrorSanitizer.ForWire(string.Join("; ", pipelineResult.Errors))}");
                     // "Sem heurística aplicável" para este layout — Estado A (§2 do design).
                     failureKinds.Add(FailureKind.NotApplicable);
                     return result;
@@ -568,7 +574,8 @@ namespace LayoutParserApi.Controllers
                         // Falha de validação não invalida o candidato em si (o XML transformado existe) —
                         // só fica sem o campo Validation preenchido.
                         _logger.LogWarning(ex, "Falha ao validar candidato tcl-xsl para layout {LayoutName}", request.LayoutName);
-                        warnings.Add($"Validação do candidato tcl-xsl falhou: {ex.Message}");
+                        // Saneado (§5 do diagnóstico-issue-86): mesmo padrão do sysmiddle (linha ~385).
+                        warnings.Add($"Validação do candidato tcl-xsl falhou: {LowCodeErrorSanitizer.ForWire(ex)}");
                     }
                 }
 
@@ -584,7 +591,8 @@ namespace LayoutParserApi.Controllers
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Falha estrutural no pathway tcl-xsl ao gerar candidato para layout {LayoutName}", request.LayoutName);
-                warnings.Add($"Pathway tcl-xsl falhou: {ex.Message}");
+                // Saneado (§5 do diagnóstico-issue-86): mesmo padrão do sysmiddle (linha ~385).
+                warnings.Add($"Pathway tcl-xsl falhou: {LowCodeErrorSanitizer.ForWire(ex)}");
                 // Exceção estrutural é infra, não "não modelado" — nunca dispara IA.
                 failureKinds.Add(FailureKind.ExecutionInfraError);
             }
