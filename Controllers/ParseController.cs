@@ -313,6 +313,7 @@ namespace LayoutParserApi.Controllers
                     summary = result.Summary,
                     documentStructure = documentStructure,
                     lineValidations = lineValidations, // Validações e posições calculadas (apenas para layouts configurados)
+                    lineInfos = result.LineInfos, // ✅ Contrato aditivo 2026-08-27: sinais por linha (IsDeclaredEmpty, PositionalAlignmentFailed)
                     validationErrors = result.ValidationErrors, // ✅ Erros de validação de tamanho de linha
                     validationWarning = !string.IsNullOrEmpty(result.ErrorMessage) ? result.ErrorMessage : null, // ✅ Aviso se houver erros
                     transformations, // array de candidatos low-code (mapper/target/xml/sucesso-ou-erro) quando concluído a tempo
