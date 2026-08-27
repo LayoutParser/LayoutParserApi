@@ -253,7 +253,17 @@ namespace LayoutParserApi.Controllers
                             var autoResult = await transformTask;
                             syncCts.Dispose();
 
-                            transformationsStatus = autoResult.Applicable ? "completed" : "not_applicable";
+                            // ✅ "failed" (contrato aditivo 2026-08-27, spec §2): existe candidato mas
+                            // NENHUM teve sucesso — distinto de "completed" (ao menos um candidato OK),
+                            // sem exigir que o front varra o array pra descobrir que deu tudo errado.
+                            var todosFalharam = autoResult.Applicable
+                                && autoResult.Candidates.Count > 0
+                                && autoResult.Candidates.All(c => !c.Success);
+
+                            transformationsStatus = !autoResult.Applicable
+                                ? "not_applicable"
+                                : todosFalharam ? "failed" : "completed";
+
                             if (autoResult.Applicable)
                             {
                                 transformations = AplicarTetoDeXmlInline(autoResult.Candidates);
@@ -303,10 +313,11 @@ namespace LayoutParserApi.Controllers
                     summary = result.Summary,
                     documentStructure = documentStructure,
                     lineValidations = lineValidations, // Validações e posições calculadas (apenas para layouts configurados)
+                    lineInfos = result.LineInfos, // ✅ Contrato aditivo 2026-08-27: sinais por linha (IsDeclaredEmpty, PositionalAlignmentFailed)
                     validationErrors = result.ValidationErrors, // ✅ Erros de validação de tamanho de linha
                     validationWarning = !string.IsNullOrEmpty(result.ErrorMessage) ? result.ErrorMessage : null, // ✅ Aviso se houver erros
                     transformations, // array de candidatos low-code (mapper/target/xml/sucesso-ou-erro) quando concluído a tempo
-                    transformationsStatus, // "not_applicable" | "completed" | "processing" | "error"
+                    transformationsStatus, // "not_applicable" | "completed" | "failed" | "processing" | "error" (contrato aditivo 2026-08-27: "failed" é novo — ver GetTransformations)
                     transformationsReason, // opcional: no_mapper | type_not_positional | empty_input | timeout_sync | structural_error
                     transformationsTicket // consulta do resultado: GET /api/parse/transformations/{ticket}
                 });
@@ -339,9 +350,22 @@ namespace LayoutParserApi.Controllers
         /// consome, para não criar um terceiro dialeto (spec §3.3).</para>
         /// </summary>
         /// <param name="ticket">"{sha256}.{layoutGuid}" — devolvido pelo upload em <c>transformationsTicket</c>.</param>
-        /// <response code="200">Manifesto encontrado (status "processing" ou "completed").</response>
+        /// <response code="200">Manifesto encontrado (status "processing" | "completed" | "failed").</response>
         /// <response code="400">Ticket fora do formato.</response>
         /// <response code="404">Nenhuma execução registrada para este ticket.</response>
+        /// <remarks>
+        /// Contrato aditivo (2026-08-27, ver
+        /// <c>docs/architecture/contrato-linha-vazia-progresso-e-degradacao-posicional-2026-08-27.md</c>
+        /// §2): o vocabulário completo de fases é <c>"uploaded"</c> → <c>"layout_selected"</c> →
+        /// <c>"parsing"</c> → <c>"transforming"</c> → <c>"completed"</c>/<c>"failed"</c>, mas as 3
+        /// primeiras são <b>client-side only</b> — este endpoint só existe (índice só é gravado) a
+        /// partir de depois que o documento já foi parseado, então a API nunca as emite. O que
+        /// este endpoint efetivamente retorna em <c>status</c> é <c>"processing"</c> (valor de fio
+        /// inalterado — equivale à fase "transforming"), <c>"completed"</c> (≥1 candidato com
+        /// sucesso) ou <c>"failed"</c> (novo: existe candidato, mas nenhum teve sucesso — antes
+        /// isso vinha como "completed" com <c>success=false</c> em todos os itens de
+        /// <c>candidates</c>, obrigando o front a inferir o fracasso varrendo o array).
+        /// </remarks>
         [HttpGet("transformations/{ticket}")]
         public async Task<IActionResult> GetTransformations(string ticket)
         {
@@ -359,7 +383,7 @@ namespace LayoutParserApi.Controllers
             {
                 success = true,
                 ticket,
-                status = entrada.Status, // "processing" | "completed"
+                status = entrada.Status, // "processing" | "completed" | "failed" (contrato aditivo 2026-08-27)
                 partial = entrada.Partial, // true = execução interrompida no teto síncrono; pode faltar candidato
                 candidates = entrada.Candidates.Select(c => new
                 {

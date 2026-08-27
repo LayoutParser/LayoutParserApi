@@ -96,7 +96,8 @@ namespace LayoutParserApi.Services.Implementations
                 }
 
                 // Processar normalmente para permitir visualização no front-end
-                result.ParsedFields = ParseTextWithSequenceValidation(result.RawText, result.Layout);
+                result.ParsedFields = ParseTextWithSequenceValidation(result.RawText, result.Layout, out var lineInfos);
+                result.LineInfos = lineInfos;
                 result.Summary = CalculateSummary(result);
                 result.Success = true; // Sempre retorna sucesso para permitir visualização
 
@@ -244,11 +245,12 @@ namespace LayoutParserApi.Services.Implementations
             }
         }
 
-        private List<ParsedField> ParseTextWithSequenceValidation(string text, Layout layout)
+        private List<ParsedField> ParseTextWithSequenceValidation(string text, Layout layout, out List<LineInfo> lineInfos)
         {
             Layout completedLayout = layout;
 
             var parsedFields = new List<ParsedField>();
+            lineInfos = new List<LineInfo>();
 
             if (string.IsNullOrEmpty(text) || layout?.Elements == null)
                 return parsedFields;
@@ -343,8 +345,33 @@ namespace LayoutParserApi.Services.Implementations
                     int maxOccurrences = matchingLineConfig.MaximumOccurrence > 0 ? matchingLineConfig.MaximumOccurrence : int.MaxValue;
 
                     if (currentOccurrence < maxOccurrences)
+                    {
                         // Chamar ParseLineFields com a próxima ocorrência (currentOccurrence já é o máximo atual, então usamos ele)
-                        ParseLineFields(currentLine, matchingLineConfig, parsedFields, currentOccurrence, formatoResolvido.Format, layoutLineLength);
+                        bool positionalAlignmentFailed = ParseLineFields(currentLine, matchingLineConfig, parsedFields, currentOccurrence, formatoResolvido.Format, layoutLineLength, out bool allDataFieldsBlank);
+
+                        // ✅ Contrato aditivo 2026-08-27 (corrigido): IsDeclaredEmpty avalia só os
+                        // CAMPOS DE DADO da linha (excluindo Sequencia/LINHA*, que identificam a
+                        // linha e nunca são whitespace por construção — ver IsLineValidForConfig).
+                        // Antes: IsNullOrWhiteSpace(currentLine) sobre a linha bruta inteira, o que
+                        // tornava IsDeclaredEmpty=true inalcançável (o prefixo estrutural sempre
+                        // preenche a linha). allDataFieldsBlank vem de ParseLineFields, que já
+                        // filtra os campos estruturais antes de avaliar. Se a linha não tem nenhum
+                        // campo de dado (só estrutural), ParseLineFields cai no fallback antigo
+                        // sobre a linha bruta (ver allDataFieldsBlank).
+                        bool isDeclaredEmpty = allDataFieldsBlank;
+
+                        lineInfos.Add(new LineInfo
+                        {
+                            LineName = ObterLineNameSemHierarquia(matchingLineConfig.Name),
+                            LineNumber = lineIndex + 1,
+                            Occurrence = currentOccurrence + 1,
+                            StartPosition = 0,
+                            Length = expectedLength,
+                            Content = currentLine,
+                            IsDeclaredEmpty = isDeclaredEmpty,
+                            PositionalAlignmentFailed = positionalAlignmentFailed
+                        });
+                    }
                     else
                     {
                         _techLogger.LogTechnical(new TechLogEntry
@@ -387,6 +414,11 @@ namespace LayoutParserApi.Services.Implementations
 
             ValidateLineOccurrences(layout, parsedFields);
 
+            // ✅ Diagnóstico InformacoesParaEDI/LINHA081 (2026-08-21), Bug B: precisa de um
+            // segundo passe porque a contagem total de ocorrências físicas de um (LineName,
+            // FieldName) só é conhecida depois que TODAS as linhas já foram processadas.
+            PopulateOccurrenceCounts(parsedFields);
+
             // ✅ Issue #37: agrega ocorrências físicas de LineElements marcados com
             // IsPositionalGroupRepetition num único ParsedField lógico (Occurrence=0).
             // Roda DEPOIS de ValidateLineOccurrences para não contaminar a contagem de
@@ -394,6 +426,23 @@ namespace LayoutParserApi.Services.Implementations
             AggregatePositionalGroupRepetitions(layout, parsedFields);
 
             return parsedFields;
+        }
+
+        /// <summary>
+        /// Diagnóstico 2026-08-21 (Bug B): popula <see cref="ParsedField.OccurrenceCount"/> com o
+        /// total de ocorrências físicas (Occurrence >= 1) por (LineName, FieldName). Aditivo — não
+        /// altera nenhum outro campo.
+        /// </summary>
+        private void PopulateOccurrenceCounts(List<ParsedField> parsedFields)
+        {
+            if (parsedFields == null) return;
+
+            foreach (var group in parsedFields.Where(f => f.Occurrence > 0).GroupBy(f => new { f.LineName, f.FieldName }))
+            {
+                int count = group.Select(f => f.Occurrence).Distinct().Count();
+                foreach (var field in group)
+                    field.OccurrenceCount = count;
+            }
         }
 
         /// <summary>
@@ -908,7 +957,13 @@ namespace LayoutParserApi.Services.Implementations
             return sequence.Length == 6 && sequence.All(char.IsDigit) && int.TryParse(sequence, out _);
         }
 
-        private void ParseLineFields(string line, LineElement lineConfig, List<ParsedField> parsedFields, int occurrenceIndex, PositionalFormat format, int expectedLineLength = LineLengthResolver.LegacyDefaultLineLength)
+        /// <summary>
+        /// Retorna <c>true</c> quando ≥2 campos desta ocorrência resolveram para a mesma posição
+        /// inicial (fieldStart colapsado) — sintoma de degradação posicional (ex.: LINHA006).
+        /// Puramente observacional: checagem pós-loop, não altera a lógica de cálculo de posição
+        /// existente nem lança exceção (sinalizador aditivo, não correção da causa raiz).
+        /// </summary>
+        private bool ParseLineFields(string line, LineElement lineConfig, List<ParsedField> parsedFields, int occurrenceIndex, PositionalFormat format, int expectedLineLength, out bool allDataFieldsBlank)
         {
             _techLogger.LogTechnical(new TechLogEntry
             {
@@ -953,6 +1008,10 @@ namespace LayoutParserApi.Services.Implementations
             });
 
             int currentPosition = CalculateLineOffset(lineConfig, paddedLine, format);
+
+            // Campos desta ocorrência específica — usado só para detectar colapso posicional
+            // (Start duplicado) no fim do loop, sem interferir no cálculo de posição em si.
+            var occurrenceFields = new List<ParsedField>();
 
             _techLogger.LogTechnical(new TechLogEntry
             {
@@ -1020,7 +1079,7 @@ namespace LayoutParserApi.Services.Implementations
                     status = "error";
                 }
 
-                parsedFields.Add(new ParsedField
+                var parsedField = new ParsedField
                 {
                     LineName = ObterLineNameSemHierarquia(lineConfig.Name),
                     FieldName = field.Name,
@@ -1032,7 +1091,10 @@ namespace LayoutParserApi.Services.Implementations
                     IsRequired = field.IsRequired,
                     Occurrence = occurrenceIndex + 1,
                     LineSequence = lineSequence
-                });
+                };
+
+                parsedFields.Add(parsedField);
+                occurrenceFields.Add(parsedField);
 
                 currentPosition = endPosition + 1;
 
@@ -1057,6 +1119,34 @@ namespace LayoutParserApi.Services.Implementations
                     Message = $"AVISO: Terminou em {currentPosition}, deveria terminar em {expectedLineLength}"
                 });
             }
+
+            // ✅ Sinal aditivo (contrato 2026-08-27): ≥2 campos desta ocorrência com o mesmo Start
+            // indica colapso posicional (ex.: LengthField mal resolvido cascateando pela linha,
+            // hipótese da LINHA006). Não corrige nem interrompe o parse — apenas sinaliza.
+            bool positionalAlignmentFailed = occurrenceFields.Count > 1
+                && occurrenceFields.Select(f => f.Start).Distinct().Count() < occurrenceFields.Count;
+
+            // ✅ Contrato aditivo 2026-08-27 (corrigido): "linha declarada vazia" deve olhar só os
+            // campos de DADO (occurrenceFields, já sem Sequencia/LINHA*), não a linha bruta —
+            // o prefixo estrutural nunca é whitespace, então IsNullOrWhiteSpace(linha inteira)
+            // era inalcançável para linhas identificadas. Sem campos de dado (só estrutural),
+            // volta pro fallback antigo sobre a linha bruta.
+            allDataFieldsBlank = occurrenceFields.Count > 0
+                ? occurrenceFields.All(f => string.IsNullOrWhiteSpace(f.Value))
+                : string.IsNullOrWhiteSpace(line);
+
+            if (positionalAlignmentFailed)
+            {
+                _techLogger.LogTechnical(new TechLogEntry
+                {
+                    RequestId = Guid.NewGuid().ToString(),
+                    Endpoint = "ParseTextWithSequenceValidation",
+                    Level = "Warn",
+                    Message = $"{lineConfig.Name} (Ocorrencia {occurrenceIndex + 1}): colapso posicional detectado — campos consecutivos com o mesmo Start"
+                });
+            }
+
+            return positionalAlignmentFailed;
         }
 
         private int CalculateLineOffset(LineElement lineConfig, string paddedLine, PositionalFormat format)
