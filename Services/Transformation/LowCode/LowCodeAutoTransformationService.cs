@@ -418,6 +418,11 @@ namespace LayoutParserApi.Services.Transformation.LowCode
         /// <summary>
         /// Fecha o índice de leitura da execução (disco + Redis opcional). Nunca lança: falha de
         /// índice é degradação de leitura, não pode derrubar uma transformação que já aconteceu.
+        ///
+        /// <para>✅ Fecha como <see cref="LowCodeTransformationIndexEntry.FailedStatus"/> (em vez de
+        /// "completed") quando existe ao menos um candidato e NENHUM teve sucesso — antes o front
+        /// via "completed" com todo mundo em erro e tinha que inferir "deu tudo errado" varrendo o
+        /// array de candidatos (spec §2, contrato aditivo 2026-08-27).</para>
         /// </summary>
         private async Task EscreverIndiceAsync(
             string sha,
@@ -437,7 +442,9 @@ namespace LayoutParserApi.Services.Transformation.LowCode
                 };
 
                 var bodies = new Dictionary<string, string?>();
-                foreach (var (c, outputFile) in candidatos)
+                var candidatosLista = candidatos as ICollection<(LowCodeCandidateResult candidato, string? outputFile)>
+                    ?? candidatos.ToList();
+                foreach (var (c, outputFile) in candidatosLista)
                 {
                     entrada.Candidates.Add(new LowCodeTransformationIndexCandidate
                     {
@@ -455,7 +462,9 @@ namespace LayoutParserApi.Services.Transformation.LowCode
                         bodies[c.MapperGuid] = c.OutputXml;
                 }
 
-                await _store.WriteCompletedAsync(sha, layoutGuid, entrada, bodies);
+                var falhouEstruturalmente = candidatosLista.Count > 0 && candidatosLista.All(x => !x.candidato.Success);
+
+                await _store.WriteCompletedAsync(sha, layoutGuid, entrada, bodies, falhouEstruturalmente);
             }
             catch (Exception ex)
             {
