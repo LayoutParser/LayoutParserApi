@@ -1,4 +1,6 @@
 using System.Linq;
+using System.Xml.Linq;
+using System.Xml.XPath;
 
 using LayoutParserApi.Services.Transformation.LowCode;
 
@@ -76,6 +78,21 @@ namespace LayoutParserApi.Tests.Transformation
 
             Assert.NotNull(namespaces);
             Assert.Equal("http://www.portalfiscal.inf.br/nfe", namespaces!["nfe"]);
+
+            // Gate QA (@lp-qa): não basta o XPath TER o formato esperado — ele precisa de fato
+            // RESOLVER, via um motor XPath real, para o nó correto dentro do XML de saída do
+            // próprio candidato (não só bater string). Usa XPathSelectElement (System.Xml.XPath)
+            // com o XmlNamespaceManager derivado do dicionário `namespaces` retornado — o mesmo
+            // par (XPath, namespaces) que o front-end receberia no contrato real.
+            var outputDoc = XDocument.Parse(OutputXmlSample);
+            var nsManager = new System.Xml.XmlNamespaceManager(new System.Xml.NameTable());
+            foreach (var kv in namespaces!)
+                nsManager.AddNamespace(kv.Key, kv.Value);
+
+            var resolvedNode = outputDoc.XPathSelectElement(target.XPath, nsManager);
+            Assert.NotNull(resolvedNode);
+            Assert.Equal("xNome", resolvedNode!.Name.LocalName);
+            Assert.Equal("EMPRESA TESTE", resolvedNode.Value);
         }
 
         [Fact]
@@ -97,6 +114,17 @@ namespace LayoutParserApi.Tests.Transformation
             // 2 nós <det>, então a contagem estrutural no XML de saída reflete isso.
             Assert.Equal(2, mappings[0].Targets[0].XmlOccurrence);
             Assert.Equal(2, mappings[1].Targets[0].XmlOccurrence);
+
+            // Gate QA: confirma resolução real via motor XPath — como o XPath não é indexado
+            // (não distingue qual dos 2 <det> é qual), XPathSelectElements deve encontrar AMBOS os
+            // nós <cProd> existentes no XML de saída, um por <det>.
+            var outputDoc = XDocument.Parse(OutputXmlSample);
+            var nsManager = new System.Xml.XmlNamespaceManager(new System.Xml.NameTable());
+            nsManager.AddNamespace("nfe", "http://www.portalfiscal.inf.br/nfe");
+            var resolvedNodes = outputDoc.XPathSelectElements(mappings[0].Targets[0].XPath, nsManager).ToList();
+            Assert.Equal(2, resolvedNodes.Count);
+            Assert.All(resolvedNodes, n => Assert.Equal("cProd", n.Name.LocalName));
+            Assert.Equal(new[] { "1", "2" }, resolvedNodes.Select(n => n.Value));
         }
 
         [Fact]
