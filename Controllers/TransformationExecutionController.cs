@@ -174,6 +174,15 @@ namespace LayoutParserApi.Controllers
         /// de infra), o fallback automático de IA é disparado em background (loop gerar→validar→
         /// corrigir via Ollama), sujeito a cooldown de 4h por LayoutGuid; ver
         /// <see cref="GetAiCandidateStatus"/> para acompanhar o resultado.
+        ///
+        /// <para>Issue LayoutParserReact #86 (diagnóstico estruturado): a resposta traz, de forma
+        /// ADITIVA (não quebra clientes existentes), <see cref="TransformationExecutionCandidatesResponse.PathwayDiagnostics"/>
+        /// — um <see cref="Models.Transformation.PathwayDiagnostic"/> por pathway avaliado (sysmiddle/tcl-xsl/
+        /// ai-fallback), com <c>status</c>/<c>code</c>/<c>message</c> — e
+        /// <see cref="TransformationExecutionCandidatesResponse.CorrelationId"/>, que permite ao suporte
+        /// cruzar a resposta HTTP com o log estruturado completo (não sanitizado) desta chamada. Toda
+        /// <c>Message</c> nesse array já passou por <see cref="Services.Transformation.LowCode.LowCodeErrorSanitizer"/>
+        /// — nunca contém caminho físico de disco ou detalhe interno cru.</para>
         /// </summary>
         // Issue #32: dispara processos externos (runner x86) e é operação privilegiada — era
         // restrita ao papel "admin". Issue #93: reabre para qualquer usuário autenticado (o
