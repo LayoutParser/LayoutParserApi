@@ -190,16 +190,18 @@ namespace LayoutParserApi.Tests.Controllers
         // TryEnqueueAiFallback é privado — mesma técnica de reflection do teste acima, pelo mesmo
         // motivo (exercitar o pathway sysmiddle real fugiria do escopo de um teste unitário).
 
-        private static void InvokeTryEnqueueAiFallback(
+        private static List<PathwayDiagnostic> InvokeTryEnqueueAiFallback(
             TransformationExecutionController controller, TransformationRequest request, LayoutRecord layoutRecord,
             bool isXmlInput, IEnumerable<FailureKind> failureKinds, List<string> warnings, string userId)
         {
             var bag = new System.Collections.Concurrent.ConcurrentBag<FailureKind>(failureKinds);
+            var diagnostics = new System.Collections.Concurrent.ConcurrentBag<PathwayDiagnostic>();
             var method = typeof(TransformationExecutionController)
                 .GetMethod("TryEnqueueAiFallback", BindingFlags.NonPublic | BindingFlags.Instance)
                 ?? throw new InvalidOperationException("Método TryEnqueueAiFallback não encontrado — o controller mudou de forma incompatível com este teste.");
 
-            method.Invoke(controller, new object?[] { request, layoutRecord, isXmlInput, bag, warnings, userId });
+            method.Invoke(controller, new object?[] { request, layoutRecord, isXmlInput, bag, warnings, diagnostics, userId });
+            return diagnostics.ToList();
         }
 
         [Fact]
@@ -219,13 +221,16 @@ namespace LayoutParserApi.Tests.Controllers
             var warnings = new List<string>();
 
             // Estado A: nenhum pathway falhou por infra — só "não aplicável"/"sem heurística".
-            InvokeTryEnqueueAiFallback(
+            var diagnostics = InvokeTryEnqueueAiFallback(
                 controller, request, layoutRecord, isXmlInput: false,
                 failureKinds: new[] { FailureKind.NotApplicable, FailureKind.NotApplicable },
                 warnings, "dave");
 
             Assert.Equal("dave", spy.LastEnqueueUserId);
             Assert.Contains(warnings, w => w.Contains("fallback automático de IA enfileirado", StringComparison.OrdinalIgnoreCase));
+            var diag = Assert.Single(diagnostics);
+            Assert.Equal("ai-fallback", diag.Pathway);
+            Assert.Equal("candidate_generated", diag.Status);
         }
 
         [Fact]
@@ -246,14 +251,16 @@ namespace LayoutParserApi.Tests.Controllers
 
             // Estado B: pelo menos um pathway falhou por infra — mapper existe, IA não deve tentar
             // recriar algo que já é a fonte de verdade (regressão explícita do caso já diagnosticado
-            // em diagnostico-mapper-nao-encontrado-producao-2026-08-15.md).
-            InvokeTryEnqueueAiFallback(
+            // em diagnostico-mapper-nao-encontrado-producao-2026-08-15.md). Nenhum diagnóstico próprio
+            // de "ai-fallback" é emitido aqui — o item failed do pathway que quebrou já é o sinal.
+            var diagnostics = InvokeTryEnqueueAiFallback(
                 controller, request, layoutRecord, isXmlInput: false,
                 failureKinds: new[] { FailureKind.ExecutionInfraError, FailureKind.NotApplicable },
                 warnings, "erin");
 
             Assert.Null(spy.LastEnqueueUserId);
             Assert.DoesNotContain(warnings, w => w.Contains("fallback automático de IA enfileirado", StringComparison.OrdinalIgnoreCase));
+            Assert.Empty(diagnostics);
         }
 
         // --- TAREFA 3 (regressão geral): os 3 endpoints deixaram de exigir o papel "admin" ---

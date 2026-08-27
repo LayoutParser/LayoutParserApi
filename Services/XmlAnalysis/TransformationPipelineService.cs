@@ -110,6 +110,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 if (string.IsNullOrEmpty(xslPath) || !File.Exists(xslPath))
                 {
                     result.Success = false;
+                    result.ErrorCode = "xsl_not_found";
                     result.Errors.Add($"Arquivo XSL não encontrado para transformação {sourceDocumentType} → {targetDocumentType}");
                     return result;
                 }
@@ -151,6 +152,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 var mapContent = await LoadMappingFileAsync(layoutName);
                 if (mapContent == null)
                 {
+                    result.ErrorCode = "map_not_found";
                     result.Errors.Add($"Arquivo MAP não encontrado para layout: {layoutName}");
                     return null;
                 }
@@ -309,6 +311,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 var xslPath = FindXslFile("Intermediate", targetDocumentType, layoutName);
                 if (string.IsNullOrEmpty(xslPath) || !File.Exists(xslPath))
                 {
+                    result.ErrorCode = "xsl_not_found";
                     result.Errors.Add($"Arquivo XSL não encontrado para transformação Intermediate → {targetDocumentType}");
                     return null;
                 }
