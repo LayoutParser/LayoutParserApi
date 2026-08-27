@@ -32,4 +32,10 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- XSD real da NF-e (mirror público nfephp-org/sped-nfe, PL_009_V4) usado pelos testes de
+         XmlLayoutStructureParser (issue #140) — estrutura de schema pública, sem dado de documento. -->
+    <None Include="StructuralResolution\fixtures\*.xsd" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>
