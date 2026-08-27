@@ -269,7 +269,8 @@ namespace LayoutParserApi.Services.Transformation.LowCode
                 PackageGuid = mapper.PackageGuid,
                 Success = true,
                 OutputXml = lowCodeXml,
-                OutputLength = (lowCodeXml ?? "").Length
+                OutputLength = (lowCodeXml ?? "").Length,
+                MapperDecryptedContent = mapper.DecryptedContent
             };
 
             // ✅ Índice de leitura ao lado dos artefatos (spec §2.3): é o que torna o store
@@ -319,7 +320,8 @@ namespace LayoutParserApi.Services.Transformation.LowCode
                         PackageGuid = mapper.PackageGuid,
                         Success = true,
                         OutputXml = xml,
-                        OutputLength = (xml ?? "").Length
+                        OutputLength = (xml ?? "").Length,
+                        MapperDecryptedContent = mapper.DecryptedContent
                     };
                 }
                 catch (Exception ex)
