@@ -368,6 +368,56 @@ Without a `groundTruthXml` (State A, "generate from scratch"), the convergence c
 
 **Sanitization rule:** every `message` in `pathwayDiagnostics` goes through [`LowCodeErrorSanitizer`](Services/Transformation/LowCode/LowCodeErrorSanitizer.cs) before reaching the HTTP payload — it **never** contains a physical disk path or raw internal detail. The full (unsanitized) detail only exists in the structured log, correlatable via `correlationId`.
 
+### Rastreabilidade TXT↔XML por linha/seção — Fase 0 (Issue LayoutParserApi #138 / LayoutParserReact #126) / Row/section TXT↔XML traceability — Phase 0
+
+**🇧🇷** `POST /api/transformationexecution/execute-candidates` ganhou dois campos **aditivos** por candidato (não quebram clientes existentes): [`sectionMappings`](Models/Transformation/SectionMapping.cs) e `xmlNamespaces`. Eles mapeiam **de qual linha/seção do TXT** veio **qual nó do XML** gerado — granularidade de **LINHA/SEÇÃO, não de CAMPO**. Rastreabilidade campo-a-campo (o que alimentaria highlight de campo no front) é escopo das issues #140/#141, ainda não implementado; `sectionMappings` sozinho **não desbloqueia** a PBI [LayoutParserReact #128](https://github.com/LayoutParser/LayoutParserReact/issues/128) (highlight de campo).
+
+Exemplo de payload (linha `ZRSDM_NFE_400_EMIT` mapeada estruturalmente para o nó de emitente do XML):
+
+```jsonc
+{
+  "candidateId": "...",
+  "pathway": "sysmiddle",
+  "transformedXml": "...",
+  "sectionMappings": [
+    {
+      "source": { "lineGuid": "a1b2c3d4-...", "lineName": "ZRSDM_NFE_400_EMIT", "lineOccurrence": 1 },
+      "targets": [
+        { "xPath": "/nfe:NFe/nfe:infNFe/nfe:emit", "nodeKind": "element", "xmlOccurrence": 1 }
+      ],
+      "confidence": "authoritative"
+    }
+  ],
+  "xmlNamespaces": { "nfe": "http://www.portalfiscal.inf.br/nfe" }
+}
+```
+
+**Semântica obrigatória de `sectionMappings`:**
+
+| Valor | Significado |
+|-------|-------------|
+| `null` | Este pathway ainda **não suporta** rastreabilidade. Hoje: `tcl-xsl` (retorna sempre `null`; `xmlNamespaces` também `null`). |
+| `[]` (lista vazia) | O pathway suporta, mas **não encontrou** mapeamentos estruturais resolvíveis para este candidato específico. |
+| lista preenchida | Mapeamentos disponíveis, cada um com XPath absoluto (`targets[].xPath`, com prefixo de namespace resolvido via `xmlNamespaces`) e nível de confiança (`confidence`). |
+
+- **Resolução sempre ESTRUTURAL**, nunca por comparação de valor textual do documento: hoje só o pathway `sysmiddle` resolve, e só emite `confidence: "authoritative"` (100% via estrutura declarada no mapper — atribuição `T.<path>` da DSL Sysmiddle) — **nunca inventa `best-effort`** por aproximação.
+- `xmlNamespaces` é reportado **uma vez por candidato** (não repetido por mapping) e é `null` sempre que `sectionMappings` também é `null`/vazio.
+- `source.lineOccurrence` distingue ocorrências quando a mesma linha alimenta múltiplos destinos estruturalmente distintos dentro do mesmo mapper — não é a ocorrência física real dentro do TXT recebido nesta chamada (fora do escopo da Fase 0).
+
+**🇺🇸** `POST /api/transformationexecution/execute-candidates` gained two **additive** per-candidate fields (safe for existing clients): [`sectionMappings`](Models/Transformation/SectionMapping.cs) and `xmlNamespaces`. They map **which TXT row/section** produced **which XML node** — **row/section granularity, not field-level**. Field-level traceability (what would power front-end field highlighting) is the scope of issues #140/#141, not implemented yet; `sectionMappings` alone **does not unblock** PBI [LayoutParserReact #128](https://github.com/LayoutParser/LayoutParserReact/issues/128) (field highlight).
+
+**Mandatory semantics of `sectionMappings`:**
+
+| Value | Meaning |
+|-------|---------|
+| `null` | This pathway does **not support** traceability yet. Today: `tcl-xsl` (always returns `null`; `xmlNamespaces` is also `null`). |
+| `[]` (empty list) | The pathway supports it, but **found no** resolvable structural mappings for this specific candidate. |
+| populated list | Mappings available, each with an absolute XPath (`targets[].xPath`, namespace-prefixed via `xmlNamespaces`) and a confidence level (`confidence`). |
+
+- Resolution is always **STRUCTURAL**, never by comparing the document's textual value: today only the `sysmiddle` pathway resolves, and only ever emits `confidence: "authoritative"` (100% via structure declared in the mapper — the Sysmiddle DSL's `T.<path>` assignment) — it **never fabricates `best-effort`** by approximation.
+- `xmlNamespaces` is reported **once per candidate** (not repeated per mapping) and is `null` whenever `sectionMappings` is also `null`/empty.
+- `source.lineOccurrence` distinguishes occurrences when the same row feeds multiple structurally distinct destinations within the same mapper — it is not the actual physical occurrence within the TXT received on this call (out of scope for Phase 0).
+
 ---
 
 ## 8. Configuração / Configuration

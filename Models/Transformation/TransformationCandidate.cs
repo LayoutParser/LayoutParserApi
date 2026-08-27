@@ -25,6 +25,28 @@ namespace LayoutParserApi.Models.Transformation
         /// (candidatos que falham não aparecem no array, ver tabela de decisão do contrato), mas mantido
         /// no schema porque o contrato o define explicitamente.</summary>
         public string? FailureReason { get; set; }
+
+        /// <summary>
+        /// Fase 0 do contrato de rastreabilidade TXT↔XML (issue #138/#126), granularidade de
+        /// LINHA/SEÇÃO — NÃO campo (isso é #140/#141). Semântica obrigatória:
+        /// <list type="bullet">
+        /// <item><c>null</c> = este pathway não suporta rastreabilidade ainda (hoje: <c>tcl-xsl</c>).</item>
+        /// <item><c>[]</c> (lista vazia) = pathway suporta, mas não encontrou mapeamentos estruturais
+        /// resolvíveis para este candidato específico.</item>
+        /// <item>lista preenchida = mapeamentos disponíveis, cada um com XPath absoluto e
+        /// confiança (ver <see cref="SectionMapping.Confidence"/>).</item>
+        /// </list>
+        /// Resolução sempre ESTRUTURAL (via GUID/definição declarada do mapper) — nunca por
+        /// comparação de valor textual do documento.
+        /// </summary>
+        public List<SectionMapping>? SectionMappings { get; set; }
+
+        /// <summary>
+        /// Namespaces XML usados nos XPaths de <see cref="SectionMappings"/> — reportado UMA VEZ por
+        /// candidato (não repetido por mapping). <c>null</c> quando <see cref="SectionMappings"/> também
+        /// é <c>null</c>/vazio.
+        /// </summary>
+        public Dictionary<string, string>? XmlNamespaces { get; set; }
     }
 
     public class TransformationExecutionCandidatesResponse
