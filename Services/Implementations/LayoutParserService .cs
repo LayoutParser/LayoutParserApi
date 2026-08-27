@@ -347,11 +347,19 @@ namespace LayoutParserApi.Services.Implementations
                     if (currentOccurrence < maxOccurrences)
                     {
                         // Chamar ParseLineFields com a próxima ocorrência (currentOccurrence já é o máximo atual, então usamos ele)
-                        bool positionalAlignmentFailed = ParseLineFields(currentLine, matchingLineConfig, parsedFields, currentOccurrence, formatoResolvido.Format, layoutLineLength);
+                        bool positionalAlignmentFailed = ParseLineFields(currentLine, matchingLineConfig, parsedFields, currentOccurrence, formatoResolvido.Format, layoutLineLength, out bool allDataFieldsBlank);
 
-                        // ✅ Contrato aditivo 2026-08-27: sinal de linha (IsDeclaredEmpty/PositionalAlignmentFailed).
-                        // Checagem de vazio usa o conteúdo bruto já truncado/paddado (currentLine) —
-                        // whitespace-only continua whitespace independente do padding aplicado.
+                        // ✅ Contrato aditivo 2026-08-27 (corrigido): IsDeclaredEmpty avalia só os
+                        // CAMPOS DE DADO da linha (excluindo Sequencia/LINHA*, que identificam a
+                        // linha e nunca são whitespace por construção — ver IsLineValidForConfig).
+                        // Antes: IsNullOrWhiteSpace(currentLine) sobre a linha bruta inteira, o que
+                        // tornava IsDeclaredEmpty=true inalcançável (o prefixo estrutural sempre
+                        // preenche a linha). allDataFieldsBlank vem de ParseLineFields, que já
+                        // filtra os campos estruturais antes de avaliar. Se a linha não tem nenhum
+                        // campo de dado (só estrutural), ParseLineFields cai no fallback antigo
+                        // sobre a linha bruta (ver allDataFieldsBlank).
+                        bool isDeclaredEmpty = allDataFieldsBlank;
+
                         lineInfos.Add(new LineInfo
                         {
                             LineName = ObterLineNameSemHierarquia(matchingLineConfig.Name),
@@ -360,7 +368,7 @@ namespace LayoutParserApi.Services.Implementations
                             StartPosition = 0,
                             Length = expectedLength,
                             Content = currentLine,
-                            IsDeclaredEmpty = string.IsNullOrWhiteSpace(currentLine),
+                            IsDeclaredEmpty = isDeclaredEmpty,
                             PositionalAlignmentFailed = positionalAlignmentFailed
                         });
                     }
@@ -955,7 +963,7 @@ namespace LayoutParserApi.Services.Implementations
         /// Puramente observacional: checagem pós-loop, não altera a lógica de cálculo de posição
         /// existente nem lança exceção (sinalizador aditivo, não correção da causa raiz).
         /// </summary>
-        private bool ParseLineFields(string line, LineElement lineConfig, List<ParsedField> parsedFields, int occurrenceIndex, PositionalFormat format, int expectedLineLength = LineLengthResolver.LegacyDefaultLineLength)
+        private bool ParseLineFields(string line, LineElement lineConfig, List<ParsedField> parsedFields, int occurrenceIndex, PositionalFormat format, int expectedLineLength, out bool allDataFieldsBlank)
         {
             _techLogger.LogTechnical(new TechLogEntry
             {
@@ -1117,6 +1125,15 @@ namespace LayoutParserApi.Services.Implementations
             // hipótese da LINHA006). Não corrige nem interrompe o parse — apenas sinaliza.
             bool positionalAlignmentFailed = occurrenceFields.Count > 1
                 && occurrenceFields.Select(f => f.Start).Distinct().Count() < occurrenceFields.Count;
+
+            // ✅ Contrato aditivo 2026-08-27 (corrigido): "linha declarada vazia" deve olhar só os
+            // campos de DADO (occurrenceFields, já sem Sequencia/LINHA*), não a linha bruta —
+            // o prefixo estrutural nunca é whitespace, então IsNullOrWhiteSpace(linha inteira)
+            // era inalcançável para linhas identificadas. Sem campos de dado (só estrutural),
+            // volta pro fallback antigo sobre a linha bruta.
+            allDataFieldsBlank = occurrenceFields.Count > 0
+                ? occurrenceFields.All(f => string.IsNullOrWhiteSpace(f.Value))
+                : string.IsNullOrWhiteSpace(line);
 
             if (positionalAlignmentFailed)
             {

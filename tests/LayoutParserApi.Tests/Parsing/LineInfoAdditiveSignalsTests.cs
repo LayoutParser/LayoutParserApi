@@ -35,18 +35,18 @@ namespace LayoutParserApi.Tests.Parsing
         }
 
         /// <summary>
-        /// ACHADO DE QA (não é regressão desta suíte, é o comportamento real do código em revisão):
-        /// <c>IsDeclaredEmpty</c> é calculado sobre <c>currentLine</c> — a linha FÍSICA INTEIRA
-        /// (Sequencia + InitialValue + campos), não sobre o(s) campo(s) de dado. Uma linha cujo
-        /// único campo de dado (<c>DADO</c>) é inteiramente espaços em branco ainda carrega
-        /// "000001" (Sequencia) + "000" (InitialValue) não-espaços no início — então
-        /// <c>string.IsNullOrWhiteSpace(currentLine)</c> nunca é true para esse caso, mesmo com o
-        /// dado 100% vazio. Documenta o comportamento atual; se a intenção do contrato (spec §1)
-        /// é sinalizar "campo de dado vazio", este teste é o motivo para o backend-dev revisitar
-        /// o cálculo (comparar o(s) campo(s) de dado, não a linha bruta com Sequencia/InitialValue).
+        /// CORRIGIDO (era ACHADO DE QA): <c>IsDeclaredEmpty</c> agora é calculado sobre o(s)
+        /// CAMPO(S) DE DADO da linha (via <c>allDataFieldsBlank</c>, populado em
+        /// <c>ParseLineFields</c>), não mais sobre <c>currentLine</c> — a linha física inteira
+        /// (Sequencia + InitialValue + campos). Antes, uma linha cujo único campo de dado
+        /// (<c>DADO</c>) era inteiramente espaços em branco ainda carregava "000001" (Sequencia) +
+        /// "000" (InitialValue) não-espaços no início, então <c>IsNullOrWhiteSpace(currentLine)</c>
+        /// nunca era true — tornando o sinal inalcançável (ver spec §1: a intenção é sinalizar
+        /// "campo de dado vazio", não "linha bruta vazia"). Este é o caso real que motivou o pedido
+        /// do usuário.
         /// </summary>
         [Fact]
-        public async Task ACHADO_dado_totalmente_em_branco_no_campo_nao_liga_IsDeclaredEmpty()
+        public async Task Dado_totalmente_em_branco_no_campo_liga_IsDeclaredEmpty()
         {
             var resultado = await ParseAsync(LayoutMqDe20Chars, "000001000" + new string(' ', 11));
 
@@ -55,7 +55,7 @@ namespace LayoutParserApi.Tests.Parsing
 
             string? dado = resultado.ParsedFields.SingleOrDefault(f => f.FieldName == "DADO")?.Value;
             Assert.True(string.IsNullOrWhiteSpace(dado)); // o dado real está vazio...
-            Assert.False(linha.IsDeclaredEmpty);           // ...mas o sinal aditivo não percebe.
+            Assert.True(linha.IsDeclaredEmpty);            // ...e agora o sinal aditivo percebe.
         }
 
         /// <summary>
