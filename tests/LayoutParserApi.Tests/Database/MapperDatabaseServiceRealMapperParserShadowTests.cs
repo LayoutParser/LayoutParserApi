@@ -114,6 +114,71 @@ namespace LayoutParserApi.Tests.Database
         }
 
         [Fact]
+        public void ExtractLayoutGuids_ComXslContentNoMapperVo_PopulaXslContentViaRealMapperParser()
+        {
+            // Issue #139, passo 2: MapperVO sintético com <XslContent> — antes migrado via
+            // MapperVo.FromXml (legado), agora via RealMapperParser (canônico). A extração de
+            // XslContent em ambos os parsers usa a MESMA leitura (root.Element("XslContent")
+            // com fallback para "Xsl"), então o resultado deve ser idêntico ao comportamento
+            // pré-migração.
+            const string mapperVoComXsl = """
+                <MapperVO>
+                    <MapperGuid>GUID_MAPPER_COM_XSL</MapperGuid>
+                    <Name>MapperComXsl</Name>
+                    <InputLayoutGuid>FLD_INPUT_XSL</InputLayoutGuid>
+                    <TargetLayoutGuid>TAG_TARGET_XSL</TargetLayoutGuid>
+                    <XslContent>&lt;xsl:stylesheet&gt;conteudo-sintetico&lt;/xsl:stylesheet&gt;</XslContent>
+                </MapperVO>
+                """;
+
+            var mapper = new Mapper
+            {
+                Id = 4,
+                Name = "MapperComXsl",
+                DecryptedContent = mapperVoComXsl
+            };
+
+            var servico = NovoServico();
+
+            InvocarExtractLayoutGuids(servico, mapper);
+
+            Assert.Equal("<xsl:stylesheet>conteudo-sintetico</xsl:stylesheet>", mapper.XslContent);
+            // GUIDs continuam vindo do caminho ad-hoc legado, inalterado pela migração do passo 2.
+            Assert.Equal("FLD_INPUT_XSL", mapper.InputLayoutGuid);
+            Assert.Equal("TAG_TARGET_XSL", mapper.TargetLayoutGuid);
+        }
+
+        [Fact]
+        public void ExtractLayoutGuids_ComXslJaPopuladoPorExtractXslFromDecryptedContent_MantemComportamentoDeNaoSobrescrever()
+        {
+            // ExtractXslFromDecryptedContent roda ANTES do bloco do RealMapperParser e já popula
+            // mapper.XslContent a partir do elemento <Xsl> (mesma leitura que o RealMapperParser
+            // faria como fallback de XslContent). O guard `string.IsNullOrEmpty(mapper.XslContent)`
+            // no bloco migrado garante que não há dupla escrita / sobrescrita redundante — cobre a
+            // guarda de precedência que já existia antes da migração do passo 2.
+            const string mapperVoComXsl = """
+                <MapperVO>
+                    <MapperGuid>GUID_MAPPER_XSL_PRECEDENCIA</MapperGuid>
+                    <Name>MapperComXslPrecedencia</Name>
+                    <Xsl>&lt;xsl:stylesheet&gt;valor-unico&lt;/xsl:stylesheet&gt;</Xsl>
+                </MapperVO>
+                """;
+
+            var mapper = new Mapper
+            {
+                Id = 5,
+                Name = "MapperComXslPrecedencia",
+                DecryptedContent = mapperVoComXsl
+            };
+
+            var servico = NovoServico();
+
+            InvocarExtractLayoutGuids(servico, mapper);
+
+            Assert.Equal("<xsl:stylesheet>valor-unico</xsl:stylesheet>", mapper.XslContent);
+        }
+
+        [Fact]
         public void ExtractLayoutGuids_ComContentVazio_NaoExecutaNadaEMantemMapperInalterado()
         {
             var mapper = new Mapper

@@ -468,20 +468,28 @@ namespace LayoutParserApi.Services.Database
                 }
 
                 // Fase de sombra (issue #139, passo 1): comparar, apenas para telemetria,
-                // os GUIDs que o RealMapperParser (parser B, candidato canônico) extrairia
-                // contra os já obtidos pela leitura ad-hoc acima (parser legado). NUNCA altera
-                // o valor retornado/usado por este método — só loga GUIDs e um booleano de
-                // divergência (sem conteúdo do documento, respeitando a restrição de dado real).
+                // os GUIDs que o RealMapperParser (parser canônico) extrairia contra os já
+                // obtidos pela leitura ad-hoc acima (que continua sendo o caminho de produção
+                // para InputLayoutGuid/TargetLayoutGuid — critério do passo 2 é não alterar esse
+                // comportamento). Mantida após o passo 2: mesmo sem mais nenhum uso do parser
+                // legado MapperVo.FromXml neste arquivo, a leitura ad-hoc de GUIDs acima é um
+                // caminho de parsing DIFERENTE do RealMapperParser, então a comparação continua
+                // tendo valor (não virou "comparar contra nada"). NUNCA altera o valor
+                // retornado/usado por este método — só loga GUIDs e um booleano de divergência.
                 CompareWithRealMapperParserShadow(mapper, doc);
 
                 // Extrair XSL do XML do mapper se existir
                 ExtractXslFromDecryptedContent(mapper, doc);
 
-                // Extrair estrutura completa do MapperVO para uso futuro
-                // Isso permite processar Rules e LinkMappings adequadamente
+                // Extrair estrutura completa do MapperVO para uso futuro (issue #139, passo 2:
+                // migrado do parser legado obsoleto LayoutParserApi.Models.Entities.MapperVo.FromXml
+                // para o parser canônico RealMapperParser/XslSynth.Model.MapperVo — mesmo parser
+                // já usado na fase de sombra acima e em XslGeneratorService.cs).
+                // Isso permite processar Rules e LinkMappings adequadamente.
                 try
                 {
-                    var parsedMapperVo = MapperVo.FromXml(doc);
+                    var realParser = new RealMapperParser();
+                    var parsedMapperVo = realParser.Parse(doc);
                     if (parsedMapperVo != null)
                     {
                         _logger.LogInformation("MapperVO parseado para mapeador {Name} (ID: {Id}): {RulesCount} Rules, {LinkMappingsCount} LinkMappings",mapper.Name, mapper.Id, parsedMapperVo.Rules.Count, parsedMapperVo.LinkMappings.Count);

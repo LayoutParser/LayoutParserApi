@@ -200,6 +200,41 @@ como já previsto — é trabalho das issues #140/#141.
   escopo.** Ver issues #140/#141; `MappingStructureService` já expõe a assinatura certa
   (§0, item 2) mas segue sem consumidor HTTP.
 
+### 7.1 Achado de QA e correção do uso residual (sessão seguinte, mesma branch)
+
+O `@lp-qa` identificou que o Passo 2 acima descreveu apenas o consumidor real em
+`XslGeneratorService.cs`, mas **um segundo uso real do parser legado sobrevivia** dentro do
+próprio `MapperDatabaseService.ExtractLayoutGuidsFromDecryptedContent` — não fazia parte da
+fase de sombra (log-only), era comportamento de produção: um bloco
+`try { var parsedMapperVo = MapperVo.FromXml(doc); ... }` (então em torno da linha 482-500)
+que populava `mapper.XslContent` quando o campo ainda estava vazio.
+
+**Correção aplicada:** esse bloco agora instancia `new RealMapperParser().Parse(doc)`
+(`XslSynth.Model.MapperVo`) em vez de `LayoutParserApi.Models.Entities.MapperVo.FromXml(doc)`.
+Confirmado por leitura de ambos os parsers que a extração de `XslContent` é **idêntica**
+em ambos — `root.Element("XslContent")?.Value`, com fallback para `root.Element("Xsl")?.Value`
+— então não há gap de comportamento a aproximar/inventar; a migração é 1:1.
+
+`ExtractLayoutGuidsFromDecryptedContent` **não tem mais nenhum uso de
+`Models.Entities.MapperVo.FromXml`** (`grep` confirma: nenhuma ocorrência de
+`MapperVo.FromXml` no arquivo, só um comentário histórico). A extração de
+`InputLayoutGuid`/`TargetLayoutGuid` continua vindo da leitura ad-hoc de elementos XML
+(inalterada — não é `MapperVo.FromXml`, nunca foi).
+
+**Decisão sobre `CompareWithRealMapperParserShadow` (Passo 1): mantida, não removida nem
+simplificada.** A hipótese inicial da tarefa era que, com os "dois usos de `MapperVo.FromXml`"
+desaparecendo, a sombra perderia sentido — mas essa hipótese não se sustentou: a sombra nunca
+comparou contra `MapperVo.FromXml`. Ela sempre comparou a leitura ad-hoc de GUIDs (que continua
+sendo o caminho de produção, por critério explícito de não regressão) contra o
+`RealMapperParser`. Como esse segundo caminho (ad-hoc) não mudou nesta correção, a telemetria
+da sombra continua tendo o mesmo valor de antes — permanece útil até acumular evidência real
+de convergência (mesma limitação do §5, fora do alcance de qualquer agente).
+
+Cobertura de teste: `tests/LayoutParserApi.Tests/Database/MapperDatabaseServiceRealMapperParserShadowTests.cs`
+ganhou 2 casos novos (`ComXslContentNoMapperVo_PopulaXslContentViaRealMapperParser` e
+`ComXslJaPopuladoPorExtractXslFromDecryptedContent_MantemComportamentoDeNaoSobrescrever`),
+cobrindo equivalência de `mapper.XslContent` antes/depois da migração com MapperVOs sintéticos.
+
 **Limitação confirmada nesta sessão:** nenhum dos parsers (A legado nem B/`RealMapperParser`,
 canônico) captura elementos `Elements` aninhados de `Rules`/`LinkMappings` — ambos usam
 `root.Descendants(...)`, que produz lista achatada independentemente de profundidade no XML
