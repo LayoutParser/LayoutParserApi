@@ -338,6 +338,9 @@ namespace LayoutParserApi.Controllers
             // pathway, é entrada fora de escopo (a IA não deveria disparar por causa disso).
             if (isXmlInput)
             {
+                _logger.LogInformation(
+                    "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code} layout={LayoutName} motivo=entrada XML fora do escopo do pathway sysmiddle",
+                    Services.Logging.CorrelationContext.CurrentId, "sysmiddle", "not_applicable", "not_applicable", request.LayoutName);
                 pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
                 {
                     Pathway = "sysmiddle",
@@ -356,6 +359,9 @@ namespace LayoutParserApi.Controllers
                     var msg = $"Layout {request.LayoutName} sem LayoutGuid válido no request ou no catálogo — pathway sysmiddle não aplicável";
                     warnings.Add(msg);
                     failureKinds.Add(FailureKind.NotApplicable);
+                    _logger.LogInformation(
+                        "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code} layout={LayoutName} fonte=request.LayoutGuid/catalogo (nenhum resolvível)",
+                        Services.Logging.CorrelationContext.CurrentId, "sysmiddle", "not_applicable", "not_applicable", request.LayoutName);
                     pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
                     {
                         Pathway = "sysmiddle",
@@ -385,6 +391,9 @@ namespace LayoutParserApi.Controllers
                     // Estado A (§2 do design-fallback-ia-automatico): não existe mapper cadastrado
                     // para este layout — gap real de cobertura, elegível ao fallback de IA.
                     failureKinds.Add(FailureKind.NotApplicable);
+                    _logger.LogInformation(
+                        "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code} layout={LayoutName} layoutGuid={LayoutGuid} fonte=catalogo (consulta a mapeadores low-code sem resultado)",
+                        Services.Logging.CorrelationContext.CurrentId, "sysmiddle", "not_applicable", "no_mapper", request.LayoutName, resolvedLayoutGuid);
                     pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
                     {
                         Pathway = "sysmiddle",
@@ -424,6 +433,9 @@ namespace LayoutParserApi.Controllers
 
                 if (result.Count > 0)
                 {
+                    _logger.LogInformation(
+                        "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} layout={LayoutName} layoutGuid={LayoutGuid} candidatos={CandidateCount} fonte=mapeadores low-code do catalogo",
+                        Services.Logging.CorrelationContext.CurrentId, "sysmiddle", "candidate_generated", request.LayoutName, resolvedLayoutGuid, result.Count);
                     pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
                     {
                         Pathway = "sysmiddle",
@@ -436,6 +448,9 @@ namespace LayoutParserApi.Controllers
                 {
                     // autoResult.Applicable == true (mapper existe) mas TODOS os candidatos
                     // falharam na execução — infra/runner, não gap de cobertura (§4.3 "runner_unavailable").
+                    _logger.LogWarning(
+                        "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code} layout={LayoutName} layoutGuid={LayoutGuid} fonte=execução do runner (mapper existe, execução falhou)",
+                        Services.Logging.CorrelationContext.CurrentId, "sysmiddle", "failed", "runner_unavailable", request.LayoutName, resolvedLayoutGuid);
                     pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
                     {
                         Pathway = "sysmiddle",
@@ -447,7 +462,9 @@ namespace LayoutParserApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Falha estrutural no pathway sysmiddle ao gerar candidatos para layout {LayoutName}", request.LayoutName);
+                _logger.LogWarning(ex,
+                    "Falha estrutural no pathway sysmiddle ao gerar candidatos para layout {LayoutName}. PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code}",
+                    request.LayoutName, Services.Logging.CorrelationContext.CurrentId, "sysmiddle", "failed", "execution_error");
                 // Saneado: exceção de I/O deste pathway carrega caminho de disco do servidor e este
                 // warning sai no payload 200 (mesmo defeito do §3.1 da spec, outro ponto de saída).
                 var sanitizedEx = LowCodeErrorSanitizer.ForWire(ex);
@@ -538,6 +555,9 @@ namespace LayoutParserApi.Controllers
                 {
                     var msg = $"Layout {request.LayoutName} sem LayoutGuid válido — fallback de IA não aplicável";
                     warnings.Add(msg);
+                    _logger.LogInformation(
+                        "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code} layout={LayoutName} fonte=request.LayoutGuid/catalogo (nenhum resolvível)",
+                        Services.Logging.CorrelationContext.CurrentId, "ai-fallback", "not_applicable", "not_applicable", request.LayoutName);
                     pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
                     {
                         Pathway = "ai-fallback",
@@ -552,6 +572,9 @@ namespace LayoutParserApi.Controllers
                 {
                     var msg = $"Pathway IA fallback suprimido para este layout até {retryAt:HH:mm} (já tentado sem sucesso)";
                     warnings.Add(msg);
+                    _logger.LogInformation(
+                        "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code} layout={LayoutName} layoutGuid={LayoutGuid} fonte=IAiFallbackSuppressionGate (cooldown ativo até {RetryAt})",
+                        Services.Logging.CorrelationContext.CurrentId, "ai-fallback", "not_applicable", "not_applicable", request.LayoutName, resolvedLayoutGuid, retryAt);
                     pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
                     {
                         Pathway = "ai-fallback",
@@ -567,6 +590,9 @@ namespace LayoutParserApi.Controllers
                 {
                     var msg = $"Layout {request.LayoutName}: não foi possível compor o ticket do fallback de IA";
                     warnings.Add(msg);
+                    _logger.LogWarning(
+                        "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code} layout={LayoutName} layoutGuid={LayoutGuid} fonte=LowCodeTransformationStore.BuildTicketFromContent (retornou null)",
+                        Services.Logging.CorrelationContext.CurrentId, "ai-fallback", "failed", "configuration_error", request.LayoutName, resolvedLayoutGuid);
                     pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
                     {
                         Pathway = "ai-fallback",
@@ -596,6 +622,9 @@ namespace LayoutParserApi.Controllers
                 // (ticket assíncrono) — não um XML pronto, mas o front tem o que fazer com ele
                 // (§4.2 do desenho: "inclui o ticket assíncrono do fallback de IA, que 'gera' no
                 // sentido de estar em processamento").
+                _logger.LogInformation(
+                    "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} layout={LayoutName} layoutGuid={LayoutGuid} ticket={Ticket} fonte=IAiTransformationCandidateService.EnqueueAsync (sem gabarito)",
+                    Services.Logging.CorrelationContext.CurrentId, "ai-fallback", "candidate_generated", request.LayoutName, resolvedLayoutGuid, ticket);
                 pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
                 {
                     Pathway = "ai-fallback",
@@ -606,7 +635,9 @@ namespace LayoutParserApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Falha ao disparar o fallback automático de IA para layout {LayoutName}", request.LayoutName);
+                _logger.LogWarning(ex,
+                    "Falha ao disparar o fallback automático de IA para layout {LayoutName}. PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code}",
+                    request.LayoutName, Services.Logging.CorrelationContext.CurrentId, "ai-fallback", "failed", "execution_error");
                 pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
                 {
                     Pathway = "ai-fallback",
@@ -685,6 +716,9 @@ namespace LayoutParserApi.Controllers
                         "xsl_not_found" => "xsl_not_found",
                         _ => "map_not_found" // fallback conservador: maioria dos casos "não aplicável" hoje é ausência de MAP
                     };
+                    _logger.LogWarning(
+                        "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code} layout={LayoutName} fonte=TransformationPipelineService.ErrorCode={ErrorCode}",
+                        Services.Logging.CorrelationContext.CurrentId, "tcl-xsl", "failed", code, request.LayoutName, pipelineResult.ErrorCode);
                     pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
                     {
                         Pathway = "tcl-xsl",
@@ -726,6 +760,10 @@ namespace LayoutParserApi.Controllers
                     Validation = validation
                 });
 
+                _logger.LogInformation(
+                    "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} layout={LayoutName} tclPath={TclPath} xslPath={XslPath} fonte=TransformationPipelineService",
+                    Services.Logging.CorrelationContext.CurrentId, "tcl-xsl", "candidate_generated", request.LayoutName,
+                    System.IO.Path.GetFileName(pipelineResult.TclPath), System.IO.Path.GetFileName(pipelineResult.XslPath));
                 pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
                 {
                     Pathway = "tcl-xsl",
@@ -736,7 +774,9 @@ namespace LayoutParserApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Falha estrutural no pathway tcl-xsl ao gerar candidato para layout {LayoutName}", request.LayoutName);
+                _logger.LogWarning(ex,
+                    "Falha estrutural no pathway tcl-xsl ao gerar candidato para layout {LayoutName}. PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code}",
+                    request.LayoutName, Services.Logging.CorrelationContext.CurrentId, "tcl-xsl", "failed", "execution_error");
                 // Saneado (§5 do diagnóstico-issue-86): mesmo padrão do sysmiddle (linha ~385).
                 var sanitizedTclXslEx = LowCodeErrorSanitizer.ForWire(ex);
                 warnings.Add($"Pathway tcl-xsl falhou: {sanitizedTclXslEx}");
