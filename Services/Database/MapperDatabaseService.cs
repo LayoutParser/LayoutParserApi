@@ -6,6 +6,8 @@ using Microsoft.Data.SqlClient;
 using System.Data;
 using System.Xml.Linq;
 
+using XslSynth.Core;
+
 namespace LayoutParserApi.Services.Database
 {
     /// <summary>
@@ -465,14 +467,29 @@ namespace LayoutParserApi.Services.Database
                         mapper.TargetLayoutGuid = mapper.TargetLayoutGuidFromXml;
                 }
 
+                // Fase de sombra (issue #139, passo 1): comparar, apenas para telemetria,
+                // os GUIDs que o RealMapperParser (parser canônico) extrairia contra os já
+                // obtidos pela leitura ad-hoc acima (que continua sendo o caminho de produção
+                // para InputLayoutGuid/TargetLayoutGuid — critério do passo 2 é não alterar esse
+                // comportamento). Mantida após o passo 2: mesmo sem mais nenhum uso do parser
+                // legado MapperVo.FromXml neste arquivo, a leitura ad-hoc de GUIDs acima é um
+                // caminho de parsing DIFERENTE do RealMapperParser, então a comparação continua
+                // tendo valor (não virou "comparar contra nada"). NUNCA altera o valor
+                // retornado/usado por este método — só loga GUIDs e um booleano de divergência.
+                CompareWithRealMapperParserShadow(mapper, doc);
+
                 // Extrair XSL do XML do mapper se existir
                 ExtractXslFromDecryptedContent(mapper, doc);
 
-                // Extrair estrutura completa do MapperVO para uso futuro
-                // Isso permite processar Rules e LinkMappings adequadamente
+                // Extrair estrutura completa do MapperVO para uso futuro (issue #139, passo 2:
+                // migrado do parser legado obsoleto LayoutParserApi.Models.Entities.MapperVo.FromXml
+                // para o parser canônico RealMapperParser/XslSynth.Model.MapperVo — mesmo parser
+                // já usado na fase de sombra acima e em XslGeneratorService.cs).
+                // Isso permite processar Rules e LinkMappings adequadamente.
                 try
                 {
-                    var parsedMapperVo = MapperVo.FromXml(doc);
+                    var realParser = new RealMapperParser();
+                    var parsedMapperVo = realParser.Parse(doc);
                     if (parsedMapperVo != null)
                     {
                         _logger.LogInformation("MapperVO parseado para mapeador {Name} (ID: {Id}): {RulesCount} Rules, {LinkMappingsCount} LinkMappings",mapper.Name, mapper.Id, parsedMapperVo.Rules.Count, parsedMapperVo.LinkMappings.Count);
@@ -493,6 +510,44 @@ namespace LayoutParserApi.Services.Database
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Erro ao extrair LayoutGuids do XML descriptografado do mapeador {Id}", mapper.Id);
+            }
+        }
+
+        /// <summary>
+        /// Fase de sombra (issue #139, passo 1 do plano de migração descrito em
+        /// docs/architecture/inventario-parsers-mapperVo-issue-139.md): roda o
+        /// <see cref="RealMapperParser"/> (parser B, candidato a canônico) sobre o mesmo
+        /// XDocument já parseado pela leitura ad-hoc legada e loga se os
+        /// InputLayoutGuid/TargetLayoutGuid extraídos divergem. Log-only, sem side effect —
+        /// nunca deve alterar o comportamento de <see cref="ExtractLayoutGuidsFromDecryptedContent"/>.
+        /// Nenhum conteúdo do documento (DSL, XSL, nomes de campo) é logado, só GUIDs/booleanos.
+        /// </summary>
+        private void CompareWithRealMapperParserShadow(Mapper mapper, XDocument doc)
+        {
+            try
+            {
+                var realParser = new RealMapperParser();
+                var realMapperVo = realParser.Parse(doc);
+
+                var legacyInputGuid = mapper.InputLayoutGuidFromXml;
+                var legacyTargetGuid = mapper.TargetLayoutGuidFromXml;
+                var realInputGuid = realMapperVo.InputLayoutGuid;
+                var realTargetGuid = realMapperVo.TargetLayoutGuid;
+
+                var diverged =
+                    !string.Equals(legacyInputGuid, realInputGuid, StringComparison.Ordinal) ||
+                    !string.Equals(legacyTargetGuid, realTargetGuid, StringComparison.Ordinal);
+
+                var logLevel = diverged ? LogLevel.Warning : LogLevel.Debug;
+                _logger.Log(
+                    logLevel,
+                    "MapperVO parser comparison (sombra #139) mapeador {Id}: legadoInput={LegacyInputGuid} realInput={RealInputGuid} legadoTarget={LegacyTargetGuid} realTarget={RealTargetGuid} diverged={Diverged}",
+                    mapper.Id, legacyInputGuid, realInputGuid, legacyTargetGuid, realTargetGuid, diverged);
+            }
+            catch (Exception ex)
+            {
+                // Log-only: falha do RealMapperParser NUNCA pode afetar o fluxo legado.
+                _logger.LogWarning(ex, "RealMapperParser falhou ao processar MapperVO do mapeador {Id} — comparação log-only ignorada.", mapper.Id);
             }
         }
 
