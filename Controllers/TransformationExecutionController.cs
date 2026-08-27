@@ -410,11 +410,20 @@ namespace LayoutParserApi.Controllers
                 {
                     if (c.Success && !string.IsNullOrEmpty(c.OutputXml))
                     {
+                        // Issue #138 (Fase 0): resolução estrutural de SectionMappings a partir do
+                        // MapeadorVO já decifrado deste candidato — nunca lança (degrada para [] com
+                        // xmlNamespaces=null; ver SysmiddleSectionMappingResolver).
+                        var (sectionMappings, xmlNamespaces) = SysmiddleSectionMappingResolver.Resolve(
+                            c.MapperDecryptedContent, c.OutputXml,
+                            msg => _logger.LogDebug("{Message} (mapper={MapperGuid})", msg, c.MapperGuid));
+
                         result.Add(new TransformationCandidate
                         {
                             CandidateId = $"sysmiddle-{c.MapperGuid}",
                             Pathway = "sysmiddle",
-                            TransformedXml = c.OutputXml
+                            TransformedXml = c.OutputXml,
+                            SectionMappings = sectionMappings,
+                            XmlNamespaces = xmlNamespaces
                         });
                     }
                     else
@@ -757,7 +766,17 @@ namespace LayoutParserApi.Controllers
                     Pathway = "tcl-xsl",
                     TransformedXml = pipelineResult.TransformedXml,
                     SegmentMappings = pipelineResult.SegmentMappings?.ToDictionary(kv => kv.Key.ToString(), kv => kv.Value),
-                    Validation = validation
+                    Validation = validation,
+                    // Issue #138 (Fase 0): pathway tcl-xsl NÃO suporta rastreabilidade de linha/seção
+                    // ainda — SectionMappings=null por definição (semântica obrigatória do contrato).
+                    // O SegmentMappings existente acima é um artefato PRÉVIO e DIFERENTE: só existe
+                    // para entrada MQSeries, é indexado por número de linha (não GUID/estrutura) e
+                    // carrega um XmlElementPath fixo ("NFe/infNFe") hardcoded em MqSeriesToXmlTransformer
+                    // — não é XPath resolvido estruturalmente, não atende ao contrato de #138. Virar
+                    // SectionMappings real para tcl-xsl exigiria expor a mesma resolução estrutural que
+                    // o pathway sysmiddle já tem (GUID→XPath via RealMapperParser) dentro do
+                    // TransformationPipelineService — fora do escopo desta fase.
+                    SectionMappings = null
                 });
 
                 _logger.LogInformation(

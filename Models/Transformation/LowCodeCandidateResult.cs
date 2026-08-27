@@ -44,5 +44,14 @@ namespace LayoutParserApi.Models.Transformation
         /// este campo sai no payload 200 do parse, então não pode carregar caminho de disco do servidor.
         /// </summary>
         public string? ErrorMessage { get; set; }
+
+        /// <summary>
+        /// MapeadorVO decifrado (XML) usado nesta transformação — issue #138 (Fase 0 de rastreabilidade
+        /// TXT↔XML). Existe SÓ para o controller resolver <c>SectionMappings</c> depois do runner
+        /// (<see cref="LayoutParserApi.Services.Transformation.LowCode.SysmiddleSectionMappingResolver"/>);
+        /// deliberadamente NÃO entra nas projeções persistidas em disco (meta.json/índice) — nenhum dos
+        /// pontos que escrevem em <c>_storePath</c> lê este campo, todos usam objetos anônimos explícitos.
+        /// </summary>
+        public string? MapperDecryptedContent { get; set; }
     }
 }
