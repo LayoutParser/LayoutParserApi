@@ -137,6 +137,44 @@ LayoutParserDecrypt.exe  (descriptografia Sysmiddle)
 
 **🇺🇸** Supported document types: **XML**, **MQSeries**, **IDOC** and positional **TXT**. Detection combines content + extension + selected layout (content alone can misfire on 601-char MQSeries lines — hence the overrides).
 
+### Sinais aditivos de linha (2026-08-27) / Additive line signals (2026-08-27)
+
+**🇧🇷** Design completo: [`docs/architecture/contrato-linha-vazia-progresso-e-degradacao-posicional-2026-08-27.md`](docs/architecture/contrato-linha-vazia-progresso-e-degradacao-posicional-2026-08-27.md). Dois booleanos novos em [`LineInfo`](Models/Entities/LineInfo.cs), ortogonais ao `Status` por campo:
+
+| Campo | Significado | Uso sugerido no front |
+|-------|-------------|------------------------|
+| `IsDeclaredEmpty` | A linha foi identificada no layout (`matchingLineConfig != null`), mas o conteúdo bruto é vazio/whitespace. Diferencia "linha declarada e vazia" de "erro de parsing". | Renderizar como estado neutro, não como erro. |
+| `PositionalAlignmentFailed` | ≥2 campos consecutivos da mesma ocorrência colapsaram na mesma posição inicial (sintoma de degradação posicional, ex.: bug reportado na LINHA006 de um layout `.mqseries`). É observacional — não é erro fatal, nem aponta o mapeador de origem (agnóstico a `sysmiddle`/`tcl`, por decisão de produto). | Exibir aviso visual de "atenção" na linha. |
+
+```json
+{
+  "lineName": "LINHA006",
+  "occurrence": 1,
+  "isDeclaredEmpty": false,
+  "positionalAlignmentFailed": true
+}
+```
+
+> ⚠️ **Gap conhecido:** `ParsingResult.LineInfos` já é preenchido internamente pelo parser com
+> esses dois sinais, mas o payload de `POST /api/parse/upload` (`ParseController.Upload`) **ainda
+> não os serializa** — hoje esse objeto não é incluído na resposta HTTP. Consumidores que hoje
+> inspecionam o payload podem notar isso caso o campo passe a existir em versão futura; até lá,
+> os dois sinais **não estão acessíveis pelo front** via este endpoint. Fechar esse gap é trabalho
+> pendente de `@lp-backend-dev`.
+
+**🇺🇸** Full design at the file above. Two new booleans on [`LineInfo`](Models/Entities/LineInfo.cs), orthogonal to per-field `Status`:
+
+| Field | Meaning | Suggested front-end use |
+|-------|---------|--------------------------|
+| `IsDeclaredEmpty` | The line was identified in the layout (`matchingLineConfig != null`), but its raw content is empty/whitespace. Distinguishes "declared and empty" from a parsing error. | Render as a neutral state, not an error. |
+| `PositionalAlignmentFailed` | ≥2 consecutive fields in the same line occurrence collapsed onto the same start position (positional-degradation symptom, e.g. the LINHA006 bug on an `.mqseries` layout). Observational — not fatal, and intentionally agnostic to the source mapper (`sysmiddle` vs. `tcl`). | Show a visual warning on the line. |
+
+> ⚠️ **Known gap:** `ParsingResult.LineInfos` is already populated internally by the parser with
+> both signals, but the `POST /api/parse/upload` response (`ParseController.Upload`) does **not**
+> serialize it yet — the object isn't included in the HTTP payload today. Both signals are
+> **not reachable by the front-end** through this endpoint until that gap is closed
+> (pending `@lp-backend-dev` work).
+
 ---
 
 ## 5. A visão de IA / The AI vision
@@ -264,6 +302,28 @@ Without a `groundTruthXml` (State A, "generate from scratch"), the convergence c
 | **Métricas de IA / AI metrics** | `AiMetrics` | `GET /api/ai-metrics/generations` e `GET /api/ai-metrics/summary` — expõem em JSON tipado as gerações do job `ai/XslSynth --mode=metrics-batch` (rodando via cron em produção), sem exigir parsing de log no cliente. Contrato completo em [`docs/architecture/handoff-frontend-gap-3-painel-ia-metrics.md`](docs/architecture/handoff-frontend-gap-3-painel-ia-metrics.md). |
 
 > Detalhe completo de rotas em runtime via Swagger. / Full route detail at runtime via Swagger.
+
+### Fases de status da transformação low-code (2026-08-27) / Low-code transformation status phases (2026-08-27)
+
+**🇧🇷** `POST /api/parse/upload` (campo `transformationsStatus`) e `GET /api/parse/transformations/{ticket}` (campo `status`, [`LowCodeTransformationIndexEntry`](Models/Transformation/LowCodeTransformationIndex.cs)) compartilham o mesmo vocabulário de fases. Design completo: [`docs/architecture/contrato-linha-vazia-progresso-e-degradacao-posicional-2026-08-27.md`](docs/architecture/contrato-linha-vazia-progresso-e-degradacao-posicional-2026-08-27.md) §2.
+
+| Fase | Emitida pelo back-end? | Significado |
+|------|------------------------|-------------|
+| `uploaded`, `layout_selected`, `parsing` | **Não** — client-side only | O ticket só existe a partir do momento em que o documento **já foi parseado** (é derivado do `RawText` pós-parse); antes disso não há entrada de índice para consultar. O front já sabe que fez upload/selecionou o layout, não precisa perguntar à API por essas fases. |
+| `processing` | Sim | Transformação em andamento (alias interno `TransformingStatus`, mesmo valor de fio). |
+| `completed` | Sim | Ao menos um candidato de transformação teve sucesso. |
+| `failed` | Sim — **novo neste contrato** | Existem candidatos, mas **nenhum** teve sucesso — falha estrutural do conjunto. Antes disso, esse caso vinha como `completed` com todos os candidatos `success=false`, obrigando o front a varrer o array para inferir o fracasso. |
+| `not_applicable` / `error` | Sim (só na resposta síncrona de `/api/parse/upload`) | `not_applicable`: pathway não elegível (sem mapper, tipo não posicional, entrada vazia). `error`: falha estrutural ao processar transformações (ex.: banco fora do ar) — não derruba o parse principal. |
+
+**🇺🇸** Both endpoints above share the same phase vocabulary.
+
+| Phase | Emitted by the back-end? | Meaning |
+|-------|---------------------------|---------|
+| `uploaded`, `layout_selected`, `parsing` | **No** — client-side only | The ticket only exists once the document has **already been parsed** (it's derived from the post-parse `RawText`); before that there's no index entry to query. The front already knows it uploaded/selected a layout — no need to ask the API for these phases. |
+| `processing` | Yes | Transformation in progress (internal alias `TransformingStatus`, same wire value). |
+| `completed` | Yes | At least one transformation candidate succeeded. |
+| `failed` | Yes — **new in this contract** | Candidates exist, but **none** succeeded — structural failure of the set. Previously this came back as `completed` with every candidate `success=false`, forcing the front to scan the array to infer failure. |
+| `not_applicable` / `error` | Yes (only in `/api/parse/upload`'s synchronous response) | `not_applicable`: pathway not eligible (no mapper, non-positional type, empty input). `error`: structural failure processing transformations (e.g. database down) — does not fail the main parse. |
 
 ---
 

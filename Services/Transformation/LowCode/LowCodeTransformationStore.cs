@@ -155,15 +155,18 @@ namespace LayoutParserApi.Services.Transformation.LowCode
         // ─────────────────────────────── escrita ───────────────────────────────
 
         /// <summary>
-        /// Marca a execução como em andamento. Chamado só DEPOIS de haver mapper candidato — sem
-        /// mapper não existe entrada (o ticket responde 404 e o parse já diz <c>not_applicable</c>).
-        /// É o que permite ao front distinguir "ainda rodando" de "nunca existiu".
+        /// Marca a execução como em andamento (fase <c>"transforming"</c> — ver
+        /// <see cref="LowCodeTransformationIndexEntry.TransformingStatus"/>, mesmo valor de fio de
+        /// <see cref="LowCodeTransformationIndexEntry.ProcessingStatus"/>). Chamado só DEPOIS de
+        /// haver mapper candidato — sem mapper não existe entrada (o ticket responde 404 e o parse
+        /// já diz <c>not_applicable</c>). É o que permite ao front distinguir "ainda rodando" de
+        /// "nunca existiu".
         /// </summary>
         public async Task WriteProcessingAsync(string sha256, string layoutGuid)
         {
             var entrada = new LowCodeTransformationIndexEntry
             {
-                Status = LowCodeTransformationIndexEntry.ProcessingStatus,
+                Status = LowCodeTransformationIndexEntry.TransformingStatus,
                 CreatedAtUtc = DateTime.UtcNow,
                 Sha256 = sha256,
                 LayoutGuid = layoutGuid
@@ -177,13 +180,21 @@ namespace LayoutParserApi.Services.Transformation.LowCode
         /// <paramref name="bodies"/> mapeia MapperGuid → XML e alimenta o split do §2.4
         /// (manifesto leve numa chave, cada XML na sua) — no disco os XMLs já estão nos artefatos.
         /// </summary>
+        /// <param name="falhouEstruturalmente">
+        /// True quando NENHUM candidato do conjunto teve sucesso — fecha o índice como
+        /// <see cref="LowCodeTransformationIndexEntry.FailedStatus"/> em vez de "completed" (spec
+        /// §2, contrato aditivo 2026-08-27). Default false preserva o comportamento de sempre.
+        /// </param>
         public async Task WriteCompletedAsync(
             string sha256,
             string layoutGuid,
             LowCodeTransformationIndexEntry entrada,
-            IReadOnlyDictionary<string, string?>? bodies = null)
+            IReadOnlyDictionary<string, string?>? bodies = null,
+            bool falhouEstruturalmente = false)
         {
-            entrada.Status = LowCodeTransformationIndexEntry.CompletedStatus;
+            entrada.Status = falhouEstruturalmente
+                ? LowCodeTransformationIndexEntry.FailedStatus
+                : LowCodeTransformationIndexEntry.CompletedStatus;
             entrada.CreatedAtUtc = DateTime.UtcNow;
             entrada.Sha256 = sha256;
             entrada.LayoutGuid = layoutGuid;
