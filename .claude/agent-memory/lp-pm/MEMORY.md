@@ -10,3 +10,4 @@
 - [Bug/gate issues 2026-08-20](project_bug-gate-issues-2026-08-20.md) — #171-#174, 4 TODOs de @lp-architect confirmados no código (NFe hardcoded, PDF, validação, métricas).
 - [Board-sync 2026-08-18](project_board-sync-2026-08-18.md) — 7 issues fechadas com evidência (#122,#33,#111,#113,#92,#93,#51); `Closes #N` na PR não garante fechamento automático, conferir sempre.
 - [Contrato linha vazia/progresso/degradação 2026-08-27](project_contrato-linha-vazia-progresso-degradacao-2026-08-27.md) — issues #194-#197; InformacoesParaEDI já resolvido em PR #191, não virou issue nova.
+- [Board-sync 2026-08-28](project_board-sync-2026-08-28.md) — 5 issues fechadas (#140,#138,#139,#141,#86); closing keyword nunca atravessa repositório, PR cross-repo exige fechamento manual sempre.

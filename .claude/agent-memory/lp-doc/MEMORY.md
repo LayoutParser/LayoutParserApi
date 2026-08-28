@@ -2,3 +2,4 @@
 - [Concorrência de git na working tree principal](concorrencia-git-worktree-isolado.md) — se branch/lock instáveis, isolar em `git worktree` temporário pra commitar com segurança
 - [README: sectionMappings/xmlNamespaces (issue #138/#126)](sectionmappings-readme-doc-issue138.md) — onde/como retomar ao documentar #140/#141 (campo-a-campo)
 - [fieldMappings em execute-candidates documentado (#141)](fieldmappings-execute-candidates-141-doc.md) — implementação estava em worktree separado (LayoutParserApi-wt-141); Swagger não expõe XML docs (sem IncludeXmlComments)
+- [README reconciliado: §5/Roadmap vs §7 sobre #138-141](readme-reconciliacao-fieldmappings-sectionmappings-138-141.md) — working tree local ficava atrás de origin/develop; sempre git fetch antes de assumir "não implementado"; commit dc4ef79
