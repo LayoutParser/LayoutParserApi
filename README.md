@@ -368,6 +368,93 @@ Without a `groundTruthXml` (State A, "generate from scratch"), the convergence c
 
 **Sanitization rule:** every `message` in `pathwayDiagnostics` goes through [`LowCodeErrorSanitizer`](Services/Transformation/LowCode/LowCodeErrorSanitizer.cs) before reaching the HTTP payload — it **never** contains a physical disk path or raw internal detail. The full (unsanitized) detail only exists in the structured log, correlatable via `correlationId`.
 
+### `fieldMappings` em `execute-candidates` (Issue #141) / `fieldMappings` in `execute-candidates` (Issue #141)
+
+> ⚠️ **Ressalva ativa — leia antes de confiar no campo / Active caveat — read before trusting this field**
+>
+> **🇧🇷** A validação comportamental (rodar 20 execuções reais contra o `LowCodeRunner` e comparar o `fieldMappings` resolvido com o comportamento real do runner) **não foi feita neste ambiente** — o `LowCodeRunner.exe` é um processo Windows-only (x86, interop nativo) que não roda em WSL/Linux. O que existe hoje é **só validação estrutural**, com fixtures sintéticas (20 cenários cobrindo `direct`/`transformed`/`concatenated`/`static`/N:1/1:N/repetição). O dono do projeto autorizou seguir mesmo assim. Na prática: `fieldMappings` é funcional e testado estruturalmente, **mas ainda não confirmado contra a saída real do `LowCodeRunner` em produção**. Trate `confidence: "best-effort"` com cautela reforçada — e mesmo `"authoritative"` deve ser lido como "resolução estrutural correta segundo as regras declaradas no mapper", não como "validado contra execução real", até essa validação pendente ser concluída.
+>
+> **🇺🇸** Behavioral validation (running 20 real executions against `LowCodeRunner` and comparing the resolved `fieldMappings` to the runner's actual behavior) **has not been done in this environment** — `LowCodeRunner.exe` is a Windows-only process (x86, native interop) that does not run on WSL/Linux. What exists today is **structural validation only**, via synthetic fixtures (20 scenarios covering `direct`/`transformed`/`concatenated`/`static`/N:1/1:N/repetition). The project owner authorized proceeding anyway. In practice: `fieldMappings` is functional and structurally tested, **but not yet confirmed against `LowCodeRunner`'s real production output**. Treat `confidence: "best-effort"` with extra caution — and even `"authoritative"` should be read as "structurally correct per the rules declared in the mapper", not "validated against real execution", until this pending validation is completed.
+
+**🇧🇷** `POST /api/transformationexecution/execute-candidates` ganha um terceiro campo **aditivo** por candidato (issue #141, não quebra clientes existentes): [`fieldMappings`](Models/Transformation/TransformationCandidate.cs), o mapeamento **campo-a-campo** entre o layout posicional de origem (TXT/MQSeries/IDOC) e o XML de destino (hoje só NF-e — escopo do motor de resolução estrutural, issue #140). Reaproveita, sem custo adicional de I/O, o mesmo mapper decifrado e o mesmo parse posicional já usados para gerar `transformedXml` no pathway `sysmiddle`.
+
+**Não confunda com `sectionMappings`/`segmentMappings` (issue #138, em documentação — pendência conhecida):** aquele é um mapeamento em nível de **linha/seção** (qual seção do layout corresponde a qual bloco do XML), já existente antes da #141. `fieldMappings` é um nível de granularidade abaixo — **campo individual** dentro de uma linha, com coordenada estrutural precisa (posição, ocorrência, XPath). Os dois são **complementares**, não substitutos: um front pode usar `sectionMappings` para navegação em bloco e `fieldMappings` para destacar/editar um campo específico.
+
+Exemplo completo — resolução do CNPJ do emitente:
+
+```jsonc
+// POST /api/transformationexecution/execute-candidates → response
+{
+  "success": true,
+  "candidates": [
+    {
+      "candidateId": "sysmiddle-{mapperGuid}",
+      "pathway": "sysmiddle",
+      "transformedXml": "<nfeProc>...</nfeProc>",
+      "fieldMappings": [
+        {
+          "mappingId": "...",
+          "sources": [
+            {
+              "lineGuid": "{guid-da-linha-C100}",
+              "lineName": "C100",
+              "fieldGuid": "{guid-do-campo-CNPJ}",
+              "fieldName": "CNPJ_EMITENTE",
+              "lineOccurrence": 0,
+              "startPosition": 12,
+              "length": 14
+            }
+          ],
+          "targets": [
+            {
+              "xpath": "/nfe:NFe/nfe:infNFe/nfe:emit/nfe:CNPJ",
+              "nodeKind": "Text",
+              "xmlOccurrence": null
+            }
+          ],
+          "kind": "Direct",
+          "confidence": "Authoritative",
+          "limitations": null
+        }
+      ]
+    }
+  ],
+  "warnings": [],
+  "pathwayDiagnostics": [],
+  "correlationId": "..."
+}
+```
+
+| Campo | Semântica |
+|-------|-----------|
+| `fieldMappings: null` | Pathway `tcl-xsl` (decisão categórica — sem fonte estrutural equivalente hoje, mesma decisão já tomada para `sectionMappings` nesse pathway); **ou** falha isolada na composição (parse compartilhado indisponível, mapper decifrado ausente, exceção do motor) — nunca derruba o candidato, vira `warning` textual em vez de erro 500. |
+| `fieldMappings: []` | Pathway `sysmiddle`, mapper existe e foi decifrado, mas o motor de composição não resolveu **nenhum** `FieldToXmlMapping` — resultado válido, não é falha. |
+| `fieldMappings: [...]` | Um ou mais mapeamentos resolvidos — ver estrutura abaixo. |
+| `sources[].lineOccurrence`/`startPosition`/`length` | Coordenadas do campo de origem no fragmento **físico** (`ParsedField.Occurrence`, nunca a ocorrência agregada) — nunca o valor do documento. |
+| `targets[].xpath` | Convenção **sempre com prefixo de namespace** (`nfe:`), nunca XPath sem prefixo — o XML da NF-e é namespaced e um XPath sem prefixo não resolveria contra o documento real. |
+| `targets[].xmlOccurrence` | `null` quando não há repetição confirmada no ancestral; inteiro quando há (ex.: N-ésimo item de uma lista repetida). |
+| `kind` | `Direct` (1:1 sem DSL, veio de `LinkMappings`) \| `Transformed` (regra DSL com função não-concatenadora, condicional ou loop) \| `Concatenated` (múltiplas origens combinadas) \| `Static` (valor literal, sem origem `I.`; `sources: []` nesse caso). |
+| `confidence` | `Authoritative` (as 5 condições objetivas do design foram atendidas) \| `BestEffort` (qualquer outro caso, inclusive fallback heurístico) — **ver a ressalva de validação pendente acima antes de tratar como verdade absoluta**. |
+| `limitations` | Populado (nunca `null`) quando `confidence: "BestEffort"` — motivo(s) legível(is) da degradação. Inclui o caso em que a linha TXT de origem está declarada vazia ou com degradação posicional (ver §4 "Sinais aditivos de linha"). |
+
+**🇺🇸** `POST /api/transformationexecution/execute-candidates` gains a third **additive** per-candidate field (issue #141, does not break existing clients): [`fieldMappings`](Models/Transformation/TransformationCandidate.cs), the **field-to-field** mapping between the source positional layout (TXT/MQSeries/IDOC) and the destination XML (NF-e only today — scope of the structural resolution engine, issue #140). It reuses, at no extra I/O cost, the same decrypted mapper and positional parse already used to produce `transformedXml` on the `sysmiddle` pathway.
+
+**Do not confuse with `sectionMappings`/`segmentMappings` (issue #138, docs pending — known gap):** that one is a **line/section**-level mapping (which layout section corresponds to which XML block), predating #141. `fieldMappings` is one granularity level below — an **individual field** inside a line, with a precise structural coordinate (position, occurrence, XPath). The two are **complementary**, not substitutes: a front-end can use `sectionMappings` for block-level navigation and `fieldMappings` to highlight/edit one specific field.
+
+| Field | Semantics |
+|-------|-----------|
+| `fieldMappings: null` | `tcl-xsl` pathway (categorical decision — no equivalent structural source today, same decision already made for `sectionMappings` on that pathway); **or** an isolated composition failure (shared parse unavailable, decrypted mapper missing, engine exception) — never fails the candidate, becomes a textual `warning` instead of a 500. |
+| `fieldMappings: []` | `sysmiddle` pathway, mapper exists and was decrypted, but the composition engine resolved **no** `FieldToXmlMapping` — a valid result, not a failure. |
+| `fieldMappings: [...]` | One or more resolved mappings — see structure above. |
+| `sources[].lineOccurrence`/`startPosition`/`length` | Coordinates of the source field in the **physical** fragment (`ParsedField.Occurrence`, never the aggregated occurrence) — never the document's actual value. |
+| `targets[].xpath` | Convention is **always namespace-prefixed** (`nfe:`), never a bare XPath — the NF-e XML is namespaced and a bare XPath would not resolve against the real document. |
+| `targets[].xmlOccurrence` | `null` when no repetition is confirmed on the ancestor; an integer when there is (e.g. the Nth item of a repeated list). |
+| `kind` | `Direct` (1:1, no DSL, came from `LinkMappings`) \| `Transformed` (DSL rule with a non-concatenating function, conditional, or loop) \| `Concatenated` (multiple sources combined) \| `Static` (literal value, no `I.` source; `sources: []` in this case). |
+| `confidence` | `Authoritative` (all 5 objective design conditions met) \| `BestEffort` (any other case, including heuristic fallback) — **see the pending-validation caveat above before treating this as absolute truth**. |
+| `limitations` | Populated (never `null`) when `confidence: "BestEffort"` — human-readable reason(s) for the degradation. Includes the case where the source TXT line is declared empty or positionally degraded (see §4 "Additive line signals"). |
+
+Design completo / Full design: [`docs/architecture/design-contrato-fieldmappings-execute-candidates-issue-141.md`](docs/architecture/design-contrato-fieldmappings-execute-candidates-issue-141.md) · [`docs/architecture/design-resolucao-estrutural-txt-xml-issue-140.md`](docs/architecture/design-resolucao-estrutural-txt-xml-issue-140.md). Endpoint isolado equivalente (mesmo motor, mesmo tipo de dado, não embutido em `execute-candidates`): `POST /api/transformationexecution/field-mappings`.
+
 ---
 
 ## 8. Configuração / Configuration
