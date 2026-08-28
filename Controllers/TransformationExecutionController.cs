@@ -1,10 +1,13 @@
 using System.Collections.Concurrent;
+using System.Xml.Linq;
 
 using LayoutParserApi.Services.Transformation;
 using LayoutParserApi.Services.XmlAnalysis;
 using LayoutParserApi.Models;
 using LayoutParserApi.Services.Transformation.LowCode;
 using LayoutParserApi.Services.Transformation.Ai;
+using LayoutParserApi.Services.Transformation.StructuralResolution;
+using LayoutParserApi.Services.Database;
 
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -14,6 +17,8 @@ using LayoutParserApi.Services.Interfaces;
 using LayoutParserApi.Services.Filters;
 using LayoutParserApi.Models.Database;
 using LayoutParserApi.Models.Transformation;
+
+using XslSynth.Core;
 
 namespace LayoutParserApi.Controllers
 {
@@ -43,6 +48,9 @@ namespace LayoutParserApi.Controllers
         private readonly IAiTransformationCandidateService _aiCandidateService;
         private readonly IAiFallbackSuppressionGate _aiFallbackGate;
         private readonly ICurrentUser _currentUser;
+        private readonly MapperDatabaseService _mapperDb;
+        private readonly ILayoutParserService _layoutParser;
+        private readonly FieldMappingCompositionService _fieldMappingComposition;
 
         public TransformationExecutionController(
             ILogger<TransformationExecutionController> logger,
@@ -56,7 +64,10 @@ namespace LayoutParserApi.Controllers
             IOptions<LowCodeRunnerOptions> lowCodeOptions,
             IAiTransformationCandidateService aiCandidateService,
             IAiFallbackSuppressionGate aiFallbackGate,
-            ICurrentUser currentUser)
+            ICurrentUser currentUser,
+            MapperDatabaseService mapperDb,
+            ILayoutParserService layoutParser,
+            FieldMappingCompositionService fieldMappingComposition)
         {
             _logger = logger;
             _pipelineService = pipelineService;
@@ -70,6 +81,9 @@ namespace LayoutParserApi.Controllers
             _aiCandidateService = aiCandidateService;
             _aiFallbackGate = aiFallbackGate;
             _currentUser = currentUser;
+            _mapperDb = mapperDb;
+            _layoutParser = layoutParser;
+            _fieldMappingComposition = fieldMappingComposition;
         }
 
         // Issue #92: chave de particionamento da AiCandidateStore. ICurrentUser.Name é null quando
@@ -946,6 +960,113 @@ namespace LayoutParserApi.Controllers
                 return StatusCode(500, new { error = ex.Message });
             }
         }
+
+        /// <summary>
+        /// Issue #140 (itens 2/6-9 da divisão de trabalho, design em
+        /// docs/architecture/design-resolucao-estrutural-txt-xml-issue-140.md §8): endpoint
+        /// dedicado que conecta o motor de resolução estrutural TXT↔XML já implementado (item 1/3/4/5,
+        /// <c>ai/XslSynth.Contracts/Core/StructuralResolution/</c>) ao pipeline real — parse posicional
+        /// real (<see cref="ILayoutParserService"/>, fonte de <c>ParsedField.Occurrence</c> real) +
+        /// mapper real decifrado (<see cref="MapperDatabaseService"/> + <c>RealMapperParser</c>, Parser
+        /// B canônico da #139) + catálogo XML de destino cacheado (NF-e via XSD).
+        ///
+        /// <para>Deliberadamente SEPARADO do contrato de <c>execute-candidates</c>
+        /// (<see cref="TransformationExecutionCandidatesResponse"/>): a decisão de expor
+        /// <c>FieldToXmlMapping[]</c> como recurso de primeira classe dentro daquele contrato é da
+        /// issue #141, não desta — aqui só a infraestrutura de composição é ligada ponta a ponta.</para>
+        ///
+        /// <para>Resiliência: qualquer falha (layout/mapper não encontrado, XSD indisponível, parse
+        /// malformado) vira 200 com <c>fieldMappings: []</c> + warning, nunca deriuba com 500 — o
+        /// motor de resolução estrutural é best-effort por natureza (design §5).</para>
+        /// </summary>
+        [Authorize]
+        [HttpPost("field-mappings")]
+        public async Task<IActionResult> GetFieldMappings([FromBody] FieldMappingsRequest request)
+        {
+            if (request == null || string.IsNullOrWhiteSpace(request.LayoutName) || string.IsNullOrWhiteSpace(request.InputContent))
+                return BadRequest(new { success = false, error = "LayoutName e InputContent são obrigatórios" });
+
+            var warnings = new List<string>();
+
+            LayoutRecord? layoutRecord;
+            try
+            {
+                var searchResponse = await _layoutDb.SearchLayoutsAsync(new LayoutSearchRequest { SearchTerm = request.LayoutName });
+                if (!searchResponse.Success)
+                    throw new InvalidOperationException(searchResponse.ErrorMessage);
+
+                layoutRecord = searchResponse.Layouts
+                    .FirstOrDefault(l => string.Equals(l.Name, request.LayoutName, StringComparison.OrdinalIgnoreCase));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Falha de infraestrutura ao resolver layout {LayoutName} para field-mappings", request.LayoutName);
+                return StatusCode(500, new { success = false, error = "Falha de infraestrutura ao consultar o catálogo de layouts" });
+            }
+
+            if (layoutRecord == null || string.IsNullOrWhiteSpace(layoutRecord.DecryptedContent))
+                return BadRequest(new { success = false, error = $"Layout '{request.LayoutName}' não encontrado ou sem conteúdo decifrado" });
+
+            var resolvedLayoutGuid = LowCodeLayoutGuidResolver.Resolve(request.LayoutGuid, layoutRecord.LayoutGuid);
+            if (resolvedLayoutGuid == null)
+                return BadRequest(new { success = false, error = $"Layout {request.LayoutName} sem LayoutGuid válido no request ou no catálogo" });
+
+            try
+            {
+                // 1) Parse posicional real do documento de entrada — fonte de Layout (crosswalk
+                //    GUID/nome de origem) e ParsedField (Occurrence físico real, nunca sintético).
+                using var layoutStream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(layoutRecord.DecryptedContent));
+                using var txtStream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(request.InputContent));
+                var parsingResult = await _layoutParser.ParseAsync(layoutStream, txtStream);
+
+                if (!parsingResult.Success || parsingResult.Layout == null)
+                {
+                    warnings.Add($"Parse posicional falhou para layout {request.LayoutName}: {parsingResult.ErrorMessage}");
+                    return Ok(new { success = true, fieldMappings = Array.Empty<object>(), warnings });
+                }
+
+                // 2) Mapper real (Parser B canônico #139) — mesma seleção/priorização já usada pelo
+                //    pathway sysmiddle de execute-candidates.
+                var ranked = await _mapperDb.GetRankedMapperCandidatesForLayoutGuidAsync(
+                    resolvedLayoutGuid, _lowCodeOpt.ProjectId, _lowCodeOpt.AllowedPackageGuids);
+                var mapperRecord = ranked.FirstOrDefault(m => !string.IsNullOrWhiteSpace(m.DecryptedContent));
+
+                if (mapperRecord == null)
+                {
+                    warnings.Add($"Nenhum mapeador decifrável encontrado para o layout {request.LayoutName}");
+                    return Ok(new { success = true, fieldMappings = Array.Empty<object>(), warnings });
+                }
+
+                var mapperVo = new RealMapperParser().Parse(XDocument.Parse(mapperRecord.DecryptedContent));
+
+                // 3) Composição: motor de resolução estrutural (itens 1/3/4/5, já implementado) sobre
+                //    dados 100% reais — nenhuma coordenada sintética.
+                var fieldMappings = _fieldMappingComposition.Compose(parsingResult.Layout, parsingResult.ParsedFields, mapperVo);
+
+                return Ok(new
+                {
+                    success = true,
+                    mapperGuid = mapperRecord.MapperGuid,
+                    fieldMappings,
+                    warnings
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Falha ao compor field mappings para layout {LayoutName}", request.LayoutName);
+                warnings.Add("Falha ao compor mapeamentos estruturais — ver log do servidor");
+                return Ok(new { success = true, fieldMappings = Array.Empty<object>(), warnings });
+            }
+        }
+    }
+
+    /// <summary>Request do endpoint /field-mappings (issue #140). Mesma convenção de LayoutGuid
+    /// opcional já usada por <see cref="TransformationRequest"/> (precedência sobre o catálogo).</summary>
+    public class FieldMappingsRequest
+    {
+        public string LayoutName { get; set; } = "";
+        public string InputContent { get; set; } = "";
+        public string? LayoutGuid { get; set; }
     }
 
     public class LowCodeTransformationRequest

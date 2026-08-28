@@ -391,9 +391,21 @@ try
     builder.Services.AddScoped<AutoTransformationGeneratorService>();
     // ✅ Cano de ligação com XslSynth.Contracts (núcleo determinístico extraído — parser DSL→JSON,
     // catálogo de funções) para o resto da API usar, sem trazer Ollama/RAG (ver
-    // docs/architecture/design-xslsynth-runtime-e-reversibilidade-2026-08-16.md §1). Ainda sem
-    // consumidor no pipeline HTTP — conexão final ao /fieldMappings é escopo de #140/#141.
+    // docs/architecture/design-xslsynth-runtime-e-reversibilidade-2026-08-16.md §1).
     builder.Services.AddScoped<LayoutParserApi.Services.Transformation.MappingStructureService>();
+
+    // ✅ Issue #140 (itens 2/6-9): wiring do motor de resolução estrutural TXT↔XML já implementado
+    // (ai/XslSynth.Contracts/Core/StructuralResolution/) ao pipeline real — cache do catálogo XML
+    // (NF-e via XSD) + serviço de composição que junta Layout/ParsedField reais + MapperVo real
+    // (RealMapperParser, Parser B canônico da #139). Endpoint consumidor:
+    // POST api/TransformationExecution/field-mappings.
+    builder.Services.AddMemoryCache();
+    builder.Services.Configure<LayoutParserApi.Services.Transformation.StructuralResolution.StructuralResolutionOptions>(
+        builder.Configuration.GetSection("StructuralResolution"));
+    // Singleton: só depende de IMemoryCache (singleton) e IOptions — o catálogo XML compilado é
+    // caro (XmlSchemaSet) e estático por processo, mesmo racional de LowCodeTransformationService.
+    builder.Services.AddSingleton<LayoutParserApi.Services.Transformation.StructuralResolution.StructuralXmlCatalogCacheService>();
+    builder.Services.AddScoped<LayoutParserApi.Services.Transformation.StructuralResolution.FieldMappingCompositionService>();
 
     // ✅ Diagnóstico de erro de validação via Ollama (LLM local) — Gap 2 do contrato
     // docs/architecture/multi-candidato-e-diagnostico-ia-contrato.md. Não usa GeminiAIService

@@ -64,4 +64,12 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Issue #140: mesmo XSD público (mirror nfephp-org/sped-nfe) já usado como fixture em
+         ai/XslSynth.Core.Tests/StructuralResolution/fixtures — copiado aqui (não referenciado por
+         caminho relativo cross-projeto) para o teste de wiring ponta-a-ponta do
+         FieldMappingCompositionService não depender da localização do outro projeto de teste. -->
+    <None Include="StructuralResolution\fixtures\*.xsd" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>
