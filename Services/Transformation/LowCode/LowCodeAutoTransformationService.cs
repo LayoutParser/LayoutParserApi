@@ -270,8 +270,9 @@ namespace LayoutParserApi.Services.Transformation.LowCode
                 Success = true,
                 OutputXml = lowCodeXml,
                 OutputLength = (lowCodeXml ?? "").Length,
-                // ✅ Issue #141: reexpõe o mapper já decifrado (nenhuma consulta SQL nova) para o
-                // controller compor fieldMappings sem repetir GetRankedMapperCandidatesForLayoutGuidAsync.
+                // ✅ Issue #141/#138: reexpõe o mapper já decifrado (nenhuma consulta SQL nova) para o
+                // controller compor fieldMappings/sectionMappings sem repetir
+                // GetRankedMapperCandidatesForLayoutGuidAsync.
                 DecryptedMapperContent = mapper.DecryptedContent
             };
 
@@ -323,8 +324,8 @@ namespace LayoutParserApi.Services.Transformation.LowCode
                         Success = true,
                         OutputXml = xml,
                         OutputLength = (xml ?? "").Length,
-                        // ✅ Issue #141: idem TransformSingleAndPersistAsync — mapper já decifrado,
-                        // sem nova consulta SQL para compor fieldMappings no controller.
+                        // ✅ Issue #141/#138: idem TransformSingleAndPersistAsync — mapper já decifrado,
+                        // sem nova consulta SQL para compor fieldMappings/sectionMappings no controller.
                         DecryptedMapperContent = mapper.DecryptedContent
                     };
                 }

@@ -265,5 +265,51 @@ namespace LayoutParserApi.Tests.Controllers
             Assert.Equal("failed", tclXsl.Status);
             Assert.Equal("xsl_not_found", tclXsl.Code);
         }
+
+        /// <summary>
+        /// Gate QA (@lp-qa) — issue #138/#126: o contrato exige distinguir <c>null</c>
+        /// ("pathway não suporta rastreabilidade") de <c>[]</c> ("suporta, mas não achou nada") em
+        /// <see cref="TransformationCandidate.SectionMappings"/>. Os testes existentes de
+        /// <c>SysmiddleSectionMappingResolverTests</c> já cobrem o caso <c>[]</c> do pathway
+        /// sysmiddle; faltava um teste ponta-a-ponta do controller com um candidato tcl-xsl
+        /// BEM-SUCEDIDO (não apenas os cenários de falha já cobertos acima) confirmando que
+        /// <c>SectionMappings</c> sai <c>null</c> por definição — reaproveita o fixture mínimo de
+        /// <c>TransformationPipelineServiceMapFileTests.Layout_real_CNHI_resolve_MAP_via_TclPath_layoutName_tcl</c>.
+        /// </summary>
+        [Fact]
+        public async Task TclXsl_bem_sucedido_reporta_SectionMappings_null_nao_lista_vazia()
+        {
+            var (controller, _, tclDir) = BuildController();
+            var xslDir = Path.Combine(Path.GetDirectoryName(tclDir)!, "xsl");
+
+            var mapXml = "<MAP><LINE identifier=\"HEADER\" name=\"HEADER\"><FIELD name=\"data\" length=\"8\"/></LINE></MAP>";
+            await File.WriteAllTextAsync(Path.Combine(tclDir, $"{LayoutName}.tcl"), mapXml);
+
+            var xslContent =
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" +
+                "<xsl:stylesheet version=\"1.0\" xmlns:xsl=\"http://www.w3.org/1999/XSL/Transform\">" +
+                "  <xsl:output method=\"xml\" encoding=\"UTF-8\"/>" +
+                "  <xsl:template match=\"/\"><Resultado/></xsl:template>" +
+                "</xsl:stylesheet>";
+            await File.WriteAllTextAsync(Path.Combine(xslDir, $"MAP_TESTE_{LayoutName}.xsl"), xslContent);
+
+            var request = new TransformationRequest
+            {
+                InputContent = "20260827SINTETICO",
+                LayoutName = LayoutName,
+                LayoutGuid = LayoutGuid.ToString()
+            };
+
+            var actionResult = await controller.ExecuteTransformationCandidates(request);
+            var ok = Assert.IsType<OkObjectResult>(actionResult);
+            var response = Assert.IsType<TransformationExecutionCandidatesResponse>(ok.Value);
+
+            var tclXslCandidate = Assert.Single(response.Candidates, c => c.Pathway == "tcl-xsl");
+            Assert.Null(tclXslCandidate.SectionMappings);
+            Assert.Null(tclXslCandidate.XmlNamespaces);
+
+            var tclXslDiag = Assert.Single(response.PathwayDiagnostics, d => d.Pathway == "tcl-xsl");
+            Assert.Equal("candidate_generated", tclXslDiag.Status);
+        }
     }
 }
