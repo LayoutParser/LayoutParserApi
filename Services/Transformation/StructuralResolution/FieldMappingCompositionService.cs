@@ -15,6 +15,7 @@ using MapperRule = XslSynth.Model.MapperRule;
 using FieldToXmlMapping = XslSynth.Model.FieldToXmlMapping;
 using TxtFieldReference = XslSynth.Model.TxtFieldReference;
 using MappingKind = XslSynth.Model.MappingKind;
+using Confidence = XslSynth.Model.Confidence;
 
 namespace LayoutParserApi.Services.Transformation.StructuralResolution
 {
@@ -60,10 +61,16 @@ namespace LayoutParserApi.Services.Transformation.StructuralResolution
         /// <c>lineOccurrence</c> — <see cref="ParsedField.Occurrence"/>, nunca sintético).</param>
         /// <param name="mapperVo">Mapper real, já parseado via <c>RealMapperParser</c> a partir do
         /// conteúdo decifrado do banco.</param>
+        /// <param name="lineInfos">Sinais aditivos de linha do contrato de degradação posicional
+        /// (<c>docs/architecture/contrato-linha-vazia-progresso-e-degradacao-posicional-2026-08-27.md</c>),
+        /// já populados por <c>ParsingResult.LineInfos</c>. Opcional (default vazio) para não quebrar
+        /// chamadores/testes existentes que ainda não têm esse dado — sem ele, esta 6ª condição
+        /// simplesmente não degrada nada (comportamento idêntico ao anterior).</param>
         public IReadOnlyList<FieldToXmlMapping> Compose(
             Layout sourceLayout,
             IReadOnlyList<ParsedField> parsedFields,
-            MapperVo mapperVo)
+            MapperVo mapperVo,
+            IReadOnlyList<LineInfo>? lineInfos = null)
         {
             var catalog = _catalogCache.GetOrBuildCatalog(mapperVo.TargetLayoutGuid);
             if (catalog == null)
@@ -75,6 +82,7 @@ namespace LayoutParserApi.Services.Transformation.StructuralResolution
 
             var composer = new FieldToXmlMappingComposer(catalog);
             var crosswalk = BuildSourceCrosswalk(sourceLayout);
+            var lineInfoLookup = BuildLineInfoLookup(lineInfos);
             var results = new List<FieldToXmlMapping>();
 
             foreach (var link in mapperVo.LinkMappings)
@@ -83,7 +91,7 @@ namespace LayoutParserApi.Services.Transformation.StructuralResolution
                 {
                     var candidate = BuildLinkCandidate(link, crosswalk, parsedFields);
                     if (candidate != null)
-                        results.Add(composer.Compose(candidate));
+                        results.Add(DegradeForUnhealthySourceLines(composer.Compose(candidate), lineInfoLookup));
                 }
                 catch (Exception ex)
                 {
@@ -100,7 +108,7 @@ namespace LayoutParserApi.Services.Transformation.StructuralResolution
                     var structuredRule = _mappingStructure.ParseRule(rule);
                     var candidate = BuildRuleCandidate(rule, structuredRule, crosswalk, parsedFields);
                     if (candidate != null)
-                        results.Add(composer.Compose(candidate));
+                        results.Add(DegradeForUnhealthySourceLines(composer.Compose(candidate), lineInfoLookup));
                 }
                 catch (Exception ex)
                 {
@@ -109,6 +117,67 @@ namespace LayoutParserApi.Services.Transformation.StructuralResolution
             }
 
             return results;
+        }
+
+        /// <summary>
+        /// 6ª condição, adicionada por fora do critério §5 já existente em
+        /// <see cref="FieldToXmlMappingComposer"/> (não reescreve as 5 condições objetivas de lá —
+        /// só pode DEGRADAR <c>Authoritative</c>→<c>BestEffort</c>, nunca promover o contrário):
+        /// se qualquer origem (<see cref="TxtFieldReference.LineName"/>+<see cref="TxtFieldReference.LineOccurrence"/>)
+        /// veio de uma linha declarada vazia (<see cref="LineInfo.IsDeclaredEmpty"/>) ou com
+        /// degradação posicional detectada (<see cref="LineInfo.PositionalAlignmentFailed"/>), o
+        /// mapeamento nunca pode ser tratado como confiável — mesmo que as 5 condições estruturais
+        /// já tenham passado.
+        /// </summary>
+        public static FieldToXmlMapping DegradeForUnhealthySourceLines(
+            FieldToXmlMapping mapping,
+            IReadOnlyDictionary<(string LineName, int Occurrence), LineInfo> lineInfoLookup)
+        {
+            if (mapping.Sources.Count == 0 || lineInfoLookup.Count == 0)
+                return mapping;
+
+            var reasons = new List<string>();
+            foreach (var source in mapping.Sources)
+            {
+                if (!lineInfoLookup.TryGetValue((source.LineName, source.LineOccurrence), out var info))
+                    continue;
+
+                if (info.IsDeclaredEmpty)
+                    reasons.Add("Origem TXT declarada vazia — resolução não confiável.");
+                if (info.PositionalAlignmentFailed)
+                    reasons.Add("Origem TXT com degradação posicional detectada — resolução não confiável.");
+            }
+
+            if (reasons.Count == 0)
+                return mapping;
+
+            var limitations = (mapping.Limitations ?? Array.Empty<string>())
+                .Concat(reasons)
+                .Distinct()
+                .ToList();
+
+            return mapping with { Confidence = Confidence.BestEffort, Limitations = limitations };
+        }
+
+        /// <summary>Indexa por (LineName, Occurrence) — <see cref="LineInfo"/> não carrega GUID, só
+        /// nome (mesma convenção do contrato de 2026-08-27); <see cref="TxtFieldReference"/> carrega
+        /// os dois, mas só o par nome+ocorrência é comparável aqui. Em caso de colisão (não deveria
+        /// ocorrer — uma linha física só deveria aparecer uma vez por ocorrência), mantém a primeira,
+        /// não é fatal.</summary>
+        private static IReadOnlyDictionary<(string LineName, int Occurrence), LineInfo> BuildLineInfoLookup(IReadOnlyList<LineInfo>? lineInfos)
+        {
+            var lookup = new Dictionary<(string, int), LineInfo>();
+            if (lineInfos == null)
+                return lookup;
+
+            foreach (var info in lineInfos)
+            {
+                var key = (info.LineName, info.Occurrence);
+                if (!lookup.ContainsKey(key))
+                    lookup[key] = info;
+            }
+
+            return lookup;
         }
 
         private static MappingCandidate? BuildLinkCandidate(

@@ -1041,7 +1041,7 @@ namespace LayoutParserApi.Controllers
 
                 // 3) Composição: motor de resolução estrutural (itens 1/3/4/5, já implementado) sobre
                 //    dados 100% reais — nenhuma coordenada sintética.
-                var fieldMappings = _fieldMappingComposition.Compose(parsingResult.Layout, parsingResult.ParsedFields, mapperVo);
+                var fieldMappings = _fieldMappingComposition.Compose(parsingResult.Layout, parsingResult.ParsedFields, mapperVo, parsingResult.LineInfos);
 
                 return Ok(new
                 {
