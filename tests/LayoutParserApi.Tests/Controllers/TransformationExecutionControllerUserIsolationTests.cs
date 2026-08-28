@@ -102,7 +102,10 @@ namespace LayoutParserApi.Tests.Controllers
                 lowCodeOptions: Options.Create(new LowCodeRunnerOptions()),
                 aiCandidateService: spy,
                 aiFallbackGate: new SpyAiFallbackSuppressionGate(),
-                currentUser: user);
+                currentUser: user,
+                mapperDb: null!,
+                layoutParser: null!,
+                fieldMappingComposition: null!);
 
             return (controller, spy, user);
         }

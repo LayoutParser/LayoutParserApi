@@ -158,7 +158,10 @@ namespace LayoutParserApi.Tests.Controllers
                 lowCodeOptions: lowCodeOptions,
                 aiCandidateService: aiSpy,
                 aiFallbackGate: new SpyAiFallbackSuppressionGate(),
-                currentUser: new FakeCurrentUser());
+                currentUser: new FakeCurrentUser(),
+                mapperDb: null!,
+                layoutParser: null!,
+                fieldMappingComposition: null!);
 
             return (controller, aiSpy, tclDir);
         }
