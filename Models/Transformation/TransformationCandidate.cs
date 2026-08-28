@@ -19,6 +19,17 @@ namespace LayoutParserApi.Models.Transformation
 
         public Dictionary<string, string>? SegmentMappings { get; set; }
 
+        /// <summary>
+        /// Mapeamentos campo-a-campo (issue #141), compostos por <see cref="LayoutParserApi.Services.Transformation.StructuralResolution.FieldMappingCompositionService"/>
+        /// sobre o mesmo <c>Layout</c>/<c>MapperVo</c> já usados para produzir <see cref="TransformedXml"/>
+        /// (pathway sysmiddle). <c>null</c> quando: (a) pathway é <c>tcl-xsl</c> (decisão categórica, sem
+        /// fonte estrutural equivalente hoje — mesma decisão de <c>SegmentMappings</c> para esse pathway);
+        /// (b) a composição falhou isoladamente (nunca derruba o candidato, vira warning); ou (c) o parse
+        /// posicional compartilhado do documento falhou. Lista vazia (não nula) é resultado válido: mapper
+        /// existe mas não resolveu nenhum <c>FieldToXmlMapping</c>.
+        /// </summary>
+        public IReadOnlyList<XslSynth.Model.FieldToXmlMapping>? FieldMappings { get; set; }
+
         public object? Validation { get; set; }
 
         /// <summary>Preenchido só quando o candidato falhou parcialmente — hoje não usado no array final

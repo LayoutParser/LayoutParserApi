@@ -270,7 +270,10 @@ namespace LayoutParserApi.Services.Transformation.LowCode
                 Success = true,
                 OutputXml = lowCodeXml,
                 OutputLength = (lowCodeXml ?? "").Length,
-                MapperDecryptedContent = mapper.DecryptedContent
+                // ✅ Issue #141/#138: reexpõe o mapper já decifrado (nenhuma consulta SQL nova) para o
+                // controller compor fieldMappings/sectionMappings sem repetir
+                // GetRankedMapperCandidatesForLayoutGuidAsync.
+                DecryptedMapperContent = mapper.DecryptedContent
             };
 
             // ✅ Índice de leitura ao lado dos artefatos (spec §2.3): é o que torna o store
@@ -321,7 +324,9 @@ namespace LayoutParserApi.Services.Transformation.LowCode
                         Success = true,
                         OutputXml = xml,
                         OutputLength = (xml ?? "").Length,
-                        MapperDecryptedContent = mapper.DecryptedContent
+                        // ✅ Issue #141/#138: idem TransformSingleAndPersistAsync — mapper já decifrado,
+                        // sem nova consulta SQL para compor fieldMappings/sectionMappings no controller.
+                        DecryptedMapperContent = mapper.DecryptedContent
                     };
                 }
                 catch (Exception ex)
