@@ -232,16 +232,16 @@ ContentValue (DSL bruta) ──► DslStructuredParser (Camada 0, 100% código) 
 
 - `DslStructuredParser` interpreta a árvore de decisão real (`if/else` aninhado, funções como `ConcatString`/`CalculateVerifierDigit`) e produz um `StructuredRule` (`SchemaVersion`, `Target`, `Branches`, `AllSources`, `AllFunctions`).
 - Esse trabalho pesado vive hoje em **`ai/XslSynth.Contracts`** — um projeto novo, extraído de `ai/XslSynth.Core`, que contém só o núcleo determinístico e sem I/O externo (`DslStructuredParser`, `StructuredRuleSchema`, `FunctionCatalog`, `GuidXPathCatalog`, `RealMapperParser`). É referenciado tanto pelo lado de pesquisa (`ai/XslSynth.Core`, que mantém Ollama/RAG/XSD validator isolados) quanto pela **API em runtime**, via `Services/Transformation/MappingStructureService.cs` (registrado `Scoped` em `Program.cs`) — ou seja, uma parte real desse trabalho **já conecta ao runtime da API**, não é mais só ferramenta offline/CLI.
-- **Estado atual, sem exagero:** `MappingStructureService` está com o "cano ligado" no DI (`ParseRule`, `TryExtractFunctionCatalog`), mas ainda **sem consumidor no pipeline HTTP** — a exposição via `/fieldMappings` para o front-end é escopo das próximas fases (issues #140/#141).
+- **Estado atual (issues #138-#141 entregues):** a exposição via HTTP deixou de ser trabalho futuro — `POST /api/transformationexecution/execute-candidates` já retorna, por candidato, tanto `sectionMappings`/`xmlNamespaces` (rastreabilidade linha/seção, issue #138) quanto `fieldMappings` (rastreabilidade campo-a-campo, issue #141, sobre o motor de resolução estrutural da issue #140); há também um endpoint dedicado equivalente, `POST /api/transformationexecution/field-mappings`. Contrato completo, exemplos de payload e a ressalva de validação comportamental ainda pendente: [§7 "`fieldMappings` em `execute-candidates`"](#7-api--endpoints) e ["Rastreabilidade TXT↔XML por linha/seção"](#7-api--endpoints).
 - **Consolidação do parser de MapperVO (issue #139):** `XslSynth.Model.MapperVo` + `RealMapperParser` (`ai/XslSynth.Contracts`) é agora o parser canônico em todo o runtime, inclusive no caminho de geração de XSL legado (`Services/XmlAnalysis/XslGeneratorService.cs`, que passou a usá-lo em vez do parser antigo). O parser antigo (`Models/Entities/MapperVo.cs`/`MapperRule.cs`/`LinkMappingItem.cs`) está marcado `[Obsolete]`, mantido apenas por rastreabilidade. Detalhe completo, inclusive a limitação conhecida de que nenhum dos dois parsers captura elementos aninhados: [`docs/architecture/inventario-parsers-mapperVo-issue-139.md`](docs/architecture/inventario-parsers-mapperVo-issue-139.md).
 
-**🇧🇷 Visão de longo prazo (declarada, não entregue):** a meta de fundo continua sendo eliminar a dependência do XML low-code Sysmiddle. O plano de mapeamento campo TXT↔XML (issues #137-141) usa essa camada estruturada tanto para **extração** (interpretar `ContentValue` real, com a IA só ajudando em ambiguidades — nunca decidindo a lógica condicional) quanto, no futuro, para **geração** (a IA aprender a produzir o JSON estruturado, com um transpilador determinístico convertendo de volta para `ContentValue`/XSLT). Reversibilidade (XML SEFAZ → TXT original) é **investigação em fase de desenho** (Fase 4, ver roadmap) — não é capacidade real hoje: funções como dígito verificador têm perda e não são inversíveis sem heurística.
+**🇧🇷 Visão de longo prazo (declarada, não entregue por completo):** a meta de fundo continua sendo eliminar a dependência do XML low-code Sysmiddle. O plano de mapeamento campo TXT↔XML (issues #137-141) já entregou a **extração** estruturada (interpretar `ContentValue` real e expor as coordenadas TXT↔XML via HTTP, sem a IA decidir a lógica condicional). O que segue como visão declarada, não capacidade real, é a **geração** (a IA aprender a produzir o JSON estruturado, com um transpilador determinístico convertendo de volta para `ContentValue`/XSLT) e a reversibilidade (XML SEFAZ → TXT original), que é **investigação em fase de desenho** (Fase 4, ver roadmap) — funções como dígito verificador têm perda e não são inversíveis sem heurística.
 
 **🇺🇸** The Sysmiddle Mapper's `ContentValue` uses a proprietary DSL with prefixes (`#.` local var, `$.` global var, `I.` source field, `T.` target field, `F.` function) and control structures with their own syntax (`begin/end`, `=` as comparison — confirmed **not** valid C#/Roslyn, a hypothesis investigated and refuted against the Sysmiddle DLLs). Strategic decision: reduce the AI's interpretation burden and enable future Ollama fine-tuning by never asking the model to learn the full Sysmiddle grammar per call.
 
-A deterministic, AI-free **Layer 0** translates raw `ContentValue` into structured JSON (`branches`/`condition`/`sources`/`target`/`functions`) before anything reaches the prompt. That logic now lives in **`ai/XslSynth.Contracts`**, a new project extracted from `ai/XslSynth.Core` containing only the deterministic, I/O-free core (`DslStructuredParser`, `StructuredRuleSchema`, `FunctionCatalog`, `GuidXPathCatalog`, `RealMapperParser`). It's referenced by both the research side (`ai/XslSynth.Core`, which keeps Ollama/RAG/XSD validation isolated) and the **API at runtime**, via `Services/Transformation/MappingStructureService.cs` (`Scoped` in `Program.cs`) — a real slice of this work now connects to the API's actual runtime, not just an offline/CLI tool. Today the service is wired into DI but has **no HTTP consumer yet** (`/fieldMappings` exposure is future work, issues #140/#141). The long-term goal of retiring the low-code XML is a declared vision, not a shipped capability — reversibility (XML → original TXT) is early-stage design investigation, not a real feature, since lossy functions (check digits) aren't cleanly invertible.
+A deterministic, AI-free **Layer 0** translates raw `ContentValue` into structured JSON (`branches`/`condition`/`sources`/`target`/`functions`) before anything reaches the prompt. That logic now lives in **`ai/XslSynth.Contracts`**, a new project extracted from `ai/XslSynth.Core` containing only the deterministic, I/O-free core (`DslStructuredParser`, `StructuredRuleSchema`, `FunctionCatalog`, `GuidXPathCatalog`, `RealMapperParser`). It's referenced by both the research side (`ai/XslSynth.Core`, which keeps Ollama/RAG/XSD validation isolated) and the **API at runtime**, via `Services/Transformation/MappingStructureService.cs` (`Scoped` in `Program.cs`) — a real slice of this work now connects to the API's actual runtime, not just an offline/CLI tool. **Current state (issues #138-#141 shipped):** HTTP exposure is no longer future work — `POST /api/transformationexecution/execute-candidates` now returns, per candidate, both `sectionMappings`/`xmlNamespaces` (row/section traceability, issue #138) and `fieldMappings` (field-level traceability, issue #141, built on the structural resolution engine from issue #140); there is also an equivalent dedicated endpoint, `POST /api/transformationexecution/field-mappings`. Full contract, payload examples and the still-pending behavioral-validation caveat: see [§7](#7-api--endpoints). The long-term goal of retiring the low-code XML remains a declared vision for the *generation* side and for reversibility (XML → original TXT), which is early-stage design investigation, not a real feature, since lossy functions (check digits) aren't cleanly invertible — but the *extraction* side (structural TXT↔XML coordinates over HTTP) is now shipped.
 
-Design completo: [`docs/architecture/design-dsl-mapper-prompt-ia-2026-08-16.md`](docs/architecture/design-dsl-mapper-prompt-ia-2026-08-16.md) e [`docs/architecture/design-xslsynth-runtime-e-reversibilidade-2026-08-16.md`](docs/architecture/design-xslsynth-runtime-e-reversibilidade-2026-08-16.md).
+Design completo: [`docs/architecture/design-dsl-mapper-prompt-ia-2026-08-16.md`](docs/architecture/design-dsl-mapper-prompt-ia-2026-08-16.md), [`docs/architecture/design-xslsynth-runtime-e-reversibilidade-2026-08-16.md`](docs/architecture/design-xslsynth-runtime-e-reversibilidade-2026-08-16.md), [`docs/architecture/design-resolucao-estrutural-txt-xml-issue-140.md`](docs/architecture/design-resolucao-estrutural-txt-xml-issue-140.md) e [`docs/architecture/design-contrato-fieldmappings-execute-candidates-issue-141.md`](docs/architecture/design-contrato-fieldmappings-execute-candidates-issue-141.md).
 
 ### Fallback automático de IA em produção / Automatic AI fallback in production
 
@@ -367,6 +367,143 @@ Without a `groundTruthXml` (State A, "generate from scratch"), the convergence c
 | `message` | free text | Human-readable message for front-end display. |
 
 **Sanitization rule:** every `message` in `pathwayDiagnostics` goes through [`LowCodeErrorSanitizer`](Services/Transformation/LowCode/LowCodeErrorSanitizer.cs) before reaching the HTTP payload — it **never** contains a physical disk path or raw internal detail. The full (unsanitized) detail only exists in the structured log, correlatable via `correlationId`.
+
+### `fieldMappings` em `execute-candidates` (Issue #141) / `fieldMappings` in `execute-candidates` (Issue #141)
+
+> ⚠️ **Ressalva ativa — leia antes de confiar no campo / Active caveat — read before trusting this field**
+>
+> **🇧🇷** A validação comportamental (rodar 20 execuções reais contra o `LowCodeRunner` e comparar o `fieldMappings` resolvido com o comportamento real do runner) **não foi feita neste ambiente** — o `LowCodeRunner.exe` é um processo Windows-only (x86, interop nativo) que não roda em WSL/Linux. O que existe hoje é **só validação estrutural**, com fixtures sintéticas (20 cenários cobrindo `direct`/`transformed`/`concatenated`/`static`/N:1/1:N/repetição). O dono do projeto autorizou seguir mesmo assim. Na prática: `fieldMappings` é funcional e testado estruturalmente, **mas ainda não confirmado contra a saída real do `LowCodeRunner` em produção**. Trate `confidence: "best-effort"` com cautela reforçada — e mesmo `"authoritative"` deve ser lido como "resolução estrutural correta segundo as regras declaradas no mapper", não como "validado contra execução real", até essa validação pendente ser concluída.
+>
+> **🇺🇸** Behavioral validation (running 20 real executions against `LowCodeRunner` and comparing the resolved `fieldMappings` to the runner's actual behavior) **has not been done in this environment** — `LowCodeRunner.exe` is a Windows-only process (x86, native interop) that does not run on WSL/Linux. What exists today is **structural validation only**, via synthetic fixtures (20 scenarios covering `direct`/`transformed`/`concatenated`/`static`/N:1/1:N/repetition). The project owner authorized proceeding anyway. In practice: `fieldMappings` is functional and structurally tested, **but not yet confirmed against `LowCodeRunner`'s real production output**. Treat `confidence: "best-effort"` with extra caution — and even `"authoritative"` should be read as "structurally correct per the rules declared in the mapper", not "validated against real execution", until this pending validation is completed.
+
+**🇧🇷** `POST /api/transformationexecution/execute-candidates` ganha um terceiro campo **aditivo** por candidato (issue #141, não quebra clientes existentes): [`fieldMappings`](Models/Transformation/TransformationCandidate.cs), o mapeamento **campo-a-campo** entre o layout posicional de origem (TXT/MQSeries/IDOC) e o XML de destino (hoje só NF-e — escopo do motor de resolução estrutural, issue #140). Reaproveita, sem custo adicional de I/O, o mesmo mapper decifrado e o mesmo parse posicional já usados para gerar `transformedXml` no pathway `sysmiddle`.
+
+**Não confunda com `sectionMappings`/`segmentMappings` (issue #138, ver seção "Rastreabilidade TXT↔XML por linha/seção" abaixo):** aquele é um mapeamento em nível de **linha/seção** (qual seção do layout corresponde a qual bloco do XML), já existente antes da #141. `fieldMappings` é um nível de granularidade abaixo — **campo individual** dentro de uma linha, com coordenada estrutural precisa (posição, ocorrência, XPath). Os dois são **complementares**, não substitutos: um front pode usar `sectionMappings` para navegação em bloco e `fieldMappings` para destacar/editar um campo específico. Juntos, os dois campos desbloqueiam a PBI [LayoutParserReact #128](https://github.com/LayoutParser/LayoutParserReact/issues/128) (highlight de campo).
+
+Exemplo completo — resolução do CNPJ do emitente:
+
+```jsonc
+// POST /api/transformationexecution/execute-candidates → response
+{
+  "success": true,
+  "candidates": [
+    {
+      "candidateId": "sysmiddle-{mapperGuid}",
+      "pathway": "sysmiddle",
+      "transformedXml": "<nfeProc>...</nfeProc>",
+      "fieldMappings": [
+        {
+          "mappingId": "...",
+          "sources": [
+            {
+              "lineGuid": "{guid-da-linha-C100}",
+              "lineName": "C100",
+              "fieldGuid": "{guid-do-campo-CNPJ}",
+              "fieldName": "CNPJ_EMITENTE",
+              "lineOccurrence": 0,
+              "startPosition": 12,
+              "length": 14
+            }
+          ],
+          "targets": [
+            {
+              "xpath": "/nfe:NFe/nfe:infNFe/nfe:emit/nfe:CNPJ",
+              "nodeKind": "Text",
+              "xmlOccurrence": null
+            }
+          ],
+          "kind": "Direct",
+          "confidence": "Authoritative",
+          "limitations": null
+        }
+      ]
+    }
+  ],
+  "warnings": [],
+  "pathwayDiagnostics": [],
+  "correlationId": "..."
+}
+```
+
+| Campo | Semântica |
+|-------|-----------|
+| `fieldMappings: null` | Pathway `tcl-xsl` (decisão categórica — sem fonte estrutural equivalente hoje, mesma decisão já tomada para `sectionMappings` nesse pathway); **ou** falha isolada na composição (parse compartilhado indisponível, mapper decifrado ausente, exceção do motor) — nunca derruba o candidato, vira `warning` textual em vez de erro 500. |
+| `fieldMappings: []` | Pathway `sysmiddle`, mapper existe e foi decifrado, mas o motor de composição não resolveu **nenhum** `FieldToXmlMapping` — resultado válido, não é falha. |
+| `fieldMappings: [...]` | Um ou mais mapeamentos resolvidos — ver estrutura abaixo. |
+| `sources[].lineOccurrence`/`startPosition`/`length` | Coordenadas do campo de origem no fragmento **físico** (`ParsedField.Occurrence`, nunca a ocorrência agregada) — nunca o valor do documento. |
+| `targets[].xpath` | Convenção **sempre com prefixo de namespace** (`nfe:`), nunca XPath sem prefixo — o XML da NF-e é namespaced e um XPath sem prefixo não resolveria contra o documento real. |
+| `targets[].xmlOccurrence` | `null` quando não há repetição confirmada no ancestral; inteiro quando há (ex.: N-ésimo item de uma lista repetida). |
+| `kind` | `Direct` (1:1 sem DSL, veio de `LinkMappings`) \| `Transformed` (regra DSL com função não-concatenadora, condicional ou loop) \| `Concatenated` (múltiplas origens combinadas) \| `Static` (valor literal, sem origem `I.`; `sources: []` nesse caso). |
+| `confidence` | `Authoritative` (as 5 condições objetivas do design foram atendidas) \| `BestEffort` (qualquer outro caso, inclusive fallback heurístico) — **ver a ressalva de validação pendente acima antes de tratar como verdade absoluta**. |
+| `limitations` | Populado (nunca `null`) quando `confidence: "BestEffort"` — motivo(s) legível(is) da degradação. Inclui o caso em que a linha TXT de origem está declarada vazia ou com degradação posicional (ver §4 "Sinais aditivos de linha"). |
+
+**🇺🇸** `POST /api/transformationexecution/execute-candidates` gains a third **additive** per-candidate field (issue #141, does not break existing clients): [`fieldMappings`](Models/Transformation/TransformationCandidate.cs), the **field-to-field** mapping between the source positional layout (TXT/MQSeries/IDOC) and the destination XML (NF-e only today — scope of the structural resolution engine, issue #140). It reuses, at no extra I/O cost, the same decrypted mapper and positional parse already used to produce `transformedXml` on the `sysmiddle` pathway.
+
+**Do not confuse with `sectionMappings`/`segmentMappings` (issue #138, see the "Row/section TXT↔XML traceability" section below):** that one is a **line/section**-level mapping (which layout section corresponds to which XML block), predating #141. `fieldMappings` is one granularity level below — an **individual field** inside a line, with a precise structural coordinate (position, occurrence, XPath). The two are **complementary**, not substitutes: a front-end can use `sectionMappings` for block-level navigation and `fieldMappings` to highlight/edit one specific field. Together, the two fields unblock PBI [LayoutParserReact #128](https://github.com/LayoutParser/LayoutParserReact/issues/128) (field highlight).
+
+| Field | Semantics |
+|-------|-----------|
+| `fieldMappings: null` | `tcl-xsl` pathway (categorical decision — no equivalent structural source today, same decision already made for `sectionMappings` on that pathway); **or** an isolated composition failure (shared parse unavailable, decrypted mapper missing, engine exception) — never fails the candidate, becomes a textual `warning` instead of a 500. |
+| `fieldMappings: []` | `sysmiddle` pathway, mapper exists and was decrypted, but the composition engine resolved **no** `FieldToXmlMapping` — a valid result, not a failure. |
+| `fieldMappings: [...]` | One or more resolved mappings — see structure above. |
+| `sources[].lineOccurrence`/`startPosition`/`length` | Coordinates of the source field in the **physical** fragment (`ParsedField.Occurrence`, never the aggregated occurrence) — never the document's actual value. |
+| `targets[].xpath` | Convention is **always namespace-prefixed** (`nfe:`), never a bare XPath — the NF-e XML is namespaced and a bare XPath would not resolve against the real document. |
+| `targets[].xmlOccurrence` | `null` when no repetition is confirmed on the ancestor; an integer when there is (e.g. the Nth item of a repeated list). |
+| `kind` | `Direct` (1:1, no DSL, came from `LinkMappings`) \| `Transformed` (DSL rule with a non-concatenating function, conditional, or loop) \| `Concatenated` (multiple sources combined) \| `Static` (literal value, no `I.` source; `sources: []` in this case). |
+| `confidence` | `Authoritative` (all 5 objective design conditions met) \| `BestEffort` (any other case, including heuristic fallback) — **see the pending-validation caveat above before treating this as absolute truth**. |
+| `limitations` | Populated (never `null`) when `confidence: "BestEffort"` — human-readable reason(s) for the degradation. Includes the case where the source TXT line is declared empty or positionally degraded (see §4 "Additive line signals"). |
+
+Design completo / Full design: [`docs/architecture/design-contrato-fieldmappings-execute-candidates-issue-141.md`](docs/architecture/design-contrato-fieldmappings-execute-candidates-issue-141.md) · [`docs/architecture/design-resolucao-estrutural-txt-xml-issue-140.md`](docs/architecture/design-resolucao-estrutural-txt-xml-issue-140.md). Endpoint isolado equivalente (mesmo motor, mesmo tipo de dado, não embutido em `execute-candidates`): `POST /api/transformationexecution/field-mappings`.
+
+### Rastreabilidade TXT↔XML por linha/seção — Fase 0 (Issue LayoutParserApi #138 / LayoutParserReact #126) / Row/section TXT↔XML traceability — Phase 0
+
+**🇧🇷** `POST /api/transformationexecution/execute-candidates` ganhou dois campos **aditivos** por candidato (não quebram clientes existentes): [`sectionMappings`](Models/Transformation/SectionMapping.cs) e `xmlNamespaces`. Eles mapeiam **de qual linha/seção do TXT** veio **qual nó do XML** gerado — granularidade de **LINHA/SEÇÃO, não de CAMPO**. Rastreabilidade campo-a-campo (`fieldMappings`) já foi entregue nas issues #140/#141 — ver seção acima. `sectionMappings` continua existindo como o nível linha/seção, complementar a `fieldMappings` (não substituído por ele): juntos, os dois campos desbloqueiam a PBI [LayoutParserReact #128](https://github.com/LayoutParser/LayoutParserReact/issues/128) (highlight de campo).
+
+Exemplo de payload (linha `ZRSDM_NFE_400_EMIT` mapeada estruturalmente para o nó de emitente do XML):
+
+```jsonc
+{
+  "candidateId": "...",
+  "pathway": "sysmiddle",
+  "transformedXml": "...",
+  "sectionMappings": [
+    {
+      "source": { "lineGuid": "a1b2c3d4-...", "lineName": "ZRSDM_NFE_400_EMIT", "lineOccurrence": 1 },
+      "targets": [
+        { "xPath": "/nfe:NFe/nfe:infNFe/nfe:emit", "nodeKind": "element", "xmlOccurrence": 1 }
+      ],
+      "confidence": "authoritative"
+    }
+  ],
+  "xmlNamespaces": { "nfe": "http://www.portalfiscal.inf.br/nfe" }
+}
+```
+
+**Semântica obrigatória de `sectionMappings`:**
+
+| Valor | Significado |
+|-------|-------------|
+| `null` | Este pathway ainda **não suporta** rastreabilidade. Hoje: `tcl-xsl` (retorna sempre `null`; `xmlNamespaces` também `null`). |
+| `[]` (lista vazia) | O pathway suporta, mas **não encontrou** mapeamentos estruturais resolvíveis para este candidato específico. |
+| lista preenchida | Mapeamentos disponíveis, cada um com XPath absoluto (`targets[].xPath`, com prefixo de namespace resolvido via `xmlNamespaces`) e nível de confiança (`confidence`). |
+
+- **Resolução sempre ESTRUTURAL**, nunca por comparação de valor textual do documento: hoje só o pathway `sysmiddle` resolve, e só emite `confidence: "authoritative"` (100% via estrutura declarada no mapper — atribuição `T.<path>` da DSL Sysmiddle) — **nunca inventa `best-effort`** por aproximação.
+- `xmlNamespaces` é reportado **uma vez por candidato** (não repetido por mapping) e é `null` sempre que `sectionMappings` também é `null`/vazio.
+- `source.lineOccurrence` distingue ocorrências quando a mesma linha alimenta múltiplos destinos estruturalmente distintos dentro do mesmo mapper — não é a ocorrência física real dentro do TXT recebido nesta chamada (fora do escopo da Fase 0).
+
+**🇺🇸** `POST /api/transformationexecution/execute-candidates` gained two **additive** per-candidate fields (safe for existing clients): [`sectionMappings`](Models/Transformation/SectionMapping.cs) and `xmlNamespaces`. They map **which TXT row/section** produced **which XML node** — **row/section granularity, not field-level**. Field-level traceability (`fieldMappings`) has already shipped as issues #140/#141 — see the section above. `sectionMappings` remains the row/section level, complementary to (not replaced by) `fieldMappings`: together, the two fields unblock PBI [LayoutParserReact #128](https://github.com/LayoutParser/LayoutParserReact/issues/128) (field highlight).
+
+**Mandatory semantics of `sectionMappings`:**
+
+| Value | Meaning |
+|-------|---------|
+| `null` | This pathway does **not support** traceability yet. Today: `tcl-xsl` (always returns `null`; `xmlNamespaces` is also `null`). |
+| `[]` (empty list) | The pathway supports it, but **found no** resolvable structural mappings for this specific candidate. |
+| populated list | Mappings available, each with an absolute XPath (`targets[].xPath`, namespace-prefixed via `xmlNamespaces`) and a confidence level (`confidence`). |
+
+- Resolution is always **STRUCTURAL**, never by comparing the document's textual value: today only the `sysmiddle` pathway resolves, and only ever emits `confidence: "authoritative"` (100% via structure declared in the mapper — the Sysmiddle DSL's `T.<path>` assignment) — it **never fabricates `best-effort`** by approximation.
+- `xmlNamespaces` is reported **once per candidate** (not repeated per mapping) and is `null` whenever `sectionMappings` is also `null`/empty.
+- `source.lineOccurrence` distinguishes occurrences when the same row feeds multiple structurally distinct destinations within the same mapper — it is not the actual physical occurrence within the TXT received on this call (out of scope for Phase 0).
 
 ---
 
@@ -571,8 +708,8 @@ LayoutParserApi/
 - [ ] **RAG vetorial:** indexar pares (layout → XSLT) num vector store (Redis Stack / RediSearch).
 - [x] **Loop de auto-correção XSLT:** fechado em produção — com gabarito (Issue #40, `sysmiddle` bem-sucedido) e sem gabarito (fallback automático Estado A, [§5](#5-a-visão-de-ia--the-ai-vision)). Falta ampliar a base de exemplos/RAG acima.
 - [ ] **Eliminar o XML low-code:** validar a geração autônoma de XSLT contra os XMLs finais esperados — hoje a IA só entra quando o low-code falha (fallback), ainda não substitui o pathway sysmiddle bem-sucedido.
-- [x] **`XslSynth.Contracts` extraído:** núcleo determinístico (parser DSL→JSON, catálogo de funções) isolado de `ai/XslSynth.Core` e referenciado pela API em runtime via `MappingStructureService` — ver [§5](#5-a-visão-de-ia--the-ai-vision). Ainda sem consumidor HTTP.
-- [ ] **Mapeamento campo TXT↔XML (issues #137-141):** Fase 1 (`XslSynth.Contracts`, feita) → Fase 2 (catálogo GUID→XPath em runtime) → Fase 3 (expor `/fieldMappings` para o front). Design: [`docs/architecture/design-xslsynth-runtime-e-reversibilidade-2026-08-16.md`](docs/architecture/design-xslsynth-runtime-e-reversibilidade-2026-08-16.md).
+- [x] **`XslSynth.Contracts` extraído:** núcleo determinístico (parser DSL→JSON, catálogo de funções) isolado de `ai/XslSynth.Core` e referenciado pela API em runtime via `MappingStructureService` — ver [§5](#5-a-visão-de-ia--the-ai-vision). **Já com consumidor HTTP real** (item abaixo).
+- [x] **Mapeamento campo TXT↔XML (issues #137-141) — entregue:** parser MapperVO canônico (#139, PR #201) → `sectionMappings`/`xmlNamespaces` linha/seção (#138, PR #203) → motor de resolução estrutural TXT↔XML via XSD NF-e (#140, PR #205) → `fieldMappings` campo-a-campo em `execute-candidates` + endpoint dedicado `POST /api/transformationexecution/field-mappings` (#141, PR #207). Contrato completo: [§7](#7-api--endpoints). **Ressalva:** validação comportamental contra o `LowCodeRunner` real ainda pendente (WSL/Linux não roda o runner Windows-only) — hoje só há validação estrutural sintética (20 fixtures), ver ressalva ativa em §7.
 - [ ] **Fase 4 — reconstrução reversa best-effort (XML→TXT):** investigação de desenho apenas, escopo ainda não confirmado com o dono; funções com perda (dígito verificador) não são inversíveis sem heurística — não prometer "reversão garantida".
 - [ ] **Testes automatizados:** ampliar cobertura de `Services/Testing`.
 - [ ] **MCP Server:** expandir o conjunto de *tools* e publicar o registro em `.mcp.json`.
