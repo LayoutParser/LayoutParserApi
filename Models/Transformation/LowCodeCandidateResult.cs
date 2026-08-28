@@ -44,5 +44,16 @@ namespace LayoutParserApi.Models.Transformation
         /// este campo sai no payload 200 do parse, então não pode carregar caminho de disco do servidor.
         /// </summary>
         public string? ErrorMessage { get; set; }
+
+        /// <summary>
+        /// Conteúdo decifrado (XML) do mapeador usado nesta transformação — issue #141. Exposto de
+        /// volta ao chamador (<c>TransformationExecutionController.ExecuteSysmiddleCandidatesAsync</c>)
+        /// para permitir compor <c>fieldMappings</c> (<see cref="LayoutParserApi.Services.Transformation.StructuralResolution.FieldMappingCompositionService"/>)
+        /// sem uma segunda consulta SQL ao mapper — o candidato já carrega o mesmo mapper decifrado que
+        /// o runner low-code usou para gerar <see cref="OutputXml"/>. Nulo quando a transformação falhou
+        /// antes de o mapper ser resolvido, ou quando o candidato é da entrada N==1 legada (preenchido
+        /// mesmo assim, ver <c>TransformSingleAndPersistAsync</c>).
+        /// </summary>
+        public string? DecryptedMapperContent { get; set; }
     }
 }

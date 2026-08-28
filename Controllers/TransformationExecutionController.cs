@@ -17,6 +17,7 @@ using LayoutParserApi.Services.Interfaces;
 using LayoutParserApi.Services.Filters;
 using LayoutParserApi.Models.Database;
 using LayoutParserApi.Models.Transformation;
+using LayoutParserApi.Models.Parsing;
 
 using XslSynth.Core;
 
@@ -418,6 +419,38 @@ namespace LayoutParserApi.Controllers
                     return result;
                 }
 
+                // ✅ Issue #141 (design §2, opção B): parse posicional do documento é feito UMA VEZ por
+                // request (compartilhado entre todos os candidatos sysmiddle — mesmo documento de
+                // entrada) em vez de recalculado por candidato. O mapper de cada candidato já veio
+                // decifrado de volta em LowCodeCandidateResult.DecryptedMapperContent (sem 2ª consulta
+                // SQL) — só falta parsear o TXT contra o Layout de origem, que RunAsync não expõe (o
+                // runner .exe parseia por dentro do processo externo, não via ILayoutParserService).
+                ParsingResult? sharedParsingResult = null;
+                if (!string.IsNullOrWhiteSpace(layoutRecord.DecryptedContent))
+                {
+                    try
+                    {
+                        using var layoutStream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(layoutRecord.DecryptedContent));
+                        using var txtStream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(request.InputContent));
+                        sharedParsingResult = await _layoutParser.ParseAsync(layoutStream, txtStream);
+                        if (!sharedParsingResult.Success || sharedParsingResult.Layout == null)
+                        {
+                            _logger.LogWarning(
+                                "fieldMappings (issue #141): parse posicional compartilhado falhou para layout {LayoutName} — candidatos sysmiddle seguem sem fieldMappings. Erro={ErrorMessage}",
+                                request.LayoutName, sharedParsingResult.ErrorMessage);
+                            sharedParsingResult = null;
+                        }
+                    }
+                    catch (Exception parseEx)
+                    {
+                        // Nunca deixa a composição de fieldMappings afetar o XML já produzido pelo runner.
+                        _logger.LogWarning(parseEx,
+                            "fieldMappings (issue #141): exceção no parse posicional compartilhado para layout {LayoutName} — candidatos sysmiddle seguem sem fieldMappings",
+                            request.LayoutName);
+                        sharedParsingResult = null;
+                    }
+                }
+
                 var anyCandidateFailed = false;
                 string lastCandidateFailureMessage = null;
                 foreach (var c in autoResult.Candidates)
@@ -428,7 +461,8 @@ namespace LayoutParserApi.Controllers
                         {
                             CandidateId = $"sysmiddle-{c.MapperGuid}",
                             Pathway = "sysmiddle",
-                            TransformedXml = c.OutputXml
+                            TransformedXml = c.OutputXml,
+                            FieldMappings = TryComposeFieldMappings(sharedParsingResult, c, request.LayoutName, warnings)
                         });
                     }
                     else
@@ -495,6 +529,39 @@ namespace LayoutParserApi.Controllers
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// Compõe <c>fieldMappings</c> (issue #141) para UM candidato sysmiddle bem-sucedido, sobre o
+        /// <paramref name="sharedParsingResult"/> já calculado uma vez por request e o mapper decifrado
+        /// que o próprio candidato já carrega (<see cref="LowCodeCandidateResult.DecryptedMapperContent"/>
+        /// — nenhuma consulta SQL nova). Nunca lança: qualquer falha (parse indisponível, mapper
+        /// ilegível, exceção do motor de composição) vira <c>null</c> + warning, e o candidato mantém
+        /// o <c>TransformedXml</c> já produzido pelo runner (design §2, "isolamento total").
+        /// </summary>
+        private IReadOnlyList<XslSynth.Model.FieldToXmlMapping>? TryComposeFieldMappings(
+            ParsingResult? sharedParsingResult, LowCodeCandidateResult candidate, string layoutName, List<string> warnings)
+        {
+            if (sharedParsingResult == null || sharedParsingResult.Layout == null)
+                return null; // já logado como warning no ponto em que o parse compartilhado falhou.
+
+            if (string.IsNullOrWhiteSpace(candidate.DecryptedMapperContent))
+                return null; // candidato sem mapper decifrado disponível (ex.: falha antes da resolução do mapper).
+
+            try
+            {
+                var mapperVo = new RealMapperParser().Parse(XDocument.Parse(candidate.DecryptedMapperContent));
+                return _fieldMappingComposition.Compose(
+                    sharedParsingResult.Layout, sharedParsingResult.ParsedFields, mapperVo, sharedParsingResult.LineInfos);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "fieldMappings (issue #141): falha ao compor mapeamentos estruturais para candidato mapper={MapperGuid} do layout {LayoutName}",
+                    candidate.MapperGuid, layoutName);
+                warnings.Add($"Candidato {candidate.MapperGuid} (pathway sysmiddle): falha ao compor fieldMappings — ver log do servidor");
+                return null;
+            }
         }
 
         /// <summary>
