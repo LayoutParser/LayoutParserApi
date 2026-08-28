@@ -347,6 +347,60 @@ namespace LayoutParserApi.Tests.Controllers
         }
 
         [Fact]
+        public async Task Candidato_sysmiddle_sem_mapeamento_resolvivel_traz_fieldMappings_vazio_nao_null()
+        {
+            // Mapper legível (RealMapperParser não falha), mas sem nenhum LinkMappingItem/Rule —
+            // Compose() itera sobre mapperVo.LinkMappings/Rules (ambos vazios aqui) e resolve para
+            // lista vazia (não nula): mapper existe e foi processado, mas não encontrou nenhum
+            // FieldToXmlMapping (design §6). Confirmado experimentalmente: um LinkMappingItem cujo
+            // InputLayoutGuid não existe no parse ainda produz uma entrada (BestEffort) — Compose()
+            // não filtra por resolução de origem, só itera a lista de links do mapper.
+            const string mapperSemCorrespondencia =
+                "<MapperVO>" +
+                "<MapperGuid>MAP_sem_match</MapperGuid>" +
+                "<TargetLayoutGuid>NFe-target</TargetLayoutGuid>" +
+                "</MapperVO>";
+
+            var (controller, _, _) = BuildController(new List<Mapper> { MapperComConteudo("M1", mapperSemCorrespondencia) });
+
+            var request = new TransformationRequest { InputContent = Documento, LayoutName = LayoutName, LayoutGuid = LayoutGuid };
+            var actionResult = await controller.ExecuteTransformationCandidates(request);
+
+            var ok = Assert.IsType<OkObjectResult>(actionResult);
+            var response = Assert.IsType<TransformationExecutionCandidatesResponse>(ok.Value);
+
+            var candidato = Assert.Single(response.Candidates, c => c.Pathway == "sysmiddle");
+            Assert.NotNull(candidato.FieldMappings); // não é null: composição rodou e concluiu sem exceção
+            Assert.Empty(candidato.FieldMappings!);  // é [], porque nenhum mapeamento foi resolvido
+        }
+
+        [Fact]
+        public async Task TransformedXml_e_identico_com_e_sem_extracao_de_fieldMappings()
+        {
+            // Mesmo mapper/documento: uma execução com parse posicional compartilhado disponível
+            // (fieldMappings populado) e outra com o parse falhando de propósito (fieldMappings null).
+            // TransformedXml vem exclusivamente de LowCodeCandidateResult.OutputXml (RunnerFalso), que
+            // não depende do resultado de TryComposeFieldMappings — este teste confirma que a extração
+            // de fieldMappings nunca influencia o XML já produzido pelo runner (isolamento total, design §2).
+            var (controllerComFieldMappings, _, _) = BuildController(new List<Mapper> { MapperComConteudo("M1", MapperXmlNatOpDireto) });
+            var (controllerSemFieldMappings, _, _) = BuildController(new List<Mapper> { MapperComConteudo("M1", MapperXmlNatOpDireto) }, parseFalha: true);
+
+            var request = new TransformationRequest { InputContent = Documento, LayoutName = LayoutName, LayoutGuid = LayoutGuid };
+
+            var okCom = Assert.IsType<OkObjectResult>(await controllerComFieldMappings.ExecuteTransformationCandidates(request));
+            var respostaCom = Assert.IsType<TransformationExecutionCandidatesResponse>(okCom.Value);
+            var candidatoCom = Assert.Single(respostaCom.Candidates, c => c.Pathway == "sysmiddle");
+
+            var okSem = Assert.IsType<OkObjectResult>(await controllerSemFieldMappings.ExecuteTransformationCandidates(request));
+            var respostaSem = Assert.IsType<TransformationExecutionCandidatesResponse>(okSem.Value);
+            var candidatoSem = Assert.Single(respostaSem.Candidates, c => c.Pathway == "sysmiddle");
+
+            Assert.NotNull(candidatoCom.FieldMappings);
+            Assert.Null(candidatoSem.FieldMappings);
+            Assert.Equal(candidatoSem.TransformedXml, candidatoCom.TransformedXml); // XML byte-idêntico nos dois cenários
+        }
+
+        [Fact]
         public async Task Pathway_tcl_xsl_fieldMappings_sempre_null()
         {
             // Sem .tcl cadastrado: o pathway tcl-xsl não gera candidato — mas quando gera (cenário
