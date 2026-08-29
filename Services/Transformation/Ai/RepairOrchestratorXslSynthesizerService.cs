@@ -1,5 +1,6 @@
 using System.Xml.Linq;
 
+using LayoutParserApi.Models.Entities;
 using LayoutParserApi.Services.Interfaces;
 using LayoutParserApi.Services.XmlAnalysis;
 
@@ -58,7 +59,8 @@ namespace LayoutParserApi.Services.Transformation.Ai
             string groundTruthXml,
             int maxIterations,
             string? layoutName,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            IReadOnlyList<ParsedField>? parsedFields = null)
         {
             try
             {
@@ -75,16 +77,39 @@ namespace LayoutParserApi.Services.Transformation.Ai
                 }
 
                 XDocument input;
-                try
+                if (parsedFields is { Count: > 0 })
                 {
-                    input = XDocument.Parse(inputXml);
+                    // Caminho real (docs/architecture/decisao-pendente-input-xml-repairorchestrator-
+                    // 2026-08-29.md): constrói o XDocument input a partir do parse posicional REAL
+                    // (ParsedField), no mesmo dialeto ROOT/Linha/Campo que RootTreeBuilder/TclRootBuilder
+                    // já produzem — não tenta mais parsear TXT cru como XML (sempre falhava).
+                    var built = ParsedFieldRootTreeBuilder.Build(parsedFields);
+                    if (built.Root is null)
+                    {
+                        _logger.LogWarning(
+                            "ParsedFieldRootTreeBuilder recusou montar o ROOT (gate de qualidade) — {Motivo} (mapperGuid={MapperGuid})",
+                            built.Motivo, mapperGuid);
+                        return Failed($"Não foi possível montar o XML de entrada a partir do parse posicional: {built.Motivo}");
+                    }
+
+                    _logger.LogInformation(
+                        "ROOT construído via ParsedFieldRootTreeBuilder: {LinhasDistintas} tipo(s) de linha, {ComValor}/{Total} campo(s) com valor (mapperGuid={MapperGuid})",
+                        built.LinhasDistintas, built.CamposComValor, built.CamposFisicos, mapperGuid);
+                    input = built.Root;
                 }
-                catch (Exception ex)
+                else
                 {
-                    // O RepairOrchestrator aplica XSLT sobre XML — TXT posicional cru não serve
-                    // aqui. É responsabilidade do chamador ter passado pelo parsing/low-code antes.
-                    _logger.LogWarning(ex, "Entrada não é XML bem-formado — RepairOrchestrator exige o low-code intermediário, não o TXT cru (mapperGuid={MapperGuid})", mapperGuid);
-                    return Failed("Entrada não é XML válido — RepairOrchestrator exige o documento já convertido (low-code), não o TXT posicional cru.");
+                    try
+                    {
+                        input = XDocument.Parse(inputXml);
+                    }
+                    catch (Exception ex)
+                    {
+                        // Sem ParsedFields e a entrada também não é XML bem-formado (TXT posicional
+                        // cru) — nada com que construir o input do RepairOrchestrator.
+                        _logger.LogWarning(ex, "Entrada não é XML bem-formado e nenhum ParsedField foi informado — RepairOrchestrator não tem como montar o documento de entrada (mapperGuid={MapperGuid})", mapperGuid);
+                        return Failed("Entrada não é XML válido e nenhum ParsedField foi informado — RepairOrchestrator exige o documento já convertido (low-code) ou o resultado do parse posicional.");
+                    }
                 }
 
                 var xsdPath = ResolveXsdPath(groundTruthXml);

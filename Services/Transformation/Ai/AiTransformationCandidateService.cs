@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 
+using LayoutParserApi.Models.Entities;
 using LayoutParserApi.Models.Transformation;
 using LayoutParserApi.Services.XmlAnalysis;
 using LayoutParserApi.Services.XmlAnalysis.Models;
@@ -71,7 +72,8 @@ namespace LayoutParserApi.Services.Transformation.Ai
             string mapperGuid,
             string inputContent,
             string? groundTruthXml,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            IReadOnlyList<ParsedField>? parsedFields = null)
         {
             if (string.IsNullOrWhiteSpace(ticket))
                 return Task.CompletedTask;
@@ -97,7 +99,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
                 try
                 {
                     if (hasGroundTruth)
-                        await RunLoopAsync(userId, ticket, layoutName, layoutGuid, mapperGuid, inputContent, groundTruthXml!, linkedCts.Token);
+                        await RunLoopAsync(userId, ticket, layoutName, layoutGuid, mapperGuid, inputContent, groundTruthXml!, linkedCts.Token, parsedFields);
                     else
                         await RunFallbackLoopAsync(userId, ticket, layoutName, layoutGuid, mapperGuid, inputContent, linkedCts.Token);
                 }
@@ -147,13 +149,14 @@ namespace LayoutParserApi.Services.Transformation.Ai
         /// caminho legado (XML-direto via Ollama) — nunca derruba o job.
         /// </summary>
         private async Task<XslSynthesisResult?> TrySynthesizeXsltAsync(
-            string layoutName, string mapperGuid, string inputContent, string groundTruthXml, int maxIterations, CancellationToken cancellationToken)
+            string layoutName, string mapperGuid, string inputContent, string groundTruthXml, int maxIterations,
+            CancellationToken cancellationToken, IReadOnlyList<ParsedField>? parsedFields)
         {
             try
             {
                 using var scope = _scopeFactory.CreateScope();
                 var synthesizer = scope.ServiceProvider.GetRequiredService<IXslSynthesizerService>();
-                var result = await synthesizer.SynthesizeAsync(mapperGuid, inputContent, groundTruthXml, maxIterations, layoutName, cancellationToken);
+                var result = await synthesizer.SynthesizeAsync(mapperGuid, inputContent, groundTruthXml, maxIterations, layoutName, cancellationToken, parsedFields);
                 return result.Success ? result : null;
             }
             catch (OperationCanceledException)
@@ -173,12 +176,13 @@ namespace LayoutParserApi.Services.Transformation.Ai
         /// </summary>
         private async Task RunLoopAsync(
             string userId, string ticket, string layoutName, Guid layoutGuid, string mapperGuid,
-            string inputContent, string groundTruthXml, CancellationToken cancellationToken)
+            string inputContent, string groundTruthXml, CancellationToken cancellationToken,
+            IReadOnlyList<ParsedField>? parsedFields = null)
         {
             var maxIterations = _options.MaxIterations > 0 ? _options.MaxIterations : 3;
 
             // ── Motor novo primeiro: RepairOrchestrator sintetiza XSLT real, não XML direto ──
-            var synthesis = await TrySynthesizeXsltAsync(layoutName, mapperGuid, inputContent, groundTruthXml, maxIterations, cancellationToken);
+            var synthesis = await TrySynthesizeXsltAsync(layoutName, mapperGuid, inputContent, groundTruthXml, maxIterations, cancellationToken, parsedFields);
             if (synthesis is not null)
             {
                 if (synthesis.Converged && !string.IsNullOrWhiteSpace(synthesis.FinalOutputXml))

@@ -303,7 +303,7 @@ namespace LayoutParserApi.Controllers
             // Pathway IA (Issue #40): dispara só depois de ter gabarito sysmiddle disponível — nunca
             // como terceiro Task síncrono (ver docs/architecture/pathway-ia-execute-candidates.md §3).
             // Fire-and-forget: NUNCA atrasa nem derruba a resposta síncrona já calculada acima.
-            TryEnqueueAiCandidate(request, layoutRecord, candidates, isXmlInput, CurrentUserId);
+            await TryEnqueueAiCandidate(request, layoutRecord, candidates, isXmlInput, CurrentUserId);
 
             // Fallback automático de IA (design-fallback-ia-automatico-2026-08-16.md §1/§2): só
             // quando NENHUM candidato foi produzido pelos dois pathways síncronos E nenhum deles
@@ -579,7 +579,7 @@ namespace LayoutParserApi.Controllers
         /// não é um fallback condicionado ao tcl-xsl. Nunca lança: qualquer falha aqui vira
         /// warning e não afeta o array <c>candidates[]</c> já calculado.
         /// </summary>
-        private void TryEnqueueAiCandidate(
+        private async Task TryEnqueueAiCandidate(
             TransformationRequest request, LayoutRecord layoutRecord, List<TransformationCandidate> candidates, bool isXmlInput,
             string userId)
         {
@@ -587,6 +587,33 @@ namespace LayoutParserApi.Controllers
                 request.LayoutGuid, layoutRecord.LayoutGuid, request.InputContent, isXmlInput, candidates);
             if (plan == null)
                 return; // sem gabarito sysmiddle bem-sucedido ou sem LayoutGuid resolvível: IA não aplicável (§2.1/§3.2 do desenho).
+
+            // ✅ Issue #140/decisão 2026-08-29 (docs/architecture/decisao-pendente-input-xml-
+            // repairorchestrator-2026-08-29.md): o RepairOrchestrator (motor novo de
+            // AiTransformationCandidateService) exige o resultado do parse posicional REAL
+            // (ParsedField) para montar o XML de entrada via ParsedFieldRootTreeBuilder — TXT cru
+            // não é XML e nunca vai ser aceito por XDocument.Parse. Parse próprio (não reaproveita
+            // o sharedParsingResult de ExecuteSysmiddleCandidatesAsync — escopo local ao método,
+            // reestruturar o retorno dele para isso não vale o acoplamento). Nunca lança: falha
+            // aqui apenas degrada o motor novo para o loop legado XML-direto (parsedFields=null).
+            IReadOnlyList<Models.Entities.ParsedField>? parsedFields = null;
+            if (!string.IsNullOrWhiteSpace(layoutRecord.DecryptedContent) && !isXmlInput)
+            {
+                try
+                {
+                    using var layoutStream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(layoutRecord.DecryptedContent));
+                    using var txtStream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(request.InputContent));
+                    var parseResult = await _layoutParser.ParseAsync(layoutStream, txtStream);
+                    if (parseResult.Success && parseResult.ParsedFields is { Count: > 0 })
+                        parsedFields = parseResult.ParsedFields;
+                }
+                catch (Exception parseEx)
+                {
+                    _logger.LogDebug(parseEx,
+                        "Pathway IA: parse posicional para ParsedFieldRootTreeBuilder falhou — motor novo degrada para o loop legado (layout={LayoutName})",
+                        request.LayoutName);
+                }
+            }
 
             try
             {
@@ -603,7 +630,8 @@ namespace LayoutParserApi.Controllers
                     plan.MapperGuid,
                     request.InputContent,
                     plan.GroundTruthXml,
-                    CancellationToken.None);
+                    CancellationToken.None,
+                    parsedFields);
             }
             catch (Exception ex)
             {

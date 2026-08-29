@@ -1,3 +1,5 @@
+using LayoutParserApi.Models.Entities;
+
 namespace LayoutParserApi.Services.Transformation.Ai
 {
     /// <summary>
@@ -18,19 +20,32 @@ namespace LayoutParserApi.Services.Transformation.Ai
         /// pela etapa de parsing/low-code antes de chegar aqui).
         /// </summary>
         /// <param name="mapperGuid">GUID do mapeador (resolve o MapeadorVO real via cache/banco).</param>
-        /// <param name="inputXml">Documento de entrada, já em XML (low-code intermediário).</param>
+        /// <param name="inputXml">
+        /// Documento de entrada, quando já em XML (low-code intermediário) — mantido por
+        /// compatibilidade/logging. Quando <paramref name="parsedFields"/> é informado e não vazio,
+        /// ele tem PRECEDÊNCIA: o <c>XDocument input</c> real é construído a partir dos
+        /// <see cref="ParsedField"/> via <see cref="ParsedFieldRootTreeBuilder"/> (docs/architecture/
+        /// decisao-pendente-input-xml-repairorchestrator-2026-08-29.md), não parseando este texto.
+        /// </param>
         /// <param name="groundTruthXml">XML final esperado (gabarito), usado pelo diff canônico.</param>
         /// <param name="maxIterations">Teto de iterações do loop gerar→validar→corrigir.</param>
         /// <param name="layoutName">Nome do layout — usado só para persistir o XSLT convergido na
         /// convenção <c>{mapperName}_{layoutName}.xsl</c> já lida por <c>TransformationPipelineService</c>
         /// (issue #55). Persistência é best-effort: falha aqui não derruba a síntese.</param>
+        /// <param name="parsedFields">
+        /// Resultado do parse posicional REAL (<c>ILayoutParserService.ParseAsync</c>) do TXT de
+        /// entrada contra o <c>Layout</c> de origem — a fonte preferida do <c>XDocument input</c>
+        /// que o <c>RepairOrchestrator</c> aplica a XSLT sintetizada por cima. <c>null</c>/vazio
+        /// degrada para tentar <paramref name="inputXml"/> como XML já pronto.
+        /// </param>
         Task<XslSynthesisResult> SynthesizeAsync(
             string mapperGuid,
             string inputXml,
             string groundTruthXml,
             int maxIterations,
             string? layoutName,
-            CancellationToken cancellationToken);
+            CancellationToken cancellationToken,
+            IReadOnlyList<ParsedField>? parsedFields = null);
     }
 
     /// <summary>Resultado do loop de síntese — mesmo vocabulário de <see cref="AiCandidateDiagnostics"/>

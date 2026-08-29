@@ -69,7 +69,8 @@ namespace LayoutParserApi.Tests.Controllers
         {
             public int EnqueueCount { get; private set; }
             public Task EnqueueAsync(string userId, string ticket, string layoutName, Guid layoutGuid, string mapperGuid,
-                string inputContent, string? groundTruthXml, CancellationToken cancellationToken)
+                string inputContent, string? groundTruthXml, CancellationToken cancellationToken,
+                IReadOnlyList<Models.Entities.ParsedField>? parsedFields = null)
             {
                 EnqueueCount++;
                 return Task.CompletedTask;

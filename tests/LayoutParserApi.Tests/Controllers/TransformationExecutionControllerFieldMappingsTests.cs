@@ -190,7 +190,8 @@ namespace LayoutParserApi.Tests.Controllers
         private sealed class SpyAiCandidateService : IAiTransformationCandidateService
         {
             public Task EnqueueAsync(string userId, string ticket, string layoutName, Guid layoutGuid, string mapperGuid,
-                string inputContent, string? groundTruthXml, CancellationToken cancellationToken) => Task.CompletedTask;
+                string inputContent, string? groundTruthXml, CancellationToken cancellationToken,
+                IReadOnlyList<Models.Entities.ParsedField>? parsedFields = null) => Task.CompletedTask;
 
             public Task<AiCandidateStatus> GetStatusAsync(string userId, string ticket, CancellationToken cancellationToken) =>
                 Task.FromResult(new AiCandidateStatus { Status = AiCandidateStatus.StatusNotFound });
