@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 
+using LayoutParserApi.Models.Entities;
 using LayoutParserApi.Models.Transformation;
 using LayoutParserApi.Services.XmlAnalysis;
 using LayoutParserApi.Services.XmlAnalysis.Models;
@@ -44,7 +45,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
         // Task.Run fire-and-forget que sobrevive ao fim do scope da request HTTP — capturar
         // diretamente a instância injetada aqui seria usar um serviço Scoped fora do seu ciclo de
         // vida. Por isso recebemos IServiceScopeFactory e abrimos um scope novo dentro do loop
-        // (RunLoopAsync/RunFallbackLoopAsync).
+        // (RunLoopAsync/RunFallbackLoopAsync). O mesmo vale para IXslSynthesizerService (Scoped).
         public AiTransformationCandidateService(
             ILogger<AiTransformationCandidateService> logger,
             HttpClient httpClient,
@@ -71,7 +72,8 @@ namespace LayoutParserApi.Services.Transformation.Ai
             string mapperGuid,
             string inputContent,
             string? groundTruthXml,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            IReadOnlyList<ParsedField>? parsedFields = null)
         {
             if (string.IsNullOrWhiteSpace(ticket))
                 return Task.CompletedTask;
@@ -97,7 +99,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
                 try
                 {
                     if (hasGroundTruth)
-                        await RunLoopAsync(userId, ticket, layoutName, layoutGuid, mapperGuid, inputContent, groundTruthXml!, linkedCts.Token);
+                        await RunLoopAsync(userId, ticket, layoutName, layoutGuid, mapperGuid, inputContent, groundTruthXml!, linkedCts.Token, parsedFields);
                     else
                         await RunFallbackLoopAsync(userId, ticket, layoutName, layoutGuid, mapperGuid, inputContent, linkedCts.Token);
                 }
@@ -137,14 +139,90 @@ namespace LayoutParserApi.Services.Transformation.Ai
         }
 
         /// <summary>
+        /// Motor real: <see cref="IXslSynthesizerService"/> (RepairOrchestrator de
+        /// <c>ai/XslSynth.Core</c>) sintetiza XSLT de verdade — gerar → validar (diff canônico +
+        /// XSD) → corrigir, tudo dentro do orquestrador. Só se aplica quando <paramref
+        /// name="inputContent"/> já é XML (o low-code intermediário) — RepairOrchestrator aplica
+        /// XSLT sobre XML, não sobre TXT posicional cru. Nesse caso o candidato convergido/falho
+        /// já vem pronto e <see cref="RunLoopAsync"/> não precisa do loop XML-direto antigo.
+        /// Quando não se aplica (TXT cru, mapper sem MapeadorVO resolvível, etc.), degrada pro
+        /// caminho legado (XML-direto via Ollama) — nunca derruba o job.
+        /// </summary>
+        private async Task<XslSynthesisResult?> TrySynthesizeXsltAsync(
+            string layoutName, string mapperGuid, string inputContent, string groundTruthXml, int maxIterations,
+            CancellationToken cancellationToken, IReadOnlyList<ParsedField>? parsedFields)
+        {
+            try
+            {
+                using var scope = _scopeFactory.CreateScope();
+                var synthesizer = scope.ServiceProvider.GetRequiredService<IXslSynthesizerService>();
+                var result = await synthesizer.SynthesizeAsync(mapperGuid, inputContent, groundTruthXml, maxIterations, layoutName, cancellationToken, parsedFields);
+                return result.Success ? result : null;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "IXslSynthesizerService indisponível/falhou — degradando para o loop XML-direto legado (mapperGuid={MapperGuid})", mapperGuid);
+                return null;
+            }
+        }
+
+        /// <summary>
         /// Loop gerar → validar XSD → diff canônico (simplificado — comparação estrutural, não
         /// node-a-node como <c>CanonicalDiffer</c> de <c>ai/XslSynth</c>) → corrigir.
         /// </summary>
         private async Task RunLoopAsync(
             string userId, string ticket, string layoutName, Guid layoutGuid, string mapperGuid,
-            string inputContent, string groundTruthXml, CancellationToken cancellationToken)
+            string inputContent, string groundTruthXml, CancellationToken cancellationToken,
+            IReadOnlyList<ParsedField>? parsedFields = null)
         {
             var maxIterations = _options.MaxIterations > 0 ? _options.MaxIterations : 3;
+
+            // ── Motor novo primeiro: RepairOrchestrator sintetiza XSLT real, não XML direto ──
+            var synthesis = await TrySynthesizeXsltAsync(layoutName, mapperGuid, inputContent, groundTruthXml, maxIterations, cancellationToken, parsedFields);
+            if (synthesis is not null)
+            {
+                if (synthesis.Converged && !string.IsNullOrWhiteSpace(synthesis.FinalOutputXml))
+                {
+                    _store.Set(userId, ticket, new AiCandidateStatus
+                    {
+                        Status = AiCandidateStatus.StatusConverged,
+                        Candidate = new TransformationCandidate
+                        {
+                            CandidateId = $"ia-{mapperGuid}",
+                            Pathway = "ia",
+                            TransformedXml = synthesis.FinalOutputXml,
+                            GeneratedXslt = synthesis.GeneratedXslt
+                        },
+                        Diagnostics = new AiCandidateDiagnostics
+                        {
+                            Iterations = synthesis.IterationsUsed,
+                            RemainingDiffs = 0,
+                            XsdValid = synthesis.XsdValid
+                        }
+                    });
+                }
+                else
+                {
+                    _store.Set(userId, ticket, new AiCandidateStatus
+                    {
+                        Status = AiCandidateStatus.StatusFailed,
+                        Diagnostics = new AiCandidateDiagnostics
+                        {
+                            Iterations = synthesis.IterationsUsed,
+                            RemainingDiffs = synthesis.ValidationErrors.Count,
+                            XsdValid = synthesis.XsdValid,
+                            LastError = synthesis.Error ?? $"RepairOrchestrator não convergiu em {synthesis.IterationsUsed} iteração(ões)"
+                        }
+                    });
+                }
+                return;
+            }
+
+            // ── Fallback legado: XML-direto via Ollama (sem síntese de XSLT reutilizável) ──
             string? lastCandidateXml = null;
             string? lastError = null;
             var lastDiffCount = int.MaxValue;

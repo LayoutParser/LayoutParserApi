@@ -1,3 +1,5 @@
+using LayoutParserApi.Models.Entities;
+
 namespace LayoutParserApi.Services.Transformation.Ai
 {
     /// <summary>
@@ -23,6 +25,13 @@ namespace LayoutParserApi.Services.Transformation.Ai
         /// <see cref="AiTransformationCandidateOptions.MaxIterationsFallback"/> e o
         /// <see cref="AiCandidateDiagnostics"/> resultante marca <c>HasGroundTruth = false</c>.
         /// </param>
+        /// <param name="parsedFields">
+        /// Resultado do parse posicional REAL do TXT contra o <c>Layout</c> de origem, quando o
+        /// chamador já o tiver calculado (docs/architecture/decisao-pendente-input-xml-
+        /// repairorchestrator-2026-08-29.md). Repassado ao motor <c>RepairOrchestrator</c> para
+        /// montar o XML de entrada via <see cref="ParsedFieldRootTreeBuilder"/> — sem ele, o motor
+        /// novo degrada e o job cai no loop legado XML-direto.
+        /// </param>
         Task EnqueueAsync(
             string userId,
             string ticket,
@@ -31,7 +40,8 @@ namespace LayoutParserApi.Services.Transformation.Ai
             string mapperGuid,
             string inputContent,
             string? groundTruthXml,
-            CancellationToken cancellationToken);
+            CancellationToken cancellationToken,
+            IReadOnlyList<ParsedField>? parsedFields = null);
 
         /// <param name="userId">Mesmo dono passado a <see cref="EnqueueAsync"/> — ticket de outro
         /// usuário não é encontrado (comporta-se como inexistente, não como erro).</param>
