@@ -353,3 +353,106 @@ e a VM esgota RAM antes de chegar ao tamanho real dos exemplos.
 `transformers` (5.16.1) **removeu o parâmetro `no_cuda`** de `TrainingArguments`, usar `use_cpu`
 no lugar) ficaram na VM (`elson@172.25.32.5:~/`), não foram copiados para o repositório — são
 artefatos de teste, não parte do pipeline de produção ainda.
+
+## Smoke-test #3 executado em 2026-08-29 — gradient checkpointing + chunking
+
+Continuação direta do smoke-test #2 (mesma VM, mesmo dataset real de 259 pares brutos em
+`~/finetuning-dataset/`). Dois ajustes implementados e medidos separadamente.
+
+### 1. Gradient checkpointing — resolve o OOM, custa ~2,7x mais tempo/passo
+
+`model.config.use_cache = False` + `model.gradient_checkpointing_enable()` +
+`gradient_checkpointing=True` em `TrainingArguments` (script `~/smoke_train_real3.py`, variante
+de `smoke_train_real2.py` do smoke-test #2).
+
+- **MAX_LEN=4096 (a config que morria por OOM no smoke-test #2):** não travou imediatamente como
+  antes (RAM subiu a ~8,4GB e ficou estável passando o ponto onde antes morria), mas o processo
+  **morreu silenciosamente durante o step 1** antes de completar (sem mensagem de erro capturada —
+  sem acesso a `dmesg`/`journalctl` nesta VM para confirmar OOM-kill com certeza, mas o padrão
+  memória-sobe-depois-processo-some é consistente com OOM). **Não confiável em produção.**
+- **MAX_LEN=2048, 5 exemplos reais (647–5.689 tokens reais, 2 de 5 truncados):** funcionou de
+  ponta a ponta, sem OOM. **RAM estável em ~11,56GB** (`PEAK_RSS_KB=11559932`) ao longo dos 5
+  passos — folga de ~3,5GB dos 15GB da VM. **Tempo por passo: 110,85–119,73s** (5 passos:
+  111,72 / 110,85 / 111,72 / 118,86 / 119,73s) — **quase constante independente do tamanho real
+  do exemplo**, porque `padding="max_length"` força todo passo a processar os 2048 tokens cheios
+  independente de quanto do exemplo é conteúdo real vs. padding. Treino completo (5 passos):
+  **572,8s de treino puro, 627,5s wall-clock** (a maior parte do resto é carregar o modelo do
+  cache, ~50-54s).
+- **Comparação direta com smoke-test #2:** ~41-43s/passo em MAX_LEN=1024 sem checkpointing vs.
+  ~111-120s/passo em MAX_LEN=2048 com checkpointing — dobrar o tamanho da sequência **e** ligar
+  checkpointing custou ~2,7x o tempo por passo (não só ~2x pelo dobro de tokens; a recomputação de
+  ativações no backward é o custo extra do checkpointing). **Veredito: MAX_LEN=2048 com gradient
+  checkpointing é o teto realista de sequência nesta VM sem OOM** — 4096 continua não confiável
+  mesmo com checkpointing.
+
+### 2. Chunking dos exemplos longos — resolve a perda de conteúdo, mas explode o nº de exemplos
+
+Script `~/build_chunks.py`: em vez de truncar o `.xsl` cru, cada par é tokenizado
+(`AutoTokenizer` do próprio modelo) e o `completion` é dividido em janelas de até
+`WINDOW=2048` tokens (descontado o espaço do prompt/instrução) com overlap de 256 tokens entre
+janelas consecutivas — cada janela vira um exemplo de treino próprio, marcado com
+`[trecho i/N do XSLT completo]` no prompt. **Confirmado antes de decidir a estratégia:** os XSLTs
+reais não têm uma estrutura de `<xsl:template>` limpa e uniforme pra particionar por bloco
+semântico (a maioria tem só 2 templates — um de match raiz + um principal monolítico; um caso
+tinha 4, outro 0) — janela deslizante com overlap foi a opção viável, não particionamento por
+template.
+
+**Resultado medido no dataset real completo (259 pares brutos):**
+- **123 de 259 pares (47%) precisam de chunking** (o `.xsl` sozinho já excede o orçamento de
+  tokens disponível dentro da janela de 2048, mesmo descontando o prompt).
+- **Total de exemplos de treino após chunking: 1.772** (era 259 um-exemplo-por-par).
+- **Chunks por par: mínimo 1, média 6,84, máximo 65** (o par mais longo do dataset, 153k
+  caracteres, tokeniza pra além do próprio limite de contexto do tokenizer do modelo — 34.487
+  tokens vs. 32.768 do Qwen2.5-Coder, o tokenizer avisa mas ainda processa).
+
+**Por que isso muda o veredito:** como o tempo por passo em MAX_LEN=2048 é ~quase-constante
+(~115s) **independente do conteúdo real do exemplo** (por causa do padding fixo), o custo total de
+treino escala com o **número de exemplos**, não com o volume de conteúdo coberto. Chunking
+preserva conteúdo (resolve o problema de qualidade do smoke-test #2), mas ao custo de **multiplicar
+o dataset por ~6,8x em média** — e o tempo de treino junto:
+
+- **259 exemplos (sem chunking, truncado) × ~115s/passo × 1 época ≈ 8,3h.** Para 3 épocas,
+  **~24,8h** — cabe numa janela de fim de semana (~48h) com folga real para merge/quantização.
+  **Mas isso é o cenário que ainda trunca os 123 pares longos** (47% do dataset perde parte do
+  conteúdo real).
+- **1.772 exemplos (com chunking, cobertura completa) × ~115s/passo × 1 época ≈ 56,6h.** Já
+  **1 única época não cabe numa janela de fim de semana de ~48h** — muito menos as 3-5 épocas
+  planejadas originalmente. Chunking com cobertura completa do dataset real, nas condições desta
+  VM, é **inviável no fim de semana**, não é uma questão de ajuste fino de configuração.
+
+### Veredito final do smoke-test #3
+
+**O ciclo mecânico com gradient checkpointing está confirmado funcionando e sem OOM em
+MAX_LEN=2048** — esse ajuste funcionou exatamente como esperado (RAM estável, ~3,5GB de folga).
+**Chunking funciona tecnicamente** (script gera o dataset expandido corretamente, medido em
+dataset real) **mas não resolve o problema dentro da janela de fim de semana** — ele troca "perda
+de conteúdo" por "tempo de treino inviável", não elimina o trade-off, só desloca ele. Não é seguro
+prometer que os dois ajustes juntos destravam o treino completo de qualidade nesta janela.
+
+**Opção realista recomendada para o treino do fim de semana (em ordem de preferência):**
+1. **MAX_LEN=2048 + gradient checkpointing, SEM chunking (truncamento aceito para os 123/259
+   pares longos), 3 épocas, ~24,8h medidas** — cabe com folga, é o que efetivamente roda ponta a
+   ponta dentro da janela. Sacrifica cobertura completa nos mapeadores mais longos (aceitável para
+   a Fase 1, cujo objetivo declarado é "ver o ciclo funcionando", não qualidade de produção).
+2. **Chunking parcial com teto** (ex.: no máximo 3-4 chunks por par, cobrindo só o início de cada
+   XSLT longo em vez de tudo) — não medido nesta rodada; reduziria o multiplicador de ~6,84x pra
+   algo como ~2-3x nos pares que hoje geram muitos chunks, mas ainda não cabe com folga junto de
+   3-5 épocas sem reduzir também o nº de pares de origem. Precisaria de novo smoke-test antes de
+   comprometer a janela.
+3. **Reduzir épocas para 1** com chunking completo (1.772 exemplos, ~56,6h) — **não cabe** mesmo
+   assim numa janela de ~48h; descartado.
+4. **Reduzir o dataset de origem** (treinar só nos pares mais curtos, ex.: os que não precisam de
+   chunking) mantendo chunking pros poucos que sobrarem — mantém qualidade total nesses pares às
+   custas de cobertura de mapeadores (fica coerente com a decisão já registrada no plano de "Fase 1
+   usa só o mapeador de referência mais bem documentado", não o corpus inteiro).
+
+**Recomendação concreta:** opção 1 para o treino de fim de semana desta rodada — é a única medida
+com números reais que cabe com folga. Revisitar chunking com teto (opção 2) ou modelo maior/GPU só
+na Fase 2, depois que o ciclo ponta a ponta (dado → treino → merge → `ollama create` → geração
+observável → validação) tiver rodado pelo menos uma vez sob a opção 1.
+
+### Scripts do smoke-test #3 (não commitados — artefatos de sessão na VM)
+
+`~/smoke_train_real3.py` (gradient checkpointing) e `~/build_chunks.py` (chunking com overlap),
+mais o dataset gerado `~/finetuning-dataset-chunked.jsonl` (1.772 linhas) — ficaram na VM
+(`elson@172.25.32.5:~/`), mesmo tratamento dos scripts anteriores (artefatos de teste).
