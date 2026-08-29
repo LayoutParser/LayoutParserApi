@@ -302,6 +302,50 @@ já parece a escolha certa) nem o mecanismo de treino (LoRA fp32 funciona). Reco
 smoke-test #2 com dados reais (mesmo que só 5-10 pares, tamanho real) antes do treino completo
 de sábado à noite.
 
+## Smoke-test #2 executado em 2026-08-29 (dado real, tamanho real)
+
+Dataset real localizado (155 pares `tcl`/`xsl` batendo por nome em
+`C:\inetpub\wwwroot\layoutparser\Examples\{tcl,xsl}\...`, 259 pares brutos considerando variantes
+de versão). Confirmado: `xsl` real varia **454 a 153.438 caracteres** (média ~16,6k, bate com a
+extrapolação anterior). Copiado para a VM (`~/finetuning-dataset/`) via `scp`; amostra de 8 pares
+reais selecionada (`smoke_dataset_real.jsonl`).
+
+**MAX_LEN=4096 (padding a 4096 tokens) → processo `Killed` (OOM) já no primeiro passo de
+treino**, mesmo com só 1 exemplo de 38k tokens na amostra — o padding a 4096 tokens sozinho, em
+fp32, já é grande demais para os ~15Gi de RAM livre desta VM.
+
+**MAX_LEN=1024, 6 exemplos reais (os mais curtos, 647–5.689 tokens reais, 5 de 6 truncados) →
+funcionou, mas no limite:** RAM subiu para **~12Gi de 15Gi usados** (`free -h` durante o treino),
+e cada passo levou **~41–43s** (vs. ~10,7s/passo no smoke-test #1 sintético de 256 tokens) — ou
+seja, **~4x mais lento para 4x mais tokens** (custo aproximadamente linear nessa faixa, não
+quadrático ainda). 5 passos completos mediram consistentemente 41,06 / 41,38 / 42,25 / 41,85 /
+43,70s; o 6º foi cortado pelo timeout de 300s do teste, não pelo treino em si.
+
+### Veredito do smoke-test #2
+
+**Não cabe como está.** Dois problemas distintos, não um só:
+
+1. **RAM é o limite real, não tempo.** A 1024 tokens já usa 80% da RAM da VM; a 4096 tokens
+   (ainda abaixo da média real de ~16,6k chars ≈ 4-6k tokens) o processo morre por OOM. Rodar o
+   dataset real sem ajuste de memória não é uma questão de "esperar mais", é inviável nesta VM.
+2. **Truncar para 1024 perde a maior parte do conteúdo real** (mediana dos `.xsl` reais é bem
+   maior que 1024 tokens) — treinar truncado a esse tamanho ensinaria o modelo a gerar só o
+   início dos XSLTs, não o documento completo. Não é uma solução de qualidade aceitável para a
+   Fase 1, só um dado de calibração de custo.
+
+**Ajuste necessário antes do treino completo de fim de semana** (em ordem de impacto):
+- **Gradient checkpointing** (`model.gradient_checkpointing_enable()`) — troca RAM por tempo de
+  CPU extra, é o único ajuste que ataca a causa raiz (RAM, não tempo) sem cortar conteúdo.
+- Mesmo com checkpointing, considerar **chunking dos `.xsl` mais longos** (ex.: janelas de
+  ~2-4k tokens com overlap) em vez de truncar cru — decisão de dataset prep, não só de treino.
+- Se checkpointing sozinho não bastar, **reduzir ainda mais o batch/seq_len efetivo** ou aceitar
+  treinar só no subconjunto de pares com `.xsl` mais curto (perde cobertura, mas mantém
+  qualidade no que treina) — última opção, não a primeira.
+
+Sem esse ajuste, o "cabe em 1,4h-2,3h" da extrapolação anterior (baseada em 256 tokens) não é
+válido para o dataset real — mais tokens por passo custam mais RAM antes de custarem mais tempo,
+e a VM esgota RAM antes de chegar ao tamanho real dos exemplos.
+
 ### Scripts usados (não commitados no repo — artefatos de sessão na VM)
 
 `~/smoke_dataset.jsonl` (10 pares sintéticos) e `~/smoke_train.py` (script de treino LoRA com
