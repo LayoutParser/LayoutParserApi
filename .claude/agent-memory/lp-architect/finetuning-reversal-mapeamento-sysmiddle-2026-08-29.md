@@ -31,14 +31,30 @@ falando do escopo antigo (diagnóstico, Decisão 2 original) ou do escopo novo (
 esta decisão) — são objetivos diferentes com decisões diferentes, não presumir que uma cancela a
 outra automaticamente.
 
-## Correção de rumo no mesmo dia — não subdimensionar modelo pelo hardware de inferência
+## Correção de rumo no mesmo dia — não subdimensionar modelo pelo hardware de inferência (revertida em seguida)
 
 O dono corrigiu a primeira versão desta entrega (que recomendava 1-3B por causa do
 [[production-server-hardware]] CPU-only): a prioridade é um modelo **tecnicamente correto pro
 domínio** (7B-14B, faixa realista pra raciocínio estrutural XML/XSLT), mesmo que o host de
-produção atual não aguente rodar bem. Se o hardware não aguentar, isso vira **pendência de infra
-separada** (upgrade ou host alternativo) — não motivo pra escolher um modelo pior. Regra geral a
-aplicar daqui pra frente: **dataset pequeno** dita a técnica de treino (LoRA/QLoRA, não fine-tuning
-completo) e **onde treinar** (sempre offline, nunca no host de produção) — mas não deve ditar
-**o tamanho do modelo final**; isso é decidido pela exigência da tarefa, e a lacuna de hardware de
-inferência é discutida à parte, explicitamente, sem contaminar a escolha do modelo.
+produção atual não aguente rodar bem — hardware seria pendência de infra separada.
+
+## Decisão final (mesmo dia, 3ª rodada) — host = VM Ubuntu, CPU-only aceito conscientemente, modelo reduzido de volta pra 1-3B
+
+Encadeamento completo da sessão: (1) modelo dimensionado pelo hardware de inferência do
+`BRNDDAPPBLD01` → (2) dono corrige, dimensionar pelo domínio (7B-14B) → (3) ao escolher onde
+treinar/rodar, identifiquei que a VM Ubuntu (`UBU220405RUN`, mesma que já roda Ollama pro Job 1 de
+métricas) não tem GPU confirmada em nenhuma memória — reportei como bloqueio técnico, sem decidir
+sozinho → (4) **dono decide prosseguir mesmo sem GPU**: prioridade da Fase 1 não é
+performance/qualidade, é ver o ciclo completo (dado→treino→modelo→geração→validação) funcionando
+de ponta a ponta com observabilidade em streaming ao vivo. Otimizar depois.
+
+**Resultado prático:** modelo volta pra 1-3B (não por hardware de inferência em produção, mas por
+viabilidade real de TREINO em CPU dentro de uma janela de fim de semana) + LoRA rank baixo.
+Streaming ao vivo (SignalR Hub sobre `RepairOrchestrator`) vira parte da Fase 1, não uma evolução
+posterior — muda a estimativa de esforço pra cima.
+
+**Lição pra próximas sessões:** as duas "regras" (não subdimensionar por hardware vs. aceitar
+hardware real) não se contradizem de fato — a primeira valia quando o objetivo era "modelo
+ideal pro domínio"; a segunda entra quando o dono explicita que o objetivo da fase atual é outro
+("ver funcionando" > "funcionar bem"). Perguntar qual é o objetivo da fase antes de fixar
+qualquer dimensionamento evita reverter a mesma decisão 2x na mesma sessão.
