@@ -106,7 +106,8 @@ namespace LayoutParserApi.Tests.Controllers
                 currentUser: user,
                 mapperDb: null!,
                 layoutParser: null!,
-                fieldMappingComposition: null!);
+                fieldMappingComposition: null!,
+                scopeFactory: null!);
 
             return (controller, spy, user);
         }
@@ -185,7 +186,16 @@ namespace LayoutParserApi.Tests.Controllers
                 .GetMethod("TryEnqueueAiCandidate", BindingFlags.NonPublic | BindingFlags.Instance)
                 ?? throw new InvalidOperationException("Método TryEnqueueAiCandidate não encontrado — o controller mudou de forma incompatível com este teste.");
 
+            // ✅ Correção pós-review da Quinn (2026-08-29): TryEnqueueAiCandidate deixou de ser
+            // "await"ado no caminho síncrono do controller — o ParseAsync/EnqueueAsync agora rodam
+            // dentro de um Task.Run fire-and-forget (nunca atrasa a resposta síncrona). O
+            // method.Invoke abaixo retorna antes do job terminar, então o teste faz polling
+            // (com teto de sanidade) em vez de assumir conclusão síncrona.
             method.Invoke(controller, new object?[] { request, layoutRecord, candidates, false, currentUserId });
+
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (spy.LastEnqueueUserId == null && DateTime.UtcNow < deadline)
+                await Task.Delay(10);
 
             Assert.Equal("carol", spy.LastEnqueueUserId);
         }

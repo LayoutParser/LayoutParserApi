@@ -162,7 +162,8 @@ namespace LayoutParserApi.Tests.Controllers
                 currentUser: new FakeCurrentUser(),
                 mapperDb: null!,
                 layoutParser: null!,
-                fieldMappingComposition: null!);
+                fieldMappingComposition: null!,
+                scopeFactory: services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>());
 
             return (controller, aiSpy, tclDir);
         }
