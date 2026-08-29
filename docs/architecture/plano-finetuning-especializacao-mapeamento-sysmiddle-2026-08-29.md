@@ -1,5 +1,24 @@
 # Plano — fine-tuning para especialização em mapeamentos Sysmiddle (2026-08-29)
 
+## Decisões finais do dono (fecham o plano — sem bloqueios de infra pendentes)
+
+1. **Host de treino QLoRA e de inferência em produção: a mesma VM Ubuntu que já roda o Ollama
+   hoje** (`UBU220405RUN`, IP atual `172.25.32.5`). Treino roda numa janela de fim de semana,
+   coordenada para não colidir com o cron do Job 1 de métricas (sábado 00:00, ver
+   `metrics-job-topology-vm.md`).
+2. **A VM NÃO tem GPU confirmada — nenhuma memória disponível registra GPU para esta VM
+   VirtualBox, e o padrão de uso observado até hoje (Job 1/`metrics-batch`) sempre foi
+   CPU-tolerante por design.** Isso foi levantado como bloqueio técnico nesta sessão. **Decisão
+   consciente do dono: prosseguir mesmo assim, treinando em CPU.** Não é mais uma pendência em
+   aberto — é uma escolha explícita, registrada aqui.
+3. **Prioridade da Fase 1 não é performance/qualidade do treino — é ver o processo de
+   desenvolvimento do mapeador acontecendo de ponta a ponta, com observabilidade em tempo real.**
+   Otimizar velocidade/qualidade vem depois, só depois de o ciclo completo (dado → treino →
+   modelo → geração observável → validação) funcionar de ponta a ponta pelo menos uma vez.
+4. **Observabilidade: streaming ao vivo**, prioridade igual ou maior que o resultado do treino em
+   si — é o mecanismo que permite ao dono "ver o modelo desenvolvendo" o mapeador em tempo real,
+   não apenas auditar depois.
+
 ## Reversão explícita de decisão
 
 Em `.claude/agent-memory/lp-architect/gemini-openai-decommission-decision.md` (2026-07-21,
@@ -13,9 +32,8 @@ não "diagnosticar erro melhor", mas **aprender e recriar os mapeamentos Sysmidd
 (TXT→TCL→XSL/XSLT→XML e XML→XSL/XSLT→XML), com observabilidade do processo. **Revertendo a
 Decisão 2 por pedido explícito do dono.** Os motivos originais continuam parcialmente válidos e
 moldam o desenho abaixo (dataset pequeno → LoRA em vez de fine-tuning completo; verificador
-continua obrigatório mesmo com modelo especializado; hardware CPU-only em produção → treino
-offline, inferência local). Não é um "esqueça a decisão anterior" — é uma mudança de escopo do
-objetivo que muda o cálculo de custo/benefício.
+continua obrigatório mesmo com modelo especializado). O raciocínio evoluiu ainda mais dentro
+desta mesma sessão — ver histórico de correções de rumo na seção 2.
 
 ## 1. Dataset de treino — honestidade sobre volume
 
@@ -34,72 +52,56 @@ Fontes reais disponíveis hoje:
   — escopo real confirmado é **4 de 54 pares**, a maioria do pipeline nunca converteu em amostra
   utilizável.
 
-**Avaliação honesta:** o volume real hoje é **dezenas de pares, não milhares** — é dataset de
-poucos mapeadores multiplicado por poucas linhas/regras cada. Isso é pequeno demais para
-fine-tuning completo de um LLM (risco de overfitting/decoreba já sinalizado na Decisão 2
-original) mas é **compatível com LoRA/QLoRA**, que é desenhado justamente para adaptar um modelo
-base com centenas a poucos milhares de exemplos sem re-treinar os pesos inteiros. Ainda assim,
-a primeira fase deve tratar o volume como **insuficiente para generalização** — ver Fase 1 vs
-Fase 2 abaixo — e o `RuleInterpretor` deve ser usado para **gerar dado sintético rotulado
-adicional** (variações de DSL → resultado correto, gerado deterministicamente pelo próprio
-motor real, não por um LLM) antes de comprometer com qualquer treino real. Isso amplia o dataset
-sem o risco de "IA decorando dado fiscal real" já levantado na Decisão 3 de 21/07.
+**Avaliação honesta:** o volume real hoje é **dezenas de pares, não milhares**. Isso é pequeno
+demais para fine-tuning completo (risco de overfitting/decoreba já sinalizado na Decisão 2
+original) mas é **compatível com LoRA/QLoRA**. Para a Fase 1 (ver-o-processo-funcionando), usar
+inicialmente **apenas o(s) mapeador(es) já melhor documentados** (o de referência com 237
+`LinkMappings`), sem esperar completar todo o corpus — objetivo é destravar o ciclo ponta a
+ponta, não maximizar dataset ainda. O `RuleInterpretor` continua disponível para gerar dado
+sintético adicional quando a Fase 2 (generalização) exigir mais volume.
 
-## 2. Abordagem técnica — LoRA/QLoRA offline, não fine-tuning completo
+## 2. Abordagem técnica — QLoRA em CPU, na VM Ubuntu, modelo reduzido pela realidade do hardware
 
-> **Correção de rumo (2026-08-29, mesmo dia, após esclarecimento do dono):** a primeira versão
-> desta seção dimensionava o modelo (1-3B) em função do hardware de **inferência** em produção.
-> O dono corrigiu: a prioridade é um Ollama **focado/nichado no domínio** (recriar mapeamentos
-> Sysmiddle) tecnicamente bem desenhado — mesmo que o host de produção atual não aguente rodar o
-> resultado hoje. Não subdimensionar o modelo pra caber no hardware disponível; se o modelo
-> tecnicamente correto exigir hardware melhor, isso vira pendência de infra separada (upgrade ou
-> host diferente), não motivo pra escolher um modelo pior. A seção abaixo foi reescrita sob essa
-> orientação.
+> **Histórico de correções de rumo nesta sessão (registrado para não se repetir):**
+> 1ª versão dimensionava o modelo pelo hardware do host de produção `BRNDDAPPBLD01` (1-3B).
+> O dono corrigiu: não subdimensionar pelo hardware, dimensionar pelo domínio (7B-14B).
+> 2ª versão então apontou um bloqueio técnico real (VM sem GPU confirmada) antes de fechar o
+> tamanho do modelo em produção.
+> **Decisão final do dono: aceitar o hardware real (CPU-only na VM) e ajustar o modelo/adapter
+> para o que é viável nele — não é mais "não subdimensionar por hardware", é "primeiro fazer
+> funcionar de ponta a ponta, otimizar depois".** As duas orientações não se contradizem: a
+> primeira valia enquanto o objetivo era "modelo tecnicamente ideal"; agora o objetivo explícito
+> da Fase 1 é "ciclo completo observável", o que muda o cálculo.
 
-Fine-tuning completo de um modelo — mesmo um modelo pequeno — exige GPU com VRAM significativa
-e volume de dados maior do que o disponível (seção 1); LoRA/QLoRA continua a escolha certa por
-causa do **dataset pequeno**, não por causa do hardware de inferência. São duas restrições
-independentes e não devem ser confundidas.
-
-- **Tamanho do modelo base: dimensionar pelo domínio, não pelo hardware de produção.** Tarefa é
-  especializada (aprender a estrutura de `LinkMappings`/regras DSL e reproduzir XSLT/TCL
-  coerente), mas ainda exige capacidade real de raciocínio estrutural sobre XML/código — a faixa
-  **7B-14B** (ex.: Qwen2.5-Coder 7B/14B, DeepSeek-Coder 6.7B/instruct) é o ponto de partida
-  tecnicamente honesto para essa classe de tarefa, não 1-3B. Modelos 1-3B (recomendação anterior,
-  calibrada pro Haswell 2014) tendem a ter taxa de erro estrutural maior em geração de
-  XML/XSLT bem-formado, o que jogaria mais trabalho pro loop de correção — o oposto do ganho que
-  o fine-tuning deveria trazer. Escolha final do tamanho exato ainda depende de medição real
-  (seção "pontos que exigem autorização"), mas a faixa-alvo não deve ser pré-cortada pelo
-  hardware de hoje.
-- **Treino acontece OFFLINE, fora do host de produção — isso já fazia sentido antes e continua.**
-  `production-server-hardware.md` confirma CPU-only (i7-4790 Haswell 2014, sem GPU) — treinar aí
-  é impraticável independente do tamanho do modelo escolhido. O ciclo:
-  1. Treino do adaptador LoRA numa máquina com GPU (workstation com GPU discreta se existir na
-     empresa, ou serviço de nuvem temporário — ver autorização pendente abaixo). Para 7B-14B,
-     QLoRA em 4-bit cabe em GPU de ~16-24GB de VRAM (ex.: RTX 3090/4090, ou instância cloud
-     equivalente) — maior que os 8-12GB estimados para 1-3B, mas ainda longe de treino
-     full-parameter de datacenter.
-  2. Merge do adaptador no modelo base + quantização (GGUF, via `llama.cpp`/`Ollama Modelfile`)
-     para o formato de distribuição.
-  3. O artefato final (modelo quantizado) é publicado via `ollama create` a partir de um
-     `Modelfile` — mas **onde ele roda em produção é uma pendência de infra separada** (ver
-     abaixo), não parte automática deste ciclo.
-- **Pendência de infra explícita: hardware de inferência atual pode não aguentar o modelo
-  recomendado.** Um modelo 7B-14B rodando via Ollama em CPU-only Haswell 2014 (DDR3,
-  sem AVX-512) provavelmente terá latência inaceitável para uso interativo — isso é esperado e
-  **não deve reduzir o tamanho do modelo recomendado**. Options a decidir com o dono, fora do
-  escopo desta arquitetura: (a) upgrade de hardware do host atual (GPU dedicada, mesmo modesta,
-  ou CPU/RAM mais moderna com melhor bandwidth); (b) rodar o modelo especializado em host
-  diferente do `BRNDDAPPBLD01` (outra máquina da NDD com melhor perfil, ou a mesma VM Ubuntu que
-  já roda Ollama para o job de métricas — checar se tem capacidade); (c) aceitar latência alta
-  para este uso específico (geração de mapeador é operação pontual/batch, não interativa por
-  requisição — diferente do diagnóstico XSD em runtime, que precisa responder rápido). Registrar
-  esta decisão como item de backlog de infra assim que o modelo for escolhido e medido.
-- **O verificador determinístico continua obrigatório**, mesmo com modelo especializado maior —
-  não é substituído pelo fine-tuning. O loop gerar→validar(XSD/diff)→corrigir do
-  `RepairOrchestrator` e do `AiTransformationCandidateService` continua sendo o mecanismo de
-  confiança; fine-tuning melhora a taxa de acerto na primeira geração (menos iterações de
-  correção), não elimina a necessidade de validar.
+- **Modelo base: reduzir para a faixa 1-3B (ex.: Qwen2.5-Coder 1.5B, `qwen2.5-coder:3b`,
+  StarCoder2-3B)** — não a faixa 7B-14B da versão anterior. QLoRA em CPU sobre 7B-14B é
+  tecnicamente possível mas o tempo de treino cresce de forma proibitiva mesmo para uma janela
+  de fim de semana longa; 1-3B é o ponto onde "dias, não semanas" continua uma estimativa honesta
+  (ver abaixo). **Trade-off explícito:** modelos 1-3B têm taxa de erro estrutural maior em geração
+  de XML/XSLT bem-formado que 7B-14B — a Fase 1 vai gerar mapeadores de qualidade pior que o
+  ideal, compensados pelo loop de correção existente (`RepairOrchestrator`). Isso é aceito
+  conscientemente pelo dono como custo da Fase 1; revisitar o tamanho do modelo é o primeiro item
+  da Fase 2 (seção 5).
+- **LoRA com rank reduzido** (ex.: r=4 ou r=8, em vez de r=16+ que se usaria com GPU) — reduz
+  ainda mais o custo computacional por época, à custa de menor capacidade de adaptação. Ajustar
+  para cima assim que o ciclo funcionar e houver folga de tempo na janela de fim de semana.
+- **Estimativa realista de tempo — não medida, extrapolação honesta:** treino QLoRA de um modelo
+  1-3B em CPU, sobre um dataset de dezenas de exemplos, por poucas épocas, tende a levar **de
+  algumas horas a 2-3 dias**, dependendo da CPU real da VM (não documentada em memória — nenhuma
+  sessão anterior perfilou a CPU desta VM especificamente, só confirmou que ela hospeda o job de
+  métricas via CPU sem medir throughput de treino). **Não prometer um número fixo sem medir** —
+  o primeiro passo do plano de execução (seção 6) é justamente medir isso com um treino de
+  smoke-test antes de comprometer a janela inteira de fim de semana a um treino completo que pode
+  não terminar a tempo.
+- **Onde roda:** treino e inferência na mesma VM Ubuntu (decisão 1 do dono) — elimina a etapa de
+  "decidir onde publicar o modelo" que versões anteriores deste plano tratavam como pendência.
+  Ciclo: (1) treino QLoRA na janela de fim de semana → (2) merge do adaptador no modelo base +
+  quantização GGUF (`llama.cpp`/`Ollama Modelfile`) → (3) `ollama create` na própria VM, que já
+  roda `ollama.service` em produção.
+- **O verificador determinístico continua obrigatório**, mesmo com modelo reduzido — o loop
+  gerar→validar(XSD/diff)→corrigir do `RepairOrchestrator`/`AiTransformationCandidateService`
+  segue sendo o mecanismo de confiança; com um modelo 1-3B, esse loop vai rodar mais iterações de
+  correção que rodaria com 7B-14B — esperado e aceito.
 
 ## 3. Dois pathways — um modelo base, dois adaptadores LoRA (não dois modelos do zero)
 
@@ -113,83 +115,94 @@ em vez de dois modelos treinados independentemente do zero. Justificativa:
   diferença que LoRA captura bem sem duplicar o custo de treino de um modelo base inteiro.
 - Dataset pequeno (seção 1) penaliza mais fortemente treinar dois modelos completos
   independentes — dividir o já-escasso dado rotulado em dois treinos do zero piora a proporção
-  dado/parâmetros ainda mais.
-- Trade-off aceito: adaptadores LoRA compartilham o mesmo modelo base, então um bug de base
-  (ex.: modelo base ruim em geração de XML bem-formado) afeta os dois pathways igualmente — não
-  há isolamento total. Se a diferença entre os dois pathways se mostrar maior do que o esperado
-  (ex.: TCL exigir raciocínio estrutural muito distinto de XML→XML), reavaliar para modelos
-  separados é uma correção de rota barata (retreinar só o adaptador, não a decisão de base).
+  dado/parâmetros ainda mais. Com treino em CPU (seção 2), esse argumento pesa ainda mais: dois
+  treinos completos do zero dobraria a já apertada janela de fim de semana.
+- **Fase 1 treina só `lora-txt-tcl-xsl` primeiro** (mais dados disponíveis, é o pathway citado
+  primeiro pelo dono) — `lora-xml-xsl` fica para a Fase 2, depois que o ciclo ponta a ponta já
+  tiver sido validado uma vez.
+- Trade-off aceito: adaptadores LoRA compartilham o mesmo modelo base, então um bug de base afeta
+  os dois pathways igualmente. Se a diferença entre os dois pathways se mostrar maior do que o
+  esperado, reavaliar para modelos separados é uma correção de rota barata.
 
-## 4. Observabilidade do processo de geração
+## 4. Observabilidade — streaming ao vivo (prioridade igual ao treino, não um extra)
 
-Objetivo do dono: acompanhar o **processo**, não só o resultado. Reaproveitar antes de propor
-infra nova:
+Decisão do dono: streaming, não só log estruturado pós-fato. Plano de execução, reaproveitando
+o que já existe:
 
-- **Já existe parcialmente**: `RepairOrchestrator` (`ai/XslSynth.Core/Core/RepairOrchestrator.cs`)
-  já estrutura o loop gerar→validar→corrigir em iterações discretas com resultado de cada
-  validação (`CanonicalDiffer`, erros XSD por iteração) — é o esqueleto certo para logging
-  estruturado por etapa, só falta emitir esses eventos para fora do processo em vez de manter
-  só o resultado final.
-- **Proposta mínima, sem infra nova**: instrumentar cada iteração do loop com `ILogger`
-  estruturado (`_logger.LogInformation("Iteracao {N} mapper {MapperId}: xsltGerado={Xslt}
-  erros={Erros}", ...)`, seguindo o padrão já estabelecido em `dotnet-standards.md`), correlacionado
-  por `CorrelationId` do mapeador/execução. Isso já dá rastreabilidade via o sink Serilog
-  existente (unificado entre Lib/Decrypt/Api, ver `unified-logging-and-multi-transform.md`) sem
-  construir nada novo.
-- **Fase 2 (se log estruturado não bastar)**: endpoint read-only que expõe o estado da última
-  execução em andamento/concluída por mapeador (XSLT parcial por iteração, lista de erros de
-  validação, decisão tomada) — reaproveitando o mesmo padrão de controller fino sobre serviço já
-  usado no resto da API, sem WebSocket/streaming novo até haver evidência de que polling não
-  serve. Streaming real (SignalR) só se justifica se o dono quiser acompanhar uma geração *ao
-  vivo*, não apenas auditar depois — não presumir isso sem confirmar.
+- **Base já existe**: `RepairOrchestrator` (`ai/XslSynth.Core/Core/RepairOrchestrator.cs`) já
+  estrutura o loop gerar→validar→corrigir em iterações discretas com resultado de cada validação
+  (`CanonicalDiffer`, erros XSD por iteração). É o ponto de emissão de eventos.
+- **Mecanismo recomendado: SignalR Hub** (já é o padrão ASP.NET Core nativo do ecossistema deste
+  projeto, sem dependência nova) publicando um evento por iteração do loop — XSLT/TCL parcial
+  gerado, lista de erros de validação da iteração, decisão tomada (aceitar/corrigir/desistir). O
+  front-end React (que já tem aba de análise/transformação, ver
+  `frontend-transformation-tab-built.md`) consome o Hub para exibir a geração acontecendo ao
+  vivo. Alternativa mais simples (Server-Sent Events) é viável se SignalR se mostrar pesado demais
+  para esse uso pontual — decisão de implementação de `@lp-backend-dev`/`@lp-parser-llm`, não
+  travada aqui.
+- **Esforço revisado para cima vs. a estimativa original deste plano:** a primeira versão desta
+  seção tratava streaming como "Fase 2, só se log não bastar" — a decisão do dono inverte isso:
+  streaming é parte da Fase 1, não uma evolução posterior. Isso adiciona trabalho de
+  implementação real (Hub, contrato de evento, consumo no front) à primeira entrega, não é mais
+  "log estruturado é suficiente por ora".
+- Log estruturado via `ILogger`/Serilog continua sendo feito em paralelo (auditoria pós-fato,
+  correlação por `CorrelationId`) — streaming é para acompanhamento ao vivo, log é para revisão
+  depois; os dois são necessários, não um substituindo o outro.
 
 ## 5. Fases
 
-**Fase 1 — replicar o conhecido (o pedido do dono, literal).**
-Escopo: só os mapeadores TXT→TCL→XSL/XSLT→XML já existentes e documentados (o corpus pequeno da
-seção 1). Objetivo de sucesso: o modelo com LoRA recria a transformação de um mapeador que ele
-viu em treino, validado por diff canônico contra o XML final real — não generalização, replicação
-fiel do que já existe. Serve como prova de conceito de que LoRA + dataset pequeno é viável antes
-de investir em generalização. Inclui: gerar dado sintético adicional via `RuleInterpretor`
-(seção 1), treinar `lora-txt-tcl-xsl` primeiro (mais dados disponíveis que XML→XML), medir taxa
-de acerto/iterações de correção necessárias, instrumentar observabilidade mínima (seção 4).
+**Fase 1 — ciclo completo, ponta a ponta, observável (o objetivo desta rodada).**
+Escopo: um único mapeador já bem documentado (o de referência, 237 `LinkMappings`), pathway
+TXT→TCL→XSL/XSLT→XML. Modelo 1-3B + LoRA rank baixo, treino CPU na VM Ubuntu, janela de fim de
+semana. Sucesso = o ciclo inteiro roda sem intervenção manual: dado preparado → treino QLoRA →
+merge/quantização → `ollama create` → geração de um mapeador via `RepairOrchestrator` observável
+em streaming ao vivo → validação XSD/diff. Não exige generalização nem qualidade de produção —
+exige que o pipeline exista e seja visível.
 
-**Fase 2 — segundo pathway + generalização controlada.**
-Treinar `lora-xml-xsl` com o corpus XML→XML disponível. Testar o modelo especializado da Fase 1
-contra um mapeador que ele **não** viu em treino (held-out) — é aqui que se descobre se LoRA
-generalizou ou só decorou. Se overfitting for confirmado, ampliar dataset sintético antes de
-prosseguir, não forçar mais épocas de treino.
+**Fase 2 — otimizar + segundo pathway + generalização controlada.**
+Depois que a Fase 1 funcionar pelo menos uma vez: (a) revisitar tamanho do modelo/rank do LoRA
+com dados reais de tempo de treino da Fase 1 na mão; (b) treinar `lora-xml-xsl`; (c) testar contra
+mapeador held-out (não visto em treino) para medir generalização real vs. decoreba.
 
 **Fase 3 — mapeamentos novos (fora do escopo desta sessão).**
-Só depois de Fase 1/2 validadas: usar o modelo especializado como ponto de partida para
-mapeamentos que a Sysmiddle nunca viu, sempre sob o loop gerar→validar→corrigir — este é o
-objetivo de longo prazo ("eliminar Sysmiddle", já registrado em `finetuning-small-model-poc.md`),
-não o objetivo desta rodada.
+Usar o modelo especializado como ponto de partida para mapeamentos que a Sysmiddle nunca viu,
+sempre sob o loop gerar→validar→corrigir — objetivo de longo prazo ("eliminar Sysmiddle", já
+registrado em `finetuning-small-model-poc.md`).
 
-## Pontos que exigem autorização explícita do dono antes de qualquer implementação
+## 6. Plano de execução — passo a passo para `@lp-parser-llm` (Lia)
 
-1. **Uso de serviço de nuvem para treino** (se não houver GPU disponível internamente) — mesmo
-   que o treino em si não use dado fiscal real de cliente (o corpus de mapeadores é estrutura
-   DSL/XSLT, não necessariamente PII), a regra de `.claude/rules/security.md` ("LLM em nuvem: não
-   envie documentos/dados reais de cliente sem autorização explícita") exige confirmação explícita
-   de que os pares de treino escolhidos não contêm dado fiscal sensível antes de subir a máquina
-   de nuvem — ou usar exclusivamente dado sintético gerado pelo `RuleInterpretor`.
-2. **Qual GPU/orçamento está disponível** para o treino offline — a proposta assume que existe
-   alguma forma de acesso a GPU (workstation da empresa ou cloud temporária); isso não foi
-   confirmado nesta sessão.
-3. **Escolha final do modelo base** — depende de licença (evitar repetir o problema de licença já
-   encontrado com SDV/BSL na Decisão 3 de 21/07) e de medição real de desempenho/qualidade de
-   geração (não travar em 7B vs 14B sem medir) — a medição de latência de inferência é separada
-   da escolha do modelo em si (ver item 5).
-4. **Nível de observabilidade desejado** (log estruturado vs. endpoint de estado vs. streaming ao
-   vivo) — a Fase 4 do item de observabilidade (streaming) só deve ser construída se o dono
-   confirmar que quer acompanhar geração em tempo real, não apenas auditar depois.
-5. **Onde o modelo especializado vai rodar em produção** — dado que a faixa recomendada (7B-14B)
-   provavelmente não roda com latência aceitável no host atual (CPU-only, Haswell 2014), o dono
-   precisa decidir entre upgrade de hardware, host alternativo, ou aceitar latência alta para este
-   uso específico (seção 2). Esta é uma decisão de infra deliberadamente separada da escolha do
-   modelo — não deve bloquear o treino/POC da Fase 1, mas bloqueia colocar o resultado em produção.
+1. **Confirmar acesso e specs reais da VM** — SSH em `elson@172.25.32.5`, rodar `lscpu` (núcleos/
+   threads/instruction set) e `nvidia-smi`/`lspci | grep -i vga` (confirmar de vez ausência de
+   GPU, para registro, não para bloquear). Sem isso, a estimativa de tempo da seção 2 continua
+   extrapolação.
+2. **Preparar o dataset da Fase 1**: extrair o par TXT→XML-lowcode→XML-final do mapeador de
+   referência (237 `LinkMappings`) em formato de treino (prompt/completion ou instrução/resposta,
+   a definir pela ferramenta de treino escolhida — ex. `peft`/`transformers` da Hugging Face).
+3. **Escolher e baixar o modelo base 1-3B** (ex. `Qwen2.5-Coder-1.5B` ou `-3B`, verificar licença)
+   na VM.
+4. **Rodar um smoke-test de treino** (1 época, poucos passos) para medir tempo real por época
+   nessa CPU específica — usar esse número para decidir se o treino completo cabe na janela de
+   fim de semana ou se é preciso reduzir mais (menos épocas, rank menor, ou dataset ainda mais
+   enxuto).
+5. **Agendar o treino completo** para a próxima janela de fim de semana disponível, coordenado
+   para não colidir com o cron do Job 1 (sábado 00:00) — treino deve rodar em horário que não
+   dispute CPU com o job de métricas.
+6. **Merge + quantização GGUF + `ollama create`** do adaptador treinado.
+7. **Implementar o Hub de streaming** (seção 4) no `RepairOrchestrator`/serviço que o invoca,
+   emitindo evento por iteração do loop gerar→validar→corrigir.
+8. **Rodar uma geração real do mapeador de referência** contra o modelo novo, observando via
+   streaming, e validar o resultado contra o XML final real (diff canônico) — este é o critério
+   de sucesso da Fase 1.
 
-Nenhum código foi implementado. Trabalho de implementação (LoRA training scripts, endpoint de
-observabilidade, wiring do modelo no Ollama) fica com `@lp-parser-llm`/`@lp-backend-dev`, sob
+## Pontos que ainda exigem autorização explícita do dono (reduzidos — a maioria já foi decidida)
+
+1. **Uso de serviço de nuvem** — não se aplica mais como pendência principal (treino é na VM,
+   decisão 1), mas continua valendo se, durante a execução, a Fase 2 decidir migrar para GPU
+   externa: nesse caso, confirmar que os dados de treino usados não contêm dado fiscal real de
+   cliente, ou usar exclusivamente dado sintético via `RuleInterpretor`.
+2. **Escolha final do modelo base específico** (qual 1-3B, exatamente) — depende de licença e do
+   resultado do smoke-test do passo 4 acima; não travar aqui.
+
+Nenhum código foi implementado. Trabalho de implementação (dataset prep, scripts de treino QLoRA,
+Hub de streaming, wiring do modelo no Ollama) fica com `@lp-parser-llm`/`@lp-backend-dev`, sob
 esta especificação.
