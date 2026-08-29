@@ -190,7 +190,8 @@ namespace LayoutParserApi.Tests.Controllers
         private sealed class SpyAiCandidateService : IAiTransformationCandidateService
         {
             public Task EnqueueAsync(string userId, string ticket, string layoutName, Guid layoutGuid, string mapperGuid,
-                string inputContent, string? groundTruthXml, CancellationToken cancellationToken) => Task.CompletedTask;
+                string inputContent, string? groundTruthXml, CancellationToken cancellationToken,
+                IReadOnlyList<Models.Entities.ParsedField>? parsedFields = null) => Task.CompletedTask;
 
             public Task<AiCandidateStatus> GetStatusAsync(string userId, string ticket, CancellationToken cancellationToken) =>
                 Task.FromResult(new AiCandidateStatus { Status = AiCandidateStatus.StatusNotFound });
@@ -247,12 +248,16 @@ namespace LayoutParserApi.Tests.Controllers
             var runner = new RunnerFalso(lowCodeOptions, lowCodeConfig);
             var mapperDb = new MapperDbFalso(lowCodeConfig, mappers);
 
+            var parserFake = new FakeLayoutParserService { Falhar = parseFalha };
+
             var services = new ServiceCollection();
             services.AddScoped<MapperDatabaseService>(_ => mapperDb);
+            services.AddScoped<ILayoutParserService>(_ => parserFake);
+            var scopeFactory = services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
 
             var lowCodeAuto = new LowCodeAutoTransformationService(
                 NullLogger<LowCodeAutoTransformationService>.Instance,
-                services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
+                scopeFactory,
                 runner,
                 store,
                 lowCodeOptions);
@@ -267,8 +272,6 @@ namespace LayoutParserApi.Tests.Controllers
             Directory.CreateDirectory(Path.Combine(raiz, "tcl"));
             Directory.CreateDirectory(Path.Combine(raiz, "xsl"));
             var pipelineService = new TransformationPipelineService(NullLogger<TransformationPipelineService>.Instance, pipelineConfig);
-
-            var parserFake = new FakeLayoutParserService { Falhar = parseFalha };
 
             var controller = new TransformationExecutionController(
                 NullLogger<TransformationExecutionController>.Instance,
@@ -285,7 +288,8 @@ namespace LayoutParserApi.Tests.Controllers
                 currentUser: new FakeCurrentUser(),
                 mapperDb: mapperDb,
                 layoutParser: parserFake,
-                fieldMappingComposition: BuildFieldMappingComposition());
+                fieldMappingComposition: BuildFieldMappingComposition(),
+                scopeFactory: scopeFactory);
 
             return (controller, parserFake, runner);
         }

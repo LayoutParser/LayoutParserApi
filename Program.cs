@@ -444,6 +444,12 @@ try
         client.Timeout = Timeout.InfiniteTimeSpan;
     });
 
+    // ✅ Síntese de XSLT real via RepairOrchestrator (ai/XslSynth.Core), in-process — substitui o
+    // caminho "IA gera XML final direto" dentro de AiTransformationCandidateService.
+    // docs/architecture/design-integracao-repairorchestrator-runtime-2026-08-21.md (Opção B).
+    builder.Services.AddScoped<LayoutParserApi.Services.Transformation.Ai.IXslSynthesizerService,
+        LayoutParserApi.Services.Transformation.Ai.RepairOrchestratorXslSynthesizerService>();
+
     // Transformation Services (ML)
     builder.Services.AddScoped<TransformationLearningService>();
     builder.Services.AddScoped<PatternComparisonService>();
