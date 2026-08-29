@@ -4,6 +4,10 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace LayoutParserApi.Controllers
 {
+    /// <summary>
+    /// Suíte de testes automatizados de transformação: roda os exemplos de referência (TXT +
+    /// XML esperado) contra o pipeline TCL/XSL e reporta pass/fail — usado em CI/QA manual.
+    /// </summary>
     [ApiController]
     [Route("api/[controller]")]
     public class TestingController : ControllerBase
@@ -19,9 +23,9 @@ namespace LayoutParserApi.Controllers
             _testService = testService;
         }
 
-        /// <summary>
-        /// Executa todos os testes automatizados
-        /// </summary>
+        /// <summary>Roda a suíte completa (todos os layouts com exemplos disponíveis).</summary>
+        /// <response code="200">Relatório com resultados por layout.</response>
+        /// <response code="500">Falha estrutural ao rodar a suíte.</response>
         [HttpPost("run-all")]
         public async Task<IActionResult> RunAllTests()
         {
@@ -38,9 +42,10 @@ namespace LayoutParserApi.Controllers
             }
         }
 
-        /// <summary>
-        /// Executa testes para um layout específico
-        /// </summary>
+        /// <summary>Roda os testes de apenas um layout, opcionalmente de um diretório de exemplos alternativo.</summary>
+        /// <param name="request"><c>LayoutName</c> obrigatório; <c>ExamplesDirectory</c> opcional (default: pasta padrão de exemplos).</param>
+        /// <response code="200">Relatório do layout.</response>
+        /// <response code="500">Falha ao rodar os testes.</response>
         [HttpPost("run-for-layout")]
         public async Task<IActionResult> RunTestsForLayout([FromBody] TestLayoutRequest request)
         {
@@ -58,9 +63,11 @@ namespace LayoutParserApi.Controllers
         }
     }
 
+    /// <summary>Requisição de teste automatizado para um único layout.</summary>
     public class TestLayoutRequest
     {
         public string LayoutName { get; set; }
+        /// <summary>Diretório alternativo de exemplos (TXT + XML esperado). Se nulo, usa o diretório padrão do serviço.</summary>
         public string ExamplesDirectory { get; set; }
     }
 }
