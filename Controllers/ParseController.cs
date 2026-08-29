@@ -14,7 +14,10 @@ using LayoutParserApi.Services.Database;
 using LayoutParserApi.Services.Security;
 
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.Extensions.Options;
+
+using System.Text;
 
 namespace LayoutParserApi.Controllers
 {
@@ -31,6 +34,7 @@ namespace LayoutParserApi.Controllers
         private readonly LowCodeAutoTransformationService _lowCodeAuto;
         private readonly LowCodeRunnerOptions _lowCodeOpt;
         private readonly LowCodeTransformationStore _transformationStore;
+        private readonly IAutomaticLayoutDetectionService _automaticLayoutDetection;
 
         public ParseController(
             ILayoutParserService parserService,
@@ -41,7 +45,8 @@ namespace LayoutParserApi.Controllers
             IConfiguration configuration,
             LowCodeAutoTransformationService lowCodeAuto,
             IOptions<LowCodeRunnerOptions> lowCodeOptions,
-            LowCodeTransformationStore transformationStore)
+            LowCodeTransformationStore transformationStore,
+            IAutomaticLayoutDetectionService automaticLayoutDetection)
         {
             _parserService = parserService;
             _logger = logger;
@@ -52,6 +57,148 @@ namespace LayoutParserApi.Controllers
             _lowCodeAuto = lowCodeAuto;
             _lowCodeOpt = lowCodeOptions.Value;
             _transformationStore = transformationStore;
+            _automaticLayoutDetection = automaticLayoutDetection;
+        }
+
+        /// <summary>
+        /// Detecta o layout de um documento MQSeries/IDoc usando somente o catálogo interno.
+        /// Unicidade exige exatamente um candidato compatível após os gates estruturais; score
+        /// serve apenas para ordenar alternativas e nunca cria certeza.
+        /// </summary>
+        /// <param name="documentFile">Documento posicional a analisar.</param>
+        /// <param name="layoutGuidOverride">GUID opcional escolhido entre os candidatos ranked da detecção atual.</param>
+        /// <param name="cancellationToken">Cancelamento da requisição.</param>
+        [ServiceFilter(typeof(AuditActionFilter))]
+        [HttpPost("auto")]
+        [Consumes("multipart/form-data")]
+        [ProducesResponseType(typeof(AutomaticParseResponse), StatusCodes.Status200OK)]
+        [ProducesResponseType(typeof(AutomaticParseResponse), StatusCodes.Status422UnprocessableEntity)]
+        public async Task<IActionResult> Auto(
+            [FromForm] IFormFile? documentFile,
+            [FromForm] string? layoutGuidOverride,
+            CancellationToken cancellationToken)
+        {
+            var correlationId = EnsureCorrelationId();
+
+            if (documentFile is null || documentFile.Length == 0)
+            {
+                return BadRequest(new
+                {
+                    success = false,
+                    correlationId,
+                    message = "O arquivo do documento é obrigatório e não pode estar vazio."
+                });
+            }
+
+            try
+            {
+                string documentContent;
+                await using (var documentStream = documentFile.OpenReadStream())
+                using (var reader = new StreamReader(documentStream, Encoding.UTF8, true, leaveOpen: false))
+                    documentContent = await reader.ReadToEndAsync(cancellationToken);
+
+                var result = await _automaticLayoutDetection.DetectAsync(documentContent, cancellationToken);
+                var detection = result.Detection;
+
+                LayoutRecord? selectedRecord = null;
+                AutomaticLayoutCandidate? selectedCandidate = null;
+                var selectionSource = "none";
+
+                if (!string.IsNullOrWhiteSpace(layoutGuidOverride))
+                {
+                    if (!result.TryGetRankedLayout(layoutGuidOverride, out selectedRecord) || selectedRecord is null)
+                    {
+                        return UnprocessableEntity(new AutomaticParseResponse
+                        {
+                            Success = false,
+                            CorrelationId = correlationId,
+                            Detection = detection,
+                            Message = "O layout informado não pertence aos candidatos compatíveis da detecção atual. Execute uma nova detecção e escolha um dos candidatos retornados."
+                        });
+                    }
+
+                    selectedCandidate = detection.Candidates.First(candidate =>
+                        AutomaticLayoutDetectionResult.TryNormalizeGuid(candidate.LayoutGuid, out var candidateGuid)
+                        && AutomaticLayoutDetectionResult.TryNormalizeGuid(layoutGuidOverride, out var overrideGuid)
+                        && string.Equals(candidateGuid, overrideGuid, StringComparison.OrdinalIgnoreCase));
+                    selectionSource = detection.Status == AutomaticLayoutDetectionStatus.Unique
+                        ? "auto_unique_confirmed"
+                        : "ranked_override";
+                    detection.SelectedLayout = selectedCandidate;
+                }
+                else if (detection.Status == AutomaticLayoutDetectionStatus.Unique
+                    && detection.SelectedLayout is not null
+                    && result.TryGetRankedLayout(detection.SelectedLayout.LayoutGuid, out selectedRecord))
+                {
+                    selectedCandidate = detection.SelectedLayout;
+                    selectionSource = "auto_unique";
+                }
+
+                if (selectedRecord is null || selectedCandidate is null)
+                {
+                    return Ok(new AutomaticParseResponse
+                    {
+                        Success = true,
+                        CorrelationId = correlationId,
+                        Detection = detection
+                    });
+                }
+
+                if (string.IsNullOrWhiteSpace(selectedRecord.DecryptedContent))
+                    throw new InvalidOperationException("O layout selecionado não possui conteúdo interno disponível.");
+
+                _logger.LogInformation(
+                    "Seleção de layout da detecção automática. CorrelationId={CorrelationId} Status={DetectionStatus} SelectionSource={SelectionSource} LayoutGuid={LayoutGuid} Rank={Rank} AlgorithmVersion={AlgorithmVersion} CatalogVersion={CatalogVersion}",
+                    correlationId,
+                    detection.Status,
+                    selectionSource,
+                    selectedCandidate.LayoutGuid,
+                    selectedCandidate.Rank,
+                    detection.AlgorithmVersion,
+                    detection.CatalogVersion);
+
+                // Reusa integralmente o pipeline já protegido de /upload. O layout descriptografado
+                // é materializado somente em memória e nunca é devolvido ao navegador.
+                var layoutBytes = Encoding.UTF8.GetBytes(selectedRecord.DecryptedContent);
+                await using var layoutStream = new MemoryStream(layoutBytes, writable: false);
+                var internalLayoutFile = new FormFile(
+                    layoutStream,
+                    0,
+                    layoutBytes.Length,
+                    "layoutFile",
+                    $"{selectedCandidate.LayoutGuid}.xml")
+                {
+                    Headers = new HeaderDictionary(),
+                    ContentType = "application/xml"
+                };
+
+                var uploadResult = await Upload(internalLayoutFile, documentFile, selectedRecord.Name);
+                return WrapUploadResult(uploadResult, detection, correlationId);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (InvalidOperationException ex)
+            {
+                _logger.LogWarning(ex, "Detecção automática indisponível. CorrelationId={CorrelationId}", correlationId);
+                return StatusCode(StatusCodes.Status503ServiceUnavailable, new
+                {
+                    success = false,
+                    correlationId,
+                    message = "A detecção automática está temporariamente indisponível."
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Falha inesperada na detecção automática. CorrelationId={CorrelationId}", correlationId);
+                return StatusCode(StatusCodes.Status500InternalServerError, new
+                {
+                    success = false,
+                    correlationId,
+                    message = "Não foi possível concluir a detecção automática."
+                });
+            }
         }
 
         [ServiceFilter(typeof(AuditActionFilter))]
@@ -337,6 +484,42 @@ namespace LayoutParserApi.Controllers
                     layoutFile.FileName,
                     txtFile.FileName);
             }
+        }
+
+        private IActionResult WrapUploadResult(
+            IActionResult uploadResult,
+            AutomaticLayoutDetection detection,
+            string correlationId)
+        {
+            if (uploadResult is ObjectResult objectResult)
+            {
+                var statusCode = objectResult.StatusCode ?? StatusCodes.Status200OK;
+                return StatusCode(statusCode, new AutomaticParseResponse
+                {
+                    Success = statusCode is >= 200 and < 300,
+                    CorrelationId = correlationId,
+                    Detection = detection,
+                    ParseResult = objectResult.Value
+                });
+            }
+
+            return StatusCode(StatusCodes.Status500InternalServerError, new AutomaticParseResponse
+            {
+                Success = false,
+                CorrelationId = correlationId,
+                Detection = detection,
+                Message = "O pipeline de parse devolveu uma resposta não reconhecida."
+            });
+        }
+
+        private string EnsureCorrelationId()
+        {
+            var correlationId = CorrelationContext.CurrentId;
+            if (string.IsNullOrWhiteSpace(correlationId))
+                correlationId = HttpContext.TraceIdentifier;
+
+            Response.Headers["X-Correlation-ID"] = correlationId;
+            return correlationId;
         }
 
         /// <summary>
