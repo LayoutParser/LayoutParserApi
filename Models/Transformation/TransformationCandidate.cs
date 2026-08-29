@@ -15,6 +15,14 @@ namespace LayoutParserApi.Models.Transformation
 
         public string TransformedXml { get; set; } = "";
 
+        /// <summary>
+        /// XSLT sintetizado pelo <c>RepairOrchestrator</c> (ai/XslSynth.Core), quando o candidato
+        /// veio do pathway IA via <see cref="LayoutParserApi.Services.Transformation.Ai.IXslSynthesizerService"/>.
+        /// <c>null</c> nos demais pathways (sysmiddle/tcl-xsl já têm XSLT persistido em disco,
+        /// não neste campo) ou quando o loop caiu no fallback legado XML-direto (sem XSLT reutilizável).
+        /// </summary>
+        public string? GeneratedXslt { get; set; }
+
         public double? Score { get; set; }
 
         public Dictionary<string, string>? SegmentMappings { get; set; }
