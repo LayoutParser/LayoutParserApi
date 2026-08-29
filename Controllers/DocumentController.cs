@@ -4,6 +4,11 @@ using LayoutParserApi.Services.Security;
 
 namespace LayoutParserApi.Controllers
 {
+    /// <summary>
+    /// Navegação da pasta local <c>Documentos/</c> (Layout/Documento/Excel) do servidor — usado
+    /// para inspecionar arquivos de exemplo/fixture já disponíveis no host, fora do fluxo de
+    /// upload principal (<c>ParseController</c>).
+    /// </summary>
     [ApiController]
     [Route("api/[controller]")]
     public class DocumentController : ControllerBase
@@ -17,6 +22,9 @@ namespace LayoutParserApi.Controllers
             _documentsPath = Path.Combine(Directory.GetCurrentDirectory(), "Documentos");
         }
 
+        /// <summary>Lista os arquivos XML da pasta <c>Documentos/Layout</c>.</summary>
+        /// <response code="200">Lista de layouts (nome, caminho, tamanho, data).</response>
+        /// <response code="404">Pasta <c>Layout</c> não existe no servidor.</response>
         [HttpGet("layouts")]
         public IActionResult GetLayouts()
         {
@@ -51,6 +59,9 @@ namespace LayoutParserApi.Controllers
             }
         }
 
+        /// <summary>Lista os arquivos da pasta <c>Documentos/Documento</c> (documentos de exemplo TXT/XML).</summary>
+        /// <response code="200">Lista de documentos.</response>
+        /// <response code="404">Pasta <c>Documento</c> não existe no servidor.</response>
         [HttpGet("documents")]
         public IActionResult GetDocuments()
         {
@@ -86,6 +97,9 @@ namespace LayoutParserApi.Controllers
             }
         }
 
+        /// <summary>Lista planilhas (.xlsx/.xls) da pasta <c>Documentos/Excel</c> — specs-fonte machine-parseáveis.</summary>
+        /// <response code="200">Lista de planilhas.</response>
+        /// <response code="404">Pasta <c>Excel</c> não existe no servidor.</response>
         [HttpGet("excel-files")]
         public IActionResult GetExcelFiles()
         {
@@ -121,6 +135,10 @@ namespace LayoutParserApi.Controllers
             }
         }
 
+        /// <summary>Lê o conteúdo de um layout XML específico dentro de <c>Documentos/Layout</c>.</summary>
+        /// <param name="fileName">Nome do arquivo (sem caminho — validado contra path traversal por <see cref="SafePathResolver"/>).</param>
+        /// <response code="200">Conteúdo do layout.</response>
+        /// <response code="404">Arquivo inexistente ou nome inválido (mesma resposta — não revela qual caso).</response>
         [HttpGet("layout/{fileName}")]
         public IActionResult GetLayout(string fileName)
         {
@@ -148,6 +166,10 @@ namespace LayoutParserApi.Controllers
             }
         }
 
+        /// <summary>Lê o conteúdo de um documento específico dentro de <c>Documentos/Documento</c>.</summary>
+        /// <param name="fileName">Nome do arquivo (sem caminho — validado contra path traversal).</param>
+        /// <response code="200">Conteúdo do documento.</response>
+        /// <response code="404">Arquivo inexistente ou nome inválido.</response>
         [HttpGet("document/{fileName}")]
         public IActionResult GetDocument(string fileName)
         {
@@ -174,6 +196,11 @@ namespace LayoutParserApi.Controllers
             }
         }
 
+        /// <summary>Baixa uma planilha específica de <c>Documentos/Excel</c> (binário, não JSON).</summary>
+        /// <param name="fileName">Nome do arquivo (sem caminho — validado contra path traversal).</param>
+        /// <returns>Arquivo binário com content-type de planilha do Office.</returns>
+        /// <response code="200">Bytes da planilha.</response>
+        /// <response code="404">Arquivo inexistente ou nome inválido.</response>
         [HttpGet("excel/{fileName}")]
         public IActionResult GetExcelFile(string fileName)
         {
@@ -194,6 +221,8 @@ namespace LayoutParserApi.Controllers
             }
         }
 
+        /// <summary>Resumo da árvore <c>Documentos/</c> (existência e contagem de arquivos por subpasta) — diagnóstico rápido, sem listar cada arquivo.</summary>
+        /// <response code="200">Estrutura resumida.</response>
         [HttpGet("structure")]
         public IActionResult GetDocumentStructure()
         {
