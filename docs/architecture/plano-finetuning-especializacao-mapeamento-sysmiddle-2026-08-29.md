@@ -206,3 +206,106 @@ registrado em `finetuning-small-model-poc.md`).
 Nenhum código foi implementado. Trabalho de implementação (dataset prep, scripts de treino QLoRA,
 Hub de streaming, wiring do modelo no Ollama) fica com `@lp-parser-llm`/`@lp-backend-dev`, sob
 esta especificação.
+
+## Smoke-test executado em 2026-08-29
+
+Executado de ponta a ponta na VM (`elson@172.25.32.48`, IP fixado depois para `172.25.32.5` no
+meio da sessão — sem impacto no resultado, só na forma de acesso SSH). Resultados **medidos**,
+não estimados.
+
+### Specs reais confirmadas da VM
+
+- CPU: Intel Core i7-4790 @ 3.60GHz, **4 núcleos físicos, 1 thread/núcleo** (sem HT), `avx2`
+  disponível (importante para throughput de matmul em CPU).
+- RAM: 15Gi total, ~14Gi livre no momento do teste.
+- Disco: 59G total, 43G livres.
+- GPU: **confirmada ausente** — `lspci | grep VGA` só lista `VMware SVGA II Adapter` (adaptador
+  virtual de vídeo, não GPU de compute), `nvidia-smi` inexistente, `torch.cuda.is_available()`
+  retorna `False`. Bate com a decisão 2 do dono (seção acima) — não era mais uma pendência de
+  confirmação, mas ficou confirmado tecnicamente mesmo assim.
+
+### Ambiente Python — mudança de abordagem necessária (bloqueio de `sudo` contornado)
+
+- `python3-venv` **não está instalado** e criar venv exige `apt install python3.12-venv`, que por
+  sua vez exige `sudo` **com senha** (não há NOPASSWD configurado para este usuário) — não tenho a
+  senha e não é algo que o dono autorizou compartilhar aqui. Contornado **sem tocar em rede/apt**:
+  `pip` de usuário via `get-pip.py --user --break-system-packages` (ambiente Debian 12 é
+  "externally managed" por padrão, PEP 668) instalou `pip` isolado em
+  `~/.local/lib/python3.12/site-packages`, sem exigir root. Todas as libs (`torch`, `transformers`,
+  `peft`, `accelerate`, `datasets`, `bitsandbytes`) foram instaladas assim, com sucesso, sem
+  precisar de `sudo` em nenhum momento.
+- **Registrar para a Fase 2:** se o treino completo do fim de semana precisar de mais alguma
+  dependência de sistema (não-Python) via `apt`, isso *vai* bloquear pela mesma razão (`sudo`
+  pede senha) — sinalizar ao dono com antecedência, não descobrir isso já dentro da janela do
+  fim de semana.
+
+### QLoRA real em CPU — NÃO funcional, decisão técnica atualizada para LoRA fp32
+
+`bitsandbytes` **instala e importa sem erro** em CPU-only (0.50.2), e até aceita construir um
+`BitsAndBytesConfig(load_in_4bit=True)` e carregar um modelo com esse config sem lançar exceção.
+Mas isso é enganoso: `bitsandbytes` não tem backend de quantização 4-bit funcional sem CUDA —
+o carregamento "funciona" porque a lib não está de fato quantizando nada nesse ambiente (sem
+kernel CUDA disponível para os kernels 4-bit reais). **Não é seguro assumir que QLoRA real
+(quantização 4-bit efetiva) funciona nesta VM.** Atualização de decisão: a seção 2 deste plano
+falava em "QLoRA em CPU" — na prática, o treino real usado no smoke-test (e recomendado para a
+Fase 1) é **LoRA em fp32, sem quantização de peso** (`r=4`, `lora_alpha=8`, `target_modules=
+["q_proj","v_proj"]`, via `peft.LoraConfig` puro). Isso não muda a viabilidade de rodar em CPU —
+LoRA fp32 sobre um modelo 1.5B roda igual, só ocupa mais RAM/disco que a versão 4-bit
+teoricamente quantizada (não um problema aqui, sobram 14G de RAM livre para um modelo de ~1.5B
+em fp32, ~6GB).
+
+### Resultado do smoke-test real (medido, não estimado)
+
+- Modelo base testado: `Qwen/Qwen2.5-Coder-1.5B-Instruct` (Hugging Face, 1543.7M parâmetros) —
+  download (~2.9GB) + carregamento em fp32: primeira vez ~259s (rede), segunda vez (já em cache
+  local) **1.6s**.
+- LoRA aplicado: `r=4`, `q_proj`/`v_proj` — **544.768 parâmetros treináveis (0,0353% do total)**.
+- Dataset do smoke-test: **10 pares sintéticos** curtos (prompt/completion no estilo
+  "campo TCL → template XSLT", não os 155 pares reais — ver limitação abaixo), `max_length=256`
+  tokens, batch size 1, sem acumulação de gradiente.
+- **Tempo de treino medido: 107,3 segundos para 1 época (10 passos, batch=1)** — ou seja,
+  **~10,7 segundos por exemplo/passo** nessa CPU, nessas condições (seq_len 256, r=4).
+- Ciclo completo (carregar modelo do cache + tokenizar + treinar 1 época) em **111 segundos**.
+- `train_loss` caiu de ~5.19 para ~4.94 ao longo da época (esperado com 10 exemplos/1 época — não
+  é sinal de qualidade, só confirma que o gradiente está fluindo e os pesos LoRA mudam).
+
+### Extrapolação honesta para o dataset real (155 pares, Fase 1)
+
+Usando o custo medido de ~10,7 s/exemplo/passo como base:
+
+- **1 época sobre 155 exemplos reais, batch=1, seq_len=256 (como no smoke-test): ~1.660s
+  (~28 minutos).** Para 3-5 épocas, **~1,4h a ~2,3h** — folga confortável dentro de uma janela de
+  fim de semana (~48h), mesmo com margem para o passo de merge/quantização GGUF depois.
+- **Risco real que o smoke-test não cobre:** os arquivos `.xsl` reais variam de 454 a 153.438
+  caracteres (média ~16,6k caracteres, ver `finetuning-poc-fase1-dataset.md`) — muito além dos
+  256 tokens usados no smoke-test. Sequências mais longas custam bem mais que proporcionalmente
+  (atenção cresce ~O(n²), e mesmo componentes lineares escalam com n) — um exemplo de 16k
+  caracteres (~4-6k tokens) pode custar **uma ordem de grandeza a mais por passo** que os 256
+  tokens medidos aqui. **Não é seguro extrapolar linearmente o tempo total do dataset real sem
+  medir com sequências do tamanho real.** Próximo passo necessário antes de comprometer a janela
+  de fim de semana ao treino completo: rodar o mesmo smoke-test com 5-10 pares *reais* (não
+  sintéticos) truncados/chunked no tamanho que a Fase 1 realmente vai usar, e medir de novo.
+- Dataset real dos 155 pares **não estava disponível nesta sessão** — foi gerado numa sessão
+  anterior em `.claude/tmp/dataset-finetuning/` (fora do controle de versão, ambiente reiniciado
+  entre sessões, ver `session-environment-gotchas.md`). Reextrair via
+  `Examples/tcl|xsl/<DocType>/<Versao>/*` (mesma lógica documentada em
+  `finetuning-poc-fase1-dataset.md`) é pré-requisito antes do treino completo — script já existia,
+  precisa ser reexecutado nesta VM ou os dados copiados para lá.
+
+### Viabilidade do treino completo no fim de semana — condicional, não fechada
+
+**O ciclo mecânico (dado → LoRA → treino → salvar adapter) está confirmado funcionando de ponta
+a ponta em CPU nesta VM**, dentro de um orçamento de tempo pequeno. **Não está confirmado ainda**
+que o tempo se mantém viável com sequências do tamanho real dos `.xsl` de produção — esse é o
+próximo passo mais crítico antes de comprometer a janela inteira, não o tamanho do modelo (1.5B
+já parece a escolha certa) nem o mecanismo de treino (LoRA fp32 funciona). Recomendação: rodar
+smoke-test #2 com dados reais (mesmo que só 5-10 pares, tamanho real) antes do treino completo
+de sábado à noite.
+
+### Scripts usados (não commitados no repo — artefatos de sessão na VM)
+
+`~/smoke_dataset.jsonl` (10 pares sintéticos) e `~/smoke_train.py` (script de treino LoRA com
+`transformers.Trainer` + `peft.LoraConfig`, `use_cpu=True` — nota: a versão instalada de
+`transformers` (5.16.1) **removeu o parâmetro `no_cuda`** de `TrainingArguments`, usar `use_cpu`
+no lugar) ficaram na VM (`elson@172.25.32.5:~/`), não foram copiados para o repositório — são
+artefatos de teste, não parte do pipeline de produção ainda.
