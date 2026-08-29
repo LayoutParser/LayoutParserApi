@@ -213,7 +213,61 @@ try
             options.JsonSerializerOptions.NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals;
         });
     builder.Services.AddEndpointsApiExplorer();
-    builder.Services.AddSwaggerGen();
+    builder.Services.AddSwaggerGen(options =>
+    {
+        // ✅ Descrição geral da API no /swagger — objetivo: qualquer pessoa/agente/dev de
+        // front-end entender e usar cada endpoint só olhando a UI, sem ler código-fonte.
+        options.SwaggerDoc("v1", new Microsoft.OpenApi.OpenApiInfo
+        {
+            Title = "LayoutParser API",
+            Version = "v1",
+            Description = "API ASP.NET Core que parseia documentos posicionais (TXT / MQSeries / IDOC) " +
+                "contra um layout XML (low-code Sysmiddle), com camada de IA/ML que aprende a gerar " +
+                "transformações (XSLT/TCL). É o hub de orquestração de parse, cache, IA e transformação " +
+                "do ecossistema LayoutParser (Api + Lib de criptografia + Decrypt.exe + front-end React). " +
+                "Endpoints agrupados por área via tag (Parsing, Transformation, Catalog, Learning, " +
+                "Validation, Metrics, Logs, Testing)."
+        });
+
+        // Inclui os comentários XML (<summary>/<param>/<returns>/<response>) gerados pelo
+        // GenerateDocumentationFile no .csproj — sem isso o Swashbuckle ignora os doc comments.
+        var xmlFile = $"{System.Reflection.Assembly.GetExecutingAssembly().GetName().Name}.xml";
+        var xmlPath = System.IO.Path.Combine(AppContext.BaseDirectory, xmlFile);
+        if (System.IO.File.Exists(xmlPath))
+        {
+            options.IncludeXmlComments(xmlPath, includeControllerXmlComments: true);
+        }
+
+        // ✅ Agrupamento por área de domínio em vez de lista plana de 17 controllers — mais
+        // fácil de navegar no /swagger. Mapeamento simples por nome de controller.
+        options.TagActionsBy(apiDesc =>
+        {
+            var controllerName = apiDesc.ActionDescriptor.RouteValues.TryGetValue("controller", out var c) ? c : null;
+            var tag = controllerName switch
+            {
+                "Parse" => "Parsing",
+                "Document" => "Parsing",
+                "XmlAnalysis" => "Parsing",
+                "AutoTransformation" => "Transformation",
+                "TransformationExecution" => "Transformation",
+                "LayoutDatabase" => "Catalog",
+                "MapperDatabase" => "Catalog",
+                "Learning" => "Learning",
+                "RAG" => "Learning",
+                "DataGeneration" => "Learning",
+                "ValidationDiagnostic" => "Validation",
+                "Testing" => "Validation",
+                "Test" => "Validation",
+                "AiMetrics" => "Metrics",
+                "Metrics" => "Metrics",
+                "Monitoring" => "Metrics",
+                "Logs" => "Logs",
+                _ => controllerName ?? "Outros"
+            };
+            return new[] { tag };
+        });
+        options.DocInclusionPredicate((docName, apiDesc) => true);
+    });
 
     // ✅ Compressão de resposta. Este payload é o caso de uso ideal: a API devolve XML e JSON —
     // documento fiscal transformado, catálogo de layouts, páginas de log — e texto marcado comprime

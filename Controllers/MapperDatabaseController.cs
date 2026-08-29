@@ -25,8 +25,12 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
-        /// Busca mapeadores para um layout específico
+        /// Lista os mapeadores Sysmiddle registrados para um layout de origem — não retorna o
+        /// XML descriptografado completo (ver <see cref="ExportMapper"/> para isso).
         /// </summary>
+        /// <param name="layoutGuid">GUID do layout de origem.</param>
+        /// <response code="200">Lista de mapeadores (pode ser vazia).</response>
+        /// <response code="500">Falha não catalogada.</response>
         [HttpGet("by-layout/{layoutGuid}")]
         public async Task<IActionResult> GetMappersByLayoutGuid(string layoutGuid)
         {
@@ -62,8 +66,12 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
-        /// Busca todos os mapeadores
+        /// Lista todos os mapeadores em cache — incluindo o conteúdo cifrado sempre e o
+        /// descriptografado só sob pedido (custo de descriptografia por item).
         /// </summary>
+        /// <param name="includeDecryptedContent">Se true, inclui <c>decryptedContent</c> (XML pleno) por mapeador.</param>
+        /// <response code="200">Lista de mapeadores.</response>
+        /// <response code="500">Falha não catalogada.</response>
         [HttpGet("all")]
         public async Task<IActionResult> GetAllMappers([FromQuery] bool includeDecryptedContent = false)
         {
@@ -107,8 +115,13 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
-        /// Exporta um mapeador específico como JSON completo (incluindo DecryptedContent)
+        /// Exporta um mapeador específico como JSON completo, sempre com <c>decryptedContent</c>
+        /// (XML Sysmiddle pleno) — endpoint de inspeção/debug, não usado no fluxo de transformação.
         /// </summary>
+        /// <param name="id">ID interno (não confundir com <c>mapperGuid</c>).</param>
+        /// <response code="200">Mapeador completo.</response>
+        /// <response code="404">ID inexistente.</response>
+        /// <response code="500">Falha não catalogada.</response>
         [HttpGet("export/{id}")]
         public async Task<IActionResult> ExportMapper(int id)
         {
@@ -153,8 +166,12 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
-        /// Busca mapeador por InputLayoutGuid (entrada)
+        /// Busca o primeiro mapeador cujo layout de <b>entrada</b> (não destino) casa com o GUID informado.
         /// </summary>
+        /// <param name="inputLayoutGuid">GUID do layout de entrada do mapeador.</param>
+        /// <response code="200">Mapeador encontrado.</response>
+        /// <response code="404">Nenhum mapeador com este InputLayoutGuid.</response>
+        /// <response code="500">Falha não catalogada.</response>
         [HttpGet("by-input/{inputLayoutGuid}")]
         public async Task<IActionResult> GetMapperByInputLayoutGuid(string inputLayoutGuid)
         {
@@ -192,8 +209,10 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
-        /// Atualiza o cache de mapeadores com dados do banco
+        /// Força a releitura do SQL Server e repovoa o cache Redis de mapeadores.
         /// </summary>
+        /// <response code="200">Cache atualizado.</response>
+        /// <response code="500">Falha ao acessar SQL/Redis.</response>
         // Issue #32: rebuild de cache é operação operacional, não de negócio — restrita ao
         // papel "operador" (mais permissivo que "admin", coerente com a tabela de decisão).
         [Authorize(Roles = "operador")]

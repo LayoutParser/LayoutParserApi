@@ -201,6 +201,31 @@ namespace LayoutParserApi.Controllers
             }
         }
 
+        /// <summary>
+        /// Endpoint principal de parse: recebe um layout XML (low-code Sysmiddle) + um documento
+        /// posicional (TXT/MQSeries/IDOC) e devolve a estrutura parseada, validações de linha e —
+        /// quando aplicável — transformação(ões) XSLT candidata(s), entregue de forma síncrona
+        /// (dentro do teto <c>LowCode:SyncDeliveryTimeoutSeconds</c>) ou assíncrona via
+        /// <c>transformationsTicket</c>.
+        /// </summary>
+        /// <param name="layoutFile">Layout XML (Sysmiddle) que descreve os campos/posições esperados.</param>
+        /// <param name="txtFile">Documento a ser parseado (TXT posicional, MQSeries ou IDOC).</param>
+        /// <param name="layoutName">
+        /// Nome do layout selecionado no front — usado para salvar o documento na pasta de
+        /// aprendizado (<c>TransformationPipeline:ExamplesPath</c>) e para dar override no tipo
+        /// detectado quando contém "MQ".
+        /// </param>
+        /// <returns>
+        /// Documento parseado (<c>layout</c>, <c>fields</c>, <c>documentStructure</c>,
+        /// <c>lineValidations</c>) + estado do pathway de transformação low-code
+        /// (<c>transformations</c>, <c>transformationsStatus</c>, <c>transformationsTicket</c>).
+        /// Se o arquivo enviado for XML, retorna instrução para processar no front-end em vez de
+        /// tentar parsear no servidor.
+        /// </returns>
+        /// <response code="200">Parse concluído (mesmo com <c>validationErrors</c> — o parse degrada, não falha, quando o defeito é localizável).</response>
+        /// <response code="400">Layout XML ou documento ausente, ou layout não é <c>.xml</c>.</response>
+        /// <response code="422">Entrada inválida/irrecuperável (documento vazio, malformado) — culpa do arquivo enviado, não da API.</response>
+        /// <response code="500">Falha não catalogada (defeito nosso) — mensagem segura no corpo, causa real no log via <c>correlationId</c>.</response>
         [ServiceFilter(typeof(AuditActionFilter))]
         [HttpPost("upload")]
         public async Task<IActionResult> Upload(IFormFile layoutFile, IFormFile txtFile, [FromForm] string layoutName = null)

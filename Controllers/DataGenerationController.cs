@@ -15,6 +15,11 @@ using System.Text;
 
 namespace LayoutParserApi.Controllers
 {
+    /// <summary>
+    /// Geração de dados sintéticos (TXT) a partir de um layout XML — usado para popular massa de
+    /// teste sem depender de documento real de cliente. Suporta enriquecimento por planilha Excel
+    /// e IA (<c>useAI</c>), análise de layout/padrões de campo e geração em lote (ZIP).
+    /// </summary>
     [ApiController]
     [Route("api/[controller]")]
     [ServiceFilter(typeof(AuditActionFilter))]
@@ -43,6 +48,14 @@ namespace LayoutParserApi.Controllers
             _logger = logger;
         }
 
+        /// <summary>Gera registros sintéticos (1 arquivo TXT, retornado inline) a partir de um layout, opcionalmente guiado por uma planilha Excel de referência.</summary>
+        /// <param name="layoutFile">Layout XML (Sysmiddle).</param>
+        /// <param name="excelFile">Planilha opcional com valores/padrões de referência por campo.</param>
+        /// <param name="numberOfRecords">Quantos registros gerar (default 2).</param>
+        /// <param name="useAI">Se true, usa geração assistida por IA para campos sem padrão claro.</param>
+        /// <response code="200">Dados gerados.</response>
+        /// <response code="400">Layout ausente/não-XML, ou falha na geração.</response>
+        /// <response code="500">Falha não catalogada.</response>
         // Issue #32: geração de dados sintéticos é operação privilegiada — restrita ao papel "admin".
         [Authorize(Roles = "admin")]
         [HttpPost("generate-synthetic")]
@@ -116,6 +129,10 @@ namespace LayoutParserApi.Controllers
             }
         }
 
+        /// <summary>Analisa um layout XML para IA (campos, tipos de linha, metadados) — insumo para decidir a estratégia de geração de <c>generate-synthetic</c>.</summary>
+        /// <response code="200">Análise concluída.</response>
+        /// <response code="400">Layout ausente ou inválido.</response>
+        /// <response code="500">Falha não catalogada.</response>
         [HttpPost("analyze-layout")]
         public async Task<IActionResult> AnalyzeLayout(IFormFile layoutFile)
         {
@@ -149,6 +166,10 @@ namespace LayoutParserApi.Controllers
             }
         }
 
+        /// <summary>Processa uma planilha isoladamente (sem gerar dados) — inspeciona headers/tipos de coluna e sugere mapeamento de campos.</summary>
+        /// <response code="200">Planilha processada.</response>
+        /// <response code="400">Excel ausente ou falha ao processar.</response>
+        /// <response code="500">Falha não catalogada.</response>
         // Issue #32: idem generate-synthetic — restrito ao papel "admin".
         [Authorize(Roles = "admin")]
         [HttpPost("process-excel")]
@@ -182,6 +203,10 @@ namespace LayoutParserApi.Controllers
             }
         }
 
+        /// <summary>Analisa até 10 campos do layout contra um arquivo de dados de exemplo, detectando padrão de valor e sugerindo estratégia de geração por campo.</summary>
+        /// <response code="200">Padrões detectados.</response>
+        /// <response code="400">Layout/dados de exemplo ausente, ou nenhum dado de exemplo lido.</response>
+        /// <response code="500">Falha não catalogada.</response>
         [HttpPost("analyze-patterns")]
         public async Task<IActionResult> AnalyzePatterns(
             IFormFile layoutFile,
@@ -241,6 +266,8 @@ namespace LayoutParserApi.Controllers
             }
         }
 
+        /// <summary>Health check trivial do controller (sempre 200, texto fixo) — não verifica dependências.</summary>
+        /// <response code="200">Controller de pé.</response>
         [HttpGet("test")]
         public IActionResult Test()
         {
@@ -383,6 +410,20 @@ namespace LayoutParserApi.Controllers
             public List<object> Details { get; set; } = new List<object>();
         }
 
+        /// <summary>
+        /// Gera múltiplos arquivos TXT sintéticos e devolve um ZIP; cada arquivo passa por
+        /// validação de linha (mesmo motor de <c>ParseController</c>) — resultado por arquivo vai
+        /// no header <c>X-Validation-Results</c>, não no corpo (que é binário).
+        /// </summary>
+        /// <param name="layoutFile">Layout XML.</param>
+        /// <param name="excelFile">Planilha opcional de referência.</param>
+        /// <param name="numberOfRecords">Registros por arquivo.</param>
+        /// <param name="numberOfFiles">Quantidade de arquivos no ZIP.</param>
+        /// <param name="generationMode">Nome do <c>GenerationMode</c> (ex.: "Random") — inválido cai para "Random" com warning no log.</param>
+        /// <returns>ZIP binário (<c>application/zip</c>); metadados de validação nos headers <c>X-Validation-Results</c>/<c>X-Accepted-Files</c>/<c>X-Total-Files</c>/<c>X-Generation-Mode</c>.</returns>
+        /// <response code="200">ZIP gerado (mesmo que arquivos individuais tenham sido rejeitados — ver headers).</response>
+        /// <response code="400">Layout ausente ou não-XML.</response>
+        /// <response code="500">Falha estrutural ao gerar o lote.</response>
         // Issue #32: idem generate-synthetic — restrito ao papel "admin".
         [Authorize(Roles = "admin")]
         [HttpPost("generate-synthetic-zip")]

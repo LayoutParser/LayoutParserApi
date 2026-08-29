@@ -47,6 +47,9 @@ namespace LayoutParserApi.Controllers
         /// Recebe log do front-end (LayoutParserReact) e grava no MESMO Serilog já configurado
         /// (sem sink/arquivo novo), marcado com Source=Frontend só no escopo desta requisição.
         /// </summary>
+        /// <param name="request"><c>Message</c> obrigatório; <c>Level</c> um de Debug/Information/Warning/Error; <c>Context</c> opcional (serializado e anexado à mensagem).</param>
+        /// <response code="204">Log gravado (best-effort — falha interna não vira erro pro front).</response>
+        /// <response code="400"><c>message</c> ausente ou <c>level</c> fora do vocabulário aceito.</response>
         [HttpPost("client")]
         public IActionResult PostClientLog([FromBody] ClientLogRequest? request)
         {
@@ -96,6 +99,9 @@ namespace LayoutParserApi.Controllers
         /// </summary>
         // Issue #32: leitura de log é operação sensível (pode expor dado de outros usuários/
         // tenants) — restrita ao papel "admin".
+        /// <param name="filter">Filtros de paginação/período/nível/origem (Api/Lib/Decrypt/Frontend).</param>
+        /// <response code="200">Página de entradas de log unificadas.</response>
+        /// <response code="500">Falha ao ler os arquivos de log.</response>
         [Authorize(Roles = "admin")]
         [HttpGet]
         public async Task<IActionResult> GetLogs([FromQuery] UnifiedLogFilter filter)

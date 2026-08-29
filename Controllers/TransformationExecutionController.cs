@@ -97,8 +97,15 @@ namespace LayoutParserApi.Controllers
         private string CurrentUserId => _currentUser.Name ?? string.Empty;
 
         /// <summary>
-        /// Executa transformação completa (TXT -> XML ou XML -> XML)
+        /// Executa transformação completa (TXT -> XML ou XML -> XML) usando o pathway tcl-xsl
+        /// (canônico, único candidato). Para obter todos os candidatos plausíveis dos dois
+        /// pathways, use <see cref="ExecuteTransformationCandidates"/>.
         /// </summary>
+        /// <param name="request"><c>InputContent</c> e <c>LayoutName</c> são obrigatórios; <c>Validate</c> dispara validação XSD/diff do resultado.</param>
+        /// <returns><c>transformedXml</c> + <c>segmentMappings</c> (indexado por linha, só para entrada MQSeries) e, se <c>Validate=true</c>, o objeto <c>validation</c>.</returns>
+        /// <response code="200">Transformação concluída.</response>
+        /// <response code="400"><c>InputContent</c>/<c>LayoutName</c> ausente, ou pipeline não conseguiu transformar (ver <c>errors</c>/<c>warnings</c>).</response>
+        /// <response code="500">Falha não catalogada no pipeline.</response>
         [HttpPost("execute")]
         public async Task<IActionResult> ExecuteTransformation([FromBody] TransformationRequest request)
         {
@@ -203,6 +210,16 @@ namespace LayoutParserApi.Controllers
         /// <c>Message</c> nesse array já passou por <see cref="Services.Transformation.LowCode.LowCodeErrorSanitizer"/>
         /// — nunca contém caminho físico de disco ou detalhe interno cru.</para>
         /// </summary>
+        /// <param name="request"><c>InputContent</c> e <c>LayoutName</c> obrigatórios; <c>LayoutGuid</c> opcional (tem precedência sobre o do catálogo).</param>
+        /// <returns>
+        /// <see cref="Models.Transformation.TransformationExecutionCandidatesResponse"/>: array <c>Candidates</c>
+        /// (um por pathway/mapper que produziu XML), <c>RecommendedCandidateId</c> (melhor <c>Score</c>),
+        /// <c>PathwayDiagnostics</c> (status por pathway avaliado) e <c>CorrelationId</c> para suporte.
+        /// </returns>
+        /// <response code="200">Ao menos um pathway foi avaliado (mesmo com <c>Candidates</c> vazio — ver <c>PathwayDiagnostics</c>).</response>
+        /// <response code="400"><c>InputContent</c>/<c>LayoutName</c> ausente, ou layout não encontrado no catálogo.</response>
+        /// <response code="500">Falha de infraestrutura ao consultar o catálogo de layouts.</response>
+        /// <response code="504">Timeout do conjunto de candidatos (teto calculado por <c>LowCodeCandidatesBudget</c>).</response>
         // Issue #32: dispara processos externos (runner x86) e é operação privilegiada — era
         // restrita ao papel "admin". Issue #93: reabre para qualquer usuário autenticado (o
         // isolamento por dono via CurrentUserId/AiCandidateStore, já feito na issue #92, é quem
@@ -806,6 +823,9 @@ namespace LayoutParserApi.Controllers
         /// <c>HasGroundTruth=false</c>: não há gabarito/histórico de validação para o layout, então
         /// o resultado é uma sugestão que exige revisão humana antes de ir para produção.
         /// </remarks>
+        /// <param name="ticket">Ticket devolvido em <c>execute-candidates</c> (correlato ao fallback/pathway IA).</param>
+        /// <response code="200">Status do job (ver <c>AiCandidateStatus</c>: pending/running/completed/failed).</response>
+        /// <response code="404">Ticket inexistente ou pertencente a outro usuário (não distinguível de propósito — evita enumeração).</response>
         [Authorize]
         [HttpGet("execute-candidates/{ticket}/ia-status")]
         public async Task<IActionResult> GetAiCandidateStatus(string ticket, CancellationToken cancellationToken)
@@ -948,8 +968,11 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
-        /// Valida transformação existente
+        /// Valida um resultado de transformação já produzido (TCL/XSL em disco) contra o TXT de
+        /// entrada e/ou o XML esperado — usado para checagem manual/QA de um par TCL/XSL específico.
         /// </summary>
+        /// <response code="200">Resultado da validação (diffs/erros de schema, se houver).</response>
+        /// <response code="500">Falha ao rodar a validação.</response>
         [HttpPost("validate")]
         public async Task<IActionResult> ValidateTransformation([FromBody] ValidationRequest request)
         {
@@ -974,8 +997,11 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
-        /// Executa aprendizado a partir de exemplos
+        /// Alimenta o motor de aprendizado com exemplos de TCL/XSL para um layout — usado para
+        /// treinar padrões reaproveitáveis na geração automática (<see cref="AutoTransformationController"/>).
         /// </summary>
+        /// <response code="200">Padrões aprendidos (ver <c>patterns</c>).</response>
+        /// <response code="500">Falha ao processar os exemplos.</response>
         [HttpPost("learn-from-examples")]
         public async Task<IActionResult> LearnFromExamples([FromBody] LearnFromExamplesRequest request)
         {
@@ -1013,8 +1039,12 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
-        /// Executa teste automatizado de transformação
+        /// Roda uma transformação (pathway tcl-xsl) e imediatamente valida o resultado contra o
+        /// XML esperado — atalho para QA/regressão em um único request.
         /// </summary>
+        /// <response code="200">Transformação executada; ver <c>testPassed</c> para o veredito.</response>
+        /// <response code="400">Transformação falhou (ver <c>errors</c>) — teste não chegou a validar.</response>
+        /// <response code="500">Falha não catalogada.</response>
         [HttpPost("run-test")]
         public async Task<IActionResult> RunTransformationTest([FromBody] TransformationTestRequest request)
         {
@@ -1066,8 +1096,13 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
-        /// Executa transformação usando o motor low-code (SysMiddle) via runner x86.
+        /// Executa transformação usando o motor low-code (SysMiddle) via runner x86, direto por
+        /// mapper (sem a busca multi-candidato de <see cref="ExecuteTransformationCandidates"/>).
         /// </summary>
+        /// <param name="request"><c>InputContent</c> obrigatório; <c>MapperId</c> ou <c>MapperName</c> obrigatório.</param>
+        /// <response code="200">Transformação concluída (<c>transformedXml</c>).</response>
+        /// <response code="400"><c>InputContent</c> ou identificador do mapper ausente.</response>
+        /// <response code="500">Falha do runner x86/processo externo.</response>
         // Issue #32: idem execute-candidates — era restrito ao papel "admin". Issue #93: mesma
         // reabertura para qualquer usuário autenticado.
         [Authorize]
@@ -1118,6 +1153,9 @@ namespace LayoutParserApi.Controllers
         /// malformado) vira 200 com <c>fieldMappings: []</c> + warning, nunca deriuba com 500 — o
         /// motor de resolução estrutural é best-effort por natureza (design §5).</para>
         /// </summary>
+        /// <response code="200">Sempre — inclusive quando não há mapeamentos (<c>fieldMappings: []</c> + <c>warnings</c>, nunca 500 por falha do motor best-effort).</response>
+        /// <response code="400"><c>LayoutName</c>/<c>InputContent</c> ausente, layout não encontrado, ou sem <c>LayoutGuid</c> válido.</response>
+        /// <response code="500">Falha de infraestrutura ao consultar o catálogo de layouts.</response>
         [Authorize]
         [HttpPost("field-mappings")]
         public async Task<IActionResult> GetFieldMappings([FromBody] FieldMappingsRequest request)
@@ -1208,10 +1246,13 @@ namespace LayoutParserApi.Controllers
         public string? LayoutGuid { get; set; }
     }
 
+    /// <summary>Requisição do pathway low-code direto (<c>execute-lowcode</c>).</summary>
     public class LowCodeTransformationRequest
     {
         public string InputContent { get; set; } = "";
+        /// <summary>GUID do mapper Sysmiddle. Um de <see cref="MapperId"/>/<see cref="MapperName"/> é obrigatório.</summary>
         public string? MapperId { get; set; }
+        /// <summary>Nome do mapper — usado para busca quando <see cref="MapperId"/> não é informado.</summary>
         public string? MapperName { get; set; }
         public string? FileName { get; set; }
 
