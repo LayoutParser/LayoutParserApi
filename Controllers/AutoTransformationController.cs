@@ -18,8 +18,11 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
-        /// Gera automaticamente TCL e XSL para todos os layouts
+        /// Varre o catálogo de layouts e gera TCL + XSL para todos eles de uma vez (batch).
         /// </summary>
+        /// <returns>Contagens (processados/sucesso/erro/aviso) e o detalhe por layout processado.</returns>
+        /// <response code="200">Batch executado (ver campo <c>success</c> e <c>errors</c>/<c>warnings</c> por layout — falha individual não derruba o batch).</response>
+        /// <response code="500">Falha estrutural ao rodar o gerador (ex.: catálogo indisponível).</response>
         [HttpPost("generate-all")]
         public async Task<IActionResult> GenerateAllTransformations()
         {
@@ -58,8 +61,13 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
-        /// Gera TCL e XSL para um layout específico
+        /// Gera TCL e XSL para um único layout, identificado por GUID ou nome.
         /// </summary>
+        /// <param name="request">Ao menos um de <see cref="GenerateForLayoutRequest.LayoutGuid"/>/<see cref="GenerateForLayoutRequest.LayoutName"/> é obrigatório.</param>
+        /// <response code="200">Transformações geradas (ver <c>generatedFiles</c>/<c>errors</c>/<c>warnings</c>).</response>
+        /// <response code="400">Nem <c>LayoutGuid</c> nem <c>LayoutName</c> foram informados.</response>
+        /// <response code="404">Layout não encontrado no catálogo (Redis).</response>
+        /// <response code="500">Falha estrutural ao gerar (ex.: catálogo indisponível).</response>
         [HttpPost("generate-for-layout")]
         public async Task<IActionResult> GenerateForLayout([FromBody] GenerateForLayoutRequest request)
         {
@@ -118,9 +126,12 @@ namespace LayoutParserApi.Controllers
         }
     }
 
+    /// <summary>Requisição de geração de TCL/XSL para um layout específico.</summary>
     public class GenerateForLayoutRequest
     {
+        /// <summary>GUID do layout no catálogo. Se ausente, resolve por <see cref="LayoutName"/>.</summary>
         public string LayoutGuid { get; set; }
+        /// <summary>Nome do layout — usado na busca quando <see cref="LayoutGuid"/> não é informado.</summary>
         public string LayoutName { get; set; }
     }
 }

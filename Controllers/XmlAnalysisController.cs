@@ -6,6 +6,12 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace LayoutParserApi.Controllers
 {
+    /// <summary>
+    /// Análise estrutural e validação de XML — contagem de elementos/profundidade, validação
+    /// contra XSD da SEFAZ (com detecção automática de tipo/versão) e transformações utilitárias
+    /// de NFe. Ver <see cref="ValidationDiagnosticController"/> (mesma rota base
+    /// <c>api/xml-analysis</c>, controller separado) para diagnóstico via Ollama.
+    /// </summary>
     [ApiController]
     [Route("api/[controller]")]
     public class XmlAnalysisController : ControllerBase
@@ -24,9 +30,10 @@ namespace LayoutParserApi.Controllers
             _logger = logger;
         }
 
-        /// <summary>
-        /// Analisa e valida um arquivo XML
-        /// </summary>
+        /// <summary>Analisa a estrutura de um XML (elementos, atributos, profundidade) e, se <c>LayoutXml</c> for informado, valida contra o layout.</summary>
+        /// <response code="200">Análise concluída.</response>
+        /// <response code="400"><c>XmlContent</c> ausente.</response>
+        /// <response code="500">Falha não catalogada.</response>
         [HttpPost("analyze")]
         public async Task<IActionResult> AnalyzeXml([FromBody] XmlAnalysisRequest request)
         {
@@ -68,9 +75,10 @@ namespace LayoutParserApi.Controllers
             }
         }
 
-        /// <summary>
-        /// Valida XML enviado como arquivo
-        /// </summary>
+        /// <summary>Mesma análise de <see cref="AnalyzeXml"/>, mas recebendo o XML (e opcionalmente o layout) como upload multipart em vez de JSON.</summary>
+        /// <response code="200">Análise concluída.</response>
+        /// <response code="400"><c>xmlFile</c> ausente ou não é <c>.xml</c>.</response>
+        /// <response code="500">Falha não catalogada.</response>
         [HttpPost("validate-file")]
         public async Task<IActionResult> ValidateXmlFile(IFormFile xmlFile, IFormFile layoutFile = null)
         {
@@ -116,8 +124,14 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
-        /// Valida XML contra XSD da SEFAZ (detecta automaticamente o tipo de documento)
+        /// Valida XML contra o XSD oficial da SEFAZ. Detecta automaticamente tipo de documento
+        /// e versão do schema (<c>XsdVersion</c>/<c>LayoutName</c> são dicas opcionais, não
+        /// obrigatórias). Em caso de erro, já anexa <c>orientations</c> (texto de orientação por
+        /// código de erro) para poupar uma segunda chamada a <see cref="GetOrientations"/>.
         /// </summary>
+        /// <response code="200">Validação concluída (ver <c>isValid</c> — XML inválido não é erro HTTP).</response>
+        /// <response code="400"><c>XmlContent</c> ausente.</response>
+        /// <response code="500">Falha não catalogada.</response>
         [HttpPost("validate-xsd")]
         public async Task<IActionResult> ValidateXsd([FromBody] XsdValidationRequest request)
         {
@@ -169,9 +183,10 @@ namespace LayoutParserApi.Controllers
         // e o caso de uso equivalente já existe via Ollama em ValidationDiagnosticController
         // (POST /api/xml-analysis/diagnose-validation-error).
 
-        /// <summary>
-        /// Transforma XML NFe (remove enviNFe, adiciona namespace)
-        /// </summary>
+        /// <summary>Utilitário de normalização de XML NFe: remove o envelope <c>enviNFe</c> e garante o namespace correto — não é o pathway de transformação principal (TXT→XML).</summary>
+        /// <response code="200">XML transformado.</response>
+        /// <response code="400"><c>XmlContent</c> ausente.</response>
+        /// <response code="500">Falha não catalogada.</response>
         [HttpPost("transform-nfe")]
         public IActionResult TransformNFe([FromBody] XmlTransformRequest request)
         {
@@ -196,9 +211,11 @@ namespace LayoutParserApi.Controllers
             }
         }
 
-        /// <summary>
-        /// Obtém orientações para correção de erros XSD
-        /// </summary>
+        /// <summary>Consulta o texto de orientação de correção para um conjunto de códigos de erro XSD, sem precisar rodar a validação de novo.</summary>
+        /// <param name="xsdVersion">Versão do schema NFe (default <c>PL_010b_NT2025_002_v1.30</c>).</param>
+        /// <param name="errorCodes">Códigos de erro a explicar (opcional — vazio devolve todas as orientações conhecidas da versão).</param>
+        /// <response code="200">Orientações encontradas.</response>
+        /// <response code="500">Falha não catalogada.</response>
         [HttpGet("orientations")]
         public async Task<IActionResult> GetOrientations([FromQuery] string xsdVersion = "PL_010b_NT2025_002_v1.30", [FromQuery] string[] errorCodes = null)
         {
@@ -221,12 +238,15 @@ namespace LayoutParserApi.Controllers
         }
     }
 
+    /// <summary>Requisição de análise estrutural de XML.</summary>
     public class XmlAnalysisRequest
     {
         public string XmlContent { get; set; }
+        /// <summary>Layout XML opcional — se informado, a análise valida o XML contra ele.</summary>
         public string LayoutXml { get; set; }
     }
 
+    /// <summary>Requisição de validação contra XSD da SEFAZ.</summary>
     public class XsdValidationRequest
     {
         public string XmlContent { get; set; }

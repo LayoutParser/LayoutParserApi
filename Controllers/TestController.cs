@@ -6,6 +6,10 @@ using System.Text;
 
 namespace LayoutParserApi.Controllers
 {
+    /// <summary>
+    /// Endpoints de diagnóstico manual/dev — parse contra um layout XML fixo hardcoded (não o
+    /// upload real de <c>ParseController</c>) e health check simples.
+    /// </summary>
     [ApiController]
     [Route("api/[controller]")]
     public class TestController : ControllerBase
@@ -17,6 +21,9 @@ namespace LayoutParserApi.Controllers
             _parserService = parserService;
         }
 
+        /// <summary>Parseia um TXT enviado contra um layout XML de exemplo fixo (hardcoded no controller, não o layout real do cliente) — só para depuração rápida do parser.</summary>
+        /// <response code="200">Parse concluído.</response>
+        /// <response code="400"><c>txtFile</c> ausente ou parse falhou.</response>
         [HttpPost("parse-with-sample")]
         public async Task<IActionResult> ParseWithSampleLayout(IFormFile txtFile)
         {
@@ -89,6 +96,8 @@ namespace LayoutParserApi.Controllers
             });
         }
 
+        /// <summary>Health check simples e incondicional (sempre 200) — confirma que o processo da API está de pé, sem checar dependências (Redis/SQL/Ollama).</summary>
+        /// <response code="200">API respondendo.</response>
         [HttpGet("health")]
         public IActionResult HealthCheck()
         {

@@ -15,6 +15,11 @@ using LayoutParserApi.Services.Security;
 
 namespace LayoutParserApi.Controllers
 {
+    /// <summary>
+    /// Métricas de aprendizado (padrões TCL/XSL aprendidos) e de qualidade (cobertura de campos
+    /// do layout pelos artefatos TCL/XSL já gerados em disco) — dashboard/diagnóstico, não
+    /// afeta o pathway de transformação em runtime.
+    /// </summary>
     [ApiController]
     [Route("api/[controller]")]
     public class MetricsController : ControllerBase
@@ -46,9 +51,9 @@ namespace LayoutParserApi.Controllers
                 ?? @"C:\inetpub\wwwroot\layoutparser\XSL";
         }
 
-        /// <summary>
-        /// Obtém métricas de aprendizado para um layout
-        /// </summary>
+        /// <summary>Métricas do modelo de aprendizado (padrões/exemplos/confiança) de TCL e XSL para um layout.</summary>
+        /// <response code="200">Métricas (campos <c>tclMetrics</c>/<c>xslMetrics</c> nulos se o layout nunca foi treinado).</response>
+        /// <response code="500">Falha não catalogada.</response>
         [HttpGet("learning/{layoutName}")]
         public async Task<IActionResult> GetLearningMetrics(string layoutName)
         {
@@ -114,9 +119,8 @@ namespace LayoutParserApi.Controllers
             }
         }
 
-        /// <summary>
-        /// Obtém estatísticas gerais de aprendizado
-        /// </summary>
+        /// <summary>Resumo agregado de aprendizado entre todos os layouts. <b>Nota:</b> implementação hoje é um stub fixo (zeros) — o agregado real ainda não foi implementado.</summary>
+        /// <response code="200">Resumo (hoje sempre zerado — ver nota).</response>
         [HttpGet("learning/summary")]
         public async Task<IActionResult> GetLearningSummary()
         {
@@ -144,9 +148,12 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
-        /// Obtém métricas de qualidade dos TCL e XSL gerados, comparando com o layout do Redis
-        /// Similar ao LayoutParserService que faz Parse do XML do layout
+        /// Compara os artefatos TCL/XSL já gerados em disco contra os campos declarados no layout
+        /// (Redis) e calcula cobertura + score de qualidade geral.
         /// </summary>
+        /// <response code="200">Métricas de qualidade calculadas.</response>
+        /// <response code="404">Layout, XML do layout, TCL ou XSL não encontrado.</response>
+        /// <response code="500">Falha não catalogada.</response>
         [HttpGet("quality/{layoutName}")]
         public async Task<IActionResult> GetQualityMetrics(string layoutName)
         {
