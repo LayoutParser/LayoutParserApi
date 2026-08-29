@@ -47,30 +47,59 @@ sem o risco de "IA decorando dado fiscal real" já levantado na Decisão 3 de 21
 
 ## 2. Abordagem técnica — LoRA/QLoRA offline, não fine-tuning completo
 
-Fine-tuning completo de um modelo, mesmo pequeno, exige GPU com VRAM significativa e volume de
-dados maior do que o disponível — inviável tanto em custo quanto em risco de overfitting.
-Recomendação:
+> **Correção de rumo (2026-08-29, mesmo dia, após esclarecimento do dono):** a primeira versão
+> desta seção dimensionava o modelo (1-3B) em função do hardware de **inferência** em produção.
+> O dono corrigiu: a prioridade é um Ollama **focado/nichado no domínio** (recriar mapeamentos
+> Sysmiddle) tecnicamente bem desenhado — mesmo que o host de produção atual não aguente rodar o
+> resultado hoje. Não subdimensionar o modelo pra caber no hardware disponível; se o modelo
+> tecnicamente correto exigir hardware melhor, isso vira pendência de infra separada (upgrade ou
+> host diferente), não motivo pra escolher um modelo pior. A seção abaixo foi reescrita sob essa
+> orientação.
 
-- **QLoRA sobre um modelo base 1-3B compatível com Ollama** (ex.: Qwen2.5-Coder 1.5B/3B,
-  StarCoder2-3B — escolha final depende de licença e desempenho medido, não travar aqui).
-  Modelo pequeno é coerente com a restrição de inferência em produção (ver abaixo) e QLoRA
-  reduz VRAM de treino o suficiente para caber em GPU de consumidor/cloud modesta (8-12GB),
-  não em datacenter.
-- **Treino acontece OFFLINE, fora do host de produção.** `production-server-hardware.md`
-  confirma CPU-only (i7-4790 Haswell 2014, sem GPU) — treinar aí é impraticável mesmo para um
-  modelo pequeno (achado já registrado em `gemini-openai-decommission-decision.md`: "TREINAR é
-  mais pesado que INFERIR o mesmo modelo... CPU-only é impraticável"). O ciclo é:
+Fine-tuning completo de um modelo — mesmo um modelo pequeno — exige GPU com VRAM significativa
+e volume de dados maior do que o disponível (seção 1); LoRA/QLoRA continua a escolha certa por
+causa do **dataset pequeno**, não por causa do hardware de inferência. São duas restrições
+independentes e não devem ser confundidas.
+
+- **Tamanho do modelo base: dimensionar pelo domínio, não pelo hardware de produção.** Tarefa é
+  especializada (aprender a estrutura de `LinkMappings`/regras DSL e reproduzir XSLT/TCL
+  coerente), mas ainda exige capacidade real de raciocínio estrutural sobre XML/código — a faixa
+  **7B-14B** (ex.: Qwen2.5-Coder 7B/14B, DeepSeek-Coder 6.7B/instruct) é o ponto de partida
+  tecnicamente honesto para essa classe de tarefa, não 1-3B. Modelos 1-3B (recomendação anterior,
+  calibrada pro Haswell 2014) tendem a ter taxa de erro estrutural maior em geração de
+  XML/XSLT bem-formado, o que jogaria mais trabalho pro loop de correção — o oposto do ganho que
+  o fine-tuning deveria trazer. Escolha final do tamanho exato ainda depende de medição real
+  (seção "pontos que exigem autorização"), mas a faixa-alvo não deve ser pré-cortada pelo
+  hardware de hoje.
+- **Treino acontece OFFLINE, fora do host de produção — isso já fazia sentido antes e continua.**
+  `production-server-hardware.md` confirma CPU-only (i7-4790 Haswell 2014, sem GPU) — treinar aí
+  é impraticável independente do tamanho do modelo escolhido. O ciclo:
   1. Treino do adaptador LoRA numa máquina com GPU (workstation com GPU discreta se existir na
-     empresa, ou serviço de nuvem temporário — ver autorização pendente abaixo).
-  2. Merge do adaptador no modelo base + quantização (GGUF, via `llama.cpp`/`Ollama Modelfile`).
-  3. Só o artefato final (modelo quantizado) é publicado no `Ollama` do host de produção via
-     `ollama create` a partir de um `Modelfile` — nenhum dado de treino nem processo de treino
-     toca o servidor Haswell.
-- **O verificador determinístico continua obrigatório**, mesmo com modelo especializado — não é
-  substituído pelo fine-tuning. O loop gerar→validar(XSD/diff)→corrigir do `RepairOrchestrator`
-  e do `AiTransformationCandidateService` continua sendo o mecanismo de confiança; fine-tuning
-  melhora a taxa de acerto na primeira geração (menos iterações de correção), não elimina a
-  necessidade de validar.
+     empresa, ou serviço de nuvem temporário — ver autorização pendente abaixo). Para 7B-14B,
+     QLoRA em 4-bit cabe em GPU de ~16-24GB de VRAM (ex.: RTX 3090/4090, ou instância cloud
+     equivalente) — maior que os 8-12GB estimados para 1-3B, mas ainda longe de treino
+     full-parameter de datacenter.
+  2. Merge do adaptador no modelo base + quantização (GGUF, via `llama.cpp`/`Ollama Modelfile`)
+     para o formato de distribuição.
+  3. O artefato final (modelo quantizado) é publicado via `ollama create` a partir de um
+     `Modelfile` — mas **onde ele roda em produção é uma pendência de infra separada** (ver
+     abaixo), não parte automática deste ciclo.
+- **Pendência de infra explícita: hardware de inferência atual pode não aguentar o modelo
+  recomendado.** Um modelo 7B-14B rodando via Ollama em CPU-only Haswell 2014 (DDR3,
+  sem AVX-512) provavelmente terá latência inaceitável para uso interativo — isso é esperado e
+  **não deve reduzir o tamanho do modelo recomendado**. Options a decidir com o dono, fora do
+  escopo desta arquitetura: (a) upgrade de hardware do host atual (GPU dedicada, mesmo modesta,
+  ou CPU/RAM mais moderna com melhor bandwidth); (b) rodar o modelo especializado em host
+  diferente do `BRNDDAPPBLD01` (outra máquina da NDD com melhor perfil, ou a mesma VM Ubuntu que
+  já roda Ollama para o job de métricas — checar se tem capacidade); (c) aceitar latência alta
+  para este uso específico (geração de mapeador é operação pontual/batch, não interativa por
+  requisição — diferente do diagnóstico XSD em runtime, que precisa responder rápido). Registrar
+  esta decisão como item de backlog de infra assim que o modelo for escolhido e medido.
+- **O verificador determinístico continua obrigatório**, mesmo com modelo especializado maior —
+  não é substituído pelo fine-tuning. O loop gerar→validar(XSD/diff)→corrigir do
+  `RepairOrchestrator` e do `AiTransformationCandidateService` continua sendo o mecanismo de
+  confiança; fine-tuning melhora a taxa de acerto na primeira geração (menos iterações de
+  correção), não elimina a necessidade de validar.
 
 ## 3. Dois pathways — um modelo base, dois adaptadores LoRA (não dois modelos do zero)
 
@@ -149,11 +178,17 @@ não o objetivo desta rodada.
    alguma forma de acesso a GPU (workstation da empresa ou cloud temporária); isso não foi
    confirmado nesta sessão.
 3. **Escolha final do modelo base** — depende de licença (evitar repetir o problema de licença já
-   encontrado com SDV/BSL na Decisão 3 de 21/07) e de medição real de desempenho no hardware de
-   produção antes de comprometer.
+   encontrado com SDV/BSL na Decisão 3 de 21/07) e de medição real de desempenho/qualidade de
+   geração (não travar em 7B vs 14B sem medir) — a medição de latência de inferência é separada
+   da escolha do modelo em si (ver item 5).
 4. **Nível de observabilidade desejado** (log estruturado vs. endpoint de estado vs. streaming ao
    vivo) — a Fase 4 do item de observabilidade (streaming) só deve ser construída se o dono
    confirmar que quer acompanhar geração em tempo real, não apenas auditar depois.
+5. **Onde o modelo especializado vai rodar em produção** — dado que a faixa recomendada (7B-14B)
+   provavelmente não roda com latência aceitável no host atual (CPU-only, Haswell 2014), o dono
+   precisa decidir entre upgrade de hardware, host alternativo, ou aceitar latência alta para este
+   uso específico (seção 2). Esta é uma decisão de infra deliberadamente separada da escolha do
+   modelo — não deve bloquear o treino/POC da Fase 1, mas bloqueia colocar o resultado em produção.
 
 Nenhum código foi implementado. Trabalho de implementação (LoRA training scripts, endpoint de
 observabilidade, wiring do modelo no Ollama) fica com `@lp-parser-llm`/`@lp-backend-dev`, sob
