@@ -607,3 +607,56 @@ avançar ao dataset completo sem esse ajuste de protocolo.
 prompt), `~/infer_single_pair.py` (validação por geração), dataset `~/single_pair_chunked.jsonl`
 (57 linhas), adapter `~/lora_single_pair_adapter/`, saída `~/gerado_single_pair.xsl` — todos na VM
 (`elson@172.25.32.5:~/`), mesmo tratamento dos artefatos de teste anteriores.
+
+## Avaliação de modelo alternativo — 2026-08-30
+
+Pedido explícito do dono: não subdimensionar a recomendação pelo hardware atual (VM Ubuntu, 4
+núcleos CPU, 15GB RAM, sem GPU) — recomendar o melhor modelo tecnicamente adequado, gratuito,
+compatível com Ollama, mesmo que não caiba confortavelmente hoje. Mesma lógica já usada nesta
+sessão para o tamanho do modelo (seção 2).
+
+### O que a degeneração por repetição do smoke-test #3 épocas realmente é
+
+A causa raiz identificada (seção "Validação pós-treino completo") **não é falta de capacidade do
+modelo** — é overfitting clássico: 171 passos sobre 57 chunks derivados de **um único par**
+empurraram o modelo para memorização degenerada (`RefDocRefDocRefDocxBairro`) em vez de
+generalização, e a transição correta prompt→XSLT que já existia com 1 época **regrediu** com 3.
+Isso é consistente com a literatura de fine-tuning: modelos maiores tendem a ser mais resistentes
+a esse colapso porque têm mais capacidade de generalizar em vez de memorizar cru um dataset
+minúsculo e repetitivo — mas o fator dominante aqui é o protocolo (épocas fixas sem validação
+hold-out, dataset de 1 par), não o tamanho de 1.5B em si. Trocar de modelo **sem** corrigir o
+protocolo (early stopping por perda de validação, mais pares no dataset) provavelmente reproduz
+o mesmo colapso em qualquer tamanho.
+
+### Modelo recomendado: manter a família Qwen2.5-Coder, subir de 1.5B para 7B-Instruct
+
+Pesquisa em `ollama.com/library` e benchmarks públicos (Qwen2.5-Coder Technical Report,
+comparativos HumanEval/MBPP) confirma Qwen2.5-Coder como a melhor família open-source/gratuita
+disponível no Ollama para geração de código estruturado hoje — o 7B-Instruct e o 14B-Instruct
+alcançam desempenho comparável a modelos de 20B+ em benchmarks de código, mantendo GGUF pronto
+no Ollama (`ollama pull qwen2.5-coder:7b`) e adapters LoRA treinados via `transformers`/`peft`
+são convertíveis para GGUF e importáveis via `Modelfile` — é exatamente o caminho já em uso
+(merge do adapter + `ollama create`), sem mudança de pipeline. Entre 7B e 14B, recomendo **7B**
+como alvo desta rodada — 14B soma qualidade em troca de custo de treino que não se justifica
+ainda sem resolver o protocolo de overfitting.
+
+### Trade-off de hardware — não cabe na VM atual, e o motivo é RAM, não CPU
+
+LoRA reduz os **parâmetros treináveis**, não o modelo base carregado — o base inteiro (congelado)
+ainda precisa estar em memória durante o treino. Em fp32 (o precision que o smoke-test usa hoje,
+porque QLoRA real em CPU já foi descartado nesta sessão por não funcional), um 7B pesa ~28GB só
+de pesos, e fontes de fine-tuning citam ~32GB de RAM como piso prático para LoRA de 7B em CPU —
+a VM atual tem 15GB, a mesma margem que já ficou apertada (~11,8GB de pico) treinando 1.5B.
+**7B em fp32 não cabe na VM atual, mesmo com LoRA.** Não há caminho de quantização real (bnb
+int8/4-bit) para contornar isso em CPU dentro do prazo — essas kernels dependem de GPU.
+
+### Recomendação prática até 31/08 06:00
+
+Não trocar de modelo agora. O ganho esperado de ir para 7B é resistência a overfitting, mas o
+smoke-test já mostra uma causa mais barata e mais rápida de corrigir: (1) treinar por 1-2 épocas
+em vez de 3, validando geração a cada época (não só ao final); (2) escalar o dataset além de 1
+par antes de aumentar épocas, para que "mais treino" pare de significar "mais repetição do mesmo
+padrão pequeno"; (3) aplicar `repetition_penalty`/`no_repeat_ngram_size` na geração de validação,
+independente do tamanho do modelo — mitigação ortogonal e imediata. **Upgrade para
+Qwen2.5-Coder-7B fica registrado como primeiro item da Fase 2** (mesmo texto da seção 2), condicionado
+a hardware com GPU ou pelo menos 32GB de RAM — fora do escopo e do prazo desta janela.
