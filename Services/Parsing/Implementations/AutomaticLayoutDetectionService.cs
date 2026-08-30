@@ -75,18 +75,45 @@ namespace LayoutParserApi.Services.Parsing.Implementations
                 };
             }
 
+            var probeDocument = new ProbeDocument(documentContent, detectedType);
+
             var probes = catalog.Layouts
                 .Where(layout => string.Equals(layout.Fingerprint.Family, detectedType, StringComparison.Ordinal))
                 .Select(layout =>
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    return Probe(documentContent, detectedType, layout);
+                    return Probe(probeDocument, detectedType, layout);
                 })
                 .OrderByDescending(probe => probe.Candidate.MatchScore)
                 .ThenBy(probe => probe.Candidate.LayoutGuid, StringComparer.Ordinal)
                 .ToList();
 
             ApplyRanksAndTies(probes);
+
+            if (!catalog.IsComplete)
+            {
+                var incompleteSuggestions = probes.Take(MaximumRankedCandidates).ToList();
+                foreach (var suggestion in incompleteSuggestions)
+                {
+                    suggestion.Candidate.Conflicts.Add("catalog_incomplete");
+                    suggestion.Candidate.Limitations.Add("authoritative_selection_disabled");
+                }
+
+                return new AutomaticLayoutDetectionResult
+                {
+                    Detection = new AutomaticLayoutDetection
+                    {
+                        Status = AutomaticLayoutDetectionStatus.NotFound,
+                        DetectedType = detectedType,
+                        AlgorithmVersion = CurrentAlgorithmVersion,
+                        CatalogVersion = catalog.Version,
+                        TotalCandidates = 0,
+                        Truncated = probes.Count > MaximumRankedCandidates,
+                        Candidates = [],
+                        SuggestedCandidates = incompleteSuggestions.Select(probe => probe.Candidate).ToList()
+                    }
+                };
+            }
 
             var compatible = probes.Where(probe => probe.IsCompatible).ToList();
             var rankedCompatible = compatible.Take(MaximumRankedCandidates).ToList();
@@ -167,8 +194,12 @@ namespace LayoutParserApi.Services.Parsing.Implementations
                 .Take(MaximumCatalogLayouts)
                 .ToList();
 
+            var catalogInitiallyComplete = response.Layouts.Count < MaximumCatalogLayouts
+                && response.TotalFound <= response.Layouts.Count
+                && usableRecords.Count == response.Layouts.Count;
+
             var version = ComputeCatalogVersion(usableRecords);
-            var cacheKey = CatalogCachePrefix + version;
+            var cacheKey = $"{CatalogCachePrefix}{version}:{response.TotalFound}:{response.Layouts.Count}";
 
             if (_memoryCache.TryGetValue(cacheKey, out CatalogSnapshot? cached) && cached is not null)
                 return cached;
@@ -203,9 +234,21 @@ namespace LayoutParserApi.Services.Parsing.Implementations
                     parsedLayouts.Add(new CatalogLayout(record, parsed, BuildFingerprint(record, parsed, guid)));
                 }
 
-                var snapshot = new CatalogSnapshot(version, parsedLayouts);
+                var catalogComplete = catalogInitiallyComplete && parsedLayouts.Count == usableRecords.Count;
+                var snapshot = new CatalogSnapshot(version, parsedLayouts, catalogComplete);
                 _memoryCache.Set(cacheKey, snapshot, TimeSpan.FromMinutes(30));
                 LogFingerprintCollisions(snapshot);
+                if (!catalogComplete)
+                {
+                    _logger.LogWarning(
+                        "Catálogo de detecção incompleto; seleção autoritativa desabilitada. CatalogVersion={CatalogVersion} Returned={ReturnedCount} TotalFound={TotalFound} Usable={UsableCount} Parsed={ParsedCount} Limit={CatalogLimit}.",
+                        version,
+                        response.Layouts.Count,
+                        response.TotalFound,
+                        usableRecords.Count,
+                        parsedLayouts.Count,
+                        MaximumCatalogLayouts);
+                }
                 return snapshot;
             }
             finally
@@ -214,7 +257,7 @@ namespace LayoutParserApi.Services.Parsing.Implementations
             }
         }
 
-        private ProbeResult Probe(string documentContent, string detectedType, CatalogLayout catalogLayout)
+        private ProbeResult Probe(ProbeDocument document, string detectedType, CatalogLayout catalogLayout)
         {
             var fingerprint = catalogLayout.Fingerprint;
             var evidence = new List<string> { $"family:{detectedType}" };
@@ -238,12 +281,11 @@ namespace LayoutParserApi.Services.Parsing.Implementations
 
             if (detectedType == "mqseries")
             {
-                var clean = documentContent.Replace("\r", string.Empty).Replace("\n", string.Empty);
                 var width = fingerprint.LineLength ?? LineLengthResolver.LegacyDefaultLineLength;
 
                 if (fingerprint.LineLength.HasValue)
                 {
-                    widthMatches = clean.Length > 0 && clean.Length % width == 0;
+                    widthMatches = document.FixedWidthLength > 0 && document.FixedWidthLength % width == 0;
                     if (widthMatches)
                     {
                         evidence.Add($"record_width:{width}");
@@ -258,12 +300,11 @@ namespace LayoutParserApi.Services.Parsing.Implementations
                     widthScore = 8;
                 }
 
-                records = SplitFixedWidth(clean, width);
+                records = document.GetFixedWidthRecords(width);
             }
             else
             {
-                records = documentContent
-                    .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                records = document.PhysicalRecords;
                 evidence.Add("record_boundary:physical_line");
                 widthScore = 15;
             }
@@ -304,7 +345,11 @@ namespace LayoutParserApi.Services.Parsing.Implementations
             if (orderMatches)
                 evidence.Add("marker_order:consistent");
             else
+            {
                 conflicts.Add("marker_order:conflict");
+                if (detectedType == "mqseries")
+                    limitations.Add("mqseries_marker_order_is_informational");
+            }
 
             var score = (familyMatches ? 20 : 0)
                 + widthScore
@@ -318,7 +363,11 @@ namespace LayoutParserApi.Services.Parsing.Implementations
                 && records.Count > 0
                 && fingerprint.Markers.Count > 0
                 && unmatchedRecords == 0
-                && orderMatches;
+                // Em MQSeries a árvore do layout contém grupos/filhos e sua ordem de cadastro
+                // não representa necessariamente a ordem física do stream. Cobertura integral de
+                // registros continua sendo gate; ordem é apenas explicação do score. No IDoc, em
+                // que cada segmento é uma linha física, a ordem permanece autoritativa.
+                && (detectedType != "idoc" || orderMatches);
 
             return new ProbeResult(
                 catalogLayout,
@@ -533,7 +582,10 @@ namespace LayoutParserApi.Services.Parsing.Implementations
                 string.Join(',', collisions));
         }
 
-        private sealed record CatalogSnapshot(string Version, IReadOnlyList<CatalogLayout> Layouts);
+        private sealed record CatalogSnapshot(
+            string Version,
+            IReadOnlyList<CatalogLayout> Layouts,
+            bool IsComplete);
         private sealed record CatalogLayout(LayoutRecord Record, Layout Layout, LayoutFingerprint Fingerprint);
         private sealed record LayoutFingerprint(
             string LayoutGuid,
@@ -544,5 +596,39 @@ namespace LayoutParserApi.Services.Parsing.Implementations
             string Hash);
         private sealed record LayoutMarker(string Token, int Order);
         private sealed record ProbeResult(CatalogLayout Layout, bool IsCompatible, AutomaticLayoutCandidate Candidate);
+
+        private sealed class ProbeDocument
+        {
+            private readonly string _fixedWidthContent;
+            private readonly Dictionary<int, IReadOnlyList<string>> _recordsByWidth = [];
+
+            public ProbeDocument(string content, string detectedType)
+            {
+                if (detectedType == "mqseries")
+                {
+                    _fixedWidthContent = content.Replace("\r", string.Empty).Replace("\n", string.Empty);
+                    PhysicalRecords = [];
+                    return;
+                }
+
+                _fixedWidthContent = string.Empty;
+                PhysicalRecords = content.Split(
+                    ['\r', '\n'],
+                    StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            }
+
+            public int FixedWidthLength => _fixedWidthContent.Length;
+            public IReadOnlyList<string> PhysicalRecords { get; }
+
+            public IReadOnlyList<string> GetFixedWidthRecords(int width)
+            {
+                if (_recordsByWidth.TryGetValue(width, out var records))
+                    return records;
+
+                records = SplitFixedWidth(_fixedWidthContent, width);
+                _recordsByWidth[width] = records;
+                return records;
+            }
+        }
     }
 }
