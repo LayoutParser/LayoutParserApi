@@ -456,3 +456,106 @@ observável → validação) tiver rodado pelo menos uma vez sob a opção 1.
 `~/smoke_train_real3.py` (gradient checkpointing) e `~/build_chunks.py` (chunking com overlap),
 mais o dataset gerado `~/finetuning-dataset-chunked.jsonl` (1.772 linhas) — ficaram na VM
 (`elson@172.25.32.5:~/`), mesmo tratamento dos scripts anteriores (artefatos de teste).
+
+## Smoke-test #4 executado em 2026-08-29 — chunking de par único (Fase 1 real)
+
+Mudança de escopo pedida pelo dono: em vez de medir chunking do dataset inteiro (inviável, ver
+smoke-test #3), aplicar chunking a **um único par `.tcl`/`.xsl` completo, sem truncar**, e treinar
+o modelo a recriar EXATAMENTE esse mapeamento — a "primeira fase" real de "ver funcionando" antes
+de generalizar. Par escolhido: `NFe/4.00/NFe009_4.00_EnvioNFe_NeoGridToSefaz` (`.tcl`=10.101
+tokens, `.xsl`=41.901 tokens — maior que o próprio limite de contexto do tokenizer do modelo,
+32.768, avisado mas processado; tamanho médio-grande do dataset, não o menor).
+
+### Chunking do par único
+
+`~/build_chunks_single.py` (variante de `build_chunks.py` restrita a este par) gerou **57 chunks**
+de até 2048 tokens de completion (janela deslizante, overlap 256) — cobertura completa do `.xsl`,
+sem perder conteúdo.
+
+### Bug real achado e corrigido antes do treino
+
+`smoke_train_real3.py` (script de treino usado nos smoke-tests #2/#3) **não truncava o prompt**
+antes de concatenar com a completion e truncar o texto final a `MAX_LEN`. Como o prompt (`.tcl`
+bruto completo, 10.101 tokens) já excede sozinho o `MAX_LEN=2048`, a truncação final cortava a
+**completion inteira** — os 57 exemplos treinavam com 0 tokens de XSLT real, só texto do `.tcl`.
+Confirmado rodando 3 steps antes da correção: `tokens reais=[10700, 11121, ...]`, `truncados p/
+MAX_LEN=2048: 57/57`. Esse é o mesmo tipo de risco que motivou o budget assumido em
+`build_chunks.py` (`WINDOW - min(len(prompt_ids), WINDOW//2) - 30`) — o build script já assumia
+truncamento do prompt a `WINDOW//2`, mas o script de treino não aplicava essa mesma premissa.
+**Corrigido** em `~/smoke_train_single_pair.py`: trunca o prompt a `MAX_LEN//2` tokens antes de
+montar o texto de treino, replicando a premissa do `build_chunks.py`. Reexecutado com 3 exemplos
+de teste: `tokens reais pos-truncamento-de-prompt=[2029, 2029, 2029]`, `0/3` truncados — completion
+íntegra presente no exemplo de treino.
+
+**Why isso importa:** sem essa correção, qualquer treino sobre pares com prompt (`.tcl`) grande
+(comum neste dataset — TCL costuma ser maior que o `.xsl` correspondente em vários casos) treinaria
+o modelo a recriar o `.tcl` de entrada, não a gerar XSLT — silenciosamente, sem erro, com loss
+caindo normalmente (o padrão perigoso: métricas de treino "normais" mascarando dado de treino
+errado). **How to apply:** ao montar QUALQUER pipeline de fine-tuning prompt+completion com
+truncamento por tamanho total, sempre truncar o prompt de forma isolada e explícita ANTES de
+concatenar — nunca confiar em `truncation=True` sobre o texto já concatenado quando o prompt
+sozinho pode exceder o orçamento.
+
+### Treino — 57 chunks, 1 época, MAX_LEN=2048, gradient checkpointing
+
+`~/smoke_train_single_pair.py 2048 57 single_pair_chunked.jsonl 1`, rodado em background via
+`nohup` (independente da sessão SSH, sobreviveu a múltiplos monitores SSH encerrados pelo harness
+local). **Concluído de ponta a ponta, sem OOM:**
+
+- **Tempo de treino puro: 6.894,3s (1h54min54s).** Wall-clock total: 6.898,3s.
+- **~120-122s/passo, quase constante** (mesmo padrão do smoke-test #3, `padding="max_length"`
+  domina o custo) — variação de 115,6s a 137,7s (2 passos levemente mais lentos, 132/136s, sem
+  causa identificada, possível contenção momentânea de CPU no host).
+- **RSS estável em ~11,64GB** (`PEAK_RSS_KB=11639068`) — mesma margem de segurança do smoke-test
+  #3 (~3,4GB de folga dos 15GB da VM).
+- **Loss:** primeiro passo 0,7647 → último passo 0,5935 (`train_loss` médio da época: 0,7033,
+  esperado com ruído alto — só 1 época, 57 exemplos de UM par só, sem validação hold-out).
+- Adapter LoRA salvo em `~/lora_single_pair_adapter` (rank 4, `q_proj`/`v_proj`, ~544K parâmetros
+  treináveis de 1,54B — 0,035%).
+
+**Extrapolação honesta para 3 épocas:** ~3 × 1h55min ≈ **5h45min** para este único par — cabe
+folgado numa sessão, bem diferente da escala do dataset inteiro (24,8h–56,6h no smoke-test #3).
+Não foi executado (rodou só 1 época, por orçamento de tempo desta sessão) — mas a extrapolação é
+direta porque o tempo/passo já mostrou ser quase-constante em 3 rodadas diferentes (smoke #2, #3,
+#4).
+
+### Validação — geração real com o adapter treinado
+
+`~/infer_single_pair.py`: carrega o modelo base + adapter LoRA, gera com `model.generate()`
+(greedy, `max_new_tokens=1024`) a partir do `.tcl` de entrada (mesmo truncamento de prompt do
+treino, 1024 tokens), salva em `~/gerado_single_pair.xsl`. Geração em CPU levou também vários
+minutos (autoregressive, sem KV-cache acelerado por hardware).
+
+**Resultado, honesto:**
+- Os **primeiros ~1024 tokens gerados não são XSLT** — o modelo ecoa conteúdo em estilo do `.tcl`
+  de entrada (linhas `<FIELD name="..." length="..."/>`), não a estrutura de saída esperada.
+  Hipótese mais provável: o prompt truncado a 1024 tokens cobre só a primeira fração do `.tcl`
+  (10.101 tokens reais), e com só 1 época sobre 1 par o modelo ainda não aprendeu a transição
+  clara "fim do prompt → início da resposta" — problema de treino insuficiente, não de arquitetura
+  quebrada.
+- **A partir daí, a geração converge para XSLT real e sintaticamente válido**: produz
+  `xsl:choose`/`xsl:when`/`xsl:otherwise` corretamente aninhados, com **defaults idênticos ao
+  `.xsl` real** para os mesmos campos — `tpAmb` (`otherwise=2`), `tpEmis` (`otherwise=1`),
+  `procEmi` (`otherwise=0`) todos batem exatamente com o arquivo de referência, incluindo a
+  estrutura `<xsl:if test="CAMPO!=''">` para campos opcionais (`dhSaiEnt`, `indIntermed`) que
+  também bate com o padrão real.
+- **Não é reprodução perfeita** (não comparado token-a-token / diff formal — comparação visual,
+  como pedido) — é evidência real de que o modelo está aprendendo o mapeamento semântico correto
+  (valores default específicos deste mapeador, não genéricos), não só sintaxe XSLT genérica.
+
+### Veredito do smoke-test #4
+
+**A Fase 1 reduzida ("aprender 1 mapeamento completo primeiro") é viável nesta VM e já mostra sinal
+real de aprendizado específico do mapeador**, mesmo com só 1 época. Achado colateral valioso: o bug
+de truncamento de prompt (não descoberto nos smoke-tests #2/#3, que usavam exemplos com prompt
+menor) teria comprometido silenciosamente qualquer treino real sobre este dataset — correção
+aplicada e confirmada antes de gastar as ~2h de treino real. Próximo passo natural (fora do escopo
+desta sessão): rodar as 3 épocas completas (~5h45min extrapoladas) e comparar a geração final com
+diff formal contra o `.xsl` real, não só inspeção visual.
+
+### Scripts do smoke-test #4 (não commitados — artefatos de sessão na VM)
+
+`~/build_chunks_single.py`, `~/smoke_train_single_pair.py` (corrige o bug de truncamento de
+prompt), `~/infer_single_pair.py` (validação por geração), dataset `~/single_pair_chunked.jsonl`
+(57 linhas), adapter `~/lora_single_pair_adapter/`, saída `~/gerado_single_pair.xsl` — todos na VM
+(`elson@172.25.32.5:~/`), mesmo tratamento dos artefatos de teste anteriores.
