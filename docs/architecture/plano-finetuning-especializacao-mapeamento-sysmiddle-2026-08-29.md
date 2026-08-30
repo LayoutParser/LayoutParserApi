@@ -553,6 +553,54 @@ aplicada e confirmada antes de gastar as ~2h de treino real. Próximo passo natu
 desta sessão): rodar as 3 épocas completas (~5h45min extrapoladas) e comparar a geração final com
 diff formal contra o `.xsl` real, não só inspeção visual.
 
+## Validação pós-treino completo (3 épocas) — 2026-08-30
+
+Treino de 3 épocas concluído na VM (171 passos sobre os mesmos 57 chunks do par único):
+`train_runtime=20556,3s` (~5h42min, bate a extrapolação de ~5h45min do smoke-test #4),
+`train_loss=0,5909` (época 3; caiu de 0,7033 na época 1), `PEAK_RSS_KB=11.802.576` (~11,8GB,
+mesma margem segura), adapter salvo em `~/lora_single_pair_adapter`.
+
+**Validação:** `~/infer_single_pair.py` (mesmo script do smoke-test #4, mesmo truncamento de
+prompt a 1024 tokens, `max_new_tokens=1024`, greedy) recarregado com o novo adapter. Mede
+memorização/ajuste sobre ESTE par específico (`NFe009_4.00_EnvioNFe_NeoGridToSefaz`), não
+generalização — o modelo nunca viu outro mapeador.
+
+**Resultado, honesto — pior que o smoke-test #4 (1 época):**
+
+- Os **1024 tokens gerados inteiros são eco/hallucination em estilo `.tcl`** (`<FIELD name="..."
+  length="..."/>`), **sem nenhuma transição para XSLT** — `grep -c 'xsl:' ~/gerado_single_pair.xsl`
+  retorna **0**. Com 1 época, a mesma geração *também* começava ecoando o `.tcl`, mas convergia
+  para XSLT válido com defaults semânticos corretos (`tpAmb=2`, `tpEmis=1`, `procEmi=0`) dentro
+  dos primeiros ~1024 tokens. Com 3 épocas, essa transição **desapareceu**.
+- O conteúdo ecoado não é cópia exata do `.tcl` real — nomes como `RefDocRefDocRefDocxBairro`
+  são concatenações repetidas/degeneradas, sinal de um padrão repetitivo aprendido em excesso
+  (`RefDoc` + campo, encadeado recursivamente), não memorização limpa nem generalização.
+- **Sinal claro de overfitting**, não de progresso: 171 passos sobre 57 chunks de UM único par
+  (repetição pesada da mesma pequena distribição) empurrou o modelo para um regime degenerado
+  em vez de reforçar a transição correta prompt→resposta que já aparecia com só 1 época.
+  Hipótese mais provável: a "âncora" de transição depende de contexto amplo do prompt truncado
+  (1024 tokens cobrem só a primeira fração dos 10.101 tokens reais do `.tcl`), e treinar demais
+  sobre exatamente essa fatia fixa reforçou o padrão de continuação do próprio `.tcl` em vez do
+  padrão de tradução para XSLT.
+
+### Veredito e recomendação — 2026-08-30
+
+**Este smoke-test específico (3 épocas sobre 1 par único, MAX_LEN=2048) NÃO é evidência de que
+mais treino ajuda — é evidência do oposto: mais épocas sobre um dataset minúsculo e repetitivo
+piorou a geração observável.** Isso não invalida a conclusão qualitativa do smoke-test #4 (o
+modelo consegue aprender defaults semânticos específicos do mapeador) — mas mostra que o
+hiperparâmetro "3 épocas fixas" não é seguro sem validação hold-out ou early stopping, mesmo
+neste par pequeno.
+
+**Recomendação:** não avançar para o dataset completo com o mesmo protocolo (N épocas fixas, sem
+validação). Antes disso: (1) medir a geração após 1 e 2 épocas neste mesmo par (não só 3) para
+achar onde a transição degrada — provavelmente entre 1 e 3; (2) ao escalar para múltiplos pares,
+usar um split de validação (mesmo pequeno) e critério de parada por perda de validação, não número
+fixo de épocas; (3) considerar reduzir `max_new_tokens` de teste ou aumentar o prompt de entrada
+(ex.: não truncar tão agressivamente a 1024) para não confundir "modelo não decidiu terminar o
+eco" com "modelo esqueceu como traduzir". Isso ainda é prova de conceito insuficiente para
+avançar ao dataset completo sem esse ajuste de protocolo.
+
 ### Scripts do smoke-test #4 (não commitados — artefatos de sessão na VM)
 
 `~/build_chunks_single.py`, `~/smoke_train_single_pair.py` (corrige o bug de truncamento de
