@@ -16,7 +16,6 @@ using LayoutParserApi.Services.Security;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 
-
 namespace LayoutParserApi.Controllers
 {
     [ApiController]
