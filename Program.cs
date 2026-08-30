@@ -516,6 +516,7 @@ try
     builder.Services.AddScoped<ILayoutValidator, LayoutValidator>();
     builder.Services.AddScoped<ILayoutNormalizer, LayoutNormalizer>();
     builder.Services.AddScoped<ILayoutDetector, LayoutDetector>();
+    builder.Services.AddScoped<IAutomaticLayoutDetectionService, AutomaticLayoutDetectionService>();
     builder.Services.AddScoped<ILayoutParserService, LayoutParserService>();
 
     // Mapper Cache Services

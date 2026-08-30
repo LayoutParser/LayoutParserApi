@@ -556,19 +556,19 @@ namespace LayoutParserApi.Controllers
                     _logger.LogInformation("Diretório criado: {Path}", layoutDirectory);
                 }
 
-                // Salvar arquivo com timestamp para evitar sobrescrita.
-                // ✅ P0 — path traversal (WRITE): o nome do upload também é do cliente. Nome real de
-                // documento carrega espaço/parêntese, então a lista branca estrita não serve aqui —
-                // reduzimos a só o nome (Path.GetFileName tira qualquer caminho embutido) e ainda
-                // conferimos contenção na base antes de escrever.
+                // Salvar com nome totalmente gerado pelo servidor.
+                // O nome enviado pelo cliente nunca participa do caminho físico.
+                // A extensão também é derivada somente do tipo já detectado.
+                // Isso evita traversal, colisões e vazamento de nomes externos.
+                // O identificador aleatório mantém cada amostra independente.
                 var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-                var uploadName = Path.GetFileName(txtFile.FileName ?? string.Empty);
-                var fileName = $"{timestamp}_{uploadName}";
+                var learningExtension = GetLearningExtension(detectedType);
+                var fileName = $"{timestamp}_{Guid.NewGuid():N}{learningExtension}";
                 var filePath = Path.Combine(layoutDirectory, fileName);
 
                 if (!SafePathResolver.IsInsideBase(layoutDirectory, filePath))
                 {
-                    _logger.LogWarning("Aprendizado ignorado: nome de arquivo de upload invalido: {FileName}", txtFile.FileName);
+                    _logger.LogWarning("Aprendizado ignorado: caminho interno fora da base permitida.");
                     return;
                 }
 
@@ -619,5 +619,214 @@ namespace LayoutParserApi.Controllers
                 // Não falhar o processamento principal se houver erro no aprendizado
             }
         }
+
+        /// <summary>
+        /// Detecta o layout de um documento MQSeries/IDoc usando somente o catálogo interno.
+        /// Unicidade exige exatamente um candidato compatível após os gates estruturais; score
+        /// serve apenas para ordenar alternativas e nunca cria certeza.
+        /// </summary>
+        /// <param name="documentFile">Documento posicional a analisar.</param>
+        /// <param name="layoutGuidOverride">GUID opcional escolhido entre os candidatos ranked da detecção atual.</param>
+        /// <param name="automaticLayoutDetection">Serviço determinístico de detecção.</param>
+        /// <param name="cancellationToken">Cancelamento da requisição.</param>
+        [ServiceFilter(typeof(AuditActionFilter))]
+        [HttpPost("auto")]
+        [Consumes("multipart/form-data")]
+        [ProducesResponseType(typeof(AutomaticParseResponse), StatusCodes.Status200OK)]
+        [ProducesResponseType(typeof(AutomaticParseResponse), StatusCodes.Status422UnprocessableEntity)]
+#pragma warning disable SCS0016 // A API não usa autenticação por cookie: aceita identidade apenas do BFF em loopback.
+        public async Task<IActionResult> Auto(
+            [FromForm] IFormFile? documentFile,
+            [FromForm] string? layoutGuidOverride,
+            [FromServices] IAutomaticLayoutDetectionService automaticLayoutDetection,
+            CancellationToken cancellationToken)
+#pragma warning restore SCS0016
+        {
+            var correlationId = EnsureCorrelationId();
+
+            if (documentFile is null || documentFile.Length == 0)
+            {
+                return BadRequest(new
+                {
+                    success = false,
+                    correlationId,
+                    message = "O arquivo do documento é obrigatório e não pode estar vazio."
+                });
+            }
+
+            try
+            {
+                byte[] documentBytes;
+                await using (var sourceStream = documentFile.OpenReadStream())
+                await using (var buffer = new MemoryStream())
+                {
+                    await sourceStream.CopyToAsync(buffer, cancellationToken);
+                    documentBytes = buffer.ToArray();
+                }
+
+                string documentContent;
+                await using (var detectionStream = new MemoryStream(documentBytes, writable: false))
+                using (var reader = new StreamReader(detectionStream, System.Text.Encoding.UTF8, true, leaveOpen: false))
+                    documentContent = await reader.ReadToEndAsync(cancellationToken);
+
+                var result = await automaticLayoutDetection.DetectAsync(documentContent, cancellationToken);
+                var detection = result.Detection;
+
+                LayoutParserApi.Models.Database.LayoutRecord? selectedRecord = null;
+                AutomaticLayoutCandidate? selectedCandidate = null;
+                var selectionSource = "none";
+
+                if (!string.IsNullOrWhiteSpace(layoutGuidOverride))
+                {
+                    if (!result.TryGetRankedLayout(layoutGuidOverride, out selectedRecord) || selectedRecord is null)
+                    {
+                        return UnprocessableEntity(new AutomaticParseResponse
+                        {
+                            Success = false,
+                            CorrelationId = correlationId,
+                            Detection = detection,
+                            Message = "O layout informado não pertence aos candidatos compatíveis da detecção atual. Execute uma nova detecção e escolha um dos candidatos retornados."
+                        });
+                    }
+
+                    selectedCandidate = detection.Candidates.First(candidate =>
+                        AutomaticLayoutDetectionResult.TryNormalizeGuid(candidate.LayoutGuid, out var candidateGuid)
+                        && AutomaticLayoutDetectionResult.TryNormalizeGuid(layoutGuidOverride, out var overrideGuid)
+                        && string.Equals(candidateGuid, overrideGuid, StringComparison.OrdinalIgnoreCase));
+                    selectionSource = detection.Status == AutomaticLayoutDetectionStatus.Unique
+                        ? "auto_unique_confirmed"
+                        : "ranked_override";
+                    detection.SelectedLayout = selectedCandidate;
+                }
+                else if (detection.Status == AutomaticLayoutDetectionStatus.Unique
+                    && detection.SelectedLayout is not null
+                    && result.TryGetRankedLayout(detection.SelectedLayout.LayoutGuid, out selectedRecord))
+                {
+                    selectedCandidate = detection.SelectedLayout;
+                    selectionSource = "auto_unique";
+                }
+
+                if (selectedRecord is null || selectedCandidate is null)
+                {
+                    return Ok(new AutomaticParseResponse
+                    {
+                        Success = true,
+                        CorrelationId = correlationId,
+                        Detection = detection
+                    });
+                }
+
+                if (string.IsNullOrWhiteSpace(selectedRecord.DecryptedContent))
+                    throw new InvalidOperationException("O layout selecionado não possui conteúdo interno disponível.");
+
+                _logger.LogInformation(
+                    "Seleção de layout da detecção automática. CorrelationId={CorrelationId} Status={DetectionStatus} SelectionSource={SelectionSource} LayoutGuid={LayoutGuid} Rank={Rank} AlgorithmVersion={AlgorithmVersion} CatalogVersion={CatalogVersion}",
+                    correlationId,
+                    detection.Status,
+                    selectionSource,
+                    selectedCandidate.LayoutGuid,
+                    selectedCandidate.Rank,
+                    detection.AlgorithmVersion,
+                    detection.CatalogVersion);
+
+                // Reusa integralmente o pipeline protegido de /upload com nomes internos fixos.
+                // O XML descriptografado e o nome original do documento nunca voltam ao navegador.
+                var layoutBytes = System.Text.Encoding.UTF8.GetBytes(selectedRecord.DecryptedContent);
+                await using var layoutStream = new MemoryStream(layoutBytes, writable: false);
+                await using var documentStream = new MemoryStream(documentBytes, writable: false);
+                var internalLayoutFile = new FormFile(
+                    layoutStream,
+                    0,
+                    layoutBytes.Length,
+                    "layoutFile",
+                    $"{selectedCandidate.LayoutGuid}.xml")
+                {
+                    Headers = new HeaderDictionary(),
+                    ContentType = "application/xml"
+                };
+                var internalDocumentFile = new FormFile(
+                    documentStream,
+                    0,
+                    documentBytes.Length,
+                    "txtFile",
+                    detection.DetectedType == "idoc" ? "document.idoc" : "document.mq_series")
+                {
+                    Headers = new HeaderDictionary(),
+                    ContentType = "application/octet-stream"
+                };
+
+                var uploadResult = await Upload(internalLayoutFile, internalDocumentFile, selectedRecord.Name);
+                return WrapUploadResult(uploadResult, detection, correlationId);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (InvalidOperationException ex)
+            {
+                _logger.LogWarning(ex, "Detecção automática indisponível. CorrelationId={CorrelationId}", correlationId);
+                return StatusCode(StatusCodes.Status503ServiceUnavailable, new
+                {
+                    success = false,
+                    correlationId,
+                    message = "A detecção automática está temporariamente indisponível."
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Falha inesperada na detecção automática. CorrelationId={CorrelationId}", correlationId);
+                return StatusCode(StatusCodes.Status500InternalServerError, new
+                {
+                    success = false,
+                    correlationId,
+                    message = "Não foi possível concluir a detecção automática."
+                });
+            }
+        }
+
+        private IActionResult WrapUploadResult(
+            IActionResult uploadResult,
+            AutomaticLayoutDetection detection,
+            string correlationId)
+        {
+            if (uploadResult is ObjectResult objectResult)
+            {
+                var statusCode = objectResult.StatusCode ?? StatusCodes.Status200OK;
+                return StatusCode(statusCode, new AutomaticParseResponse
+                {
+                    Success = statusCode is >= 200 and < 300,
+                    CorrelationId = correlationId,
+                    Detection = detection,
+                    ParseResult = objectResult.Value
+                });
+            }
+
+            return StatusCode(StatusCodes.Status500InternalServerError, new AutomaticParseResponse
+            {
+                Success = false,
+                CorrelationId = correlationId,
+                Detection = detection,
+                Message = "O pipeline de parse devolveu uma resposta não reconhecida."
+            });
+        }
+
+        private string EnsureCorrelationId()
+        {
+            var correlationId = CorrelationContext.CurrentId;
+            if (string.IsNullOrWhiteSpace(correlationId))
+                correlationId = HttpContext.TraceIdentifier;
+
+            Response.Headers["X-Correlation-ID"] = correlationId;
+            return correlationId;
+        }
+
+        private static string GetLearningExtension(string? detectedType) =>
+            detectedType?.ToLowerInvariant() switch
+            {
+                "xml" => ".xml",
+                "idoc" => ".idoc",
+                "mqseries" => ".mq_series",
+                _ => ".txt"
+            };
     }
 }
