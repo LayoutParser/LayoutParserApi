@@ -601,6 +601,77 @@ fixo de épocas; (3) considerar reduzir `max_new_tokens` de teste ou aumentar o 
 eco" com "modelo esqueceu como traduzir". Isso ainda é prova de conceito insuficiente para
 avançar ao dataset completo sem esse ajuste de protocolo.
 
+## Diagnóstico de degeneração por época — 2026-08-30
+
+Objetivo: achar em que época exata a degeneração observada em 3 épocas começa, e testar se
+`repetition_penalty`/`no_repeat_ngram_size` resolvem sozinhos (sem retreinar).
+
+**Checkpoints intermediários nunca existiram.** `smoke_train_single_pair.py` usa
+`save_strategy="no"` — só o adapter final (`~/lora_single_pair_adapter`) foi salvo em cada
+rodada anterior, sobrescrito a cada treino. Confirmado lendo o script antes de agir (não assumido).
+Solução aplicada: variante `smoke_train_ckpt.py` (`save_strategy="epoch"`, `save_total_limit=None`)
+para obter checkpoint por época **num único treino de 3 épocas**, em vez de 3 retreinos separados
+(mais barato: ~5h42min uma vez, não 3 rodadas de 1h55/3h50/5h42).
+
+**Gotcha operacional (2x) — VM tem 15GB RAM, treino usa ~11,8GB de pico:** rodar o treino e uma
+geração (`model.generate`, ~6,6GB) ao mesmo tempo estoura a memória e mata o processo de treino
+silenciosamente (sem OOM visível em `dmesg` sem root, só o processo some do `ps`). Aconteceu 2
+vezes nesta sessão: a 1ª tentativa foi morta antes mesmo de começar (lançada em paralelo com uma
+inferência já rodando); a 2ª rodou até o checkpoint-57 (fim da época 1, step 57/171, ~1h52min) e
+foi morta assim que uma inferência foi disparada em paralelo às 22:07. **Treino e geração nesta VM
+precisam ser estritamente sequenciais**, nunca concorrentes — isso limitou a coleta de dados desta
+sessão ao checkpoint da época 1 (o retreino completo até época 3 ficou fora do orçamento de tempo
+depois do 2º incidente).
+
+### Resultado: já degenerado na época 1 (não é gradual entre 1→3, é constante)
+
+Geração a partir do checkpoint-57 (época 1, mesmo protocolo do smoke-test #4: greedy,
+`max_new_tokens=1024`, prompt truncado a 1024 tokens) produz **eco puro do `.tcl` de entrada**
+(linhas `<FIELD name="..." length="..."/>`) do início ao fim dos 1024 tokens gerados —
+`grep -c 'xsl:' → 0`. Isso **contradiz o achado documentado do smoke-test #4** (que reportava
+convergência para XSLT válido com defaults semânticos corretos após ~1024 tokens de eco, no mesmo
+par, mesmo `MAX_LEN=2048`, mesma configuração de 1 época). A reprodução desta sessão, com script
+equivalente (única diferença: `save_strategy="epoch"` em vez de `"no"`, que não deveria afetar os
+pesos), **não reproduziu essa convergência** — sinal de que o resultado do smoke-test #4 pode ter
+sido sensível a alguma fonte de não-determinismo em CPU (ordem de operações float, threading) ou
+que a "convergência" ali observada era mais frágil/marginal do que documentado.
+
+Combinado com o adapter final de 3 épocas (também `xsl:` = 0, mas com padrão de repetição
+degenerada tipo `RefDocRefDocRefDocxBairro`, ver seção anterior), a conclusão honesta é: **não há
+evidência de uma transição clara "eco → XSLT válido" que piora gradualmente de 1 para 3 épocas
+neste protocolo — o padrão observado nesta sessão já é ausência de XSLT desde a época 1**, com a 3ª
+época adicionando um sintoma extra de repetição hiper-degenerada (fusão de tokens de campo) por
+cima do mesmo problema de base (nenhuma transição prompt→resposta aprendida de forma robusta).
+
+### `repetition_penalty`/`no_repeat_ngram_size` — testado, NÃO resolve sozinho
+
+Testado no adapter final de 3 épocas com `repetition_penalty=1.2`, `no_repeat_ngram_size=3`
+(greedy, mesmo `max_new_tokens=1024`): o texto degenerado tipo eco/concatenação repetitiva
+**desaparece**, mas o modelo não migra para XSLT — migra para **alucinação de conteúdo não
+relacionado** (um bloco pseudo-JSON descrevendo "instruções"/"linhas"/"identificadores" que não
+existe em nenhum dos dois formatos reais, `xsl:` continua em 0). Ou seja: o mitigador troca o modo
+de falha (de "repetição degenerada" para "alucinação fora de domínio"), não resolve o problema de
+fundo — o modelo não aprendeu a transição correta prompt→resposta o suficiente para que penalizar
+repetição destrave a saída certa.
+
+### Recomendação — 2026-08-30
+
+1. **Não gastar mais orçamento em variar número de épocas neste protocolo.** O sinal desta sessão
+   (época 1 já sem XSLT) e o do smoke-test #4 (época 1 com XSLT após eco) são inconsistentes entre
+   si no mesmo par/config — isso é mais forte evidência de que o protocolo é frágil/não confiável
+   do que de que "época X" é o ponto de corte certo. Rodar época 2 isoladamente não resolveria essa
+   inconsistência de base.
+2. **`repetition_penalty`/`no_repeat_ngram_size` sozinhos não são mitigação suficiente** — mudam o
+   sintoma, não a causa. Não usar como substituto de retreino/protocolo melhor.
+3. **Antes de investir em mais treino:** atacar a causa mais provável já identificada no
+   smoke-test #4 — o truncamento do prompt a 1024 tokens (de um `.tcl` real com >10K tokens) corta
+   a "âncora" que ensinaria a transição clara prompt→resposta. Testar com um prompt budget maior
+   (exige `MAX_LEN` maior, mais RAM/tempo) ou reestruturar o exemplo de treino para não depender de
+   ver o `.tcl` inteiro (ex.: sumarizar/pré-processar o `.tcl` de entrada antes de treinar).
+4. Se rodar mais um treino de diagnóstico: usar sempre `save_strategy="epoch"` (script
+   `~/smoke_train_ckpt.py`, já commitável) e **nunca** rodar `generate()` concorrente ao treino
+   nesta VM (15GB RAM é o teto duro).
+
 ### Scripts do smoke-test #4 (não commitados — artefatos de sessão na VM)
 
 `~/build_chunks_single.py`, `~/smoke_train_single_pair.py` (corrige o bug de truncamento de
