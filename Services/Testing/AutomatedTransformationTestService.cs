@@ -127,7 +127,7 @@ namespace LayoutParserApi.Services.Testing
                 {
                     _logger.LogWarning(
                         "Tentativa de acessar diretório de exemplos fora da base permitida: {ExamplesDirectory}",
-                        examplesDirectory);
+                        Services.Logging.LogMessageSanitizer.Sanitize(examplesDirectory));
                     result.Success = false;
                     result.Errors.Add("Diretório de exemplos fora da área permitida.");
                     return result;
@@ -244,7 +244,7 @@ namespace LayoutParserApi.Services.Testing
                     documentType = "NFe";
                     _logger.LogWarning(
                         "Não foi possível detectar o tipo de documento a partir do layout {LayoutName}; usando fallback {FallbackType}",
-                        layoutName, documentType);
+                        Services.Logging.LogMessageSanitizer.Sanitize(layoutName), documentType);
                 }
 
                 // Executar transformação
