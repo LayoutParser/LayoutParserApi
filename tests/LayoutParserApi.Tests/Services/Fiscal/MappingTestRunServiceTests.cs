@@ -187,6 +187,54 @@ namespace LayoutParserApi.Tests.Services.Fiscal
             Assert.Equal(MappingReleaseStatus.TestFailed, releaseStore.Release!.Status);
         }
 
+        [Theory]
+        [InlineData(true)]  // ataque no inputXml
+        [InlineData(false)] // ataque no expectedXml (gabarito)
+        public async Task TestRun_PayloadXxeNoFixtureHttp_RejeitadoSemProcessarEntidadeExterna(bool ataqueNoInput)
+        {
+            var workspaceId = Guid.NewGuid();
+            var draftId = Guid.NewGuid();
+            var userId = Guid.NewGuid();
+            var ruleId = Guid.NewGuid();
+
+            var ruleDetail = AcceptedCopyRule(ruleId, "/nfe/emit/CNPJ", "/dest/cnpj");
+            var draft = new MappingDraftDetail(draftId, workspaceId, Guid.NewGuid(), Guid.NewGuid(), "xslt", DateTimeOffset.UtcNow, new[] { ruleDetail });
+
+            var rule = new MappingDraftRule
+            {
+                RuleId = ruleId, DraftId = draftId, SourceRefs = new[] { "/nfe/emit/CNPJ" },
+                TargetRefs = new[] { "/dest/cnpj" }, Operation = "copy", Status = MappingDraftRuleStatus.Accepted,
+            };
+            var release = BuildCompiledXsltRelease(workspaceId, draftId, new[] { rule });
+
+            var draftStore = new FakeDraftStore { Draft = draft };
+            var releaseStore = new FakeReleaseStore { Release = release };
+            var scopeFactory = BuildScopeFactory(draftStore, releaseStore);
+
+            var service = new MappingTestRunService(NullLogger<MappingTestRunService>.Instance, scopeFactory);
+
+            // Payload XXE clássico: DOCTYPE com entidade externa apontando pra um arquivo local.
+            // Se processado, o parser tentaria ler C:\Windows\win.ini e substituir &xxe; pelo conteúdo.
+            const string xxePayload =
+                "<?xml version=\"1.0\"?>" +
+                "<!DOCTYPE root [<!ENTITY xxe SYSTEM \"file:///C:/Windows/win.ini\">]>" +
+                "<root>&xxe;</root>";
+
+            var inputXml = ataqueNoInput ? xxePayload : "<nfe><emit><CNPJ>12345678000199</CNPJ></emit></nfe>";
+            var expectedXml = ataqueNoInput ? "<dest><cnpj>12345678000199</cnpj></dest>" : xxePayload;
+
+            var jobId = await service.EnqueueAsync(workspaceId, draftId, release.ReleaseId, userId, inputXml, expectedXml, null, "corr-xxe", CancellationToken.None);
+            var state = await WaitForCompletionAsync(service, jobId);
+
+            // Nunca deve derrubar o job (dotnet-standards.md §Resiliência) — vira falha de teste
+            // reportada, sem propagar conteúdo de arquivo local nem lançar exceção não tratada.
+            Assert.Equal(TestRunJobStatus.Completed, state.Status);
+            Assert.False(state.RequiredGatesPassed);
+            var summary = releaseStore.LastAppliedSummary!;
+            Assert.False(summary.RequiredGatesPassed);
+            Assert.DoesNotContain(summary.XsdErrors.Concat(new[] { string.Empty }), e => e.Contains("[fonts]", StringComparison.OrdinalIgnoreCase));
+        }
+
         [Fact]
         public async Task TestRun_ReleaseForaDoWorkspace_LancaSemDerrubarOChamador()
         {
