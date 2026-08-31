@@ -125,3 +125,47 @@ recriar o check em cada controller).
   `XmlResolver=null`/`DtdProcessing=Prohibit`, zip bomb guard em XLSX, antivírus assíncrono via
   Windows Defender (pendência de confirmação de infra com `@lp-devops`, não bloqueante ao design).
 - **Imutabilidade**: revisão nova a cada alteração, nunca sobrescreve — é o contrato que Slice 3 exige.
+
+## 8. Implementação — 2026-08-31 (`@lp-backend-dev`)
+
+Branch `feat/slice2-fiscalmappingpackage`, a partir de `origin/develop` (já com o Slice 1, PR #234
+mesclado). `dotnet build`: verde. `dotnet test`: 467/468 (1 falha pré-existente e não relacionada em
+`AiTransformationCandidateServiceTests`, fora de escopo deste slice). 19 testes novos, todos verdes.
+
+### Desvios do design original
+
+- **Escopo reduzido a 2 endpoints** (por instrução explícita do dono): `POST .../mapping-packages`
+  (cria pacote + revisão 1) e `GET .../mapping-packages/{packageId}`. Os endpoints de nova revisão e
+  download de conteúdo (design §3) **não foram implementados** — ficam para um slice futuro.
+- **Kind do artefato = nome do campo multipart**, não veio na spec explicitamente como formato de
+  request. Cada `IFormFile` é identificado pelo nome do campo do form (`sample`, `layout`, `spec`,
+  `xsd`, `expectedXml`, `fiscalContext`) — nomes fora da allowlist de `ArtifactKind` são rejeitados
+  com 422, sem inferência pela extensão.
+- **Idempotência**: implementada como projetado (header `Idempotency-Key` OU hash SHA256 do conjunto
+  ordenado de hashes dos artefatos, se ausente), com coluna `IdempotencyKey` + UNIQUE
+  `(WorkspaceId, ProjectId, IdempotencyKey)` em `tbFiscalMappingPackage`. Reenviar o mesmo conteúdo
+  devolve o pacote já criado, sem duplicar linha nem artefato em disco.
+- **`FiscalProject` mínimo**: criado sob demanda dentro do próprio fluxo de upload
+  (`IFiscalPackageStore.EnsureProjectExistsAsync`), sem endpoint de CRUD — exatamente como previsto.
+
+### Antivírus — status real, não testado contra Defender de verdade
+
+`WindowsDefenderAntivirusScanner` invoca `MpCmdRun.exe -Scan -ScanType 3 -File <path> -DisableRemediation`
+em processo externo, fire-and-forget, atualizando `InspectionStatus` via `IFiscalPackageStore` quando
+o processo termina. **Não foi validado contra uma instância real do Windows Defender nesta sessão** —
+o ambiente de teste/CI não garante `C:\Program Files\Windows Defender\MpCmdRun.exe` presente. O código
+degrada explicitamente: se o executável não existe (`File.Exists` falha) ou o processo não inicia,
+`ScanAsync` retorna `null` e o artefato permanece `Pending` indefinidamente, sem travar o upload nem
+lançar. Isso é o comportamento correto especificado, mas **é código não exercitado por nenhum teste
+automatizado contra o binário real** — só a via de "mecanismo indisponível" foi coberta indiretamente
+(a suíte de testes roda com `FakeScanner` sempre retornando `null`). Validar contra Defender real no
+host de produção fica como pendência para `@lp-devops`/QA manual.
+
+### Arquivos criados
+
+`Models/Entities/Fiscal/{FiscalProject,FiscalMappingPackage,PackageArtifact}.cs`,
+`Services/Interfaces/{IFiscalPackageStore,IFiscalPackageService,IAntivirusScanner}.cs`,
+`Services/Database/SqlFiscalPackageStore.cs`, `Services/Validation/MultipartUploadValidator.cs`,
+`Services/Fiscal/{FiscalPackageService,WindowsDefenderAntivirusScanner}.cs`,
+`Controllers/FiscalMappingPackagesController.cs`, registro em `Program.cs` (grupo Database),
+testes em `tests/LayoutParserApi.Tests/{Services/Validation,Services/Fiscal,Controllers}/`.
