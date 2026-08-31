@@ -115,3 +115,60 @@ Cruzado com `gh` (não confiado só em memória), repos `LayoutParser/LayoutPars
    `auditoria-slice1-identidade-workspaces-2026-08-31.md`; não repetido aqui.
 
 Nenhuma issue nova criada (nenhum item ficou pendente que justificasse).
+
+## Status real dos 7 slices — 2026-08-31 (final)
+
+Reconferido via `gh issue view`/`gh pr view` reais nesta auditoria final (não reaproveitado da
+tabela acima, que já estava desatualizada — registrava só o Slice 1).
+
+| Slice | Issue(s) | Status | Evidência |
+|-------|----------|--------|-----------|
+| **1 — Identidade/workspace** | #225, #228 (OPEN) | **Concluído** | PR #234 `MERGED` (2026-08-31T17:28:18Z). Issues #225/#228 continuam `OPEN` no GitHub apesar do PR mesclado — `Closes #N` não fechou automaticamente (confirmado nesta auditoria, contradiz o que a linha do tempo acima registrou como fechamento automático). |
+| **2 — `FiscalMappingPackage`** | #229 (OPEN) | **Concluído** | PR #236 `MERGED` (2026-08-31T18:50:40Z). Issue #229 segue `OPEN`. |
+| **3 — `MappingDraft`** | #230 (OPEN) | **Concluído** | PR #238 `MERGED` (2026-08-31T20:51:14Z). Issue #230 segue `OPEN`. |
+| **4 — `MappingExplanation`/explicabilidade Sysmiddle** | #226, #227 (OPEN) | **Não iniciado** | Sem PR associado, sem comentário de progresso. |
+| **5 — Compilação/Fiscal Test Lab** | #231 (OPEN) | **Não iniciado** | Sem PR associado. |
+| **6 — Gate transversal Sysmiddle** | #232 (OPEN) | **Não iniciado** | Sem PR dedicado. O `MappingEngineGuardFilter` entregue no Slice 3 (PR #238) recusa `engine=sysmiddle` **só nos endpoints do próprio Slice 3** (`MappingDraft`/geração) — cobertura parcial e incidental, não os testes abrangentes que #232 pede ("nenhum endpoint, payload adulterado, role ou estado permite mutação" em qualquer rota, presente ou futura). Insuficiente para fechar #232. |
+| **7 — Governança/piloto FIAT** | #94 (OPEN) | **Não iniciado** | Sem desenho de `@lp-architect`, sem PR. `MapperDatabaseController` ainda só leitura + `refresh-cache`. |
+
+**Progresso real: 3 de 7 slices = 43%** (Slices 1, 2 e 3 concluídos e mesclados; Slices 4-7 sem
+nenhum trabalho iniciado).
+
+### Sincronização de branches
+
+`git diff origin/master origin/develop --stat` vazio — árvores idênticas, **sincronizados** (PR
+#239 mesclado). O `git log origin/master..origin/develop` não está vazio por causa de hashes de
+merge commit distintos entre os dois lados (mesmo conteúdo, histórico reescrito no merge), não por
+divergência real de conteúdo.
+
+### Handoff frontend (`@lp-contract-qa`) — Slices 2 e 3
+
+Não existe agente `@lp-contract-qa` configurado neste repositório (`.claude/agent-memory/` só tem
+`lp-architect`, `lp-backend-dev`, `lp-devops`, `lp-doc`, `lp-parser-llm`, `lp-pm`, `lp-qa`) e nenhum
+PR (#234, #236, #238) menciona validação de contrato cross-repo com o `LayoutParserReact`. A
+pendência do Slice 1 **não mudou** — se estende igualmente aos Slices 2 e 3: nenhum dos três teve
+validação de contrato para consumo do frontend.
+
+### README — Slices 2 e 3
+
+`gh pr view 236 --json files` e `gh pr view 238 --json files` não listam `README.md` entre os
+arquivos alterados (mesmo padrão do Slice 1, PR #234). Nenhum dos 3 slices mesclados atualizou o
+README.
+
+### O que falta, em ordem de prioridade
+
+1. **Fechar issues #225/#228/#229/#230 manualmente** — trabalho está pronto e mesclado, mas o
+   board não reflete isso (closing keyword não fechou automaticamente apesar de PR e issue estarem
+   no mesmo repositório — merece investigação separada de por que não funcionou).
+2. **Slice 4** (`MappingExplanation` + explicabilidade Sysmiddle, #226/#227) — bloqueia o Slice 6
+   (gate transversal depende de #227 estar pelo menos desenhado).
+3. **Slice 6** (gate transversal Sysmiddle, #232) — hoje só tem cobertura incidental via
+   `MappingEngineGuardFilter` do Slice 3; precisa de testes dedicados cobrindo toda rota
+   presente/futura, não só as do Slice 3.
+4. **Slice 5** (compilação TCL/XSL/XSLT + Fiscal Test Lab, #231) — sem nenhum trabalho.
+5. **Slice 7** (governança/piloto FIAT, #94) — sem desenho de `@lp-architect` ainda; é o mais
+   distante de começar.
+6. **Validação `@lp-contract-qa`** para os Slices 1-3 já mesclados, antes de declarar qualquer um
+   deles "pronto para consumo" pelo `LayoutParserReact`.
+7. **README** — nenhum dos 3 slices concluídos documentou a mudança; acumula dívida de
+   documentação a cada slice que passa sem isso.
