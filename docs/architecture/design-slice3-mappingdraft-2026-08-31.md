@@ -178,8 +178,9 @@ Build verde (`dotnet build`, 0 erros) e suíte completa verde (`dotnet test`, 48
 - `Controllers/MappingDraftsController.cs` — 5 rotas: `POST drafts`, `GET drafts/{id}`,
   `POST suggestions`, `GET suggestions/{jobId}`, `DELETE suggestions/{jobId}` (cancelamento) +
   `PATCH rules/{ruleId}`.
-- Testes: `tests/.../Filters/MappingEngineGuardFilterTests.cs` (5 casos — sysmiddle recusado,
-  case-insensitive, engines válidos passam, ausência de engine não é bloqueada pelo filtro) e
+- Testes: `tests/.../Filters/MappingEngineGuardFilterTests.cs` (6 casos — sysmiddle recusado,
+  case-insensitive, engines válidos passam, ausência de engine não é bloqueada pelo filtro,
+  sysmiddle no body é recusado mesmo com engine válido na query) e
   `tests/.../Controllers/MappingDraftsControllerTests.cs` (7 casos — 428 sem If-Match, 412 com
   If-Match divergente, sucesso com If-Match correto + ETag muda depois, `rejected` sem justificativa
   é recusado, isolamento cross-workspace no GET, `engine` ausente no POST de criação é recusado,
@@ -197,6 +198,24 @@ Build verde (`dotnet build`, 0 erros) e suíte completa verde (`dotnet test`, 48
   (fora do escopo da issue #230; XSD e sample, que são texto puro, já entram no prompt inteiros).
 - `IMappingDraftStore.UpdateRuleStatusAsync` distingue `NotFound`/`Conflict` com uma segunda consulta
   só no caminho de falha (`RowCount=0`), exatamente como o design previa em §3.
+
+**Fix pós-revisão da Quinn (2026-08-31) — fragilidade de design no `MappingEngineGuardFilter`:**
+`ResolveEngineAsync` priorizava `engine` da query sobre o body com `return` imediato — uma query
+`?engine=xslt` fazia o filtro nunca inspecionar o body, então `{"engine":"sysmiddle"}` no corpo
+passava sem ser recusado. Não era explorável no Slice 3 porque `MappingDraftsController.CreateDraft`
+tem sua própria allowlist (`tcl`/`xslt`) sobre `request.Engine` do body — mas isso era acidental,
+não o guard funcionando. Fix: `ResolveEnginesAsync` agora lê query E body sempre, e o filtro recusa
+se **qualquer um dos dois** for `sysmiddle` (não é mais "query tem prioridade", é "bloqueia se
+aparecer em qualquer lugar plausível"). XML doc do filtro agora deixa explícito que ele é defesa em
+profundidade — bloqueia só sysmiddle, não substitui a allowlist explícita que cada controller deve
+manter sobre o campo `engine`. Teste novo cobre exatamente o caso da Quinn (query `engine=xslt` +
+body `{"engine":"sysmiddle"}` → 422). Suíte completa: 482 testes verdes (481 + 1 novo).
+
+**Débito técnico registrado (não corrigido nesta sessão):** `MappingSuggestionService.ParseProposals`
+confia no array `evidence` que o Ollama devolve sem validar contra o conteúdo real dos artefatos
+enviados — risco teórico de prompt injection via artefato fiscal malicioso influenciando a
+"evidência" que o modelo alega ter encontrado. Fora de escopo desta correção pontual; avaliar em
+slice futuro se vale a pena validar `evidence` contra os artefatos reais antes de aceitar a proposta.
 
 **Handoff:**
 - `@lp-doc`: nenhum endpoint pré-existente mudou de contrato — só rotas novas. Atualizar
