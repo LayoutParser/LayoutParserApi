@@ -138,3 +138,63 @@ sintéticas com campos fiscais (CNPJ/CFOP), sem dado real.
 
 `dotnet build` (projeto principal) e `dotnet test` (suíte nova, filtrada) verdes — 16/16 passed.
 Sem endpoint HTTP nesta etapa (próximo passo é do `@lp-backend-dev`, conforme escopo).
+
+## Implementação — endpoints e Test Lab (2026-08-31)
+
+`@lp-backend-dev` (Dex). Consome só a API pública do transpilador da Lia — nenhum ajuste nele.
+
+- **`MappingRelease` (nasce aqui):** `Models/Entities/Fiscal/MappingRelease.cs` — `MappingReleaseStatus`
+  (`draft_compiled`/`test_passed`/`test_failed`, sem `approved`/`published`), `MappingReleaseArtifact`,
+  `MappingReleaseCompileDiagnostic`, `MappingTestRunSummary` (`RequiredGatesPassed` — contrato Slice 7),
+  `MappingTestRunDivergence` (provenance completa por divergência).
+- **Store:** `SqlMappingReleaseStore` (tabela `tbMappingRelease`, mesmo padrão ADO.NET/DDL idempotente
+  de `SqlMappingDraftStore`). Idempotência por `(DraftId, RulesSnapshotHash)` — hash = SHA-256 de
+  `RuleId:ETag` de todas as regras `accepted`/`edited` do draft; editar uma regra já compilada muda o
+  hash e gera uma release nova (correto — o snapshot mudou).
+- **Compilação (`POST .../compile`):** `MappingCompileService` — 202 + `jobId` (padrão observável:
+  `GET .../compile/{jobId}`), fire-and-forget via `IServiceScopeFactory`. Lê as regras do draft
+  (`IMappingDraftStore.GetDraftIfMemberAsync`, isolamento por workspace já embutido), chama
+  `MappingDraftRuleTranspiler.ToXslt`/`ToTcl` conforme `draft.Engine`, persiste artefato + diagnósticos
+  de compilação. **Achado corrigido durante a implementação:** o nome do elemento raiz do XSLT não pode
+  ser um GUID cru (`draft.PackageId.ToString()`) — GUID pode começar com dígito, inválido como NCName
+  XML (`XmlException: Name cannot begin with the '0' character`); usa `root{PackageId:N}` em vez disso.
+- **Fiscal Test Lab (`POST .../test-runs`):** `MappingTestRunService` — 202 + `jobId`
+  (`GET .../test-runs/{jobId}`). Só executa de verdade `engine=xslt` (via `XsltApplier`, já usado pelo
+  `RepairOrchestrator`) — `engine=tcl` não tem runner determinístico neste repositório (o runner
+  Sysmiddle real está fora do alcance deste slice); o job conclui `completed` com
+  `RequiredGatesPassed=false` e diagnóstico explícito, nunca finge sucesso.
+  - **Fixture ad-hoc, não catálogo:** o design (§4) previa `{ testCaseId | suiteId }`; não existe
+    `MappingTestCase` persistido neste slice (não pedido além do endpoint) — o corpo aceita
+    `{ releaseId, inputXml, expectedXml, xsdVersion? }` diretamente. Decisão de escopo registrada aqui
+    para o Slice 7/backlog, não uma pendência escondida.
+  - **Diff canônico:** `XslSynth.Core.CanonicalDiffer` entre o XML produzido e o `expectedXml`.
+    **Achado corrigido:** o atributo `lp:ruleId` que o transpilador embute para rastreabilidade (spec
+    §11) poluía o diff como divergência espúria contra qualquer gabarito real (que nunca teria esse
+    atributo) — `MappingTestRunService` remove `lp:ruleId` do XML produzido antes do diff
+    (`StripProvenanceAttributes`), mantendo a provenance por outro caminho (ver abaixo).
+  - **Validação XSD:** `XsdValidationService.ValidateXmlAgainstXsdAsync` (best-effort, mesmo princípio
+    de resiliência do projeto) — quando o tipo de documento fiscal não é detectável (fixture fora de
+    NFe/CTe/NFCom/MDFe, comum em teste sintético), o resultado é tratado como informacional, não
+    bloqueia `RequiredGatesPassed` (só o diff canônico bloqueia nesse caso).
+  - **Provenance (spec §11):** para cada `NodeDiff`, o último segmento do XPath (nome do elemento) é
+    casado contra o último segmento de `TargetRefs[0]` das regras `accepted`/`edited` do draft —
+    resolve `MappingDraftRuleDetail` (RuleId + SourceRefs + Evidence) sem depender do atributo
+    removido do diff. Testado explicitamente (`MappingTestRunServiceTests`): divergência → `RuleId`
+    correto → `SourceRefs` da regra de origem.
+  - **`RequiredGatesPassed`:** `divergences.Count == 0 && xsdValid` (com a ressalva de XSD acima).
+    Atualiza `MappingRelease.Status` para `test_passed`/`test_failed` — testado explicitamente nos
+    dois sentidos.
+- **Endpoints:** `MappingCompilationController` (`Controllers/MappingCompilationController.cs`), mesma
+  rota-base `api/workspaces/{workspaceId}` e `[ServiceFilter(typeof(MappingEngineGuardFilter))]` dos
+  Slices 3/4 (defesa em profundidade — o motor real já vem validado do `MappingDraft`, nunca
+  `sysmiddle`). `POST .../compile`, `GET .../compile/{jobId}`, `GET .../releases/{releaseId}`,
+  `POST .../test-runs`, `GET .../test-runs/{jobId}` — todos com isolamento cross-workspace fail-closed
+  (mesmo padrão "não existe" == "não é seu" dos slices anteriores).
+- **DI:** `Program.cs`, grupo Database (Slice 5) — `IMappingReleaseStore`/`SqlMappingReleaseStore`,
+  `IMappingCompileService`/`MappingCompileService`, `IMappingTestRunService`/`MappingTestRunService`,
+  todos `Scoped`. `XsdValidationService` já estava registrado (reaproveitado, não duplicado).
+
+**Testes novos:** `MappingCompileServiceTests` (draft_compiled, idempotência por snapshot, isolamento
+cross-workspace) e `MappingTestRunServiceTests` (pass com provenance vazia, fail com provenance até a
+regra, isolamento cross-workspace) — 6 casos, mais os 16 já existentes do transpilador. `dotnet build`
+(projeto principal) e `dotnet test` (suíte completa, 504 casos) verdes.
