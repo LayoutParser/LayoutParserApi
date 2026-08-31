@@ -68,6 +68,7 @@ namespace LayoutParserApi.Tests.Controllers
             public IReadOnlyList<string> Roles { get; set; } = Array.Empty<string>();
             public bool IsAuthenticated => Name != null;
             public bool IsInRole(string role) => Roles.Contains(role, StringComparer.OrdinalIgnoreCase);
+            public Guid? UserId => null;
         }
 
         private sealed class FakeLayoutDatabaseService : ILayoutDatabaseService

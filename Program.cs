@@ -400,6 +400,10 @@ try
     builder.Services.AddScoped<IDecryptionService, DecryptionService>();
     builder.Services.AddScoped<MapperDatabaseService>();
     builder.Services.AddScoped<ICachedLayoutService, CachedLayoutService>();
+    // ✅ Slice 1 (issue #225/#228): identidade externa → UserId interno + workspace fiscal isolado.
+    // Mesmo banco ConnectUS_Macgyver (não há banco dedicado); Scoped por padrão do grupo Database.
+    builder.Services.AddScoped<IIdentityWorkspaceStore, SqlIdentityWorkspaceStore>();
+    builder.Services.AddScoped<IIdentityWorkspaceService, LayoutParserApi.Services.Identity.IdentityWorkspaceService>();
     // ✅ Estado do warm-up do catálogo (P1.3), lido pela sonda de readiness. Singleton porque é
     // preenchido pelo IHostedService de warm-up e lido pelo health check — estado compartilhado.
     builder.Services.AddSingleton<CatalogWarmupState>();
