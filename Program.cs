@@ -404,6 +404,12 @@ try
     // Mesmo banco ConnectUS_Macgyver (não há banco dedicado); Scoped por padrão do grupo Database.
     builder.Services.AddScoped<IIdentityWorkspaceStore, SqlIdentityWorkspaceStore>();
     builder.Services.AddScoped<IIdentityWorkspaceService, LayoutParserApi.Services.Identity.IdentityWorkspaceService>();
+    // ✅ Slice 2 (issue #229): FiscalMappingPackage/Revision/Artifact — mesmo banco, mesmo padrão.
+    // WindowsDefenderAntivirusScanner só usa ILogger (sem estado por-requisição) — Scoped por
+    // consistência com o grupo, mas seria seguro como Singleton também.
+    builder.Services.AddScoped<IFiscalPackageStore, SqlFiscalPackageStore>();
+    builder.Services.AddScoped<IAntivirusScanner, LayoutParserApi.Services.Fiscal.WindowsDefenderAntivirusScanner>();
+    builder.Services.AddScoped<IFiscalPackageService, LayoutParserApi.Services.Fiscal.FiscalPackageService>();
     // ✅ Estado do warm-up do catálogo (P1.3), lido pela sonda de readiness. Singleton porque é
     // preenchido pelo IHostedService de warm-up e lido pelo health check — estado compartilhado.
     builder.Services.AddSingleton<CatalogWarmupState>();
