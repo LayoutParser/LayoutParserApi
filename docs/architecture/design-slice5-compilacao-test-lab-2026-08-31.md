@@ -100,3 +100,41 @@ mesma branch, como Slice 3.
 `concat`/`lookup`/`conditional`/`constant` da seção 8) como classe standalone testável,
 antes de `@lp-backend-dev` cablear o endpoint — reduz risco de descobrir gaps de cobertura de
 `operation` só depois da infra pronta.
+
+## Implementação — transpiladores (2026-08-31)
+
+`Services/Fiscal/MappingDraftRuleTranspiler.cs` — classe estática, sem DI, duas entradas:
+`ToXslt(rules, sourceSchema, targetSchema)` e `ToTcl(rules, sourceSchema, targetSchema)`, ambas
+retornando `TranspileResult(Content, Diagnostics)`.
+
+- **Filtro de status:** só `accepted`/`edited` viram output; `proposed`/`rejected`/`needs_input`/
+  `validated`/`superseded` são ignoradas silenciosamente (reflete decisão humana ainda não tomada
+  ou negativa — não é erro).
+- **Catálogo suportado:** `copy` (`xsl:value-of` direto / `FIELD op="copy"`), `concat`
+  (`concat()` XPath com separador opcional lido de `transformations[0].separator`), `lookup`
+  (`xsl:choose`/`when` por chave de `transformations[0].table`, com `default` como `otherwise`),
+  `conditional` (`xsl:choose` a partir de `conditions[]`, item com `"default":true` vira
+  `otherwise`), `constant` (`xsl:text` fixo de `transformations[0].value`).
+- **Contrato JSON livre por operação** (spec §8) documentado nos comentários XML doc de
+  `ReadTransformationString`/`ReadLookupTable`/`ReadConditions` — formato mínimo, sem schema
+  formal nesta etapa (não pedido no escopo).
+- **Rastreabilidade RuleId → elemento gerado:** XSLT usa atributo `lp:ruleId` (namespace
+  `urn:layoutparser:provenance`, constante `MappingDraftRuleTranspiler.ProvenanceNamespace`) em
+  cada elemento de destino + comentário `<!-- MappingDraftRule {guid} -->` antes dele (canal
+  humano complementar). TCL usa atributo `ruleId="..."` direto no `<FIELD>` (sem namespace formal,
+  mesmo princípio). Confirmado em teste: dado o XML/TCL gerado, dá pra recuperar o `RuleId` de
+  origem de um elemento específico via o atributo.
+- **Diagnóstico estruturado, nunca exceção não tratada:** operação fora do catálogo, JSON
+  malformado em `conditions`/`transformations`, ou payload incompleto (ex.: `lookup` sem `table`)
+  viram `TranspileDiagnostic(RuleId, Severity, Message)` — a regra é omitida do output, as demais
+  regras continuam sendo processadas.
+- **NÃO reaproveita** `RepairOrchestrator`/`DeterministicXslTranspiler` (só o padrão, conforme
+  decisão da seção 1) — assinatura de entrada incompatível (`MapperVo` vs. `MappingDraftRule`).
+
+Testes: `tests/LayoutParserApi.Tests/Services/Fiscal/MappingDraftRuleTranspilerTests.cs`, 16
+casos — uma fixture por operação (XSLT e TCL), regra `proposed`/`rejected`/`needs_input` ignorada,
+operação não suportada gera diagnóstico sem exceção, rastreabilidade RuleId→elemento. Fixtures
+sintéticas com campos fiscais (CNPJ/CFOP), sem dado real.
+
+`dotnet build` (projeto principal) e `dotnet test` (suíte nova, filtrada) verdes — 16/16 passed.
+Sem endpoint HTTP nesta etapa (próximo passo é do `@lp-backend-dev`, conforme escopo).
