@@ -601,62 +601,80 @@ fixo de épocas; (3) considerar reduzir `max_new_tokens` de teste ou aumentar o 
 eco" com "modelo esqueceu como traduzir". Isso ainda é prova de conceito insuficiente para
 avançar ao dataset completo sem esse ajuste de protocolo.
 
+## Diagnóstico de degeneração por época — 2026-08-30
+
+Objetivo: achar em que época exata a degeneração observada em 3 épocas começa, e testar se
+`repetition_penalty`/`no_repeat_ngram_size` resolvem sozinhos (sem retreinar).
+
+**Checkpoints intermediários nunca existiram.** `smoke_train_single_pair.py` usa
+`save_strategy="no"` — só o adapter final (`~/lora_single_pair_adapter`) foi salvo em cada
+rodada anterior, sobrescrito a cada treino. Confirmado lendo o script antes de agir (não assumido).
+Solução aplicada: variante `smoke_train_ckpt.py` (`save_strategy="epoch"`, `save_total_limit=None`)
+para obter checkpoint por época **num único treino de 3 épocas**, em vez de 3 retreinos separados
+(mais barato: ~5h42min uma vez, não 3 rodadas de 1h55/3h50/5h42).
+
+**Gotcha operacional (2x) — VM tem 15GB RAM, treino usa ~11,8GB de pico:** rodar o treino e uma
+geração (`model.generate`, ~6,6GB) ao mesmo tempo estoura a memória e mata o processo de treino
+silenciosamente (sem OOM visível em `dmesg` sem root, só o processo some do `ps`). Aconteceu 2
+vezes nesta sessão: a 1ª tentativa foi morta antes mesmo de começar (lançada em paralelo com uma
+inferência já rodando); a 2ª rodou até o checkpoint-57 (fim da época 1, step 57/171, ~1h52min) e
+foi morta assim que uma inferência foi disparada em paralelo às 22:07. **Treino e geração nesta VM
+precisam ser estritamente sequenciais**, nunca concorrentes — isso limitou a coleta de dados desta
+sessão ao checkpoint da época 1 (o retreino completo até época 3 ficou fora do orçamento de tempo
+depois do 2º incidente).
+
+### Resultado: já degenerado na época 1 (não é gradual entre 1→3, é constante)
+
+Geração a partir do checkpoint-57 (época 1, mesmo protocolo do smoke-test #4: greedy,
+`max_new_tokens=1024`, prompt truncado a 1024 tokens) produz **eco puro do `.tcl` de entrada**
+(linhas `<FIELD name="..." length="..."/>`) do início ao fim dos 1024 tokens gerados —
+`grep -c 'xsl:' → 0`. Isso **contradiz o achado documentado do smoke-test #4** (que reportava
+convergência para XSLT válido com defaults semânticos corretos após ~1024 tokens de eco, no mesmo
+par, mesmo `MAX_LEN=2048`, mesma configuração de 1 época). A reprodução desta sessão, com script
+equivalente (única diferença: `save_strategy="epoch"` em vez de `"no"`, que não deveria afetar os
+pesos), **não reproduziu essa convergência** — sinal de que o resultado do smoke-test #4 pode ter
+sido sensível a alguma fonte de não-determinismo em CPU (ordem de operações float, threading) ou
+que a "convergência" ali observada era mais frágil/marginal do que documentado.
+
+Combinado com o adapter final de 3 épocas (também `xsl:` = 0, mas com padrão de repetição
+degenerada tipo `RefDocRefDocRefDocxBairro`, ver seção anterior), a conclusão honesta é: **não há
+evidência de uma transição clara "eco → XSLT válido" que piora gradualmente de 1 para 3 épocas
+neste protocolo — o padrão observado nesta sessão já é ausência de XSLT desde a época 1**, com a 3ª
+época adicionando um sintoma extra de repetição hiper-degenerada (fusão de tokens de campo) por
+cima do mesmo problema de base (nenhuma transição prompt→resposta aprendida de forma robusta).
+
+### `repetition_penalty`/`no_repeat_ngram_size` — testado, NÃO resolve sozinho
+
+Testado no adapter final de 3 épocas com `repetition_penalty=1.2`, `no_repeat_ngram_size=3`
+(greedy, mesmo `max_new_tokens=1024`): o texto degenerado tipo eco/concatenação repetitiva
+**desaparece**, mas o modelo não migra para XSLT — migra para **alucinação de conteúdo não
+relacionado** (um bloco pseudo-JSON descrevendo "instruções"/"linhas"/"identificadores" que não
+existe em nenhum dos dois formatos reais, `xsl:` continua em 0). Ou seja: o mitigador troca o modo
+de falha (de "repetição degenerada" para "alucinação fora de domínio"), não resolve o problema de
+fundo — o modelo não aprendeu a transição correta prompt→resposta o suficiente para que penalizar
+repetição destrave a saída certa.
+
+### Recomendação — 2026-08-30
+
+1. **Não gastar mais orçamento em variar número de épocas neste protocolo.** O sinal desta sessão
+   (época 1 já sem XSLT) e o do smoke-test #4 (época 1 com XSLT após eco) são inconsistentes entre
+   si no mesmo par/config — isso é mais forte evidência de que o protocolo é frágil/não confiável
+   do que de que "época X" é o ponto de corte certo. Rodar época 2 isoladamente não resolveria essa
+   inconsistência de base.
+2. **`repetition_penalty`/`no_repeat_ngram_size` sozinhos não são mitigação suficiente** — mudam o
+   sintoma, não a causa. Não usar como substituto de retreino/protocolo melhor.
+3. **Antes de investir em mais treino:** atacar a causa mais provável já identificada no
+   smoke-test #4 — o truncamento do prompt a 1024 tokens (de um `.tcl` real com >10K tokens) corta
+   a "âncora" que ensinaria a transição clara prompt→resposta. Testar com um prompt budget maior
+   (exige `MAX_LEN` maior, mais RAM/tempo) ou reestruturar o exemplo de treino para não depender de
+   ver o `.tcl` inteiro (ex.: sumarizar/pré-processar o `.tcl` de entrada antes de treinar).
+4. Se rodar mais um treino de diagnóstico: usar sempre `save_strategy="epoch"` (script
+   `~/smoke_train_ckpt.py`, já commitável) e **nunca** rodar `generate()` concorrente ao treino
+   nesta VM (15GB RAM é o teto duro).
+
 ### Scripts do smoke-test #4 (não commitados — artefatos de sessão na VM)
 
 `~/build_chunks_single.py`, `~/smoke_train_single_pair.py` (corrige o bug de truncamento de
 prompt), `~/infer_single_pair.py` (validação por geração), dataset `~/single_pair_chunked.jsonl`
 (57 linhas), adapter `~/lora_single_pair_adapter/`, saída `~/gerado_single_pair.xsl` — todos na VM
 (`elson@172.25.32.5:~/`), mesmo tratamento dos artefatos de teste anteriores.
-
-## Avaliação de modelo alternativo — 2026-08-30
-
-Pedido explícito do dono: não subdimensionar a recomendação pelo hardware atual (VM Ubuntu, 4
-núcleos CPU, 15GB RAM, sem GPU) — recomendar o melhor modelo tecnicamente adequado, gratuito,
-compatível com Ollama, mesmo que não caiba confortavelmente hoje. Mesma lógica já usada nesta
-sessão para o tamanho do modelo (seção 2).
-
-### O que a degeneração por repetição do smoke-test #3 épocas realmente é
-
-A causa raiz identificada (seção "Validação pós-treino completo") **não é falta de capacidade do
-modelo** — é overfitting clássico: 171 passos sobre 57 chunks derivados de **um único par**
-empurraram o modelo para memorização degenerada (`RefDocRefDocRefDocxBairro`) em vez de
-generalização, e a transição correta prompt→XSLT que já existia com 1 época **regrediu** com 3.
-Isso é consistente com a literatura de fine-tuning: modelos maiores tendem a ser mais resistentes
-a esse colapso porque têm mais capacidade de generalizar em vez de memorizar cru um dataset
-minúsculo e repetitivo — mas o fator dominante aqui é o protocolo (épocas fixas sem validação
-hold-out, dataset de 1 par), não o tamanho de 1.5B em si. Trocar de modelo **sem** corrigir o
-protocolo (early stopping por perda de validação, mais pares no dataset) provavelmente reproduz
-o mesmo colapso em qualquer tamanho.
-
-### Modelo recomendado: manter a família Qwen2.5-Coder, subir de 1.5B para 7B-Instruct
-
-Pesquisa em `ollama.com/library` e benchmarks públicos (Qwen2.5-Coder Technical Report,
-comparativos HumanEval/MBPP) confirma Qwen2.5-Coder como a melhor família open-source/gratuita
-disponível no Ollama para geração de código estruturado hoje — o 7B-Instruct e o 14B-Instruct
-alcançam desempenho comparável a modelos de 20B+ em benchmarks de código, mantendo GGUF pronto
-no Ollama (`ollama pull qwen2.5-coder:7b`) e adapters LoRA treinados via `transformers`/`peft`
-são convertíveis para GGUF e importáveis via `Modelfile` — é exatamente o caminho já em uso
-(merge do adapter + `ollama create`), sem mudança de pipeline. Entre 7B e 14B, recomendo **7B**
-como alvo desta rodada — 14B soma qualidade em troca de custo de treino que não se justifica
-ainda sem resolver o protocolo de overfitting.
-
-### Trade-off de hardware — não cabe na VM atual, e o motivo é RAM, não CPU
-
-LoRA reduz os **parâmetros treináveis**, não o modelo base carregado — o base inteiro (congelado)
-ainda precisa estar em memória durante o treino. Em fp32 (o precision que o smoke-test usa hoje,
-porque QLoRA real em CPU já foi descartado nesta sessão por não funcional), um 7B pesa ~28GB só
-de pesos, e fontes de fine-tuning citam ~32GB de RAM como piso prático para LoRA de 7B em CPU —
-a VM atual tem 15GB, a mesma margem que já ficou apertada (~11,8GB de pico) treinando 1.5B.
-**7B em fp32 não cabe na VM atual, mesmo com LoRA.** Não há caminho de quantização real (bnb
-int8/4-bit) para contornar isso em CPU dentro do prazo — essas kernels dependem de GPU.
-
-### Recomendação prática até 31/08 06:00
-
-Não trocar de modelo agora. O ganho esperado de ir para 7B é resistência a overfitting, mas o
-smoke-test já mostra uma causa mais barata e mais rápida de corrigir: (1) treinar por 1-2 épocas
-em vez de 3, validando geração a cada época (não só ao final); (2) escalar o dataset além de 1
-par antes de aumentar épocas, para que "mais treino" pare de significar "mais repetição do mesmo
-padrão pequeno"; (3) aplicar `repetition_penalty`/`no_repeat_ngram_size` na geração de validação,
-independente do tamanho do modelo — mitigação ortogonal e imediata. **Upgrade para
-Qwen2.5-Coder-7B fica registrado como primeiro item da Fase 2** (mesmo texto da seção 2), condicionado
-a hardware com GPU ou pelo menos 32GB de RAM — fora do escopo e do prazo desta janela.
