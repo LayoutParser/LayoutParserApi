@@ -416,6 +416,11 @@ try
     builder.Services.AddScoped<IMappingDraftStore, SqlMappingDraftStore>();
     builder.Services.AddHttpClient<IMappingSuggestionService, LayoutParserApi.Services.Fiscal.MappingSuggestionService>();
     builder.Services.AddScoped<LayoutParserApi.Services.Filters.MappingEngineGuardFilter>();
+    // ✅ Slice 4 (issue #226/#227): MappingExplanation — 3 adapters determinísticos (sem LLM),
+    // resolvidos por Engine no controller via IEnumerable<IMappingExplanationAdapter>.
+    builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.IMappingExplanationAdapter, LayoutParserApi.Services.Fiscal.SysmiddleExplanationAdapter>();
+    builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.IMappingExplanationAdapter, LayoutParserApi.Services.Fiscal.TclExplanationAdapter>();
+    builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.IMappingExplanationAdapter, LayoutParserApi.Services.Fiscal.XsltExplanationAdapter>();
     // ✅ Slice 5 (issue #231): compilação determinística MappingDraftRule[] → XSLT/TCL + Fiscal Test
     // Lab. Mesmo banco/padrão ADO.NET; compile/test-run reaproveitam CanonicalDiffer/XsdValidationService
     // (já registrados/disponíveis via DI) sem I/O externo/Ollama.
