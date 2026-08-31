@@ -34,5 +34,21 @@ namespace LayoutParserApi.Services.Security
         /// explicitamente via <c>Security__TrustIdentityFromLoopbackOnly=false</c>.</para>
         /// </summary>
         public bool TrustIdentityFromLoopbackOnly { get; set; } = true;
+
+        /// <summary>
+        /// Header com o provedor de identidade (<c>entra</c>/<c>google</c>/<c>development</c>) — Slice 1
+        /// (issue #225). Default conforme o contrato cross-repo
+        /// <c>fiscal-workspace-and-mapping-explanation-api.md</c> §1.
+        /// </summary>
+        public string IdentityProviderHeader { get; set; } = "x-layoutparser-identity-provider";
+
+        /// <summary>
+        /// Header com o <c>sub</c> imutável do provedor. NUNCA deve ser logado nem devolvido ao
+        /// navegador — só o <c>UserId</c> interno resolvido a partir dele é observável.
+        /// </summary>
+        public string IdentitySubjectHeader { get; set; } = "x-layoutparser-identity-subject";
+
+        /// <summary>Header com o <c>tid</c>/issuer do provedor, quando disponível.</summary>
+        public string IdentityTenantHeader { get; set; } = "x-layoutparser-identity-tenant";
     }
 }

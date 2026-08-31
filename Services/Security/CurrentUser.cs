@@ -15,6 +15,8 @@ namespace LayoutParserApi.Services.Security
 
         public bool IsAuthenticated => !string.IsNullOrEmpty(Name);
 
+        public Guid? UserId { get; private set; }
+
         public bool IsInRole(string role)
         {
             if (string.IsNullOrEmpty(role))
@@ -37,6 +39,16 @@ namespace LayoutParserApi.Services.Security
         {
             Name = name;
             Roles = roles ?? Array.Empty<string>();
+        }
+
+        /// <summary>
+        /// Preenche a identidade imutável (Slice 1). <c>internal</c> pelo mesmo motivo de
+        /// <see cref="Set"/>: só o middleware do mesmo assembly popula. Aditivo — não interfere em
+        /// <see cref="Name"/>/<see cref="Roles"/>, que continuam vindo (ou não) dos headers legados.
+        /// </summary>
+        internal void SetUserId(Guid userId)
+        {
+            UserId = userId;
         }
     }
 }

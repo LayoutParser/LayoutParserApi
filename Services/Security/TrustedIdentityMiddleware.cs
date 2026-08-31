@@ -43,7 +43,9 @@ namespace LayoutParserApi.Services.Security
 
         // ICurrentUser é resolvido do escopo da requisição (Scoped) — a MESMA instância que controllers
         // e filtros recebem. Preenchê-la aqui torna a identidade disponível para todo o pipeline abaixo.
-        public async Task InvokeAsync(HttpContext context, ICurrentUser currentUser)
+        // identityWorkspaceService também é Scoped (Slice 1, issue #225) — resolve
+        // x-layoutparser-identity-* para o UserId interno, sob a MESMA guarda de loopback.
+        public async Task InvokeAsync(HttpContext context, ICurrentUser currentUser, IIdentityWorkspaceService identityWorkspaceService)
         {
             var remoteIp = context.Connection.RemoteIpAddress;
             var isLoopback = remoteIp != null && IPAddress.IsLoopback(remoteIp);
@@ -64,6 +66,24 @@ namespace LayoutParserApi.Services.Security
                     // Também popula o slot padrão do ASP.NET: deixa o enforcement por papel PRONTO
                     // (um [Authorize(Roles=...)] futuro, quando UseAuthorization entrar) sem ligá-lo agora.
                     context.User = ConstruirPrincipal(nome, papeis);
+                }
+
+                // ✅ Slice 1 (issue #225): headers novos convivem com os legados acima (x-iis-*) —
+                // nenhum dos dois é removido nesta fase. Ausência dos headers novos = UserId fica
+                // null, sem inferir workspace a partir de Name (recriaria o anti-padrão que #225
+                // quer eliminar — ver auditoria-slice1-identidade-workspaces-2026-08-31.md §5).
+                var provider = context.Request.Headers[_options.IdentityProviderHeader].ToString().Trim();
+                var subject = context.Request.Headers[_options.IdentitySubjectHeader].ToString().Trim();
+
+                if (!string.IsNullOrEmpty(provider) && !string.IsNullOrEmpty(subject))
+                {
+                    var tenant = context.Request.Headers[_options.IdentityTenantHeader].ToString().Trim();
+
+                    // Nunca lança: ResolveOrCreateUserAsync já degrada para null em falha de SQL
+                    // (fail-closed — ver IdentityWorkspaceService). subject não é logado aqui.
+                    var userId = await identityWorkspaceService.ResolveOrCreateUserAsync(provider, tenant, subject, context.RequestAborted);
+                    if (userId is Guid resolvedUserId && currentUser is CurrentUser cuIdentity)
+                        cuIdentity.SetUserId(resolvedUserId);
                 }
             }
             // else / sem header / header vazio: identidade anônima. Nunca lança.
