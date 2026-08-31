@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Xml;
 using System.Xml.Linq;
 
 using LayoutParserApi.Models.Entities.Fiscal;
@@ -125,16 +126,35 @@ namespace LayoutParserApi.Services.Fiscal
             string actualXml;
             try
             {
+                // xsltArtifact.Content é gerado pelo transpilador interno (confiável) — só o
+                // inputXml vem do corpo HTTP (fixture do Test Lab, não confiável). Parse XXE-safe
+                // no lado do input, como já é padrão em MultipartUploadValidator/XsdValidationService.
                 var applier = new XsltApplier();
-                actualXml = applier.Apply(XDocument.Parse(xsltArtifact.Content), XDocument.Parse(inputXml));
+                actualXml = applier.Apply(XDocument.Parse(xsltArtifact.Content), ParseXmlSafe(inputXml));
             }
             catch (Exception ex)
             {
                 // Degrada graciosamente (dotnet-standards.md §Resiliência): XSLT malformado/input
-                // inválido não derruba o job — vira falha de teste reportada, não exceção.
+                // inválido/inseguro não derruba o job — vira falha de teste reportada, não exceção.
                 _logger.LogWarning(ex, "Falha ao aplicar o XSLT compilado no XML de entrada do test-run.");
                 return new MappingTestRunSummary(0, 1, 0, false, false,
                     new[] { $"Falha ao aplicar o XSLT: {ex.Message}" }, Array.Empty<MappingTestRunDivergence>());
+            }
+
+            // expectedXml também vem do corpo HTTP (gabarito ad-hoc do Test Lab) — mesma defesa XXE.
+            // Sanitiza aqui (parse seguro + reserialização) antes de repassar pro CanonicalDiffer, que
+            // faz o próprio XDocument.Parse internamente sem hardening (biblioteca compartilhada
+            // XslSynth.Core, usada também fora do contexto HTTP — o hardening fica na fronteira aqui).
+            string safeExpectedXml;
+            try
+            {
+                safeExpectedXml = ParseXmlSafe(expectedXml).ToString(SaveOptions.DisableFormatting);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "XML esperado (gabarito) do test-run rejeitado por não ser seguro/bem formado.");
+                return new MappingTestRunSummary(0, 1, 0, false, false,
+                    new[] { $"XML esperado inválido ou inseguro: {ex.Message}" }, Array.Empty<MappingTestRunDivergence>());
             }
 
             // Diff canônico node-a-node — cada divergência vira provenance rastreada até a regra.
@@ -143,7 +163,7 @@ namespace LayoutParserApi.Services.Fiscal
             // removido só para efeito de comparação; a provenance em si já é resolvida por nome de
             // elemento (ToDivergenceWithProvenance), não depende do atributo sobreviver ao diff.
             var differ = new CanonicalDiffer();
-            var rawDiffs = differ.Diff(expectedXml, StripProvenanceAttributes(actualXml));
+            var rawDiffs = differ.Diff(safeExpectedXml, StripProvenanceAttributes(actualXml));
             var divergences = rawDiffs.Select(d => ToDivergenceWithProvenance(d, rulesById)).ToList();
 
             // Validação XSD é best-effort: degrada (não derruba o job) se o serviço não conseguir
@@ -216,6 +236,28 @@ namespace LayoutParserApi.Services.Fiscal
                 element.Attribute(lp + "ruleId")?.Remove();
 
             return doc.ToString(SaveOptions.None);
+        }
+
+        /// <summary>
+        /// Defesa XXE clássica (mesmo padrão de <c>MultipartUploadValidator.ValidateXmlIsXxeSafe</c>):
+        /// <c>XmlResolver=null</c> + <c>DtdProcessing=Prohibit</c>. XML declarando DOCTYPE/entidade
+        /// externa faz o parser lançar — tratado pelo chamador como rejeição do fixture, nunca deixa
+        /// a exceção subir com conteúdo do documento. Usado apenas para XML vindo do corpo HTTP
+        /// (inputXml/expectedXml do Test Lab); artefatos gerados internamente pelo transpilador
+        /// continuam usando XDocument.Parse direto — são confiáveis.
+        /// </summary>
+        private static XDocument ParseXmlSafe(string xml)
+        {
+            var settings = new XmlReaderSettings
+            {
+                XmlResolver = null,
+                DtdProcessing = DtdProcessing.Prohibit,
+                MaxCharactersFromEntities = 1024,
+            };
+
+            using var stringReader = new StringReader(xml);
+            using var reader = XmlReader.Create(stringReader, settings);
+            return XDocument.Load(reader);
         }
 
         private static string LastSegment(string reference)
