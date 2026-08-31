@@ -90,6 +90,47 @@ namespace LayoutParserApi.Tests.Services.Fiscal
         }
 
         [Fact]
+        public void ToXslt_Lookup_ChaveComApostrofoGeraXPathSintaticamenteValido()
+        {
+            // Regressão: razão social/lookup com apóstrofo (ex.: "O'Brien Comercio") quebrava o
+            // literal XPath — EscapeXPathLiteral inseria "&apos;" que o XAttribute reescapava pra
+            // "&amp;apos;" na serialização, corrompendo o XPath gerado.
+            var rule = Rule("lookup",
+                new[] { "/nfe/emit/xNome" },
+                new[] { "/dest/tipoParceiro" },
+                transformationsJson: "[{\"type\":\"lookup\",\"table\":{\"O'Brien Comercio\":\"Cliente\"},\"default\":\"Outros\"}]");
+
+            var result = MappingDraftRuleTranspiler.ToXslt(new[] { rule }, Source, Target);
+
+            Assert.False(result.HasDiagnostics);
+            var doc = XDocument.Parse(result.Content); // deve parsear sem exceção
+            var when = doc.Descendants().First(e => e.Name.LocalName == "when");
+            var test = when.Attribute("test")!.Value;
+            Assert.DoesNotContain("&apos;", test);
+            Assert.DoesNotContain("&amp;", test);
+            Assert.Contains("O'Brien Comercio", test);
+        }
+
+        [Fact]
+        public void ToXslt_Concat_SeparadorComApostrofoGeraXPathSintaticamenteValido()
+        {
+            var rule = Rule("concat",
+                new[] { "/nfe/ide/serie", "/nfe/ide/nNF" },
+                new[] { "/dest/chaveResumo" },
+                transformationsJson: "[{\"type\":\"concat\",\"separator\":\"'\"}]");
+
+            var result = MappingDraftRuleTranspiler.ToXslt(new[] { rule }, Source, Target);
+
+            Assert.False(result.HasDiagnostics);
+            var doc = XDocument.Parse(result.Content);
+            var valueOf = doc.Descendants().First(e => e.Name.LocalName == "value-of");
+            var select = valueOf.Attribute("select")!.Value;
+            Assert.DoesNotContain("&apos;", select);
+            Assert.DoesNotContain("&amp;", select);
+            Assert.Contains("\"'\"", select);
+        }
+
+        [Fact]
         public void ToXslt_Conditional_GeraChooseComBaseEmConditions()
         {
             var conditions = "[" +

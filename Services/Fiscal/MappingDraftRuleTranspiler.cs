@@ -168,7 +168,7 @@ namespace LayoutParserApi.Services.Fiscal
             var args = string.Join(", ", rule.SourceRefs.Select(r => r));
             var select = separator.Length == 0
                 ? $"concat({args})"
-                : $"concat({string.Join($", '{EscapeXPathLiteral(separator)}', ", rule.SourceRefs)})";
+                : $"concat({string.Join($", {BuildXPathStringLiteral(separator)}, ", rule.SourceRefs)})";
 
             return new XElement(xsl + "value-of", new XAttribute("select", select));
         }
@@ -185,7 +185,7 @@ namespace LayoutParserApi.Services.Fiscal
             foreach (var (key, value) in lookup.Table)
             {
                 choose.Add(new XElement(xsl + "when",
-                    new XAttribute("test", $"{rule.SourceRefs[0]} = '{EscapeXPathLiteral(key)}'"),
+                    new XAttribute("test", $"{rule.SourceRefs[0]} = {BuildXPathStringLiteral(key)}"),
                     new XElement(xsl + "text", value)));
             }
 
@@ -425,7 +425,47 @@ namespace LayoutParserApi.Services.Fiscal
             return idx >= 0 ? trimmed[(idx + 1)..] : trimmed;
         }
 
-        private static string EscapeXPathLiteral(string value) => value.Replace("'", "&apos;");
+        /// <summary>
+        /// Constrói um literal de string XPath 1.0 seguro para <paramref name="value"/>. XPath 1.0 não
+        /// tem sintaxe de escape de aspas dentro de um literal — o serializer (<see cref="XAttribute"/>)
+        /// já cuida do escaping de entidades XML (<c>&amp;</c>, <c>&lt;</c> etc.) na saída, então NÃO
+        /// escapamos aqui (escapar manualmente antes gera dupla-codificação, ex.: <c>&amp;apos;</c> vira
+        /// <c>&amp;amp;apos;</c>). O problema real é sintático: um <c>'</c> dentro de um literal
+        /// delimitado por <c>'</c> fecha a string prematuramente. Resolvido com a técnica padrão de
+        /// XPath 1.0 — trocar o delimitador pra <c>"</c> quando o valor só tem apóstrofo, ou fatiar em
+        /// <c>concat()</c> quando o valor tem os dois tipos de aspas.
+        /// </summary>
+        private static string BuildXPathStringLiteral(string value)
+        {
+            if (!value.Contains('\''))
+            {
+                return $"'{value}'";
+            }
+
+            if (!value.Contains('"'))
+            {
+                return $"\"{value}\"";
+            }
+
+            // Contém apóstrofo E aspas duplas — nenhum delimitador único serve; fatia em concat()
+            // alternando trechos entre apóstrofos (delimitados por ") e o próprio apóstrofo (literal '"'"').
+            var parts = new List<string>();
+            var segments = value.Split('\'');
+            for (var i = 0; i < segments.Length; i++)
+            {
+                if (segments[i].Length > 0)
+                {
+                    parts.Add($"\"{segments[i]}\"");
+                }
+
+                if (i < segments.Length - 1)
+                {
+                    parts.Add("\"'\"");
+                }
+            }
+
+            return parts.Count == 0 ? "''" : $"concat({string.Join(", ", parts)})";
+        }
 
         private static string Escape(string value) => value
             .Replace("&", "&amp;")
