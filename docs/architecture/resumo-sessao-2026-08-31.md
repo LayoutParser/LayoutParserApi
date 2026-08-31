@@ -83,3 +83,35 @@ Da fundação da "plataforma fiscal" descrita no prompt de 18 seções, **apenas
 de fato implementado e mesclado** (Slice 1 — identidade/workspace). Os demais 6 permanecem como
 issues de backlog sem execução, e a validação de `@lp-contract-qa` exigida pela seção 16 do prompt
 para handoff ao frontend não ocorreu — mesmo para o Slice 1 já concluído.
+
+## Pedidos formais do front-end — status real (2026-08-31)
+
+Cruzado com `gh` (não confiado só em memória), repos `LayoutParser/LayoutParserApi` e
+`LayoutParser/LayoutParserReact`.
+
+1. **Bug `candidates:[]` — layout CNHI ENVNFe** (docs `diagnostico-candidates-vazio-cnhi-2026-08-20.md`
+   / `resposta-frontend-...`). **RESOLVIDO.** Rastreado como React#86 ("[BUG] Diagnóstico: nenhum
+   candidato Sysmiddle ou TCL/XSL para layout NFe"), fechado 2026-08-28 com evidência de
+   `LayoutParserApi#200` (MERGED) — adiciona diagnóstico estruturado a `execute-candidates`. O
+   closing keyword não atravessou repositório (issue no React, PR na Api), fechamento foi manual;
+   comentário de 2026-08-29 só corrigiu o campo Status do Project (`Blocked`→`Done`), sem mudança
+   técnica nova. Nada pendente aqui — o "próximo passo" do diagnóstico de 20/08 (capturar log com
+   `CorrelationId`) foi cumprido pela PR #200.
+
+2. **Contrato `fieldMappings`/`segmentMappings` TXT↔XML** (PBI React#128 / Epic React#126).
+   **RESOLVIDO.** Ambos `CLOSED`, Project "Done". Comentário de encerramento (2026-08-29) cita
+   entrega via `LayoutParserApi#138/#141`, consumida pelo front nas PRs React#164 e #166
+   (`fieldMappings`, `sectionMappings`, `xmlNamespaces`, navegação vinculada), promovida a `main`
+   pela PR #167. Ressalva registrada pelo próprio front: validação comportamental com ≥20
+   documentos reais contra o `LowCodeRunner.exe` Windows **continua pendente** na Api — por isso a
+   UI evita rotular `Authoritative` como "validado em produção". Escopo funcional aceito, essa
+   ressalva não tem issue própria.
+
+3. **Bug `InformacoesParaEDI`** (Length + `OccurrenceCount`/`IsAggregatedOccurrence`).
+   **RESOLVIDO, confirmado.** `gh pr view 191`: `state: MERGED`, `mergedAt: 2026-08-26T13:04:11Z`
+   — resolve a incerteza sinalizada no item 1 da linha do tempo acima.
+
+4. **Documento fonte da plataforma fiscal** (PR React#207) — coberto em
+   `auditoria-slice1-identidade-workspaces-2026-08-31.md`; não repetido aqui.
+
+Nenhuma issue nova criada (nenhum item ficou pendente que justificasse).
