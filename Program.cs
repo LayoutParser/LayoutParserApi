@@ -416,6 +416,11 @@ try
     builder.Services.AddScoped<IMappingDraftStore, SqlMappingDraftStore>();
     builder.Services.AddHttpClient<IMappingSuggestionService, LayoutParserApi.Services.Fiscal.MappingSuggestionService>();
     builder.Services.AddScoped<LayoutParserApi.Services.Filters.MappingEngineGuardFilter>();
+    // ✅ Slice 4 (issue #226/#227): MappingExplanation — 3 adapters determinísticos (sem LLM),
+    // resolvidos por Engine no controller via IEnumerable<IMappingExplanationAdapter>.
+    builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.IMappingExplanationAdapter, LayoutParserApi.Services.Fiscal.SysmiddleExplanationAdapter>();
+    builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.IMappingExplanationAdapter, LayoutParserApi.Services.Fiscal.TclExplanationAdapter>();
+    builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.IMappingExplanationAdapter, LayoutParserApi.Services.Fiscal.XsltExplanationAdapter>();
     // ✅ Estado do warm-up do catálogo (P1.3), lido pela sonda de readiness. Singleton porque é
     // preenchido pelo IHostedService de warm-up e lido pelo health check — estado compartilhado.
     builder.Services.AddSingleton<CatalogWarmupState>();
