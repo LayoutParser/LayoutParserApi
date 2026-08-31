@@ -198,3 +198,25 @@ Sem endpoint HTTP nesta etapa (próximo passo é do `@lp-backend-dev`, conforme 
 cross-workspace) e `MappingTestRunServiceTests` (pass com provenance vazia, fail com provenance até a
 regra, isolamento cross-workspace) — 6 casos, mais os 16 já existentes do transpilador. `dotnet build`
 (projeto principal) e `dotnet test` (suíte completa, 504 casos) verdes.
+
+### Fix pós-QA (Quinn) — literal XPath com apóstrofo corrompido (2026-08-31)
+
+**Bug real:** `MappingDraftRuleTranspiler.EscapeXPathLiteral` (agora removido) trocava `'` por
+`&apos;` manualmente **antes** de inserir o valor num `XAttribute("select"/"test", ...)`. Como
+`XElement`/`XAttribute` fazem seu próprio escaping de entidades XML na serialização, o `&` da
+entidade que já tínhamos escrito virava `&amp;` — produzindo `&amp;apos;` no XML final, ou seja um
+XPath sintaticamente quebrado (`O&amp;apos;Brien` em vez de `O'Brien`). Afetava qualquer `separator`
+de `concat` ou chave de `lookup` contendo apóstrofo — caso real no domínio fiscal (razão social com
+apóstrofo, ex.: `O'Brien Comércio`).
+
+**Fix:** removido o escaping manual (o serializer já cuida disso sozinho) e substituído por
+`BuildXPathStringLiteral`, que resolve o problema sintático real de XPath 1.0 (que não tem escape de
+aspas dentro de um literal): usa `'...'` quando o valor não tem apóstrofo, `"..."` quando só tem
+apóstrofo (sem aspas duplas), e fatia em `concat()` alternando delimitador quando o valor tem os dois
+tipos de aspas — técnica padrão de XPath 1.0. `BuildConcat` e `BuildLookup` foram atualizados pra usar
+o novo método.
+
+**Testes novos:** `ToXslt_Lookup_ChaveComApostrofoGeraXPathSintaticamenteValido` e
+`ToXslt_Concat_SeparadorComApostrofoGeraXPathSintaticamenteValido`, cobrindo o caso real (razão
+social com apóstrofo). Suíte completa: 506 casos (`LayoutParserApi.Tests`) + 59 (`XslSynth.Core.Tests`)
+verdes, sem regressão.
