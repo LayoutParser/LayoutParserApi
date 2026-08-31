@@ -304,6 +304,39 @@ Without a `groundTruthXml` (State A, "generate from scratch"), the convergence c
 
 > Detalhe completo de rotas em runtime via Swagger. / Full route detail at runtime via Swagger.
 
+### Detecção automática de layout / Automatic layout detection
+
+**🇧🇷** `POST /api/parse/auto` recebe `multipart/form-data` com `documentFile` e, após uma
+escolha explícita, `layoutGuidOverride`. O probe consulta o catálogo interno, mantém o XML
+descriptografado fora do navegador e devolve:
+
+- `unique`: exatamente um layout passou todos os gates; `parseResult` já vem preenchido;
+- `ambiguous`: dois ou mais layouts continuam compatíveis; `candidates` traz no máximo cinco e
+  nenhum é aplicado sem ação do usuário;
+- `not_found`: nenhum layout passou os gates; `suggestedCandidates` pode trazer aproximações não
+  confirmadas, separadas dos candidatos compatíveis.
+
+`matchScore` é um índice determinístico de equivalência de `0` a `100`, não probabilidade. O
+override é normalizado e aceito somente se o GUID pertencer ao ranking da detecção atual; caso
+contrário a API responde `422`. A seleção registra status, origem, GUID/rank,
+`algorithmVersion`, `catalogVersion` e `correlationId`, sem conteúdo do documento. Em MQSeries, a
+ordem hierárquica cadastrada no XML é evidência informativa porque grupos/filhos não representam
+necessariamente a ordem física do stream; no IDoc ela permanece gate autoritativo.
+Se o catálogo atingir o teto de segurança ou algum layout não puder ser avaliado, a API falha
+fechado como `not_found`, anota `catalog_incomplete`/`authoritative_selection_disabled` nas
+sugestões e não aceita override. A normalização do documento e a divisão por largura são
+reutilizadas dentro da requisição para limitar alocações ao comparar layouts próximos.
+
+**🇺🇸** `POST /api/parse/auto` accepts multipart `documentFile` plus an optional, explicitly
+chosen `layoutGuidOverride`. It returns `unique`, `ambiguous` (up to five ranked compatible
+layouts, no implicit choice), or `not_found` (optional unconfirmed suggestions). The score is a
+deterministic equivalence index rather than a probability. Overrides are accepted only when they
+belong to the current ranking, and the audit trail preserves correlation/algorithm/catalog
+versions without logging raw document content or exposing decrypted layout XML.
+An incomplete/truncated catalog disables authoritative selection and overrides, returning
+`not_found` with explicit limitations. Document normalization and fixed-width splitting are reused
+per request to avoid repeating large allocations for every catalog entry.
+
 ### Fases de status da transformação low-code (2026-08-27) / Low-code transformation status phases (2026-08-27)
 
 **🇧🇷** `POST /api/parse/upload` (campo `transformationsStatus`) e `GET /api/parse/transformations/{ticket}` (campo `status`, [`LowCodeTransformationIndexEntry`](Models/Transformation/LowCodeTransformationIndex.cs)) compartilham o mesmo vocabulário de fases. Design completo: [`docs/architecture/contrato-linha-vazia-progresso-e-degradacao-posicional-2026-08-27.md`](docs/architecture/contrato-linha-vazia-progresso-e-degradacao-posicional-2026-08-27.md) §2.
