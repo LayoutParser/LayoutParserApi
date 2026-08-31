@@ -147,6 +147,26 @@ namespace LayoutParserApi.Services.Database
 
                 await tx.CommitAsync(cancellationToken);
             }
+            catch (SqlException ex) when (UniqueViolationErrorNumbers.Contains(ex.Number))
+            {
+                // Corrida entre 2 uploads concorrentes com a mesma IdempotencyKey: o UNIQUE
+                // (WorkspaceId, ProjectId, IdempotencyKey) rejeita o segundo INSERT. Mesmo padrão de
+                // EnsureProjectExistsAsync — trata como sucesso e devolve o pacote já criado pelo primeiro,
+                // em vez de propagar a SqlException (que viraria 503 pro cliente).
+                await tx.RollbackAsync(cancellationToken);
+                _logger.LogInformation(
+                    "Corrida de criação de FiscalMappingPackage detectada (IdempotencyKey {IdempotencyKey}); devolvendo pacote existente.",
+                    idempotencyKey);
+
+                var existing = await FindPackageByIdempotencyKeyAsync(workspaceId, projectId, idempotencyKey, cancellationToken);
+                if (existing is not null)
+                    return existing;
+
+                // Corrida rara: o outro INSERT ainda não commitou visível para esta leitura. Relança para
+                // o chamador tratar como falha transitória (o SELECT anterior falhou por timing, não por
+                // dado inconsistente).
+                throw;
+            }
             catch
             {
                 await tx.RollbackAsync(cancellationToken);

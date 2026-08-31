@@ -70,7 +70,7 @@ namespace LayoutParserApi.Tests.Services.Fiscal
                 => Messages.Add(formatter(state, exception));
         }
 
-        private static FiscalPackageService BuildService(FakeStore store, CapturingLogger logger, string storePath)
+        private static FiscalPackageService BuildService(IFiscalPackageStore store, CapturingLogger logger, string storePath)
         {
             var config = new ConfigurationBuilder()
                 .AddInMemoryCollection(new Dictionary<string, string?> { ["ML:FiscalMappingPackagesPath"] = storePath })
@@ -153,6 +153,87 @@ namespace LayoutParserApi.Tests.Services.Fiscal
         {
             if (Directory.Exists(_tempStorePath))
                 Directory.Delete(_tempStorePath, recursive: true);
+        }
+
+        // --- corrida de concorrência (bug encontrado por @lp-qa em CreatePackageAsync) ---
+
+        /// <summary>
+        /// Simula o comportamento real de <see cref="LayoutParserApi.Services.Database.SqlFiscalPackageStore"/>
+        /// sob corrida: 2 chamadas concorrentes com a mesma IdempotencyKey podem passar pelo SELECT antes de
+        /// qualquer uma commitar o INSERT (sem lock explícito). O UNIQUE do banco garante que só uma linha
+        /// sobrevive; a corrigida trata a violação como sucesso e devolve o pacote do "vencedor" — em vez de
+        /// propagar a exceção (que antes do fix virava 503 pro chamador perdedor da corrida).
+        /// </summary>
+        private sealed class RaceSimulatingStore : IFiscalPackageStore
+        {
+            private readonly Dictionary<string, PackageDetail> _byIdempotencyKey = new();
+            private readonly object _lock = new();
+            public int CreateCallCount;
+
+            public Task<bool> EnsureProjectExistsAsync(Guid workspaceId, Guid projectId, CancellationToken cancellationToken)
+                => Task.FromResult(true);
+
+            public async Task<PackageDetail> CreatePackageAsync(
+                Guid workspaceId, Guid projectId, Guid createdByUserId, string packageName, string idempotencyKey,
+                IReadOnlyList<PackageArtifact> artifacts, CancellationToken cancellationToken)
+            {
+                Interlocked.Increment(ref CreateCallCount);
+                var key = $"{workspaceId}|{projectId}|{idempotencyKey}";
+
+                // Janela de corrida real: ambas as chamadas concorrentes chegam aqui sem terem visto o
+                // resultado uma da outra (equivalente ao SELECT prévio de FindPackageByIdempotencyKeyAsync
+                // no FiscalPackageService não ter encontrado nada ainda).
+                await Task.Delay(15, cancellationToken);
+
+                var detail = new PackageDetail(
+                    Guid.NewGuid(), workspaceId, projectId, packageName, DateTimeOffset.UtcNow,
+                    new RevisionSummary(Guid.NewGuid(), 1, DateTimeOffset.UtcNow,
+                        artifacts.Select(a => new ArtifactSummary(a.ArtifactId, a.Kind, a.Sha256, a.SizeBytes, a.OriginalFileName, a.InspectionStatus, DateTimeOffset.UtcNow)).ToList()));
+
+                lock (_lock)
+                {
+                    // Equivalente ao UNIQUE (WorkspaceId, ProjectId, IdempotencyKey) do SQL: só o primeiro
+                    // INSERT "vence"; o fix trata a violação como sucesso e devolve o pacote existente.
+                    if (_byIdempotencyKey.TryGetValue(key, out var winner))
+                        return winner;
+
+                    _byIdempotencyKey[key] = detail;
+                    return detail;
+                }
+            }
+
+            public Task<PackageDetail?> GetPackageIfMemberAsync(Guid packageId, Guid userId, CancellationToken cancellationToken)
+                => Task.FromResult<PackageDetail?>(null);
+
+            public Task<PackageDetail?> FindPackageByIdempotencyKeyAsync(Guid workspaceId, Guid projectId, string idempotencyKey, CancellationToken cancellationToken)
+                => Task.FromResult<PackageDetail?>(null); // Simula as 2 chamadas concorrentes NÃO encontrando nada no SELECT prévio.
+
+            public Task<ArtifactSummary?> FindArtifactByHashAsync(Guid packageId, string sha256, CancellationToken cancellationToken)
+                => Task.FromResult<ArtifactSummary?>(null);
+
+            public Task UpdateInspectionStatusAsync(Guid artifactId, string inspectionStatus, CancellationToken cancellationToken)
+                => Task.CompletedTask;
+        }
+
+        [Fact]
+        public async Task Duas_requisicoes_concorrentes_com_a_mesma_chave_convergem_para_o_mesmo_pacote_sem_erro()
+        {
+            var store = new RaceSimulatingStore();
+            var service = BuildService(store, new CapturingLogger(), _tempStorePath);
+            var workspaceId = Guid.NewGuid();
+            var projectId = Guid.NewGuid();
+            var artifacts = new[] { new UploadedArtifactInput(ArtifactKind.Sample, "sample.txt", "text/plain", System.Text.Encoding.UTF8.GetBytes("linha 1\nlinha 2")) };
+
+            var task1 = service.CreatePackageAsync(workspaceId, projectId, Guid.NewGuid(), "Pacote", "chave-concorrente", artifacts, CancellationToken.None);
+            var task2 = service.CreatePackageAsync(workspaceId, projectId, Guid.NewGuid(), "Pacote", "chave-concorrente", artifacts, CancellationToken.None);
+
+            var results = await Task.WhenAll(task1, task2);
+
+            // 🔴 Antes do fix: o "perdedor" da corrida propagava SqlException (2601/2627) → 503 pro cliente.
+            Assert.True(results[0].Success);
+            Assert.True(results[1].Success);
+            Assert.Equal(results[0].Package!.PackageId, results[1].Package!.PackageId);
+            Assert.Equal(2, store.CreateCallCount); // ambas chegaram no INSERT — é o cenário exato da corrida.
         }
     }
 }
