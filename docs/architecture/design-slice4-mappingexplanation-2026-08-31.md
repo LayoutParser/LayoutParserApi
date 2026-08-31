@@ -174,3 +174,59 @@ permitido (§4 do prompt: Sysmiddle pode `explain`).
 primeiro (é o que tem gramática mais bem documentada e already-decifrada, menor incerteza),
 sobre `MapperVo`/`RealMapperParser` já existentes. Nenhum código escrito nesta sessão — design
 puro.
+
+## 5. Implementação — 2026-08-31 (`@lp-parser-llm`)
+
+Slice 4 implementado ponta a ponta nesta sessão (adapters + contrato + endpoint + testes —
+escopo estendido além do plano original do §4, que previa a divisão entre Lia/Dex/Quinn):
+
+- **Contrato** `Models/Dtos/Fiscal/MappingExplanation.cs` — exatamente o shape do §1
+  (`MappingExplanation`/`ExplainedRule`/`EngineCapabilities`/`EvidenceRef`/`SchemaRef` como
+  `record`), mais `MappingExplanationSupportLevel` (`static class`, mesmo padrão de
+  `MappingDraftRuleStatus`).
+- **`SysmiddleExplanationAdapter`** (`Services/Fiscal/`) — reaproveitou
+  `XslSynth.Core.DslStructuredParser` (Camada 0 do RAG) em vez de escrever um parser de
+  explicação do zero: `StructuredRule`/`StructuredBranch` já é literalmente uma árvore de
+  explicação (condição/origem/destino/funções por ramo), então virou tradução de campo, não
+  parsing novo. Catálogo fechado de 4 funções (`GetLength`, `GetValueFromContext`,
+  `GetDictionaryValuesFromElement`, `GetSumElementValuesFunction`) — qualquer função fora
+  disso vira `opaque` por ramo. `Capabilities.Author` hard-coded `false` em `static readonly
+  EngineCapabilities`, sem leitura de config em nenhum caminho. `LinkMappingItem` (mapeamento
+  direto) sempre `authoritative`.
+- **`TclExplanationAdapter`** — tradução quase 1:1 de `MappingDraftRuleDetail` (Slice 3) para
+  `ExplainedRule`, como previsto no design. `SupportLevel` derivado do `Status` humano
+  (`accepted/edited/validated` → `authoritative`; `proposed` → `best_effort`; `needs_input` →
+  `opaque`; `rejected/superseded` → `unsupported`) — nunca autoritativo antes de revisão
+  humana, conforme §1.
+- **`XsltExplanationAdapter`** — `ExplainAsync` sempre retorna `unsupported` com `limitations`
+  quando chamado (hoje NUNCA há artefato XSLT compilado associado a um Draft — Slice 5
+  introduz isso), confirmando a hipótese do design §2.3. O parser real
+  (`ExplainXsltDocument`, público/estático) foi escrito e testado isoladamente: navega
+  `xsl:template/value-of/for-each/if/choose/when/variable` via `System.Xml.Linq`; elementos
+  fora dessa lista fechada (inclusive outro namespace, ex. `msxsl:`) viram `opaque`. Fica
+  pronto para ser ligado a uma fonte real assim que o Slice 5 existir.
+- **Endpoint** `GET /api/workspaces/{workspaceId}/mappings/{mappingId}/versions/{version}/explanation`
+  (`Controllers/MappingExplanationController.cs`) — resolve `engine` tentando `mappingId` como
+  `draftId` primeiro (`IMappingDraftStore.GetDraftIfMemberAsync`, decide tcl/xslt pelo
+  `draft.Engine`), senão trata como `MapperGuid` Sysmiddle. **Decisão sobre
+  `MappingEngineGuardFilter`:** NÃO aplicado — é rota de leitura pura e o próprio caso
+  permitido pelo filtro (`engine=sysmiddle` só pode `explain`, nunca `author`) é exatamente o
+  que este endpoint faz; aplicar o filtro aqui bloquearia o caso de uso central do slice.
+  `WorkspaceMembershipFilter` citado no design ainda não existe no código — a checagem de
+  membership ficou inline no controller, mesmo padrão já usado em `MappingDraftsController`.
+- **DI**: os 3 adapters registrados como `IMappingExplanationAdapter` (`AddScoped`, 3
+  registros), resolvidos no controller via `IEnumerable<IMappingExplanationAdapter>` +
+  `.Single(a => a.Engine == "...")` — factory por `Engine`, sem `if/else` cego.
+- **Testes** (`tests/LayoutParserApi.Tests/Fiscal/MappingExplanationAdaptersTests.cs`, 10
+  testes, unitários sobre os adapters — sem HTTP): os 5 obrigatórios do prompt (`Author=false`
+  sempre; função desconhecida → `opaque`; mapeamento TCL correto; XSL sem artefato →
+  `unsupported` + `limitations`; isolamento cross-workspace em TCL e XSLT) mais 3 extras
+  (função conhecida → `authoritative`; `MapperGuid` inexistente → `null`/404; regra `proposed`
+  → `best_effort`).
+
+**Resultado:** `dotnet build` da solução inteira — 0 erros. `dotnet test` da solução inteira —
+551 testes, 0 falhas (492 em `LayoutParserApi.Tests` + 59 em `XslSynth.Core.Tests`, incluindo
+os 10 novos deste slice).
+
+**Não implementado nesta sessão (fora de escopo, conforme instrução):** Slice 5
+(compilação/Test Lab), parser AST de TCL real de execução, qualquer mudança de front-end.
