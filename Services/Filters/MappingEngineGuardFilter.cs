@@ -10,6 +10,16 @@ namespace LayoutParserApi.Services.Filters
     /// executa/explica, nunca autoria"). Aplicável por atributo (<c>[ServiceFilter(typeof(...))]</c>) no
     /// nível do CONTROLLER inteiro, mesmo padrão de <see cref="AuditActionFilter"/> — reutilizável
     /// pelos Slices 4/5 futuros sem repetir o <c>if</c> em cada action.
+    ///
+    /// <para>
+    /// <b>IMPORTANTE — defesa em profundidade, não allowlist:</b> este filtro só BLOQUEIA
+    /// <c>engine=sysmiddle</c> (em query OU body — qualquer um dos dois basta pra recusar). Ele NÃO
+    /// valida que o valor de <c>engine</c> é um dos motores aceitos (ex.: <c>tcl</c>/<c>xslt</c>) —
+    /// qualquer coisa que não seja "sysmiddle" passa implicitamente, inclusive lixo/typo. Cada
+    /// controller que reusa este filtro (Slice 3/4/5) AINDA precisa da própria allowlist explícita
+    /// sobre o campo <c>engine</c> do body (ver <c>MappingDraftsController.CreateDraft</c>) — não
+    /// confie apenas neste filtro para aceitar implicitamente qualquer engine não-sysmiddle.
+    /// </para>
     /// </summary>
     public class MappingEngineGuardFilter : IAsyncActionFilter
     {
@@ -17,11 +27,12 @@ namespace LayoutParserApi.Services.Filters
 
         public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
         {
-            var engine = await ResolveEngineAsync(context);
+            var (queryEngine, bodyEngine) = await ResolveEnginesAsync(context);
 
-            // "sysmiddle" explícito em body/query é recusado. Ausência de engine não é
-            // responsabilidade deste filtro — o controller decide se o payload exige o campo.
-            if (!string.IsNullOrWhiteSpace(engine) && string.Equals(engine, SysmiddleEngine, StringComparison.OrdinalIgnoreCase))
+            // "sysmiddle" explícito em QUALQUER um dos dois (query ou body) é recusado — não é
+            // "query tem prioridade sobre body", é "se aparecer em qualquer lugar plausível, bloqueia".
+            // Isso evita bypass via engine=xslt na query + {"engine":"sysmiddle"} no body.
+            if (IsSysmiddle(queryEngine) || IsSysmiddle(bodyEngine))
             {
                 context.Result = new UnprocessableEntityObjectResult(new
                 {
@@ -33,21 +44,26 @@ namespace LayoutParserApi.Services.Filters
             await next();
         }
 
-        /// <summary>Lê <c>engine</c> da query string, ou do body (bufferizado sem consumir o stream original) quando presente como JSON.</summary>
-        private static async Task<string?> ResolveEngineAsync(ActionExecutingContext context)
+        private static bool IsSysmiddle(string? engine) =>
+            !string.IsNullOrWhiteSpace(engine) && string.Equals(engine, SysmiddleEngine, StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>Lê <c>engine</c> tanto da query string quanto do body (bufferizado sem consumir o stream original, quando JSON) — os dois são checados, não só o primeiro encontrado.</summary>
+        private static async Task<(string? queryEngine, string? bodyEngine)> ResolveEnginesAsync(ActionExecutingContext context)
         {
             var httpContext = context.HttpContext;
 
-            if (httpContext.Request.Query.TryGetValue("engine", out var queryValue))
-                return queryValue.ToString();
+            string? queryEngine = httpContext.Request.Query.TryGetValue("engine", out var queryValue)
+                ? queryValue.ToString()
+                : null;
 
             var request = httpContext.Request;
             if (!request.HasJsonContentType() || request.ContentLength is null or 0)
-                return null;
+                return (queryEngine, null);
 
             request.EnableBuffering();
             request.Body.Position = 0;
 
+            string? bodyEngine = null;
             try
             {
                 using var doc = await JsonDocument.ParseAsync(request.Body, cancellationToken: httpContext.RequestAborted);
@@ -55,7 +71,7 @@ namespace LayoutParserApi.Services.Filters
                     doc.RootElement.TryGetProperty("engine", out var engineProp) &&
                     engineProp.ValueKind == JsonValueKind.String)
                 {
-                    return engineProp.GetString();
+                    bodyEngine = engineProp.GetString();
                 }
             }
             catch (JsonException)
@@ -68,7 +84,7 @@ namespace LayoutParserApi.Services.Filters
                 request.Body.Position = 0;
             }
 
-            return null;
+            return (queryEngine, bodyEngine);
         }
     }
 }
