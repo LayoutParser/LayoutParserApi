@@ -410,6 +410,12 @@ try
     builder.Services.AddScoped<IFiscalPackageStore, SqlFiscalPackageStore>();
     builder.Services.AddScoped<IAntivirusScanner, LayoutParserApi.Services.Fiscal.WindowsDefenderAntivirusScanner>();
     builder.Services.AddScoped<IFiscalPackageService, LayoutParserApi.Services.Fiscal.FiscalPackageService>();
+    // ✅ Slice 3 (issue #230): MappingDraft human-in-the-loop — mesmo banco/padrão ADO.NET.
+    // MappingSuggestionService usa HttpClient (Ollama) — AddHttpClient para pooling correto de conexão,
+    // mesmo padrão de OllamaValidationDiagnosticService.
+    builder.Services.AddScoped<IMappingDraftStore, SqlMappingDraftStore>();
+    builder.Services.AddHttpClient<IMappingSuggestionService, LayoutParserApi.Services.Fiscal.MappingSuggestionService>();
+    builder.Services.AddScoped<LayoutParserApi.Services.Filters.MappingEngineGuardFilter>();
     // ✅ Estado do warm-up do catálogo (P1.3), lido pela sonda de readiness. Singleton porque é
     // preenchido pelo IHostedService de warm-up e lido pelo health check — estado compartilhado.
     builder.Services.AddSingleton<CatalogWarmupState>();
