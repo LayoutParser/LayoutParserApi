@@ -149,3 +149,58 @@ Todos sob `WorkspaceMembershipFilter` (Slice 1) + `MappingEngineGuardFilter` (no
 MappingDraftRuleDecision}.cs` + DDL idempotente em `SqlMappingDraftStore` com coluna `ROWVERSION`,
 seguindo exatamente o padrão de `SqlFiscalPackageStore` (Slice 2). Nenhum código foi escrito nesta
 sessão — commit local, sem push.
+
+## Implementação — 2026-08-31 (`@lp-backend-dev`)
+
+Build verde (`dotnet build`, 0 erros) e suíte completa verde (`dotnet test`, 481/481, incluindo os
+12 testes novos deste slice).
+
+**Arquivos criados:**
+- `Models/Entities/Fiscal/MappingDraft.cs` — `MappingDraft`, `MappingDraftRule`,
+  `MappingDraftRuleDecision`, `MappingDraftRuleStatus` (static class de constantes, padrão Slice 1/2).
+- `Services/Interfaces/IMappingDraftStore.cs` — DTOs (`MappingDraftDetail`, `MappingDraftRuleDetail`
+  com `ETag` já em base64, `UpdateRuleOutcome`/`UpdateRuleResult`) + interface.
+- `Services/Database/SqlMappingDraftStore.cs` — ADO.NET cru, DDL idempotente (`tbMappingDraft`,
+  `tbMappingDraftRule` com coluna `RowVersion ROWVERSION NOT NULL`, `tbMappingDraftRuleDecision`).
+  Só LÊ as tabelas do Slice 2 (`tbFiscalMappingPackageRevision`/`tbPackageArtifact`) — nunca escreve
+  nelas.
+- `Services/Interfaces/IMappingSuggestionService.cs` + `Services/Fiscal/MappingSuggestionService.cs`
+  — job fire-and-forget via `IServiceScopeFactory` (mesmo padrão de `AiTransformationCandidateService`),
+  estado em memória (`ConcurrentDictionary`, mesmo espírito de `AiCandidateStore`), idempotente por
+  hash dos `ArtifactId` da revisão, cancelamento cooperativo via `CancellationTokenSource` por job.
+  Prompt novo (não reutiliza `RepairOrchestrator`) pedindo JSON estruturado ao Ollama
+  (`format: "json"`); parseia a resposta e força `needs_input` sempre que evidência ou confiança
+  vierem insuficientes — **independente do que o modelo alegou** (regra aplicada no parser, não
+  delegada ao LLM).
+- `Services/Filters/MappingEngineGuardFilter.cs` — `IAsyncActionFilter`, lê `engine` de query ou
+  body JSON (bufferizado via `EnableBuffering`, sem consumir o stream original), recusa
+  `engine=sysmiddle` com 422. `[ServiceFilter]` no nível do `MappingDraftsController` inteiro.
+- `Controllers/MappingDraftsController.cs` — 5 rotas: `POST drafts`, `GET drafts/{id}`,
+  `POST suggestions`, `GET suggestions/{jobId}`, `DELETE suggestions/{jobId}` (cancelamento) +
+  `PATCH rules/{ruleId}`.
+- Testes: `tests/.../Filters/MappingEngineGuardFilterTests.cs` (5 casos — sysmiddle recusado,
+  case-insensitive, engines válidos passam, ausência de engine não é bloqueada pelo filtro) e
+  `tests/.../Controllers/MappingDraftsControllerTests.cs` (7 casos — 428 sem If-Match, 412 com
+  If-Match divergente, sucesso com If-Match correto + ETag muda depois, `rejected` sem justificativa
+  é recusado, isolamento cross-workspace no GET, `engine` ausente no POST de criação é recusado,
+  `POST suggestions` retorna 202 sem aguardar um job "pesado" — via `TaskCompletionSource` que só é
+  liberado DEPOIS da asserção).
+
+**Decisões tomadas durante a implementação (não estavam 100% fechadas no design):**
+- `PATCH` com `answer` (resposta a `needs_input`) faz a regra voltar a `proposed` para nova avaliação
+  humana — o design não especificava o status resultante.
+- `RevisionBelongsToPackageAsync`/`GetArtifactFilesForRevisionAsync` foram colocados em
+  `IMappingDraftStore` (não em `IFiscalPackageStore`) para não tocar código do Slice 2 além de
+  reaproveitar suas tabelas via leitura direta — decisão de escopo, não de arquitetura.
+- Conteúdo de planilha (`Kind=spec`, XLSX binário) não é extraído para o prompt neste slice — só um
+  placeholder com o tamanho em bytes. Extração de texto de XLSX fica para uma iteração futura
+  (fora do escopo da issue #230; XSD e sample, que são texto puro, já entram no prompt inteiros).
+- `IMappingDraftStore.UpdateRuleStatusAsync` distingue `NotFound`/`Conflict` com uma segunda consulta
+  só no caminho de falha (`RowCount=0`), exatamente como o design previa em §3.
+
+**Handoff:**
+- `@lp-doc`: nenhum endpoint pré-existente mudou de contrato — só rotas novas. Atualizar
+  Swagger/README com os 5 endpoints novos de `MappingDraftsController` quando conveniente.
+- `@lp-qa`: cobertura de controller/filtro feita nesta sessão; ainda faltam testes de
+  `SqlMappingDraftStore` contra SQL real (idempotência do job, `superseded`, DDL) — não cobertos
+  aqui por não haver SQL Server disponível neste ambiente de execução.
