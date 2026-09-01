@@ -43,6 +43,13 @@ namespace LayoutParserApi.Tests.Services.Fiscal
                 };
                 return Task.FromResult<MappingReleaseDetail?>(Release);
             }
+
+            public Task<MappingReleaseDetail> ApproveAsync(Guid releaseId, Guid actorUserId, string justification, CancellationToken cancellationToken)
+                => throw new NotSupportedException();
+            public Task<MappingReleaseDetail> PublishAsync(Guid releaseId, Guid actorUserId, string environment, CancellationToken cancellationToken)
+                => throw new NotSupportedException();
+            public Task<MappingReleaseDetail> RollbackAsync(Guid releaseId, Guid actorUserId, CancellationToken cancellationToken)
+                => throw new NotSupportedException();
         }
 
         private sealed class FakeDraftStore : IMappingDraftStore
@@ -105,7 +112,8 @@ namespace LayoutParserApi.Tests.Services.Fiscal
             return new MappingReleaseDetail(
                 Guid.NewGuid(), workspaceId, draftId, "xslt", new[] { artifact }, rules.Select(r => r.RuleId).ToList(),
                 Array.Empty<MappingReleaseCompileDiagnostic>(), "hash", null, MappingReleaseStatus.DraftCompiled,
-                "corr-0", DateTimeOffset.UtcNow, "AAAA");
+                "corr-0", DateTimeOffset.UtcNow, "AAAA",
+                "development", null, null, null, null, null, null);
         }
 
         [Fact]
