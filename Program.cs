@@ -421,6 +421,12 @@ try
     builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.IMappingExplanationAdapter, LayoutParserApi.Services.Fiscal.SysmiddleExplanationAdapter>();
     builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.IMappingExplanationAdapter, LayoutParserApi.Services.Fiscal.TclExplanationAdapter>();
     builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.IMappingExplanationAdapter, LayoutParserApi.Services.Fiscal.XsltExplanationAdapter>();
+    // ✅ Slice 5 (issue #231): compilação determinística MappingDraftRule[] → XSLT/TCL + Fiscal Test
+    // Lab. Mesmo banco/padrão ADO.NET; compile/test-run reaproveitam CanonicalDiffer/XsdValidationService
+    // (já registrados/disponíveis via DI) sem I/O externo/Ollama.
+    builder.Services.AddScoped<IMappingReleaseStore, SqlMappingReleaseStore>();
+    builder.Services.AddScoped<IMappingCompileService, LayoutParserApi.Services.Fiscal.MappingCompileService>();
+    builder.Services.AddScoped<IMappingTestRunService, LayoutParserApi.Services.Fiscal.MappingTestRunService>();
     // ✅ Estado do warm-up do catálogo (P1.3), lido pela sonda de readiness. Singleton porque é
     // preenchido pelo IHostedService de warm-up e lido pelo health check — estado compartilhado.
     builder.Services.AddSingleton<CatalogWarmupState>();
