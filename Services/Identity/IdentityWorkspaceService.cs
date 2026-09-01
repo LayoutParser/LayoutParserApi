@@ -48,7 +48,8 @@ namespace LayoutParserApi.Services.Identity
             {
                 // Fail-closed: identidade externa não resolvida vira UserId null. O chamador (endpoint)
                 // nega acesso — nunca degrada para "segue sem filtro". Nunca logar subject.
-                _logger.LogWarning(ex, "Falha ao resolver identidade externa (provider={Provider}, tenant={Tenant}) — negando UserId (fail-closed).", provider, tenant);
+                _logger.LogWarning(ex, "Falha ao resolver identidade externa (provider={Provider}, tenant={Tenant}) — negando UserId (fail-closed).",
+                    Services.Logging.LogMessageSanitizer.Sanitize(provider), Services.Logging.LogMessageSanitizer.Sanitize(tenant));
                 return null;
             }
             finally
