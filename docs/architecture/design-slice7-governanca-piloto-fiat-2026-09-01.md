@@ -85,3 +85,50 @@ Não automatizar o pipeline inteiro num único teste caro. Dividir:
 `@lp-backend-dev`: estender enum de `MappingRelease.Status` + criar `MappingTransition` +
 os 3 endpoints com `[Authorize]` por `WorkspaceMembership.Role`. `@lp-qa` desenha as fixtures
 sintéticas do gate FIAT em paralelo.
+
+## Implementação — governança (2026-09-01)
+
+`@lp-backend-dev` (Dex). Escopo: governança + RBAC mínimo (não a #94 inteira). Teste FIAT ponta a
+ponta fica para `@lp-qa` (próxima etapa).
+
+- **`MappingReleaseStatus`** (`Models/Entities/Fiscal/MappingRelease.cs`) estendido com
+  `InReview`/`Approved`/`Published`/`Deprecated`/`Archived`, sem reabrir os 3 valores do Slice 5.
+  `MappingRelease` ganhou `Environment`, `ApprovedByUserId`/`ApprovedAt`/`ApprovalJustification`,
+  `PublishedByUserId`/`PublishedAt`, `PreviousPublishedReleaseId`.
+- **`MappingTransition`** (mesmo arquivo): entidade nova, tabela própria `dbo.tbMappingTransition`
+  — não reaproveita nenhum log genérico. `Justification` é obrigatório em `approve` (validado no
+  controller); `publish`/`rollback` gravam justificativa própria gerada pela store.
+- **`IMappingReleaseStore`/`SqlMappingReleaseStore`**: `ApproveAsync`/`PublishAsync`/`RollbackAsync`.
+  `Approve` faz `test_passed → in_review → approved` como UMA transação SQL (duas linhas em
+  `tbMappingTransition`), lançando `InvalidOperationException` se o status atual não for
+  `test_passed` — cobre `test_failed` e qualquer outro estado. `Publish` exige `approved`, busca
+  (na mesma transação, com `UPDLOCK`/`ROWLOCK`) a release hoje `published` do mesmo `DraftId` no
+  workspace, rebaixa-a a `deprecated` e grava `PreviousPublishedReleaseId` na nova. `Rollback` é
+  no-op (sem gravar transição nova) se a release apontada já não estiver `published` — cobre o
+  "duas vezes seguidas" do design §3. Schema: colunas novas adicionadas via `ALTER TABLE ... IF
+  COL_LENGTH(...) IS NULL` (idempotente, mesmo padrão de `IF OBJECT_ID(...) IS NULL` já usado nas
+  outras stores; tabela `tbMappingRelease` já existia de bases do Slice 5).
+- **RBAC mínimo**: `Services/Filters/RequireWorkspaceRoleFilter.cs` — `[RequireWorkspaceRole(...)]`
+  (`TypeFilterAttribute`) resolve `ICurrentUser.UserId` + `IIdentityWorkspaceStore.
+  GetWorkspaceIfMemberAsync` (reaproveitado do Slice 1, já devolve o `Role`). Sem `UserId`/sem
+  membership → 404 (mesmo padrão fail-closed dos slices anteriores). Membro mas papel fora da
+  allowlist → 403. Não usa `[Authorize]` do ASP.NET Core porque a identidade não vem de um
+  `ClaimsPrincipal` autenticado pela API (vem do BFF via `ICurrentUser`, ver `security.md`) — o
+  filtro escopado é o mecanismo real, reutilizável em qualquer controller com `{workspaceId:guid}`
+  na rota.
+- **`Controllers/MappingGovernanceController.cs`**: `POST .../approve` (`Reviewer`|`FiscalAdmin`),
+  `.../publish` (`FiscalAdmin`|`Owner`), `.../rollback` (`FiscalAdmin`|`Owner`), rota
+  `api/workspaces/{workspaceId:guid}/mapping-releases/{releaseId:guid}`. Isolamento cross-workspace
+  via `GetReleaseIfMemberAsync` + checagem `release.WorkspaceId != workspaceId` (mesmo padrão dos
+  Slices 1-5) — 404, não 403, quando o release não é do workspace da rota.
+- **Testes** (`tests/.../Controllers/MappingGovernanceControllerTests.cs`, 11 novos): bloqueio
+  `test_failed`→`in_review`, aprovação bem-sucedida com as 2 transições registradas
+  (ator/instante/justificativa), publish recusado sem `approved`, nova revisão do mesmo `DraftId`
+  não herda gate da anterior, rollback idempotente (2ª chamada não gera transição nova nem
+  quebra), isolamento cross-workspace (404), e RBAC via o filtro real (403 papel insuficiente, 200
+  papel suficiente, 404 sem membership) — não bypassado, o teste invoca
+  `RequireWorkspaceRoleFilter.OnActionExecutionAsync` diretamente.
+- **Build**: `dotnet build` verde. **Testes**: 529/529 (11 novos + 518 pré-existentes, todos
+  verdes).
+- **Fora do escopo, de propósito**: teste FIAT ponta a ponta com fixtures reais (próxima etapa,
+  `@lp-qa`); RBAC genérico pra outros endpoints da API.
