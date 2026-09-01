@@ -783,6 +783,10 @@ try
         var correlationId = context.Request.Headers["X-Correlation-ID"].FirstOrDefault();
         if (string.IsNullOrWhiteSpace(correlationId))
             correlationId = Guid.NewGuid().ToString();
+        else
+            // ✅ CodeQL cs/log-forging: X-Correlation-ID vem do cliente e é ecoado em TODO log da
+            // request (LogContext abaixo) — saneia aqui uma única vez em vez de em cada call site.
+            correlationId = LayoutParserApi.Services.Logging.LogMessageSanitizer.Sanitize(correlationId, maxLength: 200);
 
         context.Response.Headers["X-Correlation-ID"] = correlationId;
         CorrelationContext.CurrentId = correlationId;

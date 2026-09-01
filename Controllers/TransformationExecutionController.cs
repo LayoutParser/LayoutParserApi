@@ -369,6 +369,10 @@ namespace LayoutParserApi.Controllers
             CancellationToken cancellationToken)
         {
             var result = new List<TransformationCandidate>();
+            // ✅ CodeQL cs/log-forging: LayoutName vem do request (usuário) e pode conter \r/\n —
+            // saneia UMA VEZ aqui e reusa nos logs deste método (o valor cru continua sendo usado
+            // fora dos logs — SearchTerm, ticket, EnqueueAsync — onde forjar log não se aplica).
+            var safeLayoutName = Services.Logging.LogMessageSanitizer.Sanitize(request.LayoutName);
 
             // Sysmiddle/low-code espera texto posicional (TXT), não XML — não é uma falha do
             // pathway, é entrada fora de escopo (a IA não deveria disparar por causa disso).
@@ -376,7 +380,7 @@ namespace LayoutParserApi.Controllers
             {
                 _logger.LogInformation(
                     "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code} layout={LayoutName} motivo=entrada XML fora do escopo do pathway sysmiddle",
-                    Services.Logging.CorrelationContext.CurrentId, "sysmiddle", "not_applicable", "not_applicable", request.LayoutName);
+                    Services.Logging.CorrelationContext.CurrentId, "sysmiddle", "not_applicable", "not_applicable", safeLayoutName);
                 pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
                 {
                     Pathway = "sysmiddle",
@@ -390,6 +394,7 @@ namespace LayoutParserApi.Controllers
             try
             {
                 var resolvedLayoutGuid = LowCodeLayoutGuidResolver.Resolve(request.LayoutGuid, layoutRecord.LayoutGuid);
+                var safeResolvedLayoutGuid = Services.Logging.LogMessageSanitizer.Sanitize(resolvedLayoutGuid);
                 if (resolvedLayoutGuid == null)
                 {
                     var msg = $"Layout {request.LayoutName} sem LayoutGuid válido no request ou no catálogo — pathway sysmiddle não aplicável";
@@ -397,7 +402,7 @@ namespace LayoutParserApi.Controllers
                     failureKinds.Add(FailureKind.NotApplicable);
                     _logger.LogInformation(
                         "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code} layout={LayoutName} fonte=request.LayoutGuid/catalogo (nenhum resolvível)",
-                        Services.Logging.CorrelationContext.CurrentId, "sysmiddle", "not_applicable", "not_applicable", request.LayoutName);
+                        Services.Logging.CorrelationContext.CurrentId, "sysmiddle", "not_applicable", "not_applicable", safeLayoutName);
                     pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
                     {
                         Pathway = "sysmiddle",
@@ -429,7 +434,7 @@ namespace LayoutParserApi.Controllers
                     failureKinds.Add(FailureKind.NotApplicable);
                     _logger.LogInformation(
                         "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code} layout={LayoutName} layoutGuid={LayoutGuid} fonte=catalogo (consulta a mapeadores low-code sem resultado)",
-                        Services.Logging.CorrelationContext.CurrentId, "sysmiddle", "not_applicable", "no_mapper", request.LayoutName, resolvedLayoutGuid);
+                        Services.Logging.CorrelationContext.CurrentId, "sysmiddle", "not_applicable", "no_mapper", safeLayoutName, safeResolvedLayoutGuid);
                     pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
                     {
                         Pathway = "sysmiddle",
@@ -458,7 +463,7 @@ namespace LayoutParserApi.Controllers
                         {
                             _logger.LogWarning(
                                 "fieldMappings (issue #141): parse posicional compartilhado falhou para layout {LayoutName} — candidatos sysmiddle seguem sem fieldMappings. Erro={ErrorMessage}",
-                                request.LayoutName, sharedParsingResult.ErrorMessage);
+                                safeLayoutName, Services.Logging.LogMessageSanitizer.Sanitize(sharedParsingResult.ErrorMessage));
                             sharedParsingResult = null;
                         }
                     }
@@ -467,7 +472,7 @@ namespace LayoutParserApi.Controllers
                         // Nunca deixa a composição de fieldMappings afetar o XML já produzido pelo runner.
                         _logger.LogWarning(parseEx,
                             "fieldMappings (issue #141): exceção no parse posicional compartilhado para layout {LayoutName} — candidatos sysmiddle seguem sem fieldMappings",
-                            request.LayoutName);
+                            safeLayoutName);
                         sharedParsingResult = null;
                     }
                 }
@@ -513,7 +518,7 @@ namespace LayoutParserApi.Controllers
                 {
                     _logger.LogInformation(
                         "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} layout={LayoutName} layoutGuid={LayoutGuid} candidatos={CandidateCount} fonte=mapeadores low-code do catalogo",
-                        Services.Logging.CorrelationContext.CurrentId, "sysmiddle", "candidate_generated", request.LayoutName, resolvedLayoutGuid, result.Count);
+                        Services.Logging.CorrelationContext.CurrentId, "sysmiddle", "candidate_generated", safeLayoutName, safeResolvedLayoutGuid, result.Count);
                     pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
                     {
                         Pathway = "sysmiddle",
@@ -528,7 +533,7 @@ namespace LayoutParserApi.Controllers
                     // falharam na execução — infra/runner, não gap de cobertura (§4.3 "runner_unavailable").
                     _logger.LogWarning(
                         "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code} layout={LayoutName} layoutGuid={LayoutGuid} fonte=execução do runner (mapper existe, execução falhou)",
-                        Services.Logging.CorrelationContext.CurrentId, "sysmiddle", "failed", "runner_unavailable", request.LayoutName, resolvedLayoutGuid);
+                        Services.Logging.CorrelationContext.CurrentId, "sysmiddle", "failed", "runner_unavailable", safeLayoutName, safeResolvedLayoutGuid);
                     pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
                     {
                         Pathway = "sysmiddle",
@@ -542,7 +547,7 @@ namespace LayoutParserApi.Controllers
             {
                 _logger.LogWarning(ex,
                     "Falha estrutural no pathway sysmiddle ao gerar candidatos para layout {LayoutName}. PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code}",
-                    request.LayoutName, Services.Logging.CorrelationContext.CurrentId, "sysmiddle", "failed", "execution_error");
+                    safeLayoutName, Services.Logging.CorrelationContext.CurrentId, "sysmiddle", "failed", "execution_error");
                 // Saneado: exceção de I/O deste pathway carrega caminho de disco do servidor e este
                 // warning sai no payload 200 (mesmo defeito do §3.1 da spec, outro ponto de saída).
                 var sanitizedEx = LowCodeErrorSanitizer.ForWire(ex);
@@ -588,7 +593,7 @@ namespace LayoutParserApi.Controllers
             {
                 _logger.LogWarning(ex,
                     "fieldMappings (issue #141): falha ao compor mapeamentos estruturais para candidato mapper={MapperGuid} do layout {LayoutName}",
-                    candidate.MapperGuid, layoutName);
+                    candidate.MapperGuid, Services.Logging.LogMessageSanitizer.Sanitize(layoutName));
                 warnings.Add($"Candidato {candidate.MapperGuid} (pathway sysmiddle): falha ao compor fieldMappings — ver log do servidor");
                 return null;
             }
@@ -617,6 +622,8 @@ namespace LayoutParserApi.Controllers
             // do job em background, junto com o resto do trabalho de EnqueueAsync/RunLoopAsync —
             // capturamos só o conteúdo bruto aqui (string), nada de IO/CPU síncrono.
             var layoutName = request.LayoutName;
+            // ✅ CodeQL cs/log-forging: valor saneado só para logging deste job em background.
+            var safeLayoutNameForLog = Services.Logging.LogMessageSanitizer.Sanitize(layoutName);
             var decryptedLayoutContent = layoutRecord.DecryptedContent;
             var inputContent = request.InputContent;
 
@@ -655,7 +662,7 @@ namespace LayoutParserApi.Controllers
                     {
                         _logger.LogDebug(parseEx,
                             "Pathway IA: parse posicional para ParsedFieldRootTreeBuilder falhou — motor novo degrada para o loop legado (layout={LayoutName})",
-                            layoutName);
+                            safeLayoutNameForLog);
                     }
                 }
 
@@ -678,7 +685,7 @@ namespace LayoutParserApi.Controllers
                 {
                     // EnqueueAsync não deveria lançar (contrato do serviço), mas isolamento total aqui
                     // também — nunca derrubar o job em background por causa da IA.
-                    _logger.LogWarning(ex, "Falha ao disparar o pathway IA para layout {LayoutName}", layoutName);
+                    _logger.LogWarning(ex, "Falha ao disparar o pathway IA para layout {LayoutName}", safeLayoutNameForLog);
                 }
             }, CancellationToken.None); // O próprio Task.Run não deve morrer com a request HTTP.
         }
@@ -698,6 +705,8 @@ namespace LayoutParserApi.Controllers
             ConcurrentBag<FailureKind> failureKinds, List<string> warnings,
             ConcurrentBag<Models.Transformation.PathwayDiagnostic> pathwayDiagnostics, string userId)
         {
+            // ✅ CodeQL cs/log-forging: saneado uma vez, reusado só nos logs deste método.
+            var safeLayoutName = Services.Logging.LogMessageSanitizer.Sanitize(request.LayoutName);
             try
             {
                 if (failureKinds.Any(k => k == FailureKind.ExecutionInfraError))
@@ -717,7 +726,7 @@ namespace LayoutParserApi.Controllers
                     warnings.Add(msg);
                     _logger.LogInformation(
                         "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code} layout={LayoutName} fonte=request.LayoutGuid/catalogo (nenhum resolvível)",
-                        Services.Logging.CorrelationContext.CurrentId, "ai-fallback", "not_applicable", "not_applicable", request.LayoutName);
+                        Services.Logging.CorrelationContext.CurrentId, "ai-fallback", "not_applicable", "not_applicable", safeLayoutName);
                     pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
                     {
                         Pathway = "ai-fallback",
@@ -734,7 +743,7 @@ namespace LayoutParserApi.Controllers
                     warnings.Add(msg);
                     _logger.LogInformation(
                         "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code} layout={LayoutName} layoutGuid={LayoutGuid} fonte=IAiFallbackSuppressionGate (cooldown ativo até {RetryAt})",
-                        Services.Logging.CorrelationContext.CurrentId, "ai-fallback", "not_applicable", "not_applicable", request.LayoutName, resolvedLayoutGuid, retryAt);
+                        Services.Logging.CorrelationContext.CurrentId, "ai-fallback", "not_applicable", "not_applicable", safeLayoutName, resolvedLayoutGuid, retryAt);
                     pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
                     {
                         Pathway = "ai-fallback",
@@ -752,7 +761,7 @@ namespace LayoutParserApi.Controllers
                     warnings.Add(msg);
                     _logger.LogWarning(
                         "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code} layout={LayoutName} layoutGuid={LayoutGuid} fonte=LowCodeTransformationStore.BuildTicketFromContent (retornou null)",
-                        Services.Logging.CorrelationContext.CurrentId, "ai-fallback", "failed", "configuration_error", request.LayoutName, resolvedLayoutGuid);
+                        Services.Logging.CorrelationContext.CurrentId, "ai-fallback", "failed", "configuration_error", safeLayoutName, resolvedLayoutGuid);
                     pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
                     {
                         Pathway = "ai-fallback",
@@ -784,7 +793,7 @@ namespace LayoutParserApi.Controllers
                 // sentido de estar em processamento").
                 _logger.LogInformation(
                     "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} layout={LayoutName} layoutGuid={LayoutGuid} ticket={Ticket} fonte=IAiTransformationCandidateService.EnqueueAsync (sem gabarito)",
-                    Services.Logging.CorrelationContext.CurrentId, "ai-fallback", "candidate_generated", request.LayoutName, resolvedLayoutGuid, ticket);
+                    Services.Logging.CorrelationContext.CurrentId, "ai-fallback", "candidate_generated", safeLayoutName, resolvedLayoutGuid, Services.Logging.LogMessageSanitizer.Sanitize(ticket));
                 pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
                 {
                     Pathway = "ai-fallback",
@@ -797,7 +806,7 @@ namespace LayoutParserApi.Controllers
             {
                 _logger.LogWarning(ex,
                     "Falha ao disparar o fallback automático de IA para layout {LayoutName}. PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code}",
-                    request.LayoutName, Services.Logging.CorrelationContext.CurrentId, "ai-fallback", "failed", "execution_error");
+                    safeLayoutName, Services.Logging.CorrelationContext.CurrentId, "ai-fallback", "failed", "execution_error");
                 pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
                 {
                     Pathway = "ai-fallback",
@@ -847,6 +856,8 @@ namespace LayoutParserApi.Controllers
             ConcurrentBag<Models.Transformation.PathwayDiagnostic> pathwayDiagnostics)
         {
             var result = new List<TransformationCandidate>();
+            // ✅ CodeQL cs/log-forging: saneado uma vez, reusado só nos logs deste método.
+            var safeLayoutName = Services.Logging.LogMessageSanitizer.Sanitize(request.LayoutName);
 
             try
             {
@@ -881,7 +892,7 @@ namespace LayoutParserApi.Controllers
                     };
                     _logger.LogWarning(
                         "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code} layout={LayoutName} fonte=TransformationPipelineService.ErrorCode={ErrorCode}",
-                        Services.Logging.CorrelationContext.CurrentId, "tcl-xsl", "failed", code, request.LayoutName, pipelineResult.ErrorCode);
+                        Services.Logging.CorrelationContext.CurrentId, "tcl-xsl", "failed", code, safeLayoutName, pipelineResult.ErrorCode);
                     pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
                     {
                         Pathway = "tcl-xsl",
@@ -908,7 +919,7 @@ namespace LayoutParserApi.Controllers
                     {
                         // Falha de validação não invalida o candidato em si (o XML transformado existe) —
                         // só fica sem o campo Validation preenchido.
-                        _logger.LogWarning(ex, "Falha ao validar candidato tcl-xsl para layout {LayoutName}", request.LayoutName);
+                        _logger.LogWarning(ex, "Falha ao validar candidato tcl-xsl para layout {LayoutName}", safeLayoutName);
                         // Saneado (§5 do diagnóstico-issue-86): mesmo padrão do sysmiddle (linha ~385).
                         warnings.Add($"Validação do candidato tcl-xsl falhou: {LowCodeErrorSanitizer.ForWire(ex)}");
                     }
@@ -935,7 +946,7 @@ namespace LayoutParserApi.Controllers
 
                 _logger.LogInformation(
                     "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} layout={LayoutName} tclPath={TclPath} xslPath={XslPath} fonte=TransformationPipelineService",
-                    Services.Logging.CorrelationContext.CurrentId, "tcl-xsl", "candidate_generated", request.LayoutName,
+                    Services.Logging.CorrelationContext.CurrentId, "tcl-xsl", "candidate_generated", safeLayoutName,
                     System.IO.Path.GetFileName(pipelineResult.TclPath), System.IO.Path.GetFileName(pipelineResult.XslPath));
                 pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
                 {
@@ -949,7 +960,7 @@ namespace LayoutParserApi.Controllers
             {
                 _logger.LogWarning(ex,
                     "Falha estrutural no pathway tcl-xsl ao gerar candidato para layout {LayoutName}. PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code}",
-                    request.LayoutName, Services.Logging.CorrelationContext.CurrentId, "tcl-xsl", "failed", "execution_error");
+                    safeLayoutName, Services.Logging.CorrelationContext.CurrentId, "tcl-xsl", "failed", "execution_error");
                 // Saneado (§5 do diagnóstico-issue-86): mesmo padrão do sysmiddle (linha ~385).
                 var sanitizedTclXslEx = LowCodeErrorSanitizer.ForWire(ex);
                 warnings.Add($"Pathway tcl-xsl falhou: {sanitizedTclXslEx}");
@@ -1164,6 +1175,8 @@ namespace LayoutParserApi.Controllers
                 return BadRequest(new { success = false, error = "LayoutName e InputContent são obrigatórios" });
 
             var warnings = new List<string>();
+            // ✅ CodeQL cs/log-forging: saneado uma vez, reusado nos logs deste endpoint.
+            var safeLayoutName = Services.Logging.LogMessageSanitizer.Sanitize(request.LayoutName);
 
             LayoutRecord? layoutRecord;
             try
@@ -1177,7 +1190,7 @@ namespace LayoutParserApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Falha de infraestrutura ao resolver layout {LayoutName} para field-mappings", request.LayoutName);
+                _logger.LogError(ex, "Falha de infraestrutura ao resolver layout {LayoutName} para field-mappings", safeLayoutName);
                 return StatusCode(500, new { success = false, error = "Falha de infraestrutura ao consultar o catálogo de layouts" });
             }
 
@@ -1230,7 +1243,7 @@ namespace LayoutParserApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Falha ao compor field mappings para layout {LayoutName}", request.LayoutName);
+                _logger.LogError(ex, "Falha ao compor field mappings para layout {LayoutName}", safeLayoutName);
                 warnings.Add("Falha ao compor mapeamentos estruturais — ver log do servidor");
                 return Ok(new { success = true, fieldMappings = Array.Empty<object>(), warnings });
             }

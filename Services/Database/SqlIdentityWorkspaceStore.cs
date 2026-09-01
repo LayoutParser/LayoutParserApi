@@ -90,7 +90,7 @@ namespace LayoutParserApi.Services.Database
                     // INSERT. Não é erro — relê o UserId que já existe (idempotência sob concorrência,
                     // critério de aceite #3 do contrato cross-repo).
                     await tx.RollbackAsync(cancellationToken);
-                    _logger.LogInformation("Corrida de criação de identidade externa detectada (provider={Provider}); relendo UserId existente.", provider);
+                    _logger.LogInformation("Corrida de criação de identidade externa detectada (provider={Provider}); relendo UserId existente.", Services.Logging.LogMessageSanitizer.Sanitize(provider));
                 }
                 catch
                 {
