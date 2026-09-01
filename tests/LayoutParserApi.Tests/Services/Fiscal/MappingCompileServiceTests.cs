@@ -52,7 +52,8 @@ namespace LayoutParserApi.Tests.Services.Fiscal
                 CreateCalls++;
                 var detail = new MappingReleaseDetail(
                     Guid.NewGuid(), workspaceId, draftId, engine, artifacts, sourceRuleIds, compileDiagnostics,
-                    rulesSnapshotHash, null, MappingReleaseStatus.DraftCompiled, correlationId, DateTimeOffset.UtcNow, "AAAA");
+                    rulesSnapshotHash, null, MappingReleaseStatus.DraftCompiled, correlationId, DateTimeOffset.UtcNow, "AAAA",
+                    "development", null, null, null, null, null, null);
                 ByHash[(draftId, rulesSnapshotHash)] = detail;
                 ById[detail.ReleaseId] = detail;
                 return Task.FromResult(detail);
@@ -74,6 +75,13 @@ namespace LayoutParserApi.Tests.Services.Fiscal
                 ById[releaseId] = updated;
                 return Task.FromResult<MappingReleaseDetail?>(updated);
             }
+
+            public Task<MappingReleaseDetail> ApproveAsync(Guid releaseId, Guid actorUserId, string justification, CancellationToken cancellationToken)
+                => throw new NotSupportedException();
+            public Task<MappingReleaseDetail> PublishAsync(Guid releaseId, Guid actorUserId, string environment, CancellationToken cancellationToken)
+                => throw new NotSupportedException();
+            public Task<MappingReleaseDetail> RollbackAsync(Guid releaseId, Guid actorUserId, CancellationToken cancellationToken)
+                => throw new NotSupportedException();
         }
 
         private static MappingDraftRuleDetail AcceptedCopyRule(string source, string target) => new(
