@@ -1,0 +1,173 @@
+using LayoutParserApi.Models.Entities.Fiscal;
+using LayoutParserApi.Services.Interfaces;
+
+using Microsoft.AspNetCore.Mvc;
+
+namespace LayoutParserApi.Controllers
+{
+    /// <summary>
+    /// Pacote de mapeamento fiscal (Slice 2 — issue #229). Só os dois endpoints previstos neste slice:
+    /// upload (cria pacote + primeira revisão) e consulta. Isolamento por workspace fail-closed, mesmo
+    /// padrão do <see cref="WorkspacesController"/> (Slice 1) — "não existe" e "não é seu" respondem o
+    /// mesmo 404.
+    /// </summary>
+    [ApiController]
+    [Route("api/workspaces/{workspaceId:guid}")]
+    public class FiscalMappingPackagesController : ControllerBase
+    {
+        /// <summary>Limite de artefatos por upload — evita form-data com centenas de partes por engano/abuso.</summary>
+        private const int MaxArtifactsPerUpload = 10;
+
+        private readonly IFiscalPackageService _packageService;
+        private readonly IIdentityWorkspaceService _identityWorkspaceService;
+        private readonly ICurrentUser _currentUser;
+        private readonly ILogger<FiscalMappingPackagesController> _logger;
+
+        public FiscalMappingPackagesController(
+            IFiscalPackageService packageService,
+            IIdentityWorkspaceService identityWorkspaceService,
+            ICurrentUser currentUser,
+            ILogger<FiscalMappingPackagesController> logger)
+        {
+            _packageService = packageService;
+            _identityWorkspaceService = identityWorkspaceService;
+            _currentUser = currentUser;
+            _logger = logger;
+        }
+
+        /// <summary>
+        /// Cria um <c>FiscalMappingPackage</c> (com sua primeira revisão) a partir de um upload
+        /// multipart. Cada arquivo é identificado pelo NOME DO CAMPO do form (ex.: campo "sample" =
+        /// <see cref="ArtifactKind.Sample"/>) — nomes fora de <see cref="ArtifactKind.All"/> são
+        /// rejeitados com 422, sem inferência silenciosa.
+        /// </summary>
+        // Limite de tamanho total do request: 10 artefatos * limite por artefato — margem generosa
+        // sobre MaxArtifactsPerUpload, rejeitado explicitamente antes de bufferizar tudo em memória.
+        [HttpPost("projects/{projectId:guid}/mapping-packages")]
+        [RequestSizeLimit(10 * Services.Validation.MultipartUploadValidator.MaxArtifactSizeBytes)]
+        public async Task<IActionResult> CreatePackage(
+            Guid workspaceId,
+            Guid projectId,
+            [FromForm] string? name,
+            CancellationToken cancellationToken)
+        {
+            if (_currentUser.UserId is not Guid userId)
+                return NotFound(); // Fail-closed uniforme — mesmo padrão do Slice 1.
+
+            // Isolamento por workspace: confirma membership ANTES de tocar em qualquer artefato.
+            WorkspaceSummary? membership;
+            try
+            {
+                membership = await _identityWorkspaceService.GetWorkspaceForMemberAsync(workspaceId, userId, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Falha ao verificar membership do workspace {WorkspaceId} para upload de pacote.", workspaceId);
+                return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "Não foi possível verificar o workspace no momento." });
+            }
+
+            if (membership == null)
+                return NotFound();
+
+            if (Request.Form.Files.Count == 0)
+                return UnprocessableEntity(new { error = "Nenhum artefato enviado." });
+
+            if (Request.Form.Files.Count > MaxArtifactsPerUpload)
+                return UnprocessableEntity(new { error = $"Excede o limite de {MaxArtifactsPerUpload} artefatos por upload." });
+
+            var artifacts = new List<UploadedArtifactInput>();
+            foreach (var file in Request.Form.Files)
+            {
+                // O NOME DO CAMPO do multipart é o Kind — allowlist explícita, sem adivinhar pela extensão.
+                if (!ArtifactKind.IsValid(file.Name))
+                    return UnprocessableEntity(new { error = $"Campo de upload desconhecido: \"{file.Name}\". Esperado um de: {string.Join(", ", ArtifactKind.All)}." });
+
+                if (file.Length == 0)
+                    return UnprocessableEntity(new { error = $"Artefato \"{file.Name}\" está vazio." });
+
+                if (file.Length > Services.Validation.MultipartUploadValidator.MaxArtifactSizeBytes)
+                    return UnprocessableEntity(new { error = $"Artefato \"{file.Name}\" excede o limite de tamanho." });
+
+                using var memoryStream = new MemoryStream();
+                await file.CopyToAsync(memoryStream, cancellationToken);
+
+                artifacts.Add(new UploadedArtifactInput(file.Name, file.FileName, file.ContentType, memoryStream.ToArray()));
+            }
+
+            var idempotencyKey = Request.Headers.TryGetValue("Idempotency-Key", out var headerValue) ? headerValue.ToString() : null;
+            var packageName = string.IsNullOrWhiteSpace(name) ? $"Pacote {DateTimeOffset.UtcNow:yyyy-MM-dd HH:mm}" : name;
+
+            CreatePackageOutcome outcome;
+            try
+            {
+                outcome = await _packageService.CreatePackageAsync(workspaceId, projectId, userId, packageName, idempotencyKey, artifacts, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Falha ao criar pacote de mapeamento fiscal (workspace={WorkspaceId}, project={ProjectId}).", workspaceId, projectId);
+                return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "Não foi possível criar o pacote no momento." });
+            }
+
+            if (!outcome.Success)
+                return UnprocessableEntity(new { error = outcome.Error });
+
+            var package = outcome.Package!;
+            return CreatedAtAction(nameof(GetPackage), new { workspaceId, packageId = package.PackageId }, ToResponse(package));
+        }
+
+        /// <summary>Pacote + inventário de artefatos da revisão mais recente. Nunca expõe conteúdo bruto.</summary>
+        [HttpGet("mapping-packages/{packageId:guid}")]
+        public async Task<IActionResult> GetPackage(Guid workspaceId, Guid packageId, CancellationToken cancellationToken)
+        {
+            if (_currentUser.UserId is not Guid userId)
+                return NotFound();
+
+            PackageDetail? package;
+            try
+            {
+                package = await _packageService.GetPackageIfMemberAsync(packageId, userId, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Falha ao consultar pacote {PackageId} para o usuário {UserId}.", packageId, userId);
+                return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "Não foi possível consultar o pacote no momento." });
+            }
+
+            // "Não existe" e "existe mas é de outro workspace" respondem o mesmo 404 — mesmo padrão do
+            // isolamento cross-workspace do Slice 1. Também cobre o caso de workspaceId da rota não
+            // bater com o dono real do pacote (não confiamos no parâmetro de rota sozinho).
+            if (package == null || package.WorkspaceId != workspaceId)
+                return NotFound();
+
+            return Ok(ToResponse(package));
+        }
+
+        private static object ToResponse(PackageDetail package) => new
+        {
+            packageId = package.PackageId,
+            workspaceId = package.WorkspaceId,
+            projectId = package.ProjectId,
+            name = package.Name,
+            createdAt = package.CreatedAt,
+            revisions = new[]
+            {
+                new
+                {
+                    revisionId = package.LatestRevision.RevisionId,
+                    revisionNumber = package.LatestRevision.RevisionNumber,
+                    createdAt = package.LatestRevision.CreatedAt,
+                    artifacts = package.LatestRevision.Artifacts.Select(a => new
+                    {
+                        artifactId = a.ArtifactId,
+                        kind = a.Kind,
+                        sha256 = a.Sha256,
+                        sizeBytes = a.SizeBytes,
+                        originalFileName = a.OriginalFileName,
+                        inspectionStatus = a.InspectionStatus,
+                        uploadedAt = a.UploadedAt,
+                    })
+                }
+            }
+        };
+    }
+}

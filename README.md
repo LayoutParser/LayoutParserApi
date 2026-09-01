@@ -24,13 +24,14 @@
 5. [A visão de IA / The AI vision](#5-a-visão-de-ia--the-ai-vision)
 6. [Stack tecnológica / Tech stack](#6-stack-tecnológica--tech-stack)
 7. [API & Endpoints](#7-api--endpoints)
-8. [Configuração / Configuration](#8-configuração--configuration)
-9. [Como rodar / Getting started](#9-como-rodar--getting-started)
-10. [Segurança / Security](#10-segurança--security-)
-11. [Observabilidade / Observability](#11-observabilidade--observability)
-12. [Estrutura de pastas / Project structure](#12-estrutura-de-pastas--project-structure)
-13. [Harness Claude Code & MCP](#13-harness-claude-code--mcp)
-14. [Roadmap](#14-roadmap)
+8. [Fundação da plataforma fiscal / Fiscal platform foundation](#8-fundação-da-plataforma-fiscal--fiscal-platform-foundation)
+9. [Configuração / Configuration](#9-configuração--configuration)
+10. [Como rodar / Getting started](#10-como-rodar--getting-started)
+11. [Segurança / Security](#11-segurança--security-)
+12. [Observabilidade / Observability](#12-observabilidade--observability)
+13. [Estrutura de pastas / Project structure](#13-estrutura-de-pastas--project-structure)
+14. [Harness Claude Code & MCP](#14-harness-claude-code--mcp)
+15. [Roadmap](#15-roadmap)
 
 ---
 
@@ -84,7 +85,7 @@ LayoutParserLib  Redis        SQL Server        LLM (Ollama /
 LayoutParserDecrypt.exe  (descriptografia Sysmiddle)
 ```
 
-> **🔌 MCP** · Um **MCP Server em C#** (ver [§13](#13-harness-claude-code--mcp)) expõe as operações da API como *tools* para agentes de IA, transformando este ecossistema num conjunto de ferramentas operáveis por LLMs.
+> **🔌 MCP** · Um **MCP Server em C#** (ver [§14](#14-harness-claude-code--mcp)) expõe as operações da API como *tools* para agentes de IA, transformando este ecossistema num conjunto de ferramentas operáveis por LLMs.
 
 ---
 
@@ -304,6 +305,39 @@ Without a `groundTruthXml` (State A, "generate from scratch"), the convergence c
 
 > Detalhe completo de rotas em runtime via Swagger. / Full route detail at runtime via Swagger.
 
+### Detecção automática de layout / Automatic layout detection
+
+**🇧🇷** `POST /api/parse/auto` recebe `multipart/form-data` com `documentFile` e, após uma
+escolha explícita, `layoutGuidOverride`. O probe consulta o catálogo interno, mantém o XML
+descriptografado fora do navegador e devolve:
+
+- `unique`: exatamente um layout passou todos os gates; `parseResult` já vem preenchido;
+- `ambiguous`: dois ou mais layouts continuam compatíveis; `candidates` traz no máximo cinco e
+  nenhum é aplicado sem ação do usuário;
+- `not_found`: nenhum layout passou os gates; `suggestedCandidates` pode trazer aproximações não
+  confirmadas, separadas dos candidatos compatíveis.
+
+`matchScore` é um índice determinístico de equivalência de `0` a `100`, não probabilidade. O
+override é normalizado e aceito somente se o GUID pertencer ao ranking da detecção atual; caso
+contrário a API responde `422`. A seleção registra status, origem, GUID/rank,
+`algorithmVersion`, `catalogVersion` e `correlationId`, sem conteúdo do documento. Em MQSeries, a
+ordem hierárquica cadastrada no XML é evidência informativa porque grupos/filhos não representam
+necessariamente a ordem física do stream; no IDoc ela permanece gate autoritativo.
+Se o catálogo atingir o teto de segurança ou algum layout não puder ser avaliado, a API falha
+fechado como `not_found`, anota `catalog_incomplete`/`authoritative_selection_disabled` nas
+sugestões e não aceita override. A normalização do documento e a divisão por largura são
+reutilizadas dentro da requisição para limitar alocações ao comparar layouts próximos.
+
+**🇺🇸** `POST /api/parse/auto` accepts multipart `documentFile` plus an optional, explicitly
+chosen `layoutGuidOverride`. It returns `unique`, `ambiguous` (up to five ranked compatible
+layouts, no implicit choice), or `not_found` (optional unconfirmed suggestions). The score is a
+deterministic equivalence index rather than a probability. Overrides are accepted only when they
+belong to the current ranking, and the audit trail preserves correlation/algorithm/catalog
+versions without logging raw document content or exposing decrypted layout XML.
+An incomplete/truncated catalog disables authoritative selection and overrides, returning
+`not_found` with explicit limitations. Document normalization and fixed-width splitting are reused
+per request to avoid repeating large allocations for every catalog entry.
+
 ### Fases de status da transformação low-code (2026-08-27) / Low-code transformation status phases (2026-08-27)
 
 **🇧🇷** `POST /api/parse/upload` (campo `transformationsStatus`) e `GET /api/parse/transformations/{ticket}` (campo `status`, [`LowCodeTransformationIndexEntry`](Models/Transformation/LowCodeTransformationIndex.cs)) compartilham o mesmo vocabulário de fases. Design completo: [`docs/architecture/contrato-linha-vazia-progresso-e-degradacao-posicional-2026-08-27.md`](docs/architecture/contrato-linha-vazia-progresso-e-degradacao-posicional-2026-08-27.md) §2.
@@ -511,7 +545,52 @@ Exemplo de payload (linha `ZRSDM_NFE_400_EMIT` mapeada estruturalmente para o n�
 
 ---
 
-## 8. Configuração / Configuration
+## 8. Fundação da plataforma fiscal / Fiscal platform foundation
+
+**🇧🇷** Em 2026-08-31/09-01, sete *slices* incrementais foram entregues estabelecendo a **fundação
+de uma plataforma fiscal multi-tenant** dentro desta API — o objetivo declarado é permitir, no
+futuro, **migrar mapeamentos hoje presos ao low-code Sysmiddle para TCL/XSLT geridos pela própria
+API**, com **humano no loop** em cada etapa sensível (revisão de sugestões de IA, aprovação e
+publicação de releases) e com uma regra transversal inegociável: **nenhuma dessas capacidades
+autoriza escrita/mutação no Sysmiddle** — o Sysmiddle permanece somente leitura/execução em
+qualquer rota, presente ou futura.
+
+**🇺🇸** Between 2026-08-31 and 2026-09-01, seven incremental *slices* shipped, laying the
+**foundation of a multi-tenant fiscal platform** inside this API — the declared goal is to
+eventually **migrate mappings currently locked into the Sysmiddle low-code tool to TCL/XSLT
+managed by the API itself**, with a **human in the loop** at every sensitive step (reviewing AI
+suggestions, approving and publishing releases), and one non-negotiable cross-cutting rule:
+**none of this capability authorizes writing/mutating Sysmiddle** — Sysmiddle remains read-only
+execution across every route, present or future.
+
+> ⚠️ **Estado / Status:** capacidade nova, ainda **não documentada em `sectionMappings`/`fieldMappings`
+> nem consumida pelo front-end** ([LayoutParserReact](#2-ecossistema-de-projetos--project-ecosystem)).
+> Validação de contrato cross-repo (`@lp-contract-qa`) para os slices já mesclados **ainda não
+> ocorreu** — não tratar como "pronto para consumo" até essa validação existir. Detalhe completo,
+> decisões e histórico de auditoria: [`docs/architecture/resumo-sessao-2026-08-31.md`](docs/architecture/resumo-sessao-2026-08-31.md).
+
+| Slice | Capacidade / Capability | Resumo / Summary |
+|-------|--------------------------|-------------------|
+| **1 — Identidade & Workspace** | Multi-tenant | **🇧🇷** `ExternalIdentity`, `FiscalUser`, `FiscalWorkspace`, `WorkspaceMembership` — isola dados por workspace, com identidade confiável vinda do BFF ([§11.1](#111-identidade-e-autenticação-bff--api)). **🇺🇸** Multi-tenant identity/workspace model isolating data per workspace, trusting BFF-forwarded identity. Design: [`docs/architecture/auditoria-slice1-identidade-workspaces-2026-08-31.md`](docs/architecture/auditoria-slice1-identidade-workspaces-2026-08-31.md). |
+| **2 — `FiscalMappingPackage`** | Upload versionado | **🇧🇷** Upload versionado dos insumos de mapeamento (layout, planilha, XSD) com hardening de segurança (validação de conteúdo/MIME, revisão imutável por hash/autor/instante). **🇺🇸** Versioned upload of mapping inputs (layout, spreadsheet, XSD) with security hardening (content/MIME validation, immutable hash/author/timestamp revisions). Design: [`docs/architecture/design-slice2-fiscalmappingpackage-2026-08-31.md`](docs/architecture/design-slice2-fiscalmappingpackage-2026-08-31.md). |
+| **3 — `MappingDraft`** | Human-in-the-loop | **🇧🇷** Sugestões de IA para regras de mapeamento, sempre revisadas por humano (aceitar/editar/rejeitar) antes de virarem geração real; concorrência otimista via ETag/`If-Match`. **🇺🇸** AI-suggested mapping rules, always human-reviewed (accept/edit/reject) before feeding real generation; optimistic concurrency via ETag/`If-Match`. Design: [`docs/architecture/design-slice3-mappingdraft-2026-08-31.md`](docs/architecture/design-slice3-mappingdraft-2026-08-31.md). |
+| **4 — `MappingExplanation`** | Explicabilidade | **🇧🇷** Contrato canônico de explicabilidade (regras, origens/destinos, condições, nível de suporte, limitações), com adapters específicos para Sysmiddle, TCL e XSLT. **🇺🇸** Canonical explainability contract (rules, sources/targets, conditions, support level, limitations), with dedicated Sysmiddle/TCL/XSLT adapters. Design: [`docs/architecture/design-slice4-mappingexplanation-2026-08-31.md`](docs/architecture/design-slice4-mappingexplanation-2026-08-31.md). |
+| **5 — Compilação determinística + Fiscal Test Lab** | Compilação/Teste | **🇧🇷** `MappingDraftRuleTranspiler` compila regras revisadas em TCL/XSL/XSLT de forma determinística; laboratório de testes fiscais roda fixtures, valida XSD e faz diff canônico contra o XML esperado. **🇺🇸** `MappingDraftRuleTranspiler` deterministically compiles reviewed rules into TCL/XSL/XSLT; a fiscal test lab runs fixtures, validates XSD, and does canonical diffing against expected XML. Design: [`docs/architecture/design-slice5-compilacao-test-lab-2026-08-31.md`](docs/architecture/design-slice5-compilacao-test-lab-2026-08-31.md). |
+| **6 — Gate transversal Sysmiddle** | Segurança/Governança | **🇧🇷** Garantia técnica, aplicada em toda rota (presente e futura), de que **nenhuma mutação no Sysmiddle é permitida** — Sysmiddle é somente leitura/execução. **🇺🇸** Technical guarantee, enforced across every route (present and future), that **no Sysmiddle mutation is ever permitted** — Sysmiddle is read/execute-only. Design: [`docs/architecture/design-slice6-gate-sysmiddle-2026-09-01.md`](docs/architecture/design-slice6-gate-sysmiddle-2026-09-01.md). |
+| **7 — Governança & publicação** | RBAC/Release | **🇧🇷** RBAC mínimo (papéis com permissão de aprovar/publicar/reverter), `MappingRelease` com fluxo approve/publish/rollback, e `MappingTransition` como trilha de auditoria de cada mudança de estado. **🇺🇸** Minimal RBAC (roles authorized to approve/publish/rollback), `MappingRelease` with an approve/publish/rollback flow, and `MappingTransition` as the audit trail for every state change. Design: [`docs/architecture/design-slice7-governanca-piloto-fiat-2026-09-01.md`](docs/architecture/design-slice7-governanca-piloto-fiat-2026-09-01.md). |
+
+**🇧🇷** Contexto adicional e a auditoria honesta de status real (o que foi mesclado vs. o que ainda
+é backlog no momento em que cada slice foi escrito) está em
+[`docs/architecture/resumo-sessao-2026-08-31.md`](docs/architecture/resumo-sessao-2026-08-31.md).
+O texto original do prompt que originou os 7 slices está preservado em
+[`docs/architecture/spec-plataforma-fiscal-prompt-original-2026-08-31.md`](docs/architecture/spec-plataforma-fiscal-prompt-original-2026-08-31.md).
+
+**🇺🇸** Additional context and an honest status audit (what was merged vs. what was still backlog
+at the time each slice doc was written) lives in the two docs linked above.
+
+---
+
+## 9. Configuração / Configuration
 
 **🇧🇷** Configuração em [`appsettings.json`](appsettings.json). Chaves principais:
 
@@ -527,11 +606,11 @@ Exemplo de payload (linha `ZRSDM_NFE_400_EMIT` mapeada estruturalmente para o n�
 | `XsdValidation` | XSDs por tipo de documento fiscal (NFe, CTe, NFCom, MDFe). |
 | `Kestrel:Endpoints:Http:Url` | Porta de escuta (default `http://0.0.0.0:5000`). |
 
-> ⚠️ **Nunca** comite credenciais. Ver [§10 Segurança](#10-segurança--security-).
+> ⚠️ **Nunca** comite credenciais. Ver [§11 Segurança](#11-segurança--security-).
 
 ---
 
-## 9. Como rodar / Getting started
+## 10. Como rodar / Getting started
 
 ### Pré-requisitos / Prerequisites
 
@@ -547,7 +626,7 @@ Exemplo de payload (linha `ZRSDM_NFE_400_EMIT` mapeada estruturalmente para o n�
 # 1. Restaurar e buildar a lib referenciada primeiro
 dotnet build ../LayoutParserLib/LayoutParserLib.sln
 
-# 2. Configurar segredos (OBRIGATÓRIO — o appsettings.json tem placeholders vazios, ver §10)
+# 2. Configurar segredos (OBRIGATÓRIO — o appsettings.json tem placeholders vazios, ver §11)
 #    O UserSecretsId já está no .csproj; basta setar os valores:
 dotnet user-secrets set "Database:Password" "<senha-do-sql>"
 dotnet user-secrets set "Gemini:ApiKey" "<key-do-gemini>"
@@ -585,11 +664,11 @@ docker run -p 5000:5000 \
 
 ---
 
-## 10. Segurança / Security ⚠️
+## 11. Segurança / Security ⚠️
 
-**🇧🇷 Remediação no código — FEITO ✅.** Os segredos foram **removidos** do [`appsettings.json`](appsettings.json) (placeholders vazios) **e dos fallbacks hardcoded no código** (`GeminiAIService`, `LayoutDatabaseService`, `ElasticSearchLogger`). O `.gitignore` ignora `appsettings.*.local.json`. Os segredos agora vêm de `dotnet user-secrets` (dev) / variáveis de ambiente `Section__Key` (produção) — ver [§9](#9-como-rodar--getting-started).
+**🇧🇷 Remediação no código — FEITO ✅.** Os segredos foram **removidos** do [`appsettings.json`](appsettings.json) (placeholders vazios) **e dos fallbacks hardcoded no código** (`GeminiAIService`, `LayoutDatabaseService`, `ElasticSearchLogger`). O `.gitignore` ignora `appsettings.*.local.json`. Os segredos agora vêm de `dotnet user-secrets` (dev) / variáveis de ambiente `Section__Key` (produção) — ver [§10](#10-como-rodar--getting-started).
 
-**🇺🇸 Code-side remediation — DONE ✅.** Secrets were **removed** from [`appsettings.json`](appsettings.json) (empty placeholders) **and from the hardcoded code fallbacks**. Secrets now come from `dotnet user-secrets` (dev) / `Section__Key` environment variables (prod) — see [§9](#9-como-rodar--getting-started).
+**🇺🇸 Code-side remediation — DONE ✅.** Secrets were **removed** from [`appsettings.json`](appsettings.json) (empty placeholders) **and from the hardcoded code fallbacks**. Secrets now come from `dotnet user-secrets` (dev) / `Section__Key` environment variables (prod) — see [§10](#10-como-rodar--getting-started).
 
 **🔴 Ainda pendente (ação do operador / @lp-devops):**
 
@@ -598,7 +677,7 @@ docker run -p 5000:5000 \
 
 > **⚠️ Rotacionar é obrigatório mesmo após limpar a história:** qualquer clone feito antes da limpeza ainda contém os segredos. A limpeza reduz exposição futura; só a rotação invalida o que vazou.
 
-### 10.0 Hook de pre-commit anti-segredo
+### 11.0 Hook de pre-commit anti-segredo
 
 Para evitar reincidência (a senha do SQL já vazou uma vez para o `appsettings.json`
 comitado — ver [`.claude/rules/security.md`](.claude/rules/security.md)), o repo tem
@@ -613,7 +692,7 @@ git config core.hooksPath .githooks
 Instruções de instalação do binário `gitleaks` e detalhes do hook:
 [`.githooks/README.md`](.githooks/README.md).
 
-### 10.1 Identidade e autenticação (BFF → API)
+### 11.1 Identidade e autenticação (BFF → API)
 
 **🇧🇷** A API **não autentica ninguém diretamente** — ela **confia** na identidade que chega de um
 **BFF Fastify** (repo `LayoutParserReact/server/`), que faz login via **Microsoft Entra ID (OIDC)**
@@ -653,7 +732,7 @@ Detalhe completo (decisão, sequência, evidência de teste): [`docs/architectur
 
 ---
 
-## 11. Observabilidade / Observability
+## 12. Observabilidade / Observability
 
 - **Serilog** escreve para console + arquivo (`Logging:File:Directory`) com *rolling* por tamanho, e opcionalmente para **Elasticsearch**.
 - Todo log carrega **`CorrelationId`** (`X-Correlation-ID`), permitindo rastrear um arquivo do upload ao parse.
@@ -662,7 +741,7 @@ Detalhe completo (decisão, sequência, evidência de teste): [`docs/architectur
 
 ---
 
-## 12. Estrutura de pastas / Project structure
+## 13. Estrutura de pastas / Project structure
 
 ```
 LayoutParserApi/
@@ -680,15 +759,15 @@ LayoutParserApi/
 ├── Models/                 # Entities, DTOs, ML, RAG, Validation, ...
 ├── Enum/ · Scripts/ · Properties/
 ├── Program.cs              # Bootstrap + DI + pipeline + cache warmup
-├── appsettings.json        # Configuração (⚠️ ver §10)
+├── appsettings.json        # Configuração (⚠️ ver §11)
 ├── Dockerfile
-├── .claude/                # Harness Claude Code (agents, rules, commands) — ver §13
+├── .claude/                # Harness Claude Code (agents, rules, commands) — ver §14
 └── README.md               # este arquivo
 ```
 
 ---
 
-## 13. Harness Claude Code & MCP
+## 14. Harness Claude Code & MCP
 
 **🇧🇷** Este projeto vem equipado com um **harness de IA** (pasta [`.claude/`](.claude)) para potencializar o desenvolvimento assistido por LLM, e um **MCP Server em C#** que expõe as operações da API como *tools* para agentes.
 
@@ -706,7 +785,7 @@ LayoutParserApi/
 
 ---
 
-## 14. Roadmap
+## 15. Roadmap
 
 - [ ] **Segurança:** remover segredos do `appsettings.json`, rotacionar chaves, migrar para secrets/env.
 - [ ] **RAG vetorial:** indexar pares (layout → XSLT) num vector store (Redis Stack / RediSearch).
@@ -717,6 +796,8 @@ LayoutParserApi/
 - [ ] **Fase 4 — reconstrução reversa best-effort (XML→TXT):** investigação de desenho apenas, escopo ainda não confirmado com o dono; funções com perda (dígito verificador) não são inversíveis sem heurística — não prometer "reversão garantida".
 - [ ] **Testes automatizados:** ampliar cobertura de `Services/Testing`.
 - [ ] **MCP Server:** expandir o conjunto de *tools* e publicar o registro em `.mcp.json`.
+- [x] **Fundação da plataforma fiscal (Slices 1-7):** identidade/workspace, `FiscalMappingPackage`, `MappingDraft` human-in-the-loop, `MappingExplanation`/explicabilidade Sysmiddle, compilação determinística + Fiscal Test Lab, gate transversal Sysmiddle e governança/publicação (RBAC, `MappingRelease`, `MappingTransition`) mesclados — ver [§8](#8-fundação-da-plataforma-fiscal--fiscal-platform-foundation).
+- [ ] **Validação `@lp-contract-qa`:** nenhum slice da plataforma fiscal ainda teve validação de contrato cross-repo para consumo pelo `LayoutParserReact`; falta também rodar o runbook manual com dado real do Slice 7 (gate FIAT síntetico já PASS).
 
 ---
 

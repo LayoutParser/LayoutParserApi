@@ -406,6 +406,29 @@ try
     // schema incompatível). Scoped por padrão do grupo Database.
     builder.Services.AddScoped<IIdentityWorkspaceStore, SqlIdentityWorkspaceStore>();
     builder.Services.AddScoped<IIdentityWorkspaceService, LayoutParserApi.Services.Identity.IdentityWorkspaceService>();
+    // ✅ Slice 2 (issue #229): FiscalMappingPackage/Revision/Artifact — mesmo banco, mesmo padrão.
+    // WindowsDefenderAntivirusScanner só usa ILogger (sem estado por-requisição) — Scoped por
+    // consistência com o grupo, mas seria seguro como Singleton também.
+    builder.Services.AddScoped<IFiscalPackageStore, SqlFiscalPackageStore>();
+    builder.Services.AddScoped<IAntivirusScanner, LayoutParserApi.Services.Fiscal.WindowsDefenderAntivirusScanner>();
+    builder.Services.AddScoped<IFiscalPackageService, LayoutParserApi.Services.Fiscal.FiscalPackageService>();
+    // ✅ Slice 3 (issue #230): MappingDraft human-in-the-loop — mesmo banco/padrão ADO.NET.
+    // MappingSuggestionService usa HttpClient (Ollama) — AddHttpClient para pooling correto de conexão,
+    // mesmo padrão de OllamaValidationDiagnosticService.
+    builder.Services.AddScoped<IMappingDraftStore, SqlMappingDraftStore>();
+    builder.Services.AddHttpClient<IMappingSuggestionService, LayoutParserApi.Services.Fiscal.MappingSuggestionService>();
+    builder.Services.AddScoped<LayoutParserApi.Services.Filters.MappingEngineGuardFilter>();
+    // ✅ Slice 4 (issue #226/#227): MappingExplanation — 3 adapters determinísticos (sem LLM),
+    // resolvidos por Engine no controller via IEnumerable<IMappingExplanationAdapter>.
+    builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.IMappingExplanationAdapter, LayoutParserApi.Services.Fiscal.SysmiddleExplanationAdapter>();
+    builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.IMappingExplanationAdapter, LayoutParserApi.Services.Fiscal.TclExplanationAdapter>();
+    builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.IMappingExplanationAdapter, LayoutParserApi.Services.Fiscal.XsltExplanationAdapter>();
+    // ✅ Slice 5 (issue #231): compilação determinística MappingDraftRule[] → XSLT/TCL + Fiscal Test
+    // Lab. Mesmo banco/padrão ADO.NET; compile/test-run reaproveitam CanonicalDiffer/XsdValidationService
+    // (já registrados/disponíveis via DI) sem I/O externo/Ollama.
+    builder.Services.AddScoped<IMappingReleaseStore, SqlMappingReleaseStore>();
+    builder.Services.AddScoped<IMappingCompileService, LayoutParserApi.Services.Fiscal.MappingCompileService>();
+    builder.Services.AddScoped<IMappingTestRunService, LayoutParserApi.Services.Fiscal.MappingTestRunService>();
     // ✅ Estado do warm-up do catálogo (P1.3), lido pela sonda de readiness. Singleton porque é
     // preenchido pelo IHostedService de warm-up e lido pelo health check — estado compartilhado.
     builder.Services.AddSingleton<CatalogWarmupState>();
@@ -522,6 +545,7 @@ try
     builder.Services.AddScoped<ILayoutValidator, LayoutValidator>();
     builder.Services.AddScoped<ILayoutNormalizer, LayoutNormalizer>();
     builder.Services.AddScoped<ILayoutDetector, LayoutDetector>();
+    builder.Services.AddScoped<IAutomaticLayoutDetectionService, AutomaticLayoutDetectionService>();
     builder.Services.AddScoped<ILayoutParserService, LayoutParserService>();
 
     // Mapper Cache Services
@@ -761,6 +785,10 @@ try
         var correlationId = context.Request.Headers["X-Correlation-ID"].FirstOrDefault();
         if (string.IsNullOrWhiteSpace(correlationId))
             correlationId = Guid.NewGuid().ToString();
+        else
+            // ✅ CodeQL cs/log-forging: X-Correlation-ID vem do cliente e é ecoado em TODO log da
+            // request (LogContext abaixo) — saneia aqui uma única vez em vez de em cada call site.
+            correlationId = LayoutParserApi.Services.Logging.LogMessageSanitizer.Sanitize(correlationId, maxLength: 200);
 
         context.Response.Headers["X-Correlation-ID"] = correlationId;
         CorrelationContext.CurrentId = correlationId;
