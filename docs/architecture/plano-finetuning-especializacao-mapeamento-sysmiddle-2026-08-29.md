@@ -1039,3 +1039,81 @@ curtos), `~/build_fullprompt_pairs.py` (monta `~/fullprompt_pairs.jsonl`, 3 pare
 `~/infer_fullprompt.py` (inferência com prompt completo), adapter `~/lora_fullprompt_adapter/`,
 saída `~/gerado_fullprompt.xsl` — todos em `elson@172.25.32.5:~/`, mesmo tratamento dos
 artefatos de teste anteriores.
+
+## Teste da hipótese "decodificação greedy" com sampling real — 2026-09-01
+
+**Objetivo:** isolar a hipótese remanescente mais barata do item 1 da recomendação acima —
+testar se `do_sample=True` (`temperature`/`top_p` > 0) sobre o **mesmo adapter já treinado**
+(`~/lora_fullprompt_adapter`, sem retreinar nada) muda o modo de falha da geração, no mesmo par
+usado nas últimas duas rodadas (`NFe009_4.00_ConsSitNFe_NeoGridToSefaz`, prompt completo, sem
+truncar).
+
+### Método
+
+Script `~/infer_fullprompt_sampling.py` (baseado em `~/infer_fullprompt.py`, mesmo
+carregamento de modelo/adapter/par). Testadas 3 configurações, cada uma rodada 2 vezes
+(sampling é não-determinístico — 1 amostra não seria conclusiva):
+
+- `temperature=0.7, top_p=0.9`
+- `temperature=1.0, top_p=0.95`
+- `temperature=0.3, top_p=0.9` (mais conservador)
+
+`max_new_tokens=1024`, mesmo prompt não truncado das rodadas anteriores. 6 gerações no total,
+cada uma levando ~6-7 minutos em CPU (execução completa: ~41 minutos, 11:08–11:49). Saídas
+salvas em `~/gerado_sampling_{config}_run{1,2}.xsl` na VM (não commitadas — mesmo tratamento de
+artefatos de sessão anteriores).
+
+### Resultado — honesto
+
+**`grep -c 'xsl:'` = 0 nas 6 gerações, sem exceção.** Sampling não fez o adapter emitir uma
+única tag XSLT sequer, em nenhuma das 3 temperaturas, em nenhuma das 2 repetições por
+temperatura. **A hipótese "decodificação greedy" está refutada como causa raiz isolada.**
+
+Mas o **modo de falha mudou de forma consistente e informativa** em relação a todas as rodadas
+anteriores (greedy, `do_sample=False`):
+
+- **Nas 6 rodadas anteriores** (masking, épocas, diversidade, truncamento — todas com
+  `do_sample=False`): degeneração em **loop de repetição literal** de um padrão (mesmo
+  fragmento de texto/token repetido até `max_new_tokens`).
+- **Nas 6 rodadas desta sessão** (`do_sample=True`): a saída **quebrou o padrão de loop** — o
+  modelo produz texto coerente e não-repetitivo (majoritariamente em `temperature=0.3` e
+  `0.7`), mas **alucina o formato errado**: gera um bloco ` ```json ` com um mapeamento
+  simplificado do cabeçalho do TCL (`identifier`, `name`, `fields` com `tpAmb`/`chNFe`) seguido
+  de uma explicação em prosa em português sobre o que o JSON representa — nunca XSLT. Em
+  `temperature=1.0` (mais alta), um dos dois runs (`t10_run1`) chegou a **alternar entre blocos
+  ` ```json `, ` ```xml ` (com tags XML genéricas tipo `<Map><Line identifier="E"
+  name="Cabecalho"><Field .../></Line></Map>`, não `xsl:`) e ` ```python `** — sinal de que o
+  modelo "sabe" que existe uma estrutura de mapeamento a representar, mas não aprendeu qual
+  vocabulário/gramática (XSLT) usar para representá-la; o outro run de `temperature=1.0`
+  (`t10_run2`) divergiu ainda mais, para prosa livre sobre o campo `tpAmb` sem nenhuma estrutura.
+
+Isto é evidência qualitativa nova e relevante: o adapter treinado **não memorizou "eco do TCL"
+nem está preso a um único caminho de argmax degenerado** — ele tem alguma noção semântica do
+conteúdo do par (nomes de campo reais do TCL, ideia de "mapa"/"linha"/"campo"), mas nunca liga
+essa noção ao formato de saída correto (tags `xsl:`, estrutura de `<xsl:template>`/`<xsl:value-of>`
+etc.). Isso é consistente com **capacidade insuficiente do adapter LoRA (r=4, só
+`q_proj`/`v_proj`) e/ou do modelo base de 1.5B** para aprender a gramática XSLT a partir do
+dataset e orçamento de parâmetros treináveis usados até aqui — não com um problema de
+decodificação.
+
+### Conclusão
+
+**Sampling não resolveu — nem parcialmente, no sentido de produzir XSLT.** Mas não foi um teste
+sem valor: **mudou o modo de falha de "loop mecânico" para "alucinação semântica coerente porém
+fora do formato-alvo"**, o que é evidência a favor da hipótese de capacidade (item 2 da
+recomendação de 2026-09-01 acima), não contra ela. Combinado com a rodada anterior de
+truncamento (também refutada) e todo o histórico de masking/épocas/diversidade, **as 4 hipóteses
+mecânicas mais baratas de testar estão todas refutadas com evidência medida.**
+
+**Recomendação final desta linha de investigação:** seguir para os itens 2/3 já autorizados pelo
+dono — **aumentar o rank do LoRA (r=16-32, considerar adicionar `k_proj`/`o_proj`/módulos MLP
+como `target_modules`) e/ou trocar para um modelo base maior**, mesmo que isso deixe o servidor
+mais lento (autorização explícita do dono, mesmo sem GPU). O teste de sampling desta sessão não
+elimina a necessidade desse próximo passo — ele reforça que o gargalo é capacidade de aprender a
+gramática-alvo, não a estratégia de decodificação na hora de gerar.
+
+### Scripts desta sessão (não commitados — artefatos de sessão na VM)
+
+`~/infer_fullprompt_sampling.py` (3 configs × 2 runs de sampling sobre o adapter já treinado,
+sem retreinar), saídas `~/gerado_sampling_{t03,t07,t10}_run{1,2}.xsl` — todos em
+`elson@172.25.32.5:~/`, mesmo tratamento dos artefatos de teste anteriores.
