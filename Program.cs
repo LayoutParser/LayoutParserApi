@@ -401,7 +401,9 @@ try
     builder.Services.AddScoped<MapperDatabaseService>();
     builder.Services.AddScoped<ICachedLayoutService, CachedLayoutService>();
     // ✅ Slice 1 (issue #225/#228): identidade externa → UserId interno + workspace fiscal isolado.
-    // Mesmo banco ConnectUS_Macgyver (não há banco dedicado); Scoped por padrão do grupo Database.
+    // Banco DEDICADO (config "IdentityDatabase:*", SQL Server local à máquina da API) — NÃO é mais o
+    // ConnectUS_Macgyver do Sysmiddle (reuso causava erro de FK em produção contra tbUser legada,
+    // schema incompatível). Scoped por padrão do grupo Database.
     builder.Services.AddScoped<IIdentityWorkspaceStore, SqlIdentityWorkspaceStore>();
     builder.Services.AddScoped<IIdentityWorkspaceService, LayoutParserApi.Services.Identity.IdentityWorkspaceService>();
     // ✅ Estado do warm-up do catálogo (P1.3), lido pela sonda de readiness. Singleton porque é

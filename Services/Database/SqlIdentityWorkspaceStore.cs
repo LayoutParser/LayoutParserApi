@@ -6,17 +6,21 @@ using Microsoft.Data.SqlClient;
 namespace LayoutParserApi.Services.Database
 {
     /// <summary>
-    /// Implementação SQL de <see cref="IIdentityWorkspaceStore"/> — Slice 1 (issue #225/#228). Segue o
-    /// mesmo padrão de acesso a dado de <see cref="MapperDatabaseService"/> (ADO.NET cru, connection
-    /// string montada de <c>Database:*</c>, mesmo banco <c>ConnectUS_Macgyver</c> — não há banco
-    /// dedicado para este projeto).
+    /// Implementação SQL de <see cref="IIdentityWorkspaceStore"/> — Slice 1 (issue #225/#228).
+    /// Usa um **banco SQL Server dedicado** (config <c>IdentityDatabase:*</c>), local à máquina onde
+    /// a API roda — NÃO reusa mais o <c>ConnectUS_Macgyver</c> do Sysmiddle. O reuso original causava
+    /// erro em produção (FK inválida) porque <c>dbo.tbLpUser</c> já existia como tabela LEGADA do
+    /// próprio Sysmiddle, com schema incompatível — o <see cref="EnsureSchemaAsync"/> pulava a criação
+    /// (tabela "já existe") e a FK falhava contra o schema errado. Ver
+    /// <c>.claude/rules/security.md</c> para o histórico de credenciais compartilhadas que motivou a
+    /// separação.
     /// </summary>
     /// <remarks>
-    /// As tabelas (<c>tbUser</c>, <c>tbExternalIdentity</c>, <c>tbFiscalWorkspace</c>,
-    /// <c>tbWorkspaceMembership</c>) são criadas de forma idempotente (<c>IF OBJECT_ID(...) IS NULL</c>)
+    /// As tabelas (prefixo <c>tbLp*</c> para não colidir com nada do host — mesmo em banco próprio,
+    /// é defesa em profundidade) são criadas de forma idempotente (<c>IF OBJECT_ID(...) IS NULL</c>)
     /// na primeira chamada de cada instância de processo — não há projeto de migração dedicado nesta
     /// API ainda. A garantia de "não duplicar sob concorrência" É o UNIQUE constraint
-    /// (<c>UQ_tbExternalIdentity</c>, índice filtrado por workspace pessoal, <c>UQ_tbWorkspaceMembership</c>):
+    /// (<c>UQ_tbLpExternalIdentity</c>, índice filtrado por workspace pessoal, <c>UQ_tbLpWorkspaceMembership</c>):
     /// o INSERT tenta direto e, se colidir (erro 2601/2627), relê a linha existente — não usa
     /// <c>SELECT</c> prévio como garantia (só como fast-path), porque um <c>SELECT</c> antes do
     /// <c>INSERT</c> tem janela de corrida entre processos.
@@ -36,10 +40,11 @@ namespace LayoutParserApi.Services.Database
         public SqlIdentityWorkspaceStore(ILogger<SqlIdentityWorkspaceStore> logger, IConfiguration configuration)
         {
             _logger = logger;
-            var server = configuration["Database:Server"];
-            var database = configuration["Database:Database"];
-            var userId = configuration["Database:UserId"];
-            var password = configuration["Database:Password"];
+            // ✅ Banco dedicado (não é mais o ConnectUS_Macgyver do Sysmiddle) — credencial separada.
+            var server = configuration["IdentityDatabase:Server"];
+            var database = configuration["IdentityDatabase:Database"];
+            var userId = configuration["IdentityDatabase:UserId"];
+            var password = configuration["IdentityDatabase:Password"];
 
             _connectionString = $"Server={server};Database={database};User Id={userId};Password={password};TrustServerCertificate=True;";
         }
@@ -61,7 +66,7 @@ namespace LayoutParserApi.Services.Database
                 try
                 {
                     using (var insertUser = new SqlCommand(
-                        "INSERT INTO dbo.tbUser (UserId, CreatedAt) VALUES (@UserId, SYSUTCDATETIME());",
+                        "INSERT INTO dbo.tbLpUser (UserId, CreatedAt) VALUES (@UserId, SYSUTCDATETIME());",
                         connection, tx))
                     {
                         insertUser.Parameters.AddWithValue("@UserId", newUserId);
@@ -69,7 +74,7 @@ namespace LayoutParserApi.Services.Database
                     }
 
                     using (var insertIdentity = new SqlCommand(
-                        @"INSERT INTO dbo.tbExternalIdentity (ExternalIdentityId, UserId, Provider, TenantOrIssuer, Subject, CreatedAt)
+                        @"INSERT INTO dbo.tbLpExternalIdentity (ExternalIdentityId, UserId, Provider, TenantOrIssuer, Subject, CreatedAt)
                           VALUES (@ExternalIdentityId, @UserId, @Provider, @TenantOrIssuer, @Subject, SYSUTCDATETIME());",
                         connection, tx))
                     {
@@ -101,7 +106,7 @@ namespace LayoutParserApi.Services.Database
 
             var afterRace = await SelectUserIdByExternalIdentityAsync(connection, provider, tenantOrIssuer, subject, cancellationToken);
             return afterRace
-                ?? throw new InvalidOperationException("Colisão de UNIQUE em tbExternalIdentity, mas a releitura não encontrou a linha — estado inconsistente.");
+                ?? throw new InvalidOperationException("Colisão de UNIQUE em tbLpExternalIdentity, mas a releitura não encontrou a linha — estado inconsistente.");
         }
 
         public async Task<WorkspaceSummary> EnsurePersonalWorkspaceAsync(Guid userId, CancellationToken cancellationToken)
@@ -120,7 +125,7 @@ namespace LayoutParserApi.Services.Database
                 try
                 {
                     using (var insertWorkspace = new SqlCommand(
-                        @"INSERT INTO dbo.tbFiscalWorkspace (WorkspaceId, Name, Kind, OwnerUserId, CreatedAt)
+                        @"INSERT INTO dbo.tbLpFiscalWorkspace (WorkspaceId, Name, Kind, OwnerUserId, CreatedAt)
                           VALUES (@WorkspaceId, @Name, @Kind, @OwnerUserId, SYSUTCDATETIME());",
                         connection, tx))
                     {
@@ -132,7 +137,7 @@ namespace LayoutParserApi.Services.Database
                     }
 
                     using (var insertMembership = new SqlCommand(
-                        @"INSERT INTO dbo.tbWorkspaceMembership (WorkspaceMembershipId, WorkspaceId, UserId, Role, CreatedAt)
+                        @"INSERT INTO dbo.tbLpWorkspaceMembership (WorkspaceMembershipId, WorkspaceId, UserId, Role, CreatedAt)
                           VALUES (@Id, @WorkspaceId, @UserId, @Role, SYSUTCDATETIME());",
                         connection, tx))
                     {
@@ -148,7 +153,7 @@ namespace LayoutParserApi.Services.Database
                 catch (SqlException ex) when (UniqueViolationErrorNumbers.Contains(ex.Number))
                 {
                     // Corrida perdida: outra requisição já criou o workspace pessoal deste usuário
-                    // (índice filtrado UX_tbFiscalWorkspace_PersonalOwner). Relê abaixo.
+                    // (índice filtrado UX_tbLpFiscalWorkspace_PersonalOwner). Relê abaixo.
                     await tx.RollbackAsync(cancellationToken);
                     _logger.LogInformation("Corrida de criação de workspace pessoal detectada (userId={UserId}); relendo workspace existente.", userId);
                 }
@@ -161,7 +166,7 @@ namespace LayoutParserApi.Services.Database
 
             var afterRace = await SelectPersonalWorkspaceAsync(connection, userId, cancellationToken);
             return afterRace
-                ?? throw new InvalidOperationException("Colisão de UNIQUE em tbFiscalWorkspace, mas a releitura não encontrou o workspace pessoal — estado inconsistente.");
+                ?? throw new InvalidOperationException("Colisão de UNIQUE em tbLpFiscalWorkspace, mas a releitura não encontrou o workspace pessoal — estado inconsistente.");
         }
 
         public async Task<IReadOnlyList<WorkspaceSummary>> GetMembershipsAsync(Guid userId, CancellationToken cancellationToken)
@@ -173,8 +178,8 @@ namespace LayoutParserApi.Services.Database
             var result = new List<WorkspaceSummary>();
             using var command = new SqlCommand(
                 @"SELECT w.WorkspaceId, w.Name, w.Kind, m.Role, w.CreatedAt
-                  FROM dbo.tbWorkspaceMembership m
-                  JOIN dbo.tbFiscalWorkspace w ON w.WorkspaceId = m.WorkspaceId
+                  FROM dbo.tbLpWorkspaceMembership m
+                  JOIN dbo.tbLpFiscalWorkspace w ON w.WorkspaceId = m.WorkspaceId
                   WHERE m.UserId = @UserId
                   ORDER BY w.CreatedAt ASC;",
                 connection);
@@ -195,8 +200,8 @@ namespace LayoutParserApi.Services.Database
 
             using var command = new SqlCommand(
                 @"SELECT w.WorkspaceId, w.Name, w.Kind, m.Role, w.CreatedAt
-                  FROM dbo.tbWorkspaceMembership m
-                  JOIN dbo.tbFiscalWorkspace w ON w.WorkspaceId = m.WorkspaceId
+                  FROM dbo.tbLpWorkspaceMembership m
+                  JOIN dbo.tbLpFiscalWorkspace w ON w.WorkspaceId = m.WorkspaceId
                   WHERE m.WorkspaceId = @WorkspaceId AND m.UserId = @UserId;",
                 connection);
             command.Parameters.AddWithValue("@WorkspaceId", workspaceId);
@@ -219,7 +224,7 @@ namespace LayoutParserApi.Services.Database
         private static async Task<Guid?> SelectUserIdByExternalIdentityAsync(SqlConnection connection, string provider, string tenantOrIssuer, string subject, CancellationToken cancellationToken)
         {
             using var command = new SqlCommand(
-                "SELECT UserId FROM dbo.tbExternalIdentity WHERE Provider = @Provider AND TenantOrIssuer = @TenantOrIssuer AND Subject = @Subject;",
+                "SELECT UserId FROM dbo.tbLpExternalIdentity WHERE Provider = @Provider AND TenantOrIssuer = @TenantOrIssuer AND Subject = @Subject;",
                 connection);
             command.Parameters.AddWithValue("@Provider", provider);
             command.Parameters.AddWithValue("@TenantOrIssuer", tenantOrIssuer);
@@ -233,8 +238,8 @@ namespace LayoutParserApi.Services.Database
         {
             using var command = new SqlCommand(
                 @"SELECT w.WorkspaceId, w.Name, w.Kind, m.Role, w.CreatedAt
-                  FROM dbo.tbFiscalWorkspace w
-                  JOIN dbo.tbWorkspaceMembership m ON m.WorkspaceId = w.WorkspaceId AND m.UserId = w.OwnerUserId
+                  FROM dbo.tbLpFiscalWorkspace w
+                  JOIN dbo.tbLpWorkspaceMembership m ON m.WorkspaceId = w.WorkspaceId AND m.UserId = w.OwnerUserId
                   WHERE w.OwnerUserId = @UserId AND w.Kind = @Kind;",
                 connection);
             command.Parameters.AddWithValue("@UserId", userId);
@@ -259,43 +264,43 @@ namespace LayoutParserApi.Services.Database
                     return;
 
                 const string ddl = @"
-IF OBJECT_ID('dbo.tbUser', 'U') IS NULL
-CREATE TABLE dbo.tbUser (
+IF OBJECT_ID('dbo.tbLpUser', 'U') IS NULL
+CREATE TABLE dbo.tbLpUser (
     UserId UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
     CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
 );
 
-IF OBJECT_ID('dbo.tbExternalIdentity', 'U') IS NULL
-CREATE TABLE dbo.tbExternalIdentity (
+IF OBJECT_ID('dbo.tbLpExternalIdentity', 'U') IS NULL
+CREATE TABLE dbo.tbLpExternalIdentity (
     ExternalIdentityId UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
-    UserId UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.tbUser(UserId),
+    UserId UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.tbLpUser(UserId),
     Provider NVARCHAR(64) NOT NULL,
     TenantOrIssuer NVARCHAR(256) NOT NULL,
     Subject NVARCHAR(256) NOT NULL,
     CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
-    CONSTRAINT UQ_tbExternalIdentity UNIQUE (Provider, TenantOrIssuer, Subject)
+    CONSTRAINT UQ_tbLpExternalIdentity UNIQUE (Provider, TenantOrIssuer, Subject)
 );
 
-IF OBJECT_ID('dbo.tbFiscalWorkspace', 'U') IS NULL
-CREATE TABLE dbo.tbFiscalWorkspace (
+IF OBJECT_ID('dbo.tbLpFiscalWorkspace', 'U') IS NULL
+CREATE TABLE dbo.tbLpFiscalWorkspace (
     WorkspaceId UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
     Name NVARCHAR(256) NOT NULL,
     Kind NVARCHAR(32) NOT NULL,
-    OwnerUserId UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.tbUser(UserId),
+    OwnerUserId UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.tbLpUser(UserId),
     CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
 );
 
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_tbFiscalWorkspace_PersonalOwner' AND object_id = OBJECT_ID('dbo.tbFiscalWorkspace'))
-CREATE UNIQUE INDEX UX_tbFiscalWorkspace_PersonalOwner ON dbo.tbFiscalWorkspace(OwnerUserId) WHERE Kind = 'personal';
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_tbLpFiscalWorkspace_PersonalOwner' AND object_id = OBJECT_ID('dbo.tbLpFiscalWorkspace'))
+CREATE UNIQUE INDEX UX_tbLpFiscalWorkspace_PersonalOwner ON dbo.tbLpFiscalWorkspace(OwnerUserId) WHERE Kind = 'personal';
 
-IF OBJECT_ID('dbo.tbWorkspaceMembership', 'U') IS NULL
-CREATE TABLE dbo.tbWorkspaceMembership (
+IF OBJECT_ID('dbo.tbLpWorkspaceMembership', 'U') IS NULL
+CREATE TABLE dbo.tbLpWorkspaceMembership (
     WorkspaceMembershipId UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
-    WorkspaceId UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.tbFiscalWorkspace(WorkspaceId),
-    UserId UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.tbUser(UserId),
+    WorkspaceId UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.tbLpFiscalWorkspace(WorkspaceId),
+    UserId UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.tbLpUser(UserId),
     Role NVARCHAR(32) NOT NULL,
     CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
-    CONSTRAINT UQ_tbWorkspaceMembership UNIQUE (WorkspaceId, UserId)
+    CONSTRAINT UQ_tbLpWorkspaceMembership UNIQUE (WorkspaceId, UserId)
 );";
 
                 using var command = new SqlCommand(ddl, connection);
