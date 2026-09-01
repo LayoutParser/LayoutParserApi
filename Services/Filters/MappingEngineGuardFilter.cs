@@ -45,7 +45,7 @@ namespace LayoutParserApi.Services.Filters
         }
 
         private static bool IsSysmiddle(string? engine) =>
-            !string.IsNullOrWhiteSpace(engine) && string.Equals(engine, SysmiddleEngine, StringComparison.OrdinalIgnoreCase);
+            !string.IsNullOrWhiteSpace(engine) && string.Equals(engine.Trim(), SysmiddleEngine, StringComparison.OrdinalIgnoreCase);
 
         /// <summary>
         /// Avalia o <c>JsonElement</c> de <c>engine</c> no body considerando os formatos plausíveis:

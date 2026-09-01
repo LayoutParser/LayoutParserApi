@@ -141,43 +141,30 @@ não é vetor, é escopo futuro).
 `dotnet test`: 540 testes, **539 passando, 1 falha esperada/documentada** (ver achado abaixo) —
 sem regressão nos 522 pré-existentes.
 
-### ACHADO CRÍTICO — bypass do filtro via espaço ao redor de "sysmiddle"
+### ACHADO CRÍTICO — bypass do filtro via espaço ao redor de "sysmiddle" — CORRIGIDO (2026-09-01)
 
-`MappingEngineGuardFilter.IsSysmiddle(string? engine)` faz
+`MappingEngineGuardFilter.IsSysmiddle(string? engine)` fazia
 `!string.IsNullOrWhiteSpace(engine) && string.Equals(engine, "sysmiddle", StringComparison.OrdinalIgnoreCase)`
 — **sem `Trim()`**. Um payload com `engine=" sysmiddle "` (espaço antes/depois, tanto em query
-quanto em body, já que os dois caminhos usam o mesmo `IsSysmiddle`) **não bate** a comparação exata
-de string e **passa pelo filtro sem ser bloqueado**. Confirmado com teste real (não é suposição):
-`ACHADO_CRITICO_engine_sysmiddle_com_espacos_ao_redor_NAO_e_recusado` reproduz o bypass e falha se
-alguém corrigir sem atualizar o teste (caracterização deliberada do bug atual, comentário no teste
-explica).
+quanto em body, já que os dois caminhos usam o mesmo `IsSysmiddle`) não batia a comparação exata
+de string e passava pelo filtro sem ser bloqueado.
 
-Diferente do vetor de homoglyphs Unicode do §3.2 (que o design já tinha classificado como teórico,
-não explorável) — este é um bypass **trivial e diretamente explorável**: um cliente HTTP comum
-manda `engine=%20sysmiddle` e o `UnprocessableEntityObjectResult` nunca acontece, o request segue
-para o controller. O controller ainda tem a allowlist própria (`AllowedEngines` no
-`MappingDraftsController`, por exemplo) que rejeitaria `" sysmiddle "` por não ser `tcl`/`xslt` —
-então o dano prático fica contido nesse endpoint específico. Mas o filtro existe exatamente para
-ser a defesa uniforme e centralizada; qualquer endpoint futuro que confie só nele (sem allowlist
-própria, como o design já alertava no comentário do filtro) fica exposto.
-
-**Ação recomendada para `@lp-backend-dev`:** aplicar `.Trim()` no valor antes da comparação em
-`IsSysmiddle` (um `engine.Trim()` resolve tanto o path da query quanto o do body, já que os dois
-passam pelo mesmo método). Pequeno, mesmo arquivo (`Services/Filters/MappingEngineGuardFilter.cs`),
-mesmo padrão do fix de array/objeto já aplicado nesta sessão.
+**Fix aplicado por `@lp-backend-dev`:** `IsSysmiddle` agora aplica `engine.Trim()` antes da
+comparação (`Services/Filters/MappingEngineGuardFilter.cs`) — cobre query e body, já que os dois
+passam pelo mesmo método (inclusive via `IsEngineBlocked` para array/objeto). O teste que antes
+caracterizava o bypass (`ACHADO_CRITICO_engine_sysmiddle_com_espacos_ao_redor_NAO_e_recusado`) foi
+renomeado para `Engine_sysmiddle_com_espacos_ao_redor_e_recusado` e agora assert a recusa correta
+(`UnprocessableEntityObjectResult`), não mais o bypass. `dotnet build`: 0 erros. `dotnet test`:
+540/540 passando, sem regressão.
 
 ## Veredito final — 2026-09-01
 
 A garantia central (Sysmiddle não gera/edita nada) permanece **sólida por ausência estrutural de
 capacidade** — nenhum writer/serializer Sysmiddle existe no assembly, confirmado formalmente pela
 suíte nova (antes era confiança implícita, agora é gate testado). Os dois controllers fiscais
-recusam `engine=sysmiddle` em todas as formas testadas (string/casing/array/objeto), e o único
-endpoint que permite o valor (`MappingExplanationController`) é comprovadamente read-only
+recusam `engine=sysmiddle` em todas as formas testadas (string/casing/array/objeto/espaços), e o
+único endpoint que permite o valor (`MappingExplanationController`) é comprovadamente read-only
 (`Capabilities.Author=false` sempre).
 
-**Porém a garantia NÃO está 100% fechada**: o achado crítico acima é um bypass real do filtro
-central (não teórico) — a mitigação hoje depende inteiramente da allowlist própria de cada
-controller downstream, que é exatamente o cenário de risco que o design original já havia
-sinalizado como frágil ("cada controller que reusa este filtro AINDA precisa da própria allowlist
-explícita — não confie apenas neste filtro"). Veredito: **CONCERNS, não PASS** — recomendo o fix
-de uma linha (`.Trim()`) antes de considerar o Slice 6 fechado.
+Com o fix do `.Trim()` aplicado e testado, o único achado pendente do gate foi fechado. Veredito:
+**PASS**.

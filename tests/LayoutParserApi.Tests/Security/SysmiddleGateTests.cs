@@ -81,18 +81,12 @@ namespace LayoutParserApi.Tests.Security
         }
 
         [Fact]
-        public async Task ACHADO_CRITICO_engine_sysmiddle_com_espacos_ao_redor_NAO_e_recusado()
+        public async Task Engine_sysmiddle_com_espacos_ao_redor_e_recusado()
         {
-            // Teste de caracterização, não de garantia — documenta um gap REAL encontrado nesta
-            // sessão (Slice 6 / issue #232), não previsto no design original (que só cogitava
-            // homoglyphs Unicode, não whitespace simples). IsSysmiddle() faz apenas
-            // "!IsNullOrWhiteSpace(engine) && Equals(engine, SysmiddleEngine, OrdinalIgnoreCase)" —
-            // sem Trim() — então "engine=%20sysmiddle%20" (query) passa despercebido, porque
-            // " sysmiddle " != "sysmiddle" na comparação exata de string. O mesmo vale para o body
-            // (mesmo método IsSysmiddle). Isso é bypass real e explorável, não teórico — reportar
-            // como achado crítico ao @lp-backend-dev: ResolveEnginesAsync/IsSysmiddle precisam
-            // aplicar .Trim() antes da comparação. Este teste fixa o comportamento ATUAL (bypass)
-            // para não regredir silenciosamente e para forçar quem tocar o filtro a notar o gap.
+            // Corrigido (Slice 6 / issue #232): IsSysmiddle() agora aplica .Trim() antes da
+            // comparação, então "engine=%20sysmiddle%20" (query) é recusado igual a "sysmiddle"
+            // sem espaços. Este teste antes caracterizava o bypass (bug conhecido); agora garante
+            // o comportamento correto e evita regressão.
             var filtro = new MappingEngineGuardFilter();
             var context = CriarExecutingContext(new Dictionary<string, StringValues> { ["engine"] = " sysmiddle " });
             var nextChamado = false;
@@ -103,9 +97,8 @@ namespace LayoutParserApi.Tests.Security
                 return Task.FromResult(CriarExecutedContext());
             });
 
-            // BUG CONHECIDO: isto deveria ser False (recusado), mas hoje é True (passa).
-            Assert.True(nextChamado);
-            Assert.Null(context.Result);
+            Assert.False(nextChamado);
+            Assert.IsType<UnprocessableEntityObjectResult>(context.Result);
         }
 
         [Fact]
