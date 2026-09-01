@@ -372,6 +372,11 @@ jobs:
     # por exemplo) que ninguem versionou. Este step faz UPSERT: reescreve so as chaves que
     # gerencia e PRESERVA todo o resto. Sobrescrever em bloco apagaria a senha do SQL.
     #
+    # IdentityDatabase__Server/Database/UserId/Password: mesmo SQL Server dedicado de
+    # identidade (172.25.32.5) usado pelo ci-dev.yml, injetado aqui pelo mesmo par de
+    # secrets/variables (IDENTITY_DB_USERID/IDENTITY_DB_PASSWORD/IDENTITY_DB_SERVER/
+    # IDENTITY_DB_NAME) - ver bloco no $managed logo abaixo.
+    #
     # Roda ANTES do deploy de proposito: o servico e parado e reiniciado la, entao sobe ja
     # com o ambiente novo. Variavel de ambiente e lida no start do processo.
 
@@ -643,6 +648,10 @@ jobs:
     - name: Configurar ambiente do servico (upsert, nao destrutivo)
       env:
         AI_METRICS_INGEST_KEY: ${{ secrets.AI_METRICS_INGEST_KEY }}
+        IDENTITY_DB_SERVER: ${{ vars.IDENTITY_DB_SERVER }}
+        IDENTITY_DB_NAME: ${{ vars.IDENTITY_DB_NAME }}
+        IDENTITY_DB_USERID: ${{ secrets.IDENTITY_DB_USERID }}
+        IDENTITY_DB_PASSWORD: ${{ secrets.IDENTITY_DB_PASSWORD }}
       run: |
         $ErrorActionPreference = "Stop"
         $serviceName = "LayoutParserApi"
@@ -697,6 +706,36 @@ jobs:
           $managed['AiMetrics__IngestApiKey'] = $env:AI_METRICS_INGEST_KEY
         } else {
           Write-Warning ("Secret AI_METRICS_INGEST_KEY ausente - a ingestao de metricas de IA continuara RECUSADA. " +
+            "Crie em: GitHub -> Settings -> Secrets and variables -> Actions -> aba Secrets.")
+        }
+
+        # IdentityDatabase:* - SQL Server dedicado (172.25.32.5) para identidade/workspace,
+        # substituindo o uso indevido do banco Sysmiddle ConnectUS_Macgyver (Error 1770 de FK
+        # em SqlIdentityWorkspaceStore.cs). Server/Database vem de variables (nao sensiveis);
+        # UserId/Password vem de secrets (NUNCA ecoar o valor). Mesmo mecanismo do ci-dev.yml,
+        # mas aqui em upsert: se algum estiver ausente, a chave correspondente simplesmente NAO
+        # entra em $managed - um valor ja configurado manualmente no destino fica PRESERVADO em
+        # vez de apagado (mesma semantica de LowCode__RunnerPath acima).
+        if (-not [string]::IsNullOrWhiteSpace($env:IDENTITY_DB_SERVER)) {
+          $managed['IdentityDatabase__Server'] = $env:IDENTITY_DB_SERVER
+        } else {
+          Write-Warning "Variable IDENTITY_DB_SERVER ausente - IdentityDatabase:Server nao sera gerenciada (valor existente, se houver, fica preservado)."
+        }
+        if (-not [string]::IsNullOrWhiteSpace($env:IDENTITY_DB_NAME)) {
+          $managed['IdentityDatabase__Database'] = $env:IDENTITY_DB_NAME
+        } else {
+          Write-Warning "Variable IDENTITY_DB_NAME ausente - IdentityDatabase:Database nao sera gerenciada (valor existente, se houver, fica preservado)."
+        }
+        if (-not [string]::IsNullOrWhiteSpace($env:IDENTITY_DB_USERID)) {
+          $managed['IdentityDatabase__UserId'] = $env:IDENTITY_DB_USERID
+        } else {
+          Write-Warning "Secret IDENTITY_DB_USERID ausente - IdentityDatabase:UserId nao sera gerenciada (valor existente, se houver, fica preservado)."
+        }
+        if (-not [string]::IsNullOrWhiteSpace($env:IDENTITY_DB_PASSWORD)) {
+          $managed['IdentityDatabase__Password'] = $env:IDENTITY_DB_PASSWORD
+        } else {
+          Write-Warning ("Secret IDENTITY_DB_PASSWORD ausente - IdentityDatabase:Password nao sera gerenciada (valor existente, se houver, fica preservado). " +
+            "Sem ela e sem valor manual no destino, a API sobe fail-closed negando UserId. " +
             "Crie em: GitHub -> Settings -> Secrets and variables -> Actions -> aba Secrets.")
         }
 
