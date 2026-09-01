@@ -806,9 +806,16 @@ try
     app.UseMiddleware<TrustedIdentityMiddleware>();
 
     // ✅ Swagger habilitado em todo ambiente (não só Development) — pedido explícito do dono
-    // para testar endpoints via Postman/Swagger UI direto em produção.
-    app.UseSwagger();
-    app.UseSwaggerUI();
+    // para testar endpoints via Postman/Swagger UI direto em produção. Servido sob /api/swagger
+    // (não /swagger) de propósito: em produção o BFF/reverse proxy (LayoutParserReact/server)
+    // só encaminha /api/* para esta API — qualquer rota fora desse prefixo cai no catch-all do
+    // SPA React e devolve a página de erro 404 do front, não o Swagger.
+    app.UseSwagger(c => c.RouteTemplate = "api/swagger/{documentName}/swagger.json");
+    app.UseSwaggerUI(c =>
+    {
+        c.RoutePrefix = "api/swagger";
+        c.SwaggerEndpoint("/api/swagger/v1/swagger.json", "LayoutParserApi v1");
+    });
 
     // Enable detailed error pages in development
     if (app.Environment.IsDevelopment())
