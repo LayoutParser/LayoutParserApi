@@ -470,6 +470,10 @@ jobs:
     # O ambiente do servico vive em HKLM\...\Services\LayoutParserApi\Environment (REG_MULTI_SZ):
     #   - Kestrel__Endpoints__Http__Url: porta da instancia de dev (o appsettings fixa 5000).
     #   - Database__Password: injetada do secret DB_PASSWORD_DEV (NUNCA ecoar o valor).
+    #   - IdentityDatabase__Server/Database: SQL dedicado de identidade (172.25.32.5), das
+    #     variables IDENTITY_DB_SERVER/IDENTITY_DB_NAME (nao sensiveis).
+    #   - IdentityDatabase__UserId/Password: injetadas dos secrets IDENTITY_DB_USERID/
+    #     IDENTITY_DB_PASSWORD (NUNCA ecoar o valor).
     #   - LowCode__Package: sem ele o runner sai com exit 9 e NENHUMA transformacao acontece.
     #   - LowCode__RunnerTimeoutSeconds: o default de 15s mata o runner no meio, sempre.
     #   - ML__LowCodeTransformationsPath: tira o store de dentro da pasta que o deploy sobrescreve.
@@ -556,6 +560,10 @@ jobs:
       env:
         DB_PASSWORD_DEV: ${{ secrets.DB_PASSWORD_DEV }}
         AI_METRICS_INGEST_KEY_DEV: ${{ secrets.AI_METRICS_INGEST_KEY_DEV }}
+        IDENTITY_DB_USERID: ${{ secrets.IDENTITY_DB_USERID }}
+        IDENTITY_DB_PASSWORD: ${{ secrets.IDENTITY_DB_PASSWORD }}
+        IDENTITY_DB_SERVER: ${{ vars.IDENTITY_DB_SERVER }}
+        IDENTITY_DB_NAME: ${{ vars.IDENTITY_DB_NAME }}
       run: |
         $serviceName = "LayoutParserApi"
         $exePath = Join-Path $env:DEPLOY_PATH_RESOLVED "api\LayoutParserApi.exe"
@@ -594,6 +602,33 @@ jobs:
         } else {
           Write-Warning ("Secret DB_PASSWORD_DEV vazio - a API subira DEGRADADA (sem SQL) ate configurarem o secret " +
             "em: GitHub -> Settings -> Secrets and variables -> Actions -> aba Secrets.")
+        }
+
+        # IdentityDatabase:* - SQL Server dedicado (172.25.32.5) para identidade/workspace,
+        # substituindo o uso indevido do banco Sysmiddle ConnectUS_Macgyver (Error 1770 de FK
+        # em SqlIdentityWorkspaceStore.cs). Server/Database sao variables (nao sensiveis);
+        # UserId/Password sao secrets. Sem eles, a API sobe fail-closed negando UserId ate o
+        # secret/variable ser configurado.
+        if (-not [string]::IsNullOrWhiteSpace($env:IDENTITY_DB_SERVER)) {
+          $envList += "IdentityDatabase__Server=$($env:IDENTITY_DB_SERVER)"
+        } else {
+          Write-Warning "Variable IDENTITY_DB_SERVER vazia - IdentityDatabase:Server nao sera definida."
+        }
+        if (-not [string]::IsNullOrWhiteSpace($env:IDENTITY_DB_NAME)) {
+          $envList += "IdentityDatabase__Database=$($env:IDENTITY_DB_NAME)"
+        } else {
+          Write-Warning "Variable IDENTITY_DB_NAME vazia - IdentityDatabase:Database nao sera definida."
+        }
+        if (-not [string]::IsNullOrWhiteSpace($env:IDENTITY_DB_USERID)) {
+          $envList += "IdentityDatabase__UserId=$($env:IDENTITY_DB_USERID)"
+        } else {
+          Write-Warning "Secret IDENTITY_DB_USERID vazio - IdentityDatabase:UserId nao sera definida."
+        }
+        if (-not [string]::IsNullOrWhiteSpace($env:IDENTITY_DB_PASSWORD)) {
+          $envList += "IdentityDatabase__Password=$($env:IDENTITY_DB_PASSWORD)"
+        } else {
+          Write-Warning ("Secret IDENTITY_DB_PASSWORD vazio - a API subira sem acesso ao banco de identidade " +
+            "ate configurarem o secret em: GitHub -> Settings -> Secrets and variables -> Actions -> aba Secrets.")
         }
 
         # LowCode__Package - NAO e segredo (identificador do projeto Sysmiddle), por isso vai
