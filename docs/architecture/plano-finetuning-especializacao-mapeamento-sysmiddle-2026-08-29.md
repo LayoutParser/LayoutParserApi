@@ -678,3 +678,117 @@ repetição destrave a saída certa.
 prompt), `~/infer_single_pair.py` (validação por geração), dataset `~/single_pair_chunked.jsonl`
 (57 linhas), adapter `~/lora_single_pair_adapter/`, saída `~/gerado_single_pair.xsl` — todos na VM
 (`elson@172.25.32.5:~/`), mesmo tratamento dos artefatos de teste anteriores.
+
+## Teste da hipótese "diversidade de dados" (2026-09-01) — REFUTADA
+
+### Contexto
+
+Entre o smoke-test #4 acima e esta rodada, um ciclo intermediário (não registrado nesta cópia do
+doc, ver histórico de commits) corrigiu um bug real de masking de labels no script de treino
+(`~/smoke_train_ckpt_masked.py` — a loss estava sendo calculada sobre a sequência inteira,
+incluindo o prompt; o fix mascara com `-100` tudo até `### Resposta:\n`). Com o fix, `train_loss`
+melhorou (0.4959), mas a geração continuou **100% degenerada** — 0 tags `xsl:`, eco puro e
+repetitivo de nomes de campo do `.tcl` de entrada (ex.: `indPagamento`/`indCarteira`/`indRend`/
+`indRecibo` em loop).
+
+Hipótese líder levantada: os "57 exemplos" usados até então eram todos fatias (sliding window) do
+**MESMO documento único** (`NFe009_4.00_EnvioNFe_NeoGridToSefaz`) — zero diversidade real de
+dados, o que incentivaria memorização/repetição local de n-gramas em vez de aprender a
+transformação de fato, agravado por modelo pequeno (1.5B) + decodificação greedy
+(`do_sample=False`, propensa a loops repetitivos em geração longa).
+
+**Esta seção testa diretamente essa hipótese** treinando com 7 pares DISTINTOS (documentos
+diferentes) em vez de 1 documento fatiado 57 vezes.
+
+### Config exata
+
+- Dataset: `~/multi_pair_dataset.jsonl` — 7 pares reais distintos, escolhidos por variedade de
+  tipo de documento e versão de layout (nenhum é fatia do mesmo arquivo):
+  `CTe/1.04c/CTe001_EnvioCTe`, `CTe/2.00/CTe200_EnvioCTe`, `MDFe/1.00c/MDFe100a_envio`,
+  `MDFe/3.00/MDFe300_envio`, `NFSe/NFSe2.01_envio`, `NFe/2.06b/NFe006c_EnvioNFe`,
+  `NFe/3.10/NFe008a_3.10_EnvioNFe`. Cada exemplo é o par completo (prompt=`.tcl` inteiro,
+  completion=`.xsl` inteiro), sem chunking/sliding-window — a truncagem de `MAX_LEN` faz o corte
+  natural no treino/inferência, igual ao script anterior.
+- Held-out (fora do treino, usado só pra teste de generalização):
+  `CTe/1.04c/CTe004_EnvioCTe_NeogridToSefaz` — documento nunca visto em nenhum ciclo desta sessão
+  nem da anterior.
+- Script de treino: `~/train_multi_pair.py` (cópia de `~/smoke_train_ckpt_masked.py` com apenas os
+  nomes de saída trocados — mesma lógica de masking de labels, mesmo `LoraConfig(r=4, lora_alpha=8,
+  target_modules=["q_proj","v_proj"])`, mesmo `MAX_LEN=2048`/`PROMPT_BUDGET=1024`).
+  Comando: `python3 train_multi_pair.py 2048 7 multi_pair_dataset.jsonl 1` (1 época).
+- Adapter salvo em `~/lora_multi_pair_adapter/`.
+- Inferência: `~/infer_multi_pair.py` (generalização de `infer_single_pair_masked.py`,
+  parametrizado por `.tcl`/`.xsl`/saída via argv), mesma decodificação greedy
+  (`do_sample=False`, `max_new_tokens=1024`).
+
+### Resultado do treino
+
+- Tempo de treino: 769.3s (~12.8 min) para 7 steps (1 por exemplo, batch=1, 1 época) — ~110s/step,
+  consistente com o custo por step observado nos ciclos anteriores.
+- `train_loss` final: **0.3026** (por step: 0.2798, 0.3348, 0.2644, 0.3582, 0.346, 0.2785, 0.2566)
+  — na mesma faixa do ciclo de masking anterior (0.4959 com o par único fatiado), sem sinal de
+  degradação por causa da diversidade.
+- Todos os 7 exemplos foram truncados em `MAX_LEN=2048` (nenhum par cabe inteiro — os `.xsl` reais
+  variam de ~25k a ~101k chars) — mesma limitação estrutural já apontada no smoke-test #4 (fração
+  de tokens que contribui pra loss ~0.495 em todos os exemplos, porque o prompt consome metade do
+  budget).
+
+### Resultado da geração — REFUTA a hipótese
+
+Testado com `do_sample=False`/`max_new_tokens=1024` em 3 documentos:
+
+| Documento | No treino? | Tags `xsl:` geradas | Padrão observado |
+|---|---|---|---|
+| `NFe/2.06b/NFe006c_EnvioNFe` | Sim | **0** | Eco de nomes de campo do `.tcl` em loop (`idZonaZonaZona...` repetindo e crescendo) |
+| `MDFe/3.00/MDFe300_envio` | Sim | **0** | Eco de `<FIELD name="placa".../>` duplicado e nomes de campo em sequência |
+| `CTe/1.04c/CTe004_EnvioCTe` (held-out) | **Não** | **0** | Eco de `<FIELD name="xCaracNeg".../>` variando sufixos em loop |
+
+**Resultado honesto: 0/3 gerações produziram qualquer tag `xsl:` — inclusive nos 2 pares que
+estavam no dataset de treino.** Isso é um sinal mais forte do que "não generaliza": o modelo nem
+sequer reconstrói razoavelmente algo perto do que viu durante o próprio treino, com a mesma
+assinatura de degeneração das rodadas anteriores (eco do vocabulário do `.tcl` de entrada, não do
+`.xsl` de saída, em loop repetitivo típico de greedy decoding).
+
+### Conclusão
+
+**A diversidade de dados NÃO resolveu a degeneração.** Passar de "1 documento fatiado 57 vezes"
+para "7 documentos distintos" não mudou o padrão de saída — a geração continua 100% eco do
+vocabulário de entrada, mesmo em exemplos vistos no treino. Isso invalida a hipótese de que a
+causa raiz era falta de diversidade/memorização de n-gramas locais.
+
+**Isso reforça a hipótese que já estava registrada como próximo passo no smoke-test #4:** o
+gargalo estrutural é o **truncamento do prompt a 1024 tokens** (`PROMPT_BUDGET = MAX_LEN // 2`) —
+nenhum dos `.tcl` reais cabe inteiro nesse budget (o menor exemplo do dataset multi-par tinha
+~1034 tokens só de prefixo já truncado), então o modelo nunca vê o documento de entrada completo
+nem em treino nem em inferência. Sem essa âncora, o comportamento greedy de "continuar o padrão
+mais provável" tende a extrapolar o próprio `.tcl` truncado em vez de comutar para gerar XSLT.
+
+Duas outras hipóteses continuam de pé e não foram isoladas nesta rodada:
+
+1. **Modelo pequeno demais para o problema** (1.5B parâmetros, LoRA rank 4 em só
+   `q_proj`/`v_proj` = 544.768 parâmetros treináveis, 0.035% do total) — pode não ter capacidade
+   de representar a transformação estrutural TCL→XSLT com esse orçamento de parâmetros treináveis,
+   independente de dataset ou prompt.
+2. **Decodificação greedy** (`do_sample=False`) é conhecida por favorecer loops repetitivos em
+   sequências longas — não testado ainda com sampling (`temperature`/`top_p`) ou
+   `repetition_penalty`, que poderia pelo menos quebrar o padrão de eco sem resolver o problema de
+   fundo.
+
+**Recomendação honesta para o dono:** depois de múltiplas rodadas de diagnóstico ao todo (masking
+de labels, truncamento de prompt, número de épocas, diversidade de dados) sem produzir XSLT válido
+uma única vez de forma reprodutível, o sinal está consistentemente apontando para uma limitação
+estrutural (budget de prompt insuficiente para caber o `.tcl` real, ou capacidade do modelo de
+1.5B) que dataset maior ou mais épocas não resolvem sozinhos. Antes de mais uma rodada de treino,
+vale isolar a variável "prompt completo" isoladamente (par curto que caiba inteiro em `MAX_LEN`
+maior, ex. 4096-8192, sem truncar o `.tcl`) antes de decidir entre (a) aumentar o budget de
+contexto, (b) trocar de modelo base, ou (c) reavaliar se fine-tuning LoRA em CPU é o caminho certo
+para este objetivo.
+
+### Scripts desta sessão (não commitados — artefatos de sessão na VM)
+
+`~/build_multi_pair.py` (monta o dataset multi-par a partir de `~/finetuning-dataset/`),
+`~/multi_pair_dataset.jsonl` (7 pares), `~/train_multi_pair.py` (treino, cópia parametrizada de
+`~/smoke_train_ckpt_masked.py`), `~/infer_multi_pair.py` (inferência generalizada por argv),
+adapter `~/lora_multi_pair_adapter/`, saídas `~/gerado_multi_pair_NFe_2.06b.xsl`,
+`~/gerado_multi_pair_MDFe300.xsl`, `~/gerado_multi_pair_CTe004_heldout.xsl` — todos em
+`elson@172.25.32.5:~/`, mesmo tratamento dos artefatos de teste anteriores.
