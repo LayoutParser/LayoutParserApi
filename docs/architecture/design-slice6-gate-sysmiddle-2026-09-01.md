@@ -35,8 +35,8 @@ documentar a razão inline no controller (já existe comentário, reforçar cita
 ## 3. Vetores de adulteração a cobrir em teste (além do já coberto no Slice 3)
 
 1. `engine` como array/objeto em vez de string — `MappingEngineGuardFilter.ResolveEnginesAsync` só
-   trata `ValueKind == String`; um payload `{"engine":["sysmiddle"]}` ou `{"engine":{"value":"sysmiddle"}}`
-   passa sem detecção. **Lacuna real.**
+   tratava `ValueKind == String`; um payload `{"engine":["sysmiddle"]}` ou `{"engine":{"value":"sysmiddle"}}`
+   passava sem detecção. **Lacuna real — CORRIGIDA em 2026-09-01 (ver seção abaixo).**
 2. Homoglyphs/Unicode que normalizam para "sysmiddle" (ex.: caracteres Cyrillic visualmente
    idênticos) — comparação é `OrdinalIgnoreCase` sobre string literal ASCII; não há normalização
    Unicode (NFKC) antes da comparação. Se o backend downstream faz qualquer `ToLowerInvariant`
@@ -119,3 +119,52 @@ explicitamente, mas o código já estava correto. Adicionado teste de reflection
 Testes novos em `MappingEngineGuardFilterTests`: array com `sysmiddle` no meio → recusado; array
 sem `sysmiddle` → passa; objeto JSON em `engine` → recusado (fail-closed). `dotnet build` (0 erros)
 e `dotnet test` (522 casos, todos verdes, sem regressão).
+
+## Suíte de gate consolidada — 2026-09-01 (Quinn/QA)
+
+Criada `tests/LayoutParserApi.Tests/Security/SysmiddleGateTests.cs` (25 testes) cobrindo, num
+único arquivo, todos os vetores do §3 e o plano de teste do §5: atributo do filtro nos dois
+controllers fiscais (`MappingDraftsController`/`MappingCompilationController`) + ausência
+deliberada no `MappingExplanationController`; `engine=sysmiddle` recusado em string/casing/
+array/objeto, em query e em body, isolado e combinado (query≠body); ausência de `engine` não
+bloqueada pelo filtro mas recusada pelo controller (as duas metades da garantia, juntas);
+content-type não-JSON como vetor teórico confirmado (documentado, não explorável hoje);
+`MappingExplanationController` permitindo `engine=sysmiddle` via fallback de `MapperGuid` real
+(200) e reafirmando `Capabilities.Author=false`/`Publish=false` mesmo nesse único caso legítimo;
+teste de caracterização por reflection sobre o assembly inteiro da API procurando por qualquer
+tipo com "Sysmiddle" no nome combinado com "Writer"/"Serializer"/"Encoder"/"Author"/"Publisher"/
+"Generator" — nenhum encontrado; `ExecuteSysmiddleCandidatesAsync` confirmado privado (não é
+superfície pública); nota estrutural de que nenhum controller fiscal tem `[Authorize]` hoje (RBAC
+não é vetor, é escopo futuro).
+
+`dotnet build`: 0 erros (só warnings pré-existentes, `SCS0005`/`SCS0018`, não relacionados).
+`dotnet test`: 540 testes, **539 passando, 1 falha esperada/documentada** (ver achado abaixo) —
+sem regressão nos 522 pré-existentes.
+
+### ACHADO CRÍTICO — bypass do filtro via espaço ao redor de "sysmiddle" — CORRIGIDO (2026-09-01)
+
+`MappingEngineGuardFilter.IsSysmiddle(string? engine)` fazia
+`!string.IsNullOrWhiteSpace(engine) && string.Equals(engine, "sysmiddle", StringComparison.OrdinalIgnoreCase)`
+— **sem `Trim()`**. Um payload com `engine=" sysmiddle "` (espaço antes/depois, tanto em query
+quanto em body, já que os dois caminhos usam o mesmo `IsSysmiddle`) não batia a comparação exata
+de string e passava pelo filtro sem ser bloqueado.
+
+**Fix aplicado por `@lp-backend-dev`:** `IsSysmiddle` agora aplica `engine.Trim()` antes da
+comparação (`Services/Filters/MappingEngineGuardFilter.cs`) — cobre query e body, já que os dois
+passam pelo mesmo método (inclusive via `IsEngineBlocked` para array/objeto). O teste que antes
+caracterizava o bypass (`ACHADO_CRITICO_engine_sysmiddle_com_espacos_ao_redor_NAO_e_recusado`) foi
+renomeado para `Engine_sysmiddle_com_espacos_ao_redor_e_recusado` e agora assert a recusa correta
+(`UnprocessableEntityObjectResult`), não mais o bypass. `dotnet build`: 0 erros. `dotnet test`:
+540/540 passando, sem regressão.
+
+## Veredito final — 2026-09-01
+
+A garantia central (Sysmiddle não gera/edita nada) permanece **sólida por ausência estrutural de
+capacidade** — nenhum writer/serializer Sysmiddle existe no assembly, confirmado formalmente pela
+suíte nova (antes era confiança implícita, agora é gate testado). Os dois controllers fiscais
+recusam `engine=sysmiddle` em todas as formas testadas (string/casing/array/objeto/espaços), e o
+único endpoint que permite o valor (`MappingExplanationController`) é comprovadamente read-only
+(`Capabilities.Author=false` sempre).
+
+Com o fix do `.Trim()` aplicado e testado, o único achado pendente do gate foi fechado. Veredito:
+**PASS**.
