@@ -805,12 +805,15 @@ try
     // loopback ou sem header → identidade anônima, nunca exceção. Ver TrustedIdentityMiddleware.
     app.UseMiddleware<TrustedIdentityMiddleware>();
 
+    // ✅ Swagger habilitado em todo ambiente (não só Development) — pedido explícito do dono
+    // para testar endpoints via Postman/Swagger UI direto em produção.
+    app.UseSwagger();
+    app.UseSwaggerUI();
+
     // Enable detailed error pages in development
     if (app.Environment.IsDevelopment())
     {
         app.UseDeveloperExceptionPage();
-        app.UseSwagger();
-        app.UseSwaggerUI();
         Log.Information("Swagger UI enabled for development");
     }
     else
