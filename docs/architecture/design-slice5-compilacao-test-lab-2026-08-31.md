@@ -245,3 +245,26 @@ exceção nem processa a entidade externa. Teste novo (`MappingTestRunServiceTes
 ataque em `inputXml` e em `expectedXml`) confirma rejeição com DOCTYPE apontando pra
 `file:///C:/Windows/win.ini`. `dotnet build` (0 erros) e `dotnet test` (506 casos, +2 desta suíte)
 verdes.
+
+## Correção do filtro — 2026-09-01 (Slice 6, issue #232)
+
+`MappingEngineGuardFilter` só reconhecia `engine` como string simples — `{"engine":["sysmiddle"]}`
+(ou qualquer array com `sysmiddle` no meio) passava despercebido, porque `ResolveEnginesAsync`
+checava `engineProp.ValueKind == JsonValueKind.String` e ignorava silenciosamente qualquer outro
+`ValueKind`.
+
+**Fix:** `ResolveEnginesAsync` agora delega a avaliação do corpo pra `IsEngineBlocked(JsonElement)`,
+que trata três casos: string simples (comportamento antigo, preservado); array (qualquer elemento
+string batendo `sysmiddle` recusa — cobre `["xslt","sysmiddle"]`); e, por padrão fail-closed,
+qualquer outro `ValueKind` (objeto, número, bool, null) é tratado como recusa — não reconhecer o
+formato não deveria significar "aceitar por omissão".
+
+**Cobertura no Slice 5 confirmada:** `MappingCompilationController` (endpoints `compile`/
+`test-runs`) já tinha `[ServiceFilter(typeof(MappingEngineGuardFilter))]` no nível da classe desde
+a implementação original do Slice 5 — o design anterior não tinha esse ponto confirmado
+explicitamente, mas o código já estava correto. Adicionado teste de reflection
+(`MappingCompilationController_aplica_o_filtro_no_nivel_da_classe`) pra travar isso.
+
+Testes novos em `MappingEngineGuardFilterTests`: array com `sysmiddle` no meio → recusado; array
+sem `sysmiddle` → passa; objeto JSON em `engine` → recusado (fail-closed). `dotnet build` (0 erros)
+e `dotnet test` (522 casos, todos verdes, sem regressão).
