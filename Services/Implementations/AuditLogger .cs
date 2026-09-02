@@ -14,7 +14,14 @@ namespace LayoutParserApi.Services.Implementations
 
         public void LogAudit(AuditLogEntry entry)
         {
-            _logger.LogInformation("AUDIT | UserId:{UserId} | RequestId:{RequestId} | Endpoint:{Endpoint} | Action:{Action} | Details:{Details}",entry.UserId, entry.RequestId, entry.Endpoint, entry.Action, entry.Details);
+            // ✅ CodeQL cs/log-forging: entry.* vem do request (endpoint/ação/detalhes do usuário) e
+            // este log também é fonte de auditoria — CRLF cru forjaria linhas de auditoria falsas.
+            _logger.LogInformation("AUDIT | UserId:{UserId} | RequestId:{RequestId} | Endpoint:{Endpoint} | Action:{Action} | Details:{Details}",
+                Services.Logging.LogMessageSanitizer.Sanitize(entry.UserId),
+                Services.Logging.LogMessageSanitizer.Sanitize(entry.RequestId),
+                Services.Logging.LogMessageSanitizer.Sanitize(entry.Endpoint),
+                Services.Logging.LogMessageSanitizer.Sanitize(entry.Action),
+                Services.Logging.LogMessageSanitizer.Sanitize(entry.Details));
         }
     }
 
@@ -29,10 +36,18 @@ namespace LayoutParserApi.Services.Implementations
 
         public void LogTechnical(LogEntry entry)
         {
+            // ✅ CodeQL cs/log-forging: mesmo motivo do AuditLogger acima — entry.* é derivado do request.
             if (entry.Level == "Error" && entry.Exception != null)
-                _logger.LogError(entry.Exception,"TECH | RequestId:{RequestId} | Endpoint:{Endpoint} | Message:{Message}",entry.RequestId, entry.Endpoint, entry.Message);
+                _logger.LogError(entry.Exception, "TECH | RequestId:{RequestId} | Endpoint:{Endpoint} | Message:{Message}",
+                    Services.Logging.LogMessageSanitizer.Sanitize(entry.RequestId),
+                    Services.Logging.LogMessageSanitizer.Sanitize(entry.Endpoint),
+                    Services.Logging.LogMessageSanitizer.Sanitize(entry.Message));
             else
-                _logger.LogInformation("TECH | Level:{Level} | RequestId:{RequestId} | Endpoint:{Endpoint} | Message:{Message}",entry.Level, entry.RequestId, entry.Endpoint, entry.Message);
+                _logger.LogInformation("TECH | Level:{Level} | RequestId:{RequestId} | Endpoint:{Endpoint} | Message:{Message}",
+                    Services.Logging.LogMessageSanitizer.Sanitize(entry.Level),
+                    Services.Logging.LogMessageSanitizer.Sanitize(entry.RequestId),
+                    Services.Logging.LogMessageSanitizer.Sanitize(entry.Endpoint),
+                    Services.Logging.LogMessageSanitizer.Sanitize(entry.Message));
         }
     }
 
