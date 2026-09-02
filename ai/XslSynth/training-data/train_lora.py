@@ -26,9 +26,11 @@ Rodar em background na VM (persistente a desconexao SSH):
       > ~/train_lora.log 2>&1 &
 """
 import argparse
+import glob
 import json
 import os
 import random
+import re
 
 from datasets import Dataset
 from peft import LoraConfig, get_peft_model
@@ -74,6 +76,32 @@ def load_dataset(path: str) -> Dataset:
             completion = obj.get("output", "")
             rows.append({"prompt": prompt, "completion": completion})
     return Dataset.from_list(rows)
+
+
+def find_latest_checkpoint(output_dir: str):
+    """Procura o checkpoint mais recente em output_dir (padrao checkpoint-<step>
+    salvo pelo Trainer/SFTTrainer com save_strategy="steps"). Retorna o caminho
+    absoluto do checkpoint de maior step, ou None se nao houver nenhum.
+
+    Usado para retomar o treino automaticamente apos reboot/crash da VM, sem
+    exigir que quem chama o script saiba o numero exato do ultimo step.
+    """
+    if not os.path.isdir(output_dir):
+        return None
+
+    candidates = []
+    for path in glob.glob(os.path.join(output_dir, "checkpoint-*")):
+        if not os.path.isdir(path):
+            continue
+        match = re.search(r"checkpoint-(\d+)$", path)
+        if match:
+            candidates.append((int(match.group(1)), path))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: item[0])
+    return candidates[-1][1]
 
 
 def split_train_eval(ds: Dataset, eval_fraction: float, seed: int) -> tuple[Dataset, Dataset]:
@@ -181,8 +209,14 @@ def main():
         callbacks=[EarlyStoppingCallback(early_stopping_patience=args.early_stopping_patience)],
     )
 
+    resume_checkpoint = find_latest_checkpoint(args.output_dir)
+    if resume_checkpoint:
+        print(f"[train_lora] checkpoint encontrado em {resume_checkpoint} — retomando treino a partir dele")
+    else:
+        print("[train_lora] nenhum checkpoint encontrado — iniciando treino do zero")
+
     print("[train_lora] iniciando treino (isso deve rodar por horas/dias em CPU)")
-    trainer.train()
+    trainer.train(resume_from_checkpoint=resume_checkpoint)
 
     print(f"[train_lora] salvando adapter final (melhor checkpoint por eval_loss) em {args.output_dir}")
     trainer.save_model(args.output_dir)
