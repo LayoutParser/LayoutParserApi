@@ -62,6 +62,10 @@ namespace LayoutParserApi.Services.Transformation.Ai
             CancellationToken cancellationToken,
             IReadOnlyList<ParsedField>? parsedFields = null)
         {
+            // ✅ CodeQL cs/log-forging: mapperGuid/layoutName vêm do request (ticket assíncrono de
+            // IA) e podem conter \r/\n — saneia uma vez, reusa só nos logs deste serviço.
+            var safeMapperGuid = Services.Logging.LogMessageSanitizer.Sanitize(mapperGuid);
+            var safeLayoutName = Services.Logging.LogMessageSanitizer.Sanitize(layoutName);
             try
             {
                 var mapper = await ResolveMapperAsync(mapperGuid, cancellationToken);
@@ -88,13 +92,13 @@ namespace LayoutParserApi.Services.Transformation.Ai
                     {
                         _logger.LogWarning(
                             "ParsedFieldRootTreeBuilder recusou montar o ROOT (gate de qualidade) — {Motivo} (mapperGuid={MapperGuid})",
-                            built.Motivo, mapperGuid);
+                            built.Motivo, safeMapperGuid);
                         return Failed($"Não foi possível montar o XML de entrada a partir do parse posicional: {built.Motivo}");
                     }
 
                     _logger.LogInformation(
                         "ROOT construído via ParsedFieldRootTreeBuilder: {LinhasDistintas} tipo(s) de linha, {ComValor}/{Total} campo(s) com valor (mapperGuid={MapperGuid})",
-                        built.LinhasDistintas, built.CamposComValor, built.CamposFisicos, mapperGuid);
+                        built.LinhasDistintas, built.CamposComValor, built.CamposFisicos, safeMapperGuid);
                     input = built.Root;
                 }
                 else
@@ -107,7 +111,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
                     {
                         // Sem ParsedFields e a entrada também não é XML bem-formado (TXT posicional
                         // cru) — nada com que construir o input do RepairOrchestrator.
-                        _logger.LogWarning(ex, "Entrada não é XML bem-formado e nenhum ParsedField foi informado — RepairOrchestrator não tem como montar o documento de entrada (mapperGuid={MapperGuid})", mapperGuid);
+                        _logger.LogWarning(ex, "Entrada não é XML bem-formado e nenhum ParsedField foi informado — RepairOrchestrator não tem como montar o documento de entrada (mapperGuid={MapperGuid})", safeMapperGuid);
                         return Failed("Entrada não é XML válido e nenhum ParsedField foi informado — RepairOrchestrator exige o documento já convertido (low-code) ou o resultado do parse posicional.");
                     }
                 }
@@ -115,7 +119,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
                 var xsdPath = ResolveXsdPath(groundTruthXml);
                 if (xsdPath is null)
                 {
-                    _logger.LogWarning("XSD não resolvido para o gabarito (mapperGuid={MapperGuid}) — validação XSD do loop sempre reportará inválido", mapperGuid);
+                    _logger.LogWarning("XSD não resolvido para o gabarito (mapperGuid={MapperGuid}) — validação XSD do loop sempre reportará inválido", safeMapperGuid);
                 }
 
                 var synthesizer = CreateOllamaSynthesizer();
@@ -154,7 +158,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
             {
                 // Resiliência (dotnet-standards.md): Ollama/RepairOrchestrator podem falhar —
                 // nunca propaga exceção não tratada pro chamador (fire-and-forget).
-                _logger.LogError(ex, "Falha não tratada na síntese de XSLT via RepairOrchestrator (mapperGuid={MapperGuid})", mapperGuid);
+                _logger.LogError(ex, "Falha não tratada na síntese de XSLT via RepairOrchestrator (mapperGuid={MapperGuid})", safeMapperGuid);
                 return Failed($"Falha interna na síntese de XSLT: {ex.Message}");
             }
         }
@@ -193,7 +197,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "MapeadorVO do mapper {MapperGuid} não é XML bem-formado", mapperGuid);
+                _logger.LogWarning(ex, "MapeadorVO do mapper {MapperGuid} não é XML bem-formado", Services.Logging.LogMessageSanitizer.Sanitize(mapperGuid));
                 return null;
             }
         }
@@ -202,22 +206,23 @@ namespace LayoutParserApi.Services.Transformation.Ai
         /// devolvido convergido ao chamador via <see cref="XslSynthesisResult"/>).</summary>
         private void TryPersistXslt(string? mapperName, string layoutName, string xslt)
         {
+            var safeLayoutName = Services.Logging.LogMessageSanitizer.Sanitize(layoutName);
             try
             {
                 if (string.IsNullOrWhiteSpace(mapperName))
                 {
-                    _logger.LogWarning("Não foi possível persistir o XSLT sintetizado — mapper sem Name (layout={LayoutName})", layoutName);
+                    _logger.LogWarning("Não foi possível persistir o XSLT sintetizado — mapper sem Name (layout={LayoutName})", safeLayoutName);
                     return;
                 }
 
                 Directory.CreateDirectory(_xslBasePath);
                 var path = Path.Combine(_xslBasePath, $"{mapperName}_{layoutName}.xsl");
                 File.WriteAllText(path, xslt);
-                _logger.LogInformation("XSLT sintetizado via RepairOrchestrator persistido em {Path}", path);
+                _logger.LogInformation("XSLT sintetizado via RepairOrchestrator persistido em {Path}", Services.Logging.LogMessageSanitizer.Sanitize(path));
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Falha ao persistir o XSLT sintetizado (layout={LayoutName})", layoutName);
+                _logger.LogWarning(ex, "Falha ao persistir o XSLT sintetizado (layout={LayoutName})", safeLayoutName);
             }
         }
 

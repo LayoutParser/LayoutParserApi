@@ -165,7 +165,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
             }
             catch (Exception ex)
             {
-                _logger.LogDebug(ex, "IXslSynthesizerService indisponível/falhou — degradando para o loop XML-direto legado (mapperGuid={MapperGuid})", mapperGuid);
+                _logger.LogDebug(ex, "IXslSynthesizerService indisponível/falhou — degradando para o loop XML-direto legado (mapperGuid={MapperGuid})", Services.Logging.LogMessageSanitizer.Sanitize(mapperGuid));
                 return null;
             }
         }
@@ -341,7 +341,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
                 }
                 catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
                 {
-                    _logger.LogWarning(ex, "Ollama indisponível/timeout no fallback IA (ticket={Ticket}, iteração={Iteration})", ticket, iteration);
+                    _logger.LogWarning(ex, "Ollama indisponível/timeout no fallback IA (ticket={Ticket}, iteração={Iteration})", Services.Logging.LogMessageSanitizer.Sanitize(ticket), iteration);
                     _store.Set(userId, ticket, new AiCandidateStatus
                     {
                         Status = AiCandidateStatus.StatusFailed,

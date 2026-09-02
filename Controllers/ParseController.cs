@@ -553,7 +553,7 @@ namespace LayoutParserApi.Controllers
                 if (!Directory.Exists(layoutDirectory))
                 {
                     Directory.CreateDirectory(layoutDirectory);
-                    _logger.LogInformation("Diretório criado: {Path}", layoutDirectory);
+                    _logger.LogInformation("Diretório criado: {Path}", Services.Logging.LogMessageSanitizer.Sanitize(layoutDirectory));
                 }
 
                 // Salvar com nome totalmente gerado pelo servidor.
