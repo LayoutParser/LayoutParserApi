@@ -516,6 +516,9 @@ try
     builder.Services.Configure<LayoutParserApi.Services.Transformation.Ai.AiTransformationCandidateOptions>(
         builder.Configuration.GetSection("AiTransformationCandidate"));
     builder.Services.AddSingleton<LayoutParserApi.Services.Transformation.Ai.AiCandidateStore>();
+    // ✅ Issue #98: prompt customizado complementar, fallback mínimo por partição de usuário
+    // (mesma partição da issue #92) — anexado APÓS o prompt padrão em BuildPrompt, nunca o substitui.
+    builder.Services.AddSingleton<LayoutParserApi.Services.Transformation.Ai.AiUserInstructionStore>();
     // ✅ Fallback automático de IA (design-fallback-ia-automatico-2026-08-16.md §5) — circuito de
     // proteção cross-usuário por LayoutGuid, estado em memória (Singleton, mesmo padrão de
     // LowCodeTransformationService/IConnectionMultiplexer em dotnet-standards.md).

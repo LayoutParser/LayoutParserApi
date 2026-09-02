@@ -182,6 +182,74 @@ namespace LayoutParserApi.Tests.Services.Transformation.Ai
             }
         }
 
+        [Fact]
+        public async Task Instrucao_customizada_do_usuario_aparece_no_prompt_e_saida_ainda_passa_pelo_diff_canonico()
+        {
+            // Issue #98: a instrução customizada deve chegar ao prompt final (complementar, após o
+            // prompt padrão), mas o candidato só converge se também bater o diff canônico contra o
+            // gabarito — a instrução não pode virar um atalho que dispensa o verificador
+            // determinístico (CanonicalDiffer), reforçando a mitigação de prompt injection da issue.
+            const string groundTruth = "<nfe><infNFe><campo>valor</campo></infNFe></nfe>";
+            const string instrucao = "Prefira nomes de tag em minúsculas.";
+            string? promptCapturado = null;
+
+            var instructionStore = new AiUserInstructionStore();
+            instructionStore.Set("usuario-a", instrucao);
+
+            var service = CriarService(prompt =>
+            {
+                promptCapturado = prompt;
+                return groundTruth;
+            }, out var tempDir, out _, userInstructionStore: instructionStore);
+
+            try
+            {
+                var ticket = "ticket-prompt-customizado";
+                await service.EnqueueAsync("usuario-a", ticket, "NFe", Guid.NewGuid(), "mapper-x", "linha", groundTruth, CancellationToken.None);
+                var status = await PollUntilAsync(service, "usuario-a", ticket, s => s.Status != AiCandidateStatus.StatusRunning, TimeSpan.FromSeconds(10));
+
+                Assert.Equal(AiCandidateStatus.StatusConverged, status.Status);
+                Assert.NotNull(promptCapturado);
+                Assert.Contains("INSTRUÇÃO ADICIONAL DO USUÁRIO", promptCapturado);
+                Assert.Contains(instrucao, promptCapturado);
+                // A instrução vem depois do prompt de sistema fixo — nunca antes/substituindo.
+                Assert.True(promptCapturado!.IndexOf("Você é um especialista", StringComparison.Ordinal)
+                    < promptCapturado.IndexOf("INSTRUÇÃO ADICIONAL DO USUÁRIO", StringComparison.Ordinal));
+                Assert.Equal(0, status.Diagnostics?.RemainingDiffs);
+            }
+            finally
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
+
+        [Fact]
+        public async Task Sem_instrucao_customizada_prompt_nao_ganha_secao_adicional()
+        {
+            const string groundTruth = "<nfe><infNFe><campo>valor</campo></infNFe></nfe>";
+            string? promptCapturado = null;
+
+            var service = CriarService(prompt =>
+            {
+                promptCapturado = prompt;
+                return groundTruth;
+            }, out var tempDir, out _, userInstructionStore: new AiUserInstructionStore());
+
+            try
+            {
+                var ticket = "ticket-sem-prompt-customizado";
+                await service.EnqueueAsync("usuario-a", ticket, "NFe", Guid.NewGuid(), "mapper-x", "linha", groundTruth, CancellationToken.None);
+                await PollUntilAsync(service, "usuario-a", ticket, s => s.Status != AiCandidateStatus.StatusRunning, TimeSpan.FromSeconds(10));
+
+                Assert.NotNull(promptCapturado);
+                Assert.DoesNotContain("INSTRUÇÃO ADICIONAL DO USUÁRIO", promptCapturado);
+            }
+            finally
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
+
         private static async Task<AiCandidateStatus> PollUntilAsync(
             IAiTransformationCandidateService service, string userId, string ticket, Func<AiCandidateStatus, bool> until, TimeSpan timeout)
         {
@@ -204,7 +272,7 @@ namespace LayoutParserApi.Tests.Services.Transformation.Ai
 
         private static IAiTransformationCandidateService CriarService(
             Func<string, string> respostaModelo, out string tempStorePath, out IAiFallbackSuppressionGate gate,
-            IAiFallbackSuppressionGate? gateOverride = null)
+            IAiFallbackSuppressionGate? gateOverride = null, AiUserInstructionStore? userInstructionStore = null)
         {
             var handler = new FakeOllamaHandler(respostaModelo);
             var httpClient = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
@@ -234,6 +302,7 @@ namespace LayoutParserApi.Tests.Services.Transformation.Ai
                 scopeFactory,
                 store,
                 gate,
+                userInstructionStore ?? new AiUserInstructionStore(),
                 CreateSessionStore());
         }
 

@@ -39,6 +39,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly AiCandidateStore _store;
         private readonly IAiFallbackSuppressionGate _suppressionGate;
+        private readonly AiUserInstructionStore _userInstructionStore;
         private readonly Database.SqlAiUserSessionStore _sessionStore;
         private readonly CanonicalDiffer _differ = new();
 
@@ -55,6 +56,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
             IServiceScopeFactory scopeFactory,
             AiCandidateStore store,
             IAiFallbackSuppressionGate suppressionGate,
+            AiUserInstructionStore userInstructionStore,
             Database.SqlAiUserSessionStore sessionStore)
         {
             _logger = logger;
@@ -64,6 +66,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
             _scopeFactory = scopeFactory;
             _store = store;
             _suppressionGate = suppressionGate;
+            _userInstructionStore = userInstructionStore;
             _sessionStore = sessionStore;
         }
 
@@ -129,24 +132,28 @@ namespace LayoutParserApi.Services.Transformation.Ai
                     _logger.LogWarning(
                         "Job do pathway IA excedeu o teto de sanidade de {SanityMinutes}min (ticket={Ticket}, layout={LayoutName})",
                         sanityMinutes, ticket, layoutName);
+                    // Registra o cooldown ANTES de publicar o status terminal: SetStatus dispara o
+                    // histórico SQL fire-and-forget (issue #102) e pollers observam o status assim
+                    // que ele muda — se o cooldown fosse setado depois, um poller rápido poderia ler
+                    // "failed" com o gate ainda sem cooldown (corrida observada nos testes).
+                    if (!hasGroundTruth)
+                        _suppressionGate.RegisterFailure(layoutGuid, TimeSpan.FromMinutes(_options.CooldownMinutes));
                     SetStatus(userId, ticket, new AiCandidateStatus
                     {
                         Status = AiCandidateStatus.StatusFailed,
                         Diagnostics = new AiCandidateDiagnostics { LastError = "Teto de sanidade excedido", HasGroundTruth = hasGroundTruth }
                     });
-                    if (!hasGroundTruth)
-                        _suppressionGate.RegisterFailure(layoutGuid, TimeSpan.FromMinutes(_options.CooldownMinutes));
                 }
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "Falha não tratada no job do pathway IA (ticket={Ticket}, layout={LayoutName})", ticket, layoutName);
+                    if (!hasGroundTruth)
+                        _suppressionGate.RegisterFailure(layoutGuid, TimeSpan.FromMinutes(_options.CooldownMinutes));
                     SetStatus(userId, ticket, new AiCandidateStatus
                     {
                         Status = AiCandidateStatus.StatusFailed,
                         Diagnostics = new AiCandidateDiagnostics { LastError = "Falha interna no job de geração via IA", HasGroundTruth = hasGroundTruth }
                     });
-                    if (!hasGroundTruth)
-                        _suppressionGate.RegisterFailure(layoutGuid, TimeSpan.FromMinutes(_options.CooldownMinutes));
                 }
             }, CancellationToken.None); // O próprio Task.Run não deve morrer com a request HTTP.
 
@@ -201,6 +208,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
             IReadOnlyList<ParsedField>? parsedFields = null)
         {
             var maxIterations = _options.MaxIterations > 0 ? _options.MaxIterations : 3;
+            var userInstruction = _userInstructionStore.Get(userId);
 
             // ── Motor novo primeiro: RepairOrchestrator sintetiza XSLT real, não XML direto ──
             var synthesis = await TrySynthesizeXsltAsync(layoutName, mapperGuid, inputContent, groundTruthXml, maxIterations, cancellationToken, parsedFields);
@@ -256,7 +264,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
                 try
                 {
                     candidateXml = await GenerateCandidateAsync(
-                        layoutName, mapperGuid, inputContent, groundTruthXml, lastCandidateXml, lastError, cancellationToken);
+                        layoutName, mapperGuid, inputContent, groundTruthXml, lastCandidateXml, lastError, userInstruction, cancellationToken);
                 }
                 catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
                 {
@@ -347,6 +355,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
             string inputContent, CancellationToken cancellationToken)
         {
             var maxIterations = _options.MaxIterationsFallback > 0 ? _options.MaxIterationsFallback : 2;
+            var userInstruction = _userInstructionStore.Get(userId);
             string? lastCandidateXml = null;
             string? lastError = null;
 
@@ -358,11 +367,14 @@ namespace LayoutParserApi.Services.Transformation.Ai
                 try
                 {
                     candidateXml = await GenerateFallbackCandidateAsync(
-                        layoutName, mapperGuid, inputContent, lastCandidateXml, lastError, cancellationToken);
+                        layoutName, mapperGuid, inputContent, lastCandidateXml, lastError, userInstruction, cancellationToken);
                 }
                 catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
                 {
                     _logger.LogWarning(ex, "Ollama indisponível/timeout no fallback IA (ticket={Ticket}, iteração={Iteration})", Services.Logging.LogMessageSanitizer.Sanitize(ticket), iteration);
+                    // Ordem proposital: cooldown antes do status terminal (ver comentário em
+                    // EnqueueAsync sobre a corrida com pollers).
+                    _suppressionGate.RegisterFailure(layoutGuid, TimeSpan.FromMinutes(_options.CooldownMinutes));
                     SetStatus(userId, ticket, new AiCandidateStatus
                     {
                         Status = AiCandidateStatus.StatusFailed,
@@ -373,7 +385,6 @@ namespace LayoutParserApi.Services.Transformation.Ai
                             HasGroundTruth = false
                         }
                     });
-                    _suppressionGate.RegisterFailure(layoutGuid, TimeSpan.FromMinutes(_options.CooldownMinutes));
                     return;
                 }
 
@@ -420,6 +431,9 @@ namespace LayoutParserApi.Services.Transformation.Ai
 
                 if (iteration == maxIterations)
                 {
+                    // Ordem proposital: cooldown antes do status terminal (ver comentário em
+                    // EnqueueAsync sobre a corrida com pollers).
+                    _suppressionGate.RegisterFailure(layoutGuid, TimeSpan.FromMinutes(_options.CooldownMinutes));
                     SetStatus(userId, ticket, new AiCandidateStatus
                     {
                         Status = AiCandidateStatus.StatusFailed,
@@ -432,16 +446,15 @@ namespace LayoutParserApi.Services.Transformation.Ai
                             LastError = $"Não convergiu em {maxIterations} iteração(ões) (fallback sem gabarito): {lastError}"
                         }
                     });
-                    _suppressionGate.RegisterFailure(layoutGuid, TimeSpan.FromMinutes(_options.CooldownMinutes));
                 }
             }
         }
 
         private async Task<string?> GenerateFallbackCandidateAsync(
             string layoutName, string mapperGuid, string inputContent,
-            string? previousCandidateXml, string? previousError, CancellationToken cancellationToken)
+            string? previousCandidateXml, string? previousError, string? userInstruction, CancellationToken cancellationToken)
         {
-            var prompt = BuildFallbackPrompt(layoutName, mapperGuid, inputContent, previousCandidateXml, previousError);
+            var prompt = BuildFallbackPrompt(layoutName, mapperGuid, inputContent, previousCandidateXml, previousError, userInstruction);
 
             var payload = new
             {
@@ -476,7 +489,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
         /// </summary>
         private static string BuildFallbackPrompt(
             string layoutName, string mapperGuid, string inputContent,
-            string? previousCandidateXml, string? previousError)
+            string? previousCandidateXml, string? previousError, string? userInstruction = null)
         {
             var sb = new StringBuilder();
             sb.AppendLine("Você é um especialista em transformação de documentos fiscais (NFe/CTe) do");
@@ -505,6 +518,8 @@ namespace LayoutParserApi.Services.Transformation.Ai
                 sb.AppendLine($"MOTIVO DA REJEIÇÃO: {previousError}");
                 sb.AppendLine("Corrija a tentativa anterior para eliminar esse problema.");
             }
+
+            AppendUserInstruction(sb, userInstruction);
 
             return sb.ToString();
         }
@@ -554,9 +569,9 @@ namespace LayoutParserApi.Services.Transformation.Ai
 
         private async Task<string?> GenerateCandidateAsync(
             string layoutName, string mapperGuid, string inputContent, string groundTruthXml,
-            string? previousCandidateXml, string? previousError, CancellationToken cancellationToken)
+            string? previousCandidateXml, string? previousError, string? userInstruction, CancellationToken cancellationToken)
         {
-            var prompt = BuildPrompt(layoutName, mapperGuid, inputContent, groundTruthXml, previousCandidateXml, previousError);
+            var prompt = BuildPrompt(layoutName, mapperGuid, inputContent, groundTruthXml, previousCandidateXml, previousError, userInstruction);
 
             var payload = new
             {
@@ -585,7 +600,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
 
         private static string BuildPrompt(
             string layoutName, string mapperGuid, string inputContent, string groundTruthXml,
-            string? previousCandidateXml, string? previousError)
+            string? previousCandidateXml, string? previousError, string? userInstruction = null)
         {
             var sb = new StringBuilder();
             sb.AppendLine("Você é um especialista em transformação de documentos fiscais (NFe/CTe) do");
@@ -616,7 +631,27 @@ namespace LayoutParserApi.Services.Transformation.Ai
                 sb.AppendLine("Corrija a tentativa anterior para eliminar essa divergência.");
             }
 
+            AppendUserInstruction(sb, userInstruction);
+
             return sb.ToString();
+        }
+
+        /// <summary>
+        /// Issue #98: instrução customizada do usuário, anexada SEMPRE por último — nunca antes,
+        /// nunca substituindo o prompt de sistema fixo acima. O rótulo deixa explícito ao modelo
+        /// que a seção é complementar, não uma sobreposição das regras de formato/segurança já
+        /// estabelecidas (mitigação de prompt injection registrada na issue: o pior caso é o
+        /// modelo divagar e nunca convergir — quem decide aceitar o candidato é o verificador
+        /// determinístico, <see cref="CanonicalDiffer"/>/<see cref="XsdValidationService"/>, não o LLM).
+        /// </summary>
+        private static void AppendUserInstruction(StringBuilder sb, string? userInstruction)
+        {
+            if (string.IsNullOrWhiteSpace(userInstruction))
+                return;
+
+            sb.AppendLine();
+            sb.AppendLine("INSTRUÇÃO ADICIONAL DO USUÁRIO (complementar, não sobrepõe as regras acima):");
+            sb.AppendLine(Truncate(userInstruction, AiUserInstructionStore.MaxLength));
         }
 
         private static string Truncate(string value, int maxLength)

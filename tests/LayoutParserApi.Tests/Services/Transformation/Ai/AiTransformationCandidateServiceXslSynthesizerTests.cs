@@ -268,6 +268,7 @@ namespace LayoutParserApi.Tests.Services.Transformation.Ai
                 scopeFactory,
                 store,
                 new AiFallbackSuppressionGate(),
+                new AiUserInstructionStore(),
                 CreateSessionStore());
         }
 
