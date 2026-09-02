@@ -49,6 +49,7 @@ namespace LayoutParserApi.Controllers
         private readonly LowCodeRunnerOptions _lowCodeOpt;
         private readonly IAiTransformationCandidateService _aiCandidateService;
         private readonly IAiFallbackSuppressionGate _aiFallbackGate;
+        private readonly AiUserInstructionStore _aiUserInstructionStore;
         private readonly ICurrentUser _currentUser;
         private readonly MapperDatabaseService _mapperDb;
         private readonly ILayoutParserService _layoutParser;
@@ -67,6 +68,7 @@ namespace LayoutParserApi.Controllers
             IOptions<LowCodeRunnerOptions> lowCodeOptions,
             IAiTransformationCandidateService aiCandidateService,
             IAiFallbackSuppressionGate aiFallbackGate,
+            AiUserInstructionStore aiUserInstructionStore,
             ICurrentUser currentUser,
             MapperDatabaseService mapperDb,
             ILayoutParserService layoutParser,
@@ -84,6 +86,7 @@ namespace LayoutParserApi.Controllers
             _lowCodeOpt = lowCodeOptions.Value;
             _aiCandidateService = aiCandidateService;
             _aiFallbackGate = aiFallbackGate;
+            _aiUserInstructionStore = aiUserInstructionStore;
             _currentUser = currentUser;
             _mapperDb = mapperDb;
             _layoutParser = layoutParser;
@@ -847,6 +850,31 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
+        /// Issue #98: define/atualiza a instrução customizada que o usuário quer anexar ao prompt
+        /// padrão do pathway IA (<c>execute-candidates</c> e o fallback automático). Endpoint
+        /// dedicado, separado do payload de execução — fallback mínimo por partição de usuário
+        /// (mesma partição da issue #92), enquanto a sessão de IA completa (issue #6) não existe.
+        /// </summary>
+        /// <param name="request">Instrução em texto livre; vazio/nulo remove a instrução salva.</param>
+        /// <response code="200">Instrução salva (ou removida, se vazia).</response>
+        [Authorize]
+        [HttpPut("ai-prompt-adicional")]
+        public IActionResult SetAiPromptAdicional([FromBody] SetAiPromptAdicionalRequest request)
+        {
+            _aiUserInstructionStore.Set(CurrentUserId, request?.Instruction);
+            return Ok(new { saved = !string.IsNullOrWhiteSpace(request?.Instruction) });
+        }
+
+        /// <summary>Consulta a instrução customizada atualmente salva para o usuário (issue #98).</summary>
+        [Authorize]
+        [HttpGet("ai-prompt-adicional")]
+        public IActionResult GetAiPromptAdicional()
+        {
+            var instruction = _aiUserInstructionStore.Get(CurrentUserId);
+            return Ok(new { instruction });
+        }
+
+        /// <summary>
         /// Pathway tcl-xsl (canônico): reaproveita <see cref="TransformationPipelineService"/>, mesma lógica
         /// já usada pelo endpoint <c>execute</c>. Hoje produz no máximo 1 candidato (o pipeline não tem
         /// noção de múltiplos TCL/XSL candidatos para o mesmo layout).
@@ -1248,6 +1276,12 @@ namespace LayoutParserApi.Controllers
                 return Ok(new { success = true, fieldMappings = Array.Empty<object>(), warnings });
             }
         }
+    }
+
+    /// <summary>Requisição de <c>PUT ai-prompt-adicional</c> (issue #98).</summary>
+    public class SetAiPromptAdicionalRequest
+    {
+        public string? Instruction { get; set; }
     }
 
     /// <summary>Request do endpoint /field-mappings (issue #140). Mesma convenção de LayoutGuid

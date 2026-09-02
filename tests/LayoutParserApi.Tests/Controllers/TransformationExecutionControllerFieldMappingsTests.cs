@@ -286,6 +286,7 @@ namespace LayoutParserApi.Tests.Controllers
                 lowCodeOptions: lowCodeOptions,
                 aiCandidateService: new SpyAiCandidateService(),
                 aiFallbackGate: new SpyAiFallbackSuppressionGate(),
+                aiUserInstructionStore: new LayoutParserApi.Services.Transformation.Ai.AiUserInstructionStore(),
                 currentUser: new FakeCurrentUser(),
                 mapperDb: mapperDb,
                 layoutParser: parserFake,

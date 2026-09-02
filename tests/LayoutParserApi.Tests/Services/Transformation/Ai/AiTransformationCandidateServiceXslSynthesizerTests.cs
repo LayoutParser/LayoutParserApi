@@ -267,7 +267,8 @@ namespace LayoutParserApi.Tests.Services.Transformation.Ai
                 Options.Create(new AiTransformationCandidateOptions { MaxIterations = 3, MaxIterationsFallback = 2, SanityTimeoutMinutes = 1, StorePath = tempStorePath }),
                 scopeFactory,
                 store,
-                new AiFallbackSuppressionGate());
+                new AiFallbackSuppressionGate(),
+                new AiUserInstructionStore());
         }
 
         private sealed class FakeXslSynthesizerService : IXslSynthesizerService

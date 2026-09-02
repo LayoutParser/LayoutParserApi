@@ -104,6 +104,7 @@ namespace LayoutParserApi.Tests.Controllers
                 lowCodeOptions: Options.Create(new LowCodeRunnerOptions()),
                 aiCandidateService: spy,
                 aiFallbackGate: new SpyAiFallbackSuppressionGate(),
+                aiUserInstructionStore: new LayoutParserApi.Services.Transformation.Ai.AiUserInstructionStore(),
                 currentUser: user,
                 mapperDb: null!,
                 layoutParser: null!,
