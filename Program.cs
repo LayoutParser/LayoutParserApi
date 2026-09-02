@@ -401,7 +401,9 @@ try
     builder.Services.AddScoped<MapperDatabaseService>();
     builder.Services.AddScoped<ICachedLayoutService, CachedLayoutService>();
     // ✅ Slice 1 (issue #225/#228): identidade externa → UserId interno + workspace fiscal isolado.
-    // Mesmo banco ConnectUS_Macgyver (não há banco dedicado); Scoped por padrão do grupo Database.
+    // Banco DEDICADO (config "IdentityDatabase:*", SQL Server local à máquina da API) — NÃO é mais o
+    // ConnectUS_Macgyver do Sysmiddle (reuso causava erro de FK em produção contra tbUser legada,
+    // schema incompatível). Scoped por padrão do grupo Database.
     builder.Services.AddScoped<IIdentityWorkspaceStore, SqlIdentityWorkspaceStore>();
     builder.Services.AddScoped<IIdentityWorkspaceService, LayoutParserApi.Services.Identity.IdentityWorkspaceService>();
     // ✅ Slice 2 (issue #229): FiscalMappingPackage/Revision/Artifact — mesmo banco, mesmo padrão.
@@ -803,12 +805,22 @@ try
     // loopback ou sem header → identidade anônima, nunca exceção. Ver TrustedIdentityMiddleware.
     app.UseMiddleware<TrustedIdentityMiddleware>();
 
+    // ✅ Swagger habilitado em todo ambiente (não só Development) — pedido explícito do dono
+    // para testar endpoints via Postman/Swagger UI direto em produção. Servido sob /api/swagger
+    // (não /swagger) de propósito: em produção o BFF/reverse proxy (LayoutParserReact/server)
+    // só encaminha /api/* para esta API — qualquer rota fora desse prefixo cai no catch-all do
+    // SPA React e devolve a página de erro 404 do front, não o Swagger.
+    app.UseSwagger(c => c.RouteTemplate = "api/swagger/{documentName}/swagger.json");
+    app.UseSwaggerUI(c =>
+    {
+        c.RoutePrefix = "api/swagger";
+        c.SwaggerEndpoint("/api/swagger/v1/swagger.json", "LayoutParserApi v1");
+    });
+
     // Enable detailed error pages in development
     if (app.Environment.IsDevelopment())
     {
         app.UseDeveloperExceptionPage();
-        app.UseSwagger();
-        app.UseSwaggerUI();
         Log.Information("Swagger UI enabled for development");
     }
     else
