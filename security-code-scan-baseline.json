@@ -21,6 +21,11 @@
     "Nao remova entradas por conveniencia - so remova quando o achado subjacente for corrigido no",
     "codigo (o que tambem deve refletir sozinho, pois o SCS para de reportar aquele achado).",
     "",
+    "2026-09-02 (coordenador, PR #276): ParseController.cs (575->586, instrumentacao/logging da",
+    "issue #99 deslocou o codigo) e XsdValidationService.cs (221->227, 235->241, 340->346, leitura",
+    "de PDF da issue #172 deslocou o codigo) tiveram o numero de linha atualizado - mesmos achados",
+    "ja aceitos, nao vulnerabilidades novas. Confirmado lendo o codigo em cada linha antes de mover.",
+    "",
     "2026-08-20 (@lp-backend-dev, PR #177): as 5 entradas de AutomatedTransformationTestService.cs",
     "(linhas 160/170/234) e TransformationValidatorService.cs (linhas 161/232) tiveram o numero de",
     "linha atualizado apos a feature de deteccao automatica de tipo de documento deslocar o codigo -",
@@ -71,7 +76,7 @@
     { "code": "SCS0018", "file": "Controllers/MetricsController.cs", "line": 338 },
     { "code": "SCS0016", "file": "Controllers/FiscalMappingPackagesController.cs", "line": 48 },
     { "code": "SCS0016", "file": "Controllers/ParseController.cs", "line": 84 },
-    { "code": "SCS0018", "file": "Controllers/ParseController.cs", "line": 575 },
+    { "code": "SCS0018", "file": "Controllers/ParseController.cs", "line": 586 },
     { "code": "SCS0018", "file": "Services/Testing/AutomatedTransformationTestService.cs", "line": 160 },
     { "code": "SCS0018", "file": "Services/Testing/AutomatedTransformationTestService.cs", "line": 170 },
     { "code": "SCS0018", "file": "Services/Testing/AutomatedTransformationTestService.cs", "line": 234 },
@@ -89,8 +94,8 @@
     { "code": "SCS0018", "file": "Services/Validation/DocumentMLValidationService.cs", "line": 178 },
     { "code": "SCS0018", "file": "Services/Validation/DocumentMLValidationService.cs", "line": 206 },
     { "code": "SCS0018", "file": "Services/XmlAnalysis/TransformationPipelineService.cs", "line": 393 },
-    { "code": "SCS0018", "file": "Services/XmlAnalysis/XsdValidationService.cs", "line": 221 },
-    { "code": "SCS0018", "file": "Services/XmlAnalysis/XsdValidationService.cs", "line": 235 },
-    { "code": "SCS0018", "file": "Services/XmlAnalysis/XsdValidationService.cs", "line": 340 }
+    { "code": "SCS0018", "file": "Services/XmlAnalysis/XsdValidationService.cs", "line": 227 },
+    { "code": "SCS0018", "file": "Services/XmlAnalysis/XsdValidationService.cs", "line": 241 },
+    { "code": "SCS0018", "file": "Services/XmlAnalysis/XsdValidationService.cs", "line": 346 }
   ]
 }
