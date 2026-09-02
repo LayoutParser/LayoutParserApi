@@ -28,6 +28,11 @@
     <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.11" />
     <PackageReference Include="Microsoft.VisualStudio.Azure.Containers.Tools.Targets" Version="1.23.0" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+    <!-- Leitura de PDF (issue #172, orientações de correção XSD): PdfPig, Apache-2.0, mesma
+         biblioteca já validada em ai/XslSynth/NtPipeline/PdfSmokeExtractor.cs (protótipo B5 P-2) -
+         evita depender de PdfSharp/iTextSharp (AGPL/comercial em versões recentes, ver TODO
+         original no XsdValidationService). -->
+    <PackageReference Include="PdfPig" Version="0.1.16" />
     <!-- Analyzer Roslyn de seguranca estatica (SAST), gratuito e sem infra extra - roda dentro
          do dotnet build normal. Alternativa ao CodeQL/GitHub Advanced Security, que exige
          repo publico ou licenca paga (este repo e privado por decisao de seguranca -
