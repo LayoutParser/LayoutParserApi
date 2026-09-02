@@ -119,11 +119,8 @@ namespace LayoutParserApi.Controllers
             }
         }
 
-        /// <summary>
-        /// Resumo agregado de aprendizado entre todos os layouts — soma os modelos TCL/XSL já
-        /// persistidos em disco (<c>TransformationPipeline:LearningModelsPath</c>).
-        /// </summary>
-        /// <response code="200">Resumo agregado (zerado se nenhum layout foi treinado ainda, ou se a leitura falhar — degrade gracioso).</response>
+        /// <summary>Resumo agregado de aprendizado entre todos os layouts. <b>Nota:</b> implementação hoje é um stub fixo (zeros) — o agregado real ainda não foi implementado.</summary>
+        /// <response code="200">Resumo (hoje sempre zerado — ver nota).</response>
         [HttpGet("learning/summary")]
         public async Task<IActionResult> GetLearningSummary()
         {
@@ -131,17 +128,14 @@ namespace LayoutParserApi.Controllers
             {
                 _logger.LogInformation("Buscando resumo de métricas de aprendizado");
 
-                var aggregate = await _learningService.GetLearningSummaryAsync();
-
+                // TODO: Implementar busca de todos os modelos aprendidos
+                // Por enquanto, retornar estrutura básica
                 var summary = new
                 {
-                    totalModels = aggregate.TotalModels,
-                    totalPatterns = aggregate.TotalPatterns,
-                    totalExamples = aggregate.TotalExamples,
-                    // Média simples entre TODOS os padrões de TODOS os modelos — não há uma métrica
-                    // de "confiança real" única no pipeline hoje, apenas a confiança por padrão já
-                    // calculada no treino individual (ver GetLearningMetrics).
-                    averageConfidence = aggregate.AverageConfidence
+                    totalModels = 0,
+                    totalPatterns = 0,
+                    totalExamples = 0,
+                    averageConfidence = 0.0
                 };
 
                 return Ok(summary);
