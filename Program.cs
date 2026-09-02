@@ -405,6 +405,8 @@ try
     // ConnectUS_Macgyver do Sysmiddle (reuso causava erro de FK em produção contra tbUser legada,
     // schema incompatível). Scoped por padrão do grupo Database.
     builder.Services.AddScoped<IIdentityWorkspaceStore, SqlIdentityWorkspaceStore>();
+    // Histórico de longo prazo do pathway de IA por usuário (issue #102) — mesmo banco IdentityDatabase.
+    builder.Services.AddScoped<LayoutParserApi.Services.Database.SqlAiUserSessionStore>();
     builder.Services.AddScoped<IIdentityWorkspaceService, LayoutParserApi.Services.Identity.IdentityWorkspaceService>();
     // ✅ Slice 2 (issue #229): FiscalMappingPackage/Revision/Artifact — mesmo banco, mesmo padrão.
     // WindowsDefenderAntivirusScanner só usa ILogger (sem estado por-requisição) — Scoped por
@@ -467,6 +469,8 @@ try
     builder.Services.AddScoped<XmlAnalysisService>();
     builder.Services.AddScoped<XsdValidationService>();
     builder.Services.AddScoped<XmlDocumentTypeDetector>();
+    // Leitura de PDF de orientações XSD (issue #172) — sem estado, seguro como Scoped junto do resto.
+    builder.Services.AddScoped<LayoutParserApi.Services.XmlAnalysis.PdfOrientationReader>();
     builder.Services.AddScoped<MqSeriesToXmlTransformer>();
     builder.Services.AddScoped<TransformationPipelineService>();
     builder.Services.AddScoped<TclGeneratorService>();
@@ -512,6 +516,9 @@ try
     builder.Services.Configure<LayoutParserApi.Services.Transformation.Ai.AiTransformationCandidateOptions>(
         builder.Configuration.GetSection("AiTransformationCandidate"));
     builder.Services.AddSingleton<LayoutParserApi.Services.Transformation.Ai.AiCandidateStore>();
+    // ✅ Issue #98: prompt customizado complementar, fallback mínimo por partição de usuário
+    // (mesma partição da issue #92) — anexado APÓS o prompt padrão em BuildPrompt, nunca o substitui.
+    builder.Services.AddSingleton<LayoutParserApi.Services.Transformation.Ai.AiUserInstructionStore>();
     // ✅ Fallback automático de IA (design-fallback-ia-automatico-2026-08-16.md §5) — circuito de
     // proteção cross-usuário por LayoutGuid, estado em memória (Singleton, mesmo padrão de
     // LowCodeTransformationService/IConnectionMultiplexer em dotnet-standards.md).
