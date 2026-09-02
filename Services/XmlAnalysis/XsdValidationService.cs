@@ -1,4 +1,6 @@
 using LayoutParserApi.Models.XmlAnalysis;
+using LayoutParserApi.Services.Logging;
+using LayoutParserApi.Services.Security;
 using LayoutParserApi.Services.XmlAnalysis.Models;
 
 using System.Xml;
@@ -372,7 +374,16 @@ namespace LayoutParserApi.Services.XmlAnalysis
 
             try
             {
-                var pdfPath = Path.Combine(_pdfBasePath, xsdVersion);
+                // xsdVersion vem de parâmetro de request (controller) — nunca combine direto num
+                // Path.Combine sem validar. SafePathResolver barra "..", separador de caminho e
+                // qualquer resultado que escape de _pdfBasePath (path traversal, CodeQL cs/path-injection).
+                var pdfPath = SafePathResolver.Resolve(_pdfBasePath, xsdVersion);
+                if (pdfPath == null)
+                {
+                    _logger.LogWarning("Versão de XSD rejeitada para leitura de orientações PDF: {XsdVersion}", LogMessageSanitizer.Sanitize(xsdVersion));
+                    result.Orientations.Add("Pasta de orientações PDF não encontrada.");
+                    return result;
+                }
 
                 if (!Directory.Exists(pdfPath))
                 {

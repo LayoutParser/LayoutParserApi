@@ -1,3 +1,5 @@
+using LayoutParserApi.Services.Logging;
+
 using Microsoft.Data.SqlClient;
 
 namespace LayoutParserApi.Services.Database
