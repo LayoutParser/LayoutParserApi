@@ -1,3 +1,5 @@
+using LayoutParserApi.Services.Logging;
+
 using Microsoft.Data.SqlClient;
 
 namespace LayoutParserApi.Services.Database
@@ -136,7 +138,7 @@ namespace LayoutParserApi.Services.Database
             catch (Exception ex)
             {
                 // Degrade: histórico é auditoria, não pode quebrar o job de IA que acabou de terminar.
-                _logger.LogWarning(ex, "Falha ao gravar histórico de sessão de IA (ticket={Ticket}) — degradado, não afeta o pathway de IA em si", ticket);
+                _logger.LogWarning(ex, "Falha ao gravar histórico de sessão de IA (ticket={Ticket}) — degradado, não afeta o pathway de IA em si", LogMessageSanitizer.Sanitize(ticket));
             }
         }
 

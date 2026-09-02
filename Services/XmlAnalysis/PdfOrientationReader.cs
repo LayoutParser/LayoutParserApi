@@ -1,3 +1,5 @@
+using LayoutParserApi.Services.Logging;
+
 using UglyToad.PdfPig;
 
 namespace LayoutParserApi.Services.XmlAnalysis
@@ -50,13 +52,13 @@ namespace LayoutParserApi.Services.XmlAnalysis
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Falha ao listar PDFs de orientação em {Pasta}", pdfFolderPath);
+                _logger.LogWarning(ex, "Falha ao listar PDFs de orientação em {Pasta}", LogMessageSanitizer.Sanitize(pdfFolderPath));
                 return result;
             }
 
             if (arquivosPdf.Count == 0)
             {
-                _logger.LogInformation("Nenhum PDF de orientação encontrado em {Pasta}", pdfFolderPath);
+                _logger.LogInformation("Nenhum PDF de orientação encontrado em {Pasta}", LogMessageSanitizer.Sanitize(pdfFolderPath));
                 return result;
             }
 
