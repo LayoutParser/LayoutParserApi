@@ -268,8 +268,14 @@ namespace LayoutParserApi.Tests.Services.Transformation.Ai
                 scopeFactory,
                 store,
                 new AiFallbackSuppressionGate(),
-                new AiUserInstructionStore());
+                new AiUserInstructionStore(),
+                CreateSessionStore());
         }
+
+        // Issue #102: mesma justificativa de AiTransformationCandidateServiceTests.CreateSessionStore.
+        private static LayoutParserApi.Services.Database.SqlAiUserSessionStore CreateSessionStore()
+            => new(NullLogger<LayoutParserApi.Services.Database.SqlAiUserSessionStore>.Instance,
+                   new ConfigurationBuilder().Build());
 
         private sealed class FakeXslSynthesizerService : IXslSynthesizerService
         {

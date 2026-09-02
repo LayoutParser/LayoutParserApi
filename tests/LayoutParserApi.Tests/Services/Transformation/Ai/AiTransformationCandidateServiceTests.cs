@@ -302,8 +302,17 @@ namespace LayoutParserApi.Tests.Services.Transformation.Ai
                 scopeFactory,
                 store,
                 gate,
-                userInstructionStore ?? new AiUserInstructionStore());
+                userInstructionStore ?? new AiUserInstructionStore(),
+                CreateSessionStore());
         }
+
+        // Issue #102: AiTransformationCandidateService agora grava historico terminal via
+        // SqlAiUserSessionStore. Config vazia -> connection string invalida, mas o store degrada
+        // (try/catch interno loga Warning e segue) - suficiente para os testes existentes, que nao
+        // cobrem persistencia de historico em si.
+        private static LayoutParserApi.Services.Database.SqlAiUserSessionStore CreateSessionStore()
+            => new(NullLogger<LayoutParserApi.Services.Database.SqlAiUserSessionStore>.Instance,
+                   new ConfigurationBuilder().Build());
 
         private class FakeOllamaHandler : HttpMessageHandler
         {

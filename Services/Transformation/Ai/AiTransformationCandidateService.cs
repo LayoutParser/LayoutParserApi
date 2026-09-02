@@ -40,6 +40,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
         private readonly AiCandidateStore _store;
         private readonly IAiFallbackSuppressionGate _suppressionGate;
         private readonly AiUserInstructionStore _userInstructionStore;
+        private readonly Database.SqlAiUserSessionStore _sessionStore;
         private readonly CanonicalDiffer _differ = new();
 
         // ✅ XsdValidationService/XmlAnalysisService são Scoped (dotnet-standards.md). O job roda em
@@ -55,7 +56,8 @@ namespace LayoutParserApi.Services.Transformation.Ai
             IServiceScopeFactory scopeFactory,
             AiCandidateStore store,
             IAiFallbackSuppressionGate suppressionGate,
-            AiUserInstructionStore userInstructionStore)
+            AiUserInstructionStore userInstructionStore,
+            Database.SqlAiUserSessionStore sessionStore)
         {
             _logger = logger;
             _httpClient = httpClient;
@@ -65,6 +67,25 @@ namespace LayoutParserApi.Services.Transformation.Ai
             _store = store;
             _suppressionGate = suppressionGate;
             _userInstructionStore = userInstructionStore;
+            _sessionStore = sessionStore;
+        }
+
+        /// <summary>
+        /// Wrapper de <see cref="AiCandidateStore.Set"/> que também grava o histórico de longo prazo
+        /// (issue #102, tabela <c>tbLpAiUserSessionHistoryEntry</c>) quando o status chega a um
+        /// estado terminal (<c>converged</c>/<c>failed</c>). Fire-and-forget best-effort: uma falha de
+        /// SQL aqui já é tratada dentro do próprio <see cref="Database.SqlAiUserSessionStore"/>
+        /// (loga e degrada), então não precisa de try/catch adicional aqui — só não podemos bloquear
+        /// o loop de IA esperando o SQL responder.
+        /// </summary>
+        private void SetStatus(string userId, string ticket, AiCandidateStatus status)
+        {
+            _store.Set(userId, ticket, status);
+
+            if (status.Status is AiCandidateStatus.StatusConverged or AiCandidateStatus.StatusFailed)
+            {
+                _ = _sessionStore.AddHistoryEntryAsync(userId, ticket, status.Status, CancellationToken.None);
+            }
         }
 
         public Task EnqueueAsync(
@@ -88,7 +109,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
             // executamos o modo certo do loop.
             var hasGroundTruth = !string.IsNullOrWhiteSpace(groundTruthXml);
 
-            _store.Set(userId, ticket, new AiCandidateStatus { Status = AiCandidateStatus.StatusRunning });
+            SetStatus(userId, ticket, new AiCandidateStatus { Status = AiCandidateStatus.StatusRunning });
 
             // ✅ Fire-and-forget real: NUNCA propaga exceção para o chamador (dotnet-standards.md
             // §Background work). O teto de sanidade (não é SLA de produto — §2.3/§6 do desenho)
@@ -111,24 +132,28 @@ namespace LayoutParserApi.Services.Transformation.Ai
                     _logger.LogWarning(
                         "Job do pathway IA excedeu o teto de sanidade de {SanityMinutes}min (ticket={Ticket}, layout={LayoutName})",
                         sanityMinutes, ticket, layoutName);
-                    _store.Set(userId, ticket, new AiCandidateStatus
+                    // Registra o cooldown ANTES de publicar o status terminal: SetStatus dispara o
+                    // histórico SQL fire-and-forget (issue #102) e pollers observam o status assim
+                    // que ele muda — se o cooldown fosse setado depois, um poller rápido poderia ler
+                    // "failed" com o gate ainda sem cooldown (corrida observada nos testes).
+                    if (!hasGroundTruth)
+                        _suppressionGate.RegisterFailure(layoutGuid, TimeSpan.FromMinutes(_options.CooldownMinutes));
+                    SetStatus(userId, ticket, new AiCandidateStatus
                     {
                         Status = AiCandidateStatus.StatusFailed,
                         Diagnostics = new AiCandidateDiagnostics { LastError = "Teto de sanidade excedido", HasGroundTruth = hasGroundTruth }
                     });
-                    if (!hasGroundTruth)
-                        _suppressionGate.RegisterFailure(layoutGuid, TimeSpan.FromMinutes(_options.CooldownMinutes));
                 }
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "Falha não tratada no job do pathway IA (ticket={Ticket}, layout={LayoutName})", ticket, layoutName);
-                    _store.Set(userId, ticket, new AiCandidateStatus
+                    if (!hasGroundTruth)
+                        _suppressionGate.RegisterFailure(layoutGuid, TimeSpan.FromMinutes(_options.CooldownMinutes));
+                    SetStatus(userId, ticket, new AiCandidateStatus
                     {
                         Status = AiCandidateStatus.StatusFailed,
                         Diagnostics = new AiCandidateDiagnostics { LastError = "Falha interna no job de geração via IA", HasGroundTruth = hasGroundTruth }
                     });
-                    if (!hasGroundTruth)
-                        _suppressionGate.RegisterFailure(layoutGuid, TimeSpan.FromMinutes(_options.CooldownMinutes));
                 }
             }, CancellationToken.None); // O próprio Task.Run não deve morrer com a request HTTP.
 
@@ -191,7 +216,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
             {
                 if (synthesis.Converged && !string.IsNullOrWhiteSpace(synthesis.FinalOutputXml))
                 {
-                    _store.Set(userId, ticket, new AiCandidateStatus
+                    SetStatus(userId, ticket, new AiCandidateStatus
                     {
                         Status = AiCandidateStatus.StatusConverged,
                         Candidate = new TransformationCandidate
@@ -211,7 +236,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
                 }
                 else
                 {
-                    _store.Set(userId, ticket, new AiCandidateStatus
+                    SetStatus(userId, ticket, new AiCandidateStatus
                     {
                         Status = AiCandidateStatus.StatusFailed,
                         Diagnostics = new AiCandidateDiagnostics
@@ -244,7 +269,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
                 catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
                 {
                     _logger.LogWarning(ex, "Ollama indisponível/timeout no pathway IA (ticket={Ticket}, iteração={Iteration})", ticket, iteration);
-                    _store.Set(userId, ticket, new AiCandidateStatus
+                    SetStatus(userId, ticket, new AiCandidateStatus
                     {
                         Status = AiCandidateStatus.StatusFailed,
                         Diagnostics = new AiCandidateDiagnostics { Iterations = iteration - 1, LastError = "Ollama indisponível ou excedeu o tempo limite" }
@@ -270,7 +295,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
 
                 if (diffCount == 0)
                 {
-                    _store.Set(userId, ticket, new AiCandidateStatus
+                    SetStatus(userId, ticket, new AiCandidateStatus
                     {
                         Status = AiCandidateStatus.StatusConverged,
                         Candidate = new TransformationCandidate
@@ -298,7 +323,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
                 // (o candidato em si não vaza para candidates[]/recommendedCandidateId — §2.2 do desenho).
                 if (iteration == maxIterations)
                 {
-                    _store.Set(userId, ticket, new AiCandidateStatus
+                    SetStatus(userId, ticket, new AiCandidateStatus
                     {
                         Status = AiCandidateStatus.StatusFailed,
                         Diagnostics = new AiCandidateDiagnostics
@@ -347,7 +372,10 @@ namespace LayoutParserApi.Services.Transformation.Ai
                 catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
                 {
                     _logger.LogWarning(ex, "Ollama indisponível/timeout no fallback IA (ticket={Ticket}, iteração={Iteration})", Services.Logging.LogMessageSanitizer.Sanitize(ticket), iteration);
-                    _store.Set(userId, ticket, new AiCandidateStatus
+                    // Ordem proposital: cooldown antes do status terminal (ver comentário em
+                    // EnqueueAsync sobre a corrida com pollers).
+                    _suppressionGate.RegisterFailure(layoutGuid, TimeSpan.FromMinutes(_options.CooldownMinutes));
+                    SetStatus(userId, ticket, new AiCandidateStatus
                     {
                         Status = AiCandidateStatus.StatusFailed,
                         Diagnostics = new AiCandidateDiagnostics
@@ -357,7 +385,6 @@ namespace LayoutParserApi.Services.Transformation.Ai
                             HasGroundTruth = false
                         }
                     });
-                    _suppressionGate.RegisterFailure(layoutGuid, TimeSpan.FromMinutes(_options.CooldownMinutes));
                     return;
                 }
 
@@ -375,7 +402,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
 
                 if (xsdValid && businessValidation.Success)
                 {
-                    _store.Set(userId, ticket, new AiCandidateStatus
+                    SetStatus(userId, ticket, new AiCandidateStatus
                     {
                         Status = AiCandidateStatus.StatusConverged,
                         Candidate = new TransformationCandidate
@@ -404,7 +431,10 @@ namespace LayoutParserApi.Services.Transformation.Ai
 
                 if (iteration == maxIterations)
                 {
-                    _store.Set(userId, ticket, new AiCandidateStatus
+                    // Ordem proposital: cooldown antes do status terminal (ver comentário em
+                    // EnqueueAsync sobre a corrida com pollers).
+                    _suppressionGate.RegisterFailure(layoutGuid, TimeSpan.FromMinutes(_options.CooldownMinutes));
+                    SetStatus(userId, ticket, new AiCandidateStatus
                     {
                         Status = AiCandidateStatus.StatusFailed,
                         Diagnostics = new AiCandidateDiagnostics
@@ -416,7 +446,6 @@ namespace LayoutParserApi.Services.Transformation.Ai
                             LastError = $"Não convergiu em {maxIterations} iteração(ões) (fallback sem gabarito): {lastError}"
                         }
                     });
-                    _suppressionGate.RegisterFailure(layoutGuid, TimeSpan.FromMinutes(_options.CooldownMinutes));
                 }
             }
         }
