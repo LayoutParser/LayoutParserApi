@@ -147,6 +147,17 @@ mesclado). `dotnet build`: verde. `dotnet test`: 467/468 (1 falha pré-existente
   devolve o pacote já criado, sem duplicar linha nem artefato em disco.
 - **`FiscalProject` mínimo**: criado sob demanda dentro do próprio fluxo de upload
   (`IFiscalPackageStore.EnsureProjectExistsAsync`), sem endpoint de CRUD — exatamente como previsto.
+- **Fix pós-revisão de `@lp-qa` (2026-08-31)**: `SqlFiscalPackageStore.CreatePackageAsync` fazia
+  `FindPackageByIdempotencyKeyAsync` (SELECT) e só depois `INSERT`, sem lock — sob 2 uploads
+  concorrentes com a mesma `IdempotencyKey`, ambos passavam no SELECT e o segundo `INSERT` batia no
+  `UNIQUE (WorkspaceId, ProjectId, IdempotencyKey)`, lançando `SqlException` (2601/2627) não tratada,
+  que virava 503 pro cliente perdedor da corrida em vez de devolver o pacote já criado. Corrigido
+  reaproveitando o mesmo padrão já usado em `EnsureProjectExistsAsync`: `catch (SqlException ex) when
+  (UniqueViolationErrorNumbers.Contains(ex.Number))` faz rollback da transação e devolve o pacote
+  existente via `FindPackageByIdempotencyKeyAsync`. Coberto por teste de corrida real
+  (`Duas_requisicoes_concorrentes_com_a_mesma_chave_convergem_para_o_mesmo_pacote_sem_erro`, em
+  `FiscalPackageServiceTests.cs`), simulando a janela de corrida com 2 `Task`s concorrentes contra um
+  fake store que replica a semântica do `UNIQUE` do SQL.
 
 ### Antivírus — status real, não testado contra Defender de verdade
 

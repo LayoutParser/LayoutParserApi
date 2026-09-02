@@ -88,7 +88,7 @@ namespace LayoutParserApi.Services.Transformation
                     documentType = "NFe";
                     _logger.LogWarning(
                         "Não foi possível detectar o tipo de documento a partir do layout {LayoutName}; usando fallback {FallbackType}",
-                        layoutName, documentType);
+                        Services.Logging.LogMessageSanitizer.Sanitize(layoutName), documentType);
                 }
 
                 // Passo 2: Executar transformação completa
