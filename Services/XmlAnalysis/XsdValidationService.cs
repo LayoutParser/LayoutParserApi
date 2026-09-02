@@ -17,12 +17,18 @@ namespace LayoutParserApi.Services.XmlAnalysis
         private readonly string _pdfBasePath;
         private readonly XmlDocumentTypeDetector _documentTypeDetector;
         private readonly IConfiguration _configuration;
+        private readonly PdfOrientationReader _pdfOrientationReader;
 
-        public XsdValidationService(ILogger<XsdValidationService> logger,IConfiguration configuration,XmlDocumentTypeDetector documentTypeDetector)
+        public XsdValidationService(
+            ILogger<XsdValidationService> logger,
+            IConfiguration configuration,
+            XmlDocumentTypeDetector documentTypeDetector,
+            PdfOrientationReader pdfOrientationReader)
         {
             _logger = logger;
             _configuration = configuration;
             _documentTypeDetector = documentTypeDetector;
+            _pdfOrientationReader = pdfOrientationReader;
             _xsdBasePath = configuration["XsdValidation:BasePath"] ?? @"C:\inetpub\wwwroot\layoutparser\xsd";
             _pdfBasePath = configuration["XsdValidation:PdfBasePath"] ?? @"C:\inetpub\wwwroot\layoutparser\pdf";
         }
@@ -375,13 +381,37 @@ namespace LayoutParserApi.Services.XmlAnalysis
                     return result;
                 }
 
-                // Por enquanto, retornar mensagem genérica
-                // TODO: Implementar leitura de PDF (usar biblioteca como PdfSharp ou iTextSharp)
-                result.Orientations.Add("Para corrigir os erros de validação XSD:");
-                result.Orientations.Add("1. Verifique se todos os campos obrigatórios estão preenchidos");
-                result.Orientations.Add("2. Confirme que os valores estão nos formatos corretos (CNPJ, CPF, datas, etc.)");
-                result.Orientations.Add("3. Valide que os códigos de produto, CFOP e outras referências estão corretos");
-                result.Orientations.Add("4. Consulte a documentação oficial da SEFAZ para a versão " + xsdVersion);
+                // Leitura real do conteúdo do(s) PDF(s) (issue #172) — a mensagem genérica abaixo
+                // é o fallback de degradação, não mais o comportamento único.
+                PdfOrientationReadResult? leitura = null;
+                try
+                {
+                    leitura = _pdfOrientationReader.ReadOrientations(pdfPath, errorCodes);
+                }
+                catch (Exception ex)
+                {
+                    // Degrade gracioso: falha na leitura do PDF (biblioteca indisponível, PDF
+                    // protegido/corrompido) não pode quebrar a resposta de validação — cai no
+                    // fallback genérico abaixo, igual ao comportamento anterior a esta issue.
+                    _logger.LogWarning(ex, "Falha ao ler conteúdo dos PDFs de orientação em {Path}", pdfPath);
+                }
+
+                if (leitura is { Success: true, Trechos.Count: > 0 })
+                {
+                    result.Orientations.Add($"Orientações extraídas da documentação oficial (versão {xsdVersion}):");
+                    foreach (var trecho in leitura.Trechos)
+                        result.Orientations.Add($"[{trecho.Arquivo}] {trecho.Texto}");
+                }
+                else
+                {
+                    // Fallback genérico — mesmo texto de antes da issue #172, preservado para não
+                    // quebrar quem já depende dessas mensagens quando não há PDF/trecho aplicável.
+                    result.Orientations.Add("Para corrigir os erros de validação XSD:");
+                    result.Orientations.Add("1. Verifique se todos os campos obrigatórios estão preenchidos");
+                    result.Orientations.Add("2. Confirme que os valores estão nos formatos corretos (CNPJ, CPF, datas, etc.)");
+                    result.Orientations.Add("3. Valide que os códigos de produto, CFOP e outras referências estão corretos");
+                    result.Orientations.Add("4. Consulte a documentação oficial da SEFAZ para a versão " + xsdVersion);
+                }
 
                 if (errorCodes != null && errorCodes.Any())
                     result.Orientations.Add($"Erros específicos detectados: {string.Join(", ", errorCodes)}");
