@@ -425,6 +425,28 @@ jobs:
           Write-Host "Destino sem appsettings.json (primeiro deploy?) - o do publish sera usado."
         }
 
+        # Best-effort: mata processo(s) orfaos rodando a partir de $API_DEST fora do
+        # servico gerenciado (ex.: alguem executou o .exe/dotnet manualmente da pasta
+        # de deploy), que deixam handle aberto em DLLs e derrubam o Copy-Item abaixo.
+        # Nao falha o step se nada for encontrado; se o Copy-Item falhar mesmo assim,
+        # o erro real continua propagando normalmente (sem mascarar).
+        try {
+          $orphans = Get-Process -ErrorAction SilentlyContinue | Where-Object {
+            $_.Path -and $_.Path.StartsWith($API_DEST, [StringComparison]::OrdinalIgnoreCase)
+          }
+          if ($orphans) {
+            foreach ($proc in $orphans) {
+              Write-Host "Processo orfao encontrado em $API_DEST : $($proc.ProcessName) (PID $($proc.Id)) - $($proc.Path). Encerrando..."
+              Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            }
+            Start-Sleep -Seconds 2
+          } else {
+            Write-Host "Nenhum processo orfao rodando a partir de $API_DEST."
+          }
+        } catch {
+          Write-Warning "Falha ao verificar/encerrar processos orfaos em $API_DEST (best-effort, seguindo): $_"
+        }
+
         Write-Host "Copiando publish-api -> $API_DEST (preservar appsettings: $preserveAppSettings)..."
         if ($preserveAppSettings) {
           Copy-Item -Path (Join-Path $SRC '*') -Destination $API_DEST -Recurse -Force -Exclude 'appsettings.json'
