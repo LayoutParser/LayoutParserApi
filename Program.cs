@@ -405,6 +405,8 @@ try
     // ConnectUS_Macgyver do Sysmiddle (reuso causava erro de FK em produção contra tbUser legada,
     // schema incompatível). Scoped por padrão do grupo Database.
     builder.Services.AddScoped<IIdentityWorkspaceStore, SqlIdentityWorkspaceStore>();
+    // Histórico de longo prazo do pathway de IA por usuário (issue #102) — mesmo banco IdentityDatabase.
+    builder.Services.AddScoped<LayoutParserApi.Services.Database.SqlAiUserSessionStore>();
     builder.Services.AddScoped<IIdentityWorkspaceService, LayoutParserApi.Services.Identity.IdentityWorkspaceService>();
     // ✅ Slice 2 (issue #229): FiscalMappingPackage/Revision/Artifact — mesmo banco, mesmo padrão.
     // WindowsDefenderAntivirusScanner só usa ILogger (sem estado por-requisição) — Scoped por
