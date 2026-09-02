@@ -814,6 +814,76 @@ namespace LayoutParserApi.Services.Transformation
         }
 
         /// <summary>
+        /// Agrega, entre TODOS os layouts já treinados, os modelos TCL/XSL persistidos em
+        /// <see cref="_learningModelsPath"/> — usado pelo dashboard de métricas (issue #174).
+        /// Falha de leitura de um arquivo individual não derruba o agregado (loga e pula).
+        /// </summary>
+        public async Task<LearningSummary> GetLearningSummaryAsync()
+        {
+            var summary = new LearningSummary();
+            var confidences = new List<double>();
+
+            try
+            {
+                if (!Directory.Exists(_learningModelsPath))
+                {
+                    _logger.LogWarning("Diretório de modelos de aprendizado não encontrado: {Path}", _learningModelsPath);
+                    return summary;
+                }
+
+                var tclFiles = Directory.GetFiles(_learningModelsPath, "tcl_*.json", SearchOption.TopDirectoryOnly);
+                var xslFiles = Directory.GetFiles(_learningModelsPath, "xsl_*.json", SearchOption.TopDirectoryOnly);
+
+                foreach (var file in tclFiles)
+                {
+                    try
+                    {
+                        var json = await File.ReadAllTextAsync(file);
+                        var model = System.Text.Json.JsonSerializer.Deserialize<LearnedTclModel>(json);
+                        if (model == null) continue;
+
+                        summary.TotalModels++;
+                        summary.TotalPatterns += model.Patterns.Count;
+                        summary.TotalExamples += model.ExamplesCount;
+                        confidences.AddRange(model.Patterns.Select(p => p.Confidence));
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Erro ao carregar modelo TCL para o resumo agregado: {File}", file);
+                    }
+                }
+
+                foreach (var file in xslFiles)
+                {
+                    try
+                    {
+                        var json = await File.ReadAllTextAsync(file);
+                        var model = System.Text.Json.JsonSerializer.Deserialize<LearnedXslModel>(json);
+                        if (model == null) continue;
+
+                        summary.TotalModels++;
+                        summary.TotalPatterns += model.Patterns.Count;
+                        summary.TotalExamples += model.ExamplesCount;
+                        confidences.AddRange(model.Patterns.Select(p => p.Confidence));
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Erro ao carregar modelo XSL para o resumo agregado: {File}", file);
+                    }
+                }
+
+                summary.AverageConfidence = confidences.Count > 0 ? confidences.Average() : 0.0;
+            }
+            catch (Exception ex)
+            {
+                // Degrade gracioso: resumo zerado em vez de derrubar o endpoint.
+                _logger.LogError(ex, "Erro ao agregar resumo de métricas de aprendizado");
+            }
+
+            return summary;
+        }
+
+        /// <summary>
         /// Carrega exemplos TCL constantemente da pasta ExamplesTclPath
         /// </summary>
         public async Task<List<TclExample>> LoadTclExamplesAsync(string layoutName = null)

@@ -153,7 +153,18 @@ namespace LayoutParserApi.Controllers
                 using var layoutStream = layoutFile.OpenReadStream();
                 using var txtStream = txtFile.OpenReadStream();
 
+                // ✅ Instrumentação de duração do parse (issue #99): resposta formal à proposta do
+                // front-end sobre a barra de progresso travando em "100%" — antes desta medição não
+                // havia número de referência para decidir se o parse (à parte da transformação, que
+                // já tem o transformationsTicket abaixo) também precisaria de um mecanismo próprio no
+                // futuro. Mede só ParseAsync, não o upload/detecção/gravação de aprendizado que vêm
+                // antes — é o trecho apontado como suspeito na issue.
+                var parseStopwatch = System.Diagnostics.Stopwatch.StartNew();
                 var result = await _parserService.ParseAsync(layoutStream, txtStream);
+                parseStopwatch.Stop();
+                _logger.LogInformation(
+                    "Parse concluído em {ParseDurationMs}ms (Layout={LayoutFile}, Txt={TxtFile}, Tipo={DetectedType})",
+                    parseStopwatch.ElapsedMilliseconds, layoutFile.FileName, txtFile.FileName, detectedType);
 
                 // ✅ Gate de falha de parse: ParseAsync captura a exceção internamente e devolve
                 // Success=false / Layout=null, com a causa real em ErrorMessage. Sem este gate,
