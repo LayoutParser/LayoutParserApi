@@ -21,6 +21,12 @@
     "Nao remova entradas por conveniencia - so remova quando o achado subjacente for corrigido no",
     "codigo (o que tambem deve refletir sozinho, pois o SCS para de reportar aquele achado).",
     "",
+    "2026-09-02 (@lp-devops, PR #278): XsdValidationService.cs (227->229, 241->243, 346->348) teve",
+    "o numero de linha atualizado de novo - a correcao do path traversal real da issue #172",
+    "(SafePathResolver.Resolve em xsdVersion, PR #278) adicionou linhas acima dos achados ja",
+    "aceitos, deslocando-os. Mesmos achados, nao vulnerabilidades novas - confirmado lendo cada",
+    "linha antes de mover.",
+    "",
     "2026-09-02 (coordenador, PR #276): ParseController.cs (575->586, instrumentacao/logging da",
     "issue #99 deslocou o codigo) e XsdValidationService.cs (221->227, 235->241, 340->346, leitura",
     "de PDF da issue #172 deslocou o codigo) tiveram o numero de linha atualizado - mesmos achados",
@@ -94,8 +100,8 @@
     { "code": "SCS0018", "file": "Services/Validation/DocumentMLValidationService.cs", "line": 178 },
     { "code": "SCS0018", "file": "Services/Validation/DocumentMLValidationService.cs", "line": 206 },
     { "code": "SCS0018", "file": "Services/XmlAnalysis/TransformationPipelineService.cs", "line": 393 },
-    { "code": "SCS0018", "file": "Services/XmlAnalysis/XsdValidationService.cs", "line": 227 },
-    { "code": "SCS0018", "file": "Services/XmlAnalysis/XsdValidationService.cs", "line": 241 },
-    { "code": "SCS0018", "file": "Services/XmlAnalysis/XsdValidationService.cs", "line": 346 }
+    { "code": "SCS0018", "file": "Services/XmlAnalysis/XsdValidationService.cs", "line": 229 },
+    { "code": "SCS0018", "file": "Services/XmlAnalysis/XsdValidationService.cs", "line": 243 },
+    { "code": "SCS0018", "file": "Services/XmlAnalysis/XsdValidationService.cs", "line": 348 }
   ]
 }
