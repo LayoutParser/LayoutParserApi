@@ -479,6 +479,8 @@ try
     builder.Services.AddScoped<XmlDocumentTypeDetector>();
     // Leitura de PDF de orientações XSD (issue #172) — sem estado, seguro como Scoped junto do resto.
     builder.Services.AddScoped<LayoutParserApi.Services.XmlAnalysis.PdfOrientationReader>();
+    // Reconstrução reversa best-effort XML->TXT (issue #151, Fase 4) — sem estado, mesmo grupo.
+    builder.Services.AddScoped<LayoutParserApi.Services.XmlAnalysis.ReverseReconstructionService>();
     builder.Services.AddScoped<MqSeriesToXmlTransformer>();
     builder.Services.AddScoped<TransformationPipelineService>();
     builder.Services.AddScoped<TclGeneratorService>();
