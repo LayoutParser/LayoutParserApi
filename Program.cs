@@ -431,6 +431,10 @@ try
     builder.Services.AddScoped<IMappingReleaseStore, SqlMappingReleaseStore>();
     builder.Services.AddScoped<IMappingCompileService, LayoutParserApi.Services.Fiscal.MappingCompileService>();
     builder.Services.AddScoped<IMappingTestRunService, LayoutParserApi.Services.Fiscal.MappingTestRunService>();
+    // ✅ Issue #103 Passo 1: extração determinística (sem LLM) de tabelas de decisão fiscal a
+    // partir de Excel real do dono. Sem estado por-requisição, poderia ser Singleton — Scoped
+    // por consistência com o resto do grupo Fiscal.
+    builder.Services.AddScoped<LayoutParserApi.Services.Fiscal.IFiscalMappingRuleExtractor, LayoutParserApi.Services.Fiscal.FiscalMappingRuleExtractor>();
     // ✅ Estado do warm-up do catálogo (P1.3), lido pela sonda de readiness. Singleton porque é
     // preenchido pelo IHostedService de warm-up e lido pelo health check — estado compartilhado.
     builder.Services.AddSingleton<CatalogWarmupState>();
