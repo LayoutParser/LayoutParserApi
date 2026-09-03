@@ -6,6 +6,14 @@
 > **Revisão 2026-09-03 (mesmo dia):** decisão trocada de Opção B → **Opção A**, a pedido explícito
 > do dono. Ver seção "Revisão da decisão" abaixo. Seções originais preservadas (raciocínio da
 > Opção B continua válido como registro — só o veredito final mudou).
+>
+> **Adendo 2026-09-03 (mesmo dia, `@lp-devops`/Gage):** investigação da topologia do runner do
+> Cypress, pendência deixada em aberto na seção "Rede: 127.0.0.1 vs. client credentials". Ver
+> "Adendo — topologia real do runner Cypress" ao final do documento. Resumo: **não há hoje um
+> runner de CI para esta suíte** — ela só foi executada manualmente, do próprio workstation de
+> desenvolvimento. O caminho 1 (co-localização) é viável se a futura automação usar o runner
+> self-hosted `dev-local` já existente (mesma máquina do serviço de dev da API), mas isso ainda
+> não está configurado nem decidido.
 
 ## Status
 
@@ -398,7 +406,9 @@ detectar isso antes/durante, em vez de só depois de um incidente confirmado por
    ao dono antes de comprometer uma data de entrega.
 2. **Confirmar topologia do runner do Cypress com `@lp-devops`** antes de tocar em rede — ver
    seção "Rede: 127.0.0.1 vs. client credentials" acima. Decisão de abrir ou não exceção de IP é
-   do dono, registrar como adendo a este ADR quando resolvida.
+   do dono, registrar como adendo a este ADR quando resolvida. **Investigação inicial concluída
+   em 2026-09-03 — ver "Adendo — topologia real do runner Cypress" ao final: não há hoje CI
+   configurado para esta suíte; decisão formal ainda pendente do dono.**
 3. **Pacote NuGet:** `Microsoft.Identity.Web` (ou `Microsoft.AspNetCore.Authentication.JwtBearer`
    puro, mais leve — avaliar qual encaixa melhor sem trazer dependências além do necessário para
    um App-only flow).
@@ -452,6 +462,122 @@ detectar isso antes/durante, em vez de só depois de um incidente confirmado por
 | Endpoint-isca ou credencial-isca são descobertos e "aprendidos" por um atacante sofisticado que evita chamá-los | Aceito como limite conhecido de qualquer honeypot — valor está em pegar tentativas automatizadas/não sofisticadas (scanners, replay de segredo vazado), não um atacante direcionado que já conhece o mecanismo. Não é motivo para não implementar. |
 | Sink de e-mail do canary depende do mesmo provedor SMTP ainda não escolhido pelo dono | Log `Critical` local continua funcionando mesmo sem e-mail configurado — degrada, não falha silenciosamente. |
 | Confundir a credencial-isca com um mecanismo de auth real e alguém tentar "consertá-la" para funcionar de verdade | Documentar explicitamente no código (comentário PT-BR) que a credencial-isca **nunca** deve autenticar nada — é o oposto do propósito. |
+
+## Nota sobre #219 — frente separada, não depende deste ADR
+
+`generate-for-layout` não tem `[Authorize]` hoje; o erro reportado
+(`"Tipo de layout não suportado: 2"`, HTTP 200 com `success:false`) é de validação de
+`layoutType` do layout FIAT (`LAY_TXT_MQSERIES_ENVNFE_4.00_NFe`), não de autenticação. Nenhuma
+parte do mecanismo M2M desta ADR afeta essa investigação — ela segue com `@lp-parser-llm`
+(domínio de geração TCL/XSL), como a própria epic #221 já havia separado corretamente em
+"Frente B". Confirmar via código/cadastro se `layoutType=2` deveria ser suportado pelo endpoint
+(lacuna real) ou se é o cadastro do layout que está errado no banco.
+
+---
+
+## Adendo — topologia real do runner Cypress (2026-09-03, `@lp-devops`/Gage)
+
+Investigação da pendência aberta na seção "Rede: 127.0.0.1 vs. client credentials" (item 2 do
+plano de implementação). Baseada em leitura de código/config/memória deste repo — **sem acesso
+ao repositório `LayoutParserCypress`**, que é onde o runner de fato vive. Fatos primeiro,
+depois o veredito.
+
+### O que este repositório permite confirmar
+
+1. **Não existe CI configurado para a suíte E2E Cypress hoje.** `LayoutParserCypress` (repo
+   dedicado, criado em 2026-07-28 — ver
+   `.claude/agent-memory/lp-devops/layoutparser-cypress-bootstrap.md`) **não tem remoto/GitHub
+   nem workflow do GitHub Actions** — só existe como clone local
+   (`C:\Users\elson.lopes\source\repos\LayoutParserCypress`). Não há, portanto, um "runner do
+   Cypress" em execução automatizada para confirmar — a pergunta do ADR ("onde o runner roda")
+   pressupõe uma automação que ainda não foi criada.
+
+2. **A suíte relevante para #218/#221 (`nfe-emissao-normal.cy.js`, a que bate em
+   `execute`/`execute-lowcode`/`generate-for-layout`) só foi executada manualmente, do próprio
+   workstation de desenvolvimento**, com a API rodando via `dotnet run` local na porta 5000 (ver
+   `.claude/agent-memory/lp-qa/cypress-alpha-emissao-normal-spec.md`, sessão de 2026-07-29). Não
+   há evidência de execução contra a instância de dev implantada (`dev-local`, porta 5100) nem
+   contra produção.
+
+3. **Existe uma suíte Cypress diferente, já com topologia real definida — mas não é a mesma
+   suíte, nem o mesmo problema de rede.** O "Job 2" (`ia-candidates-batch.cy.js`, ver
+   `docs/architecture/runbook-vm-cypress-provisionamento.md` e
+   `docs/architecture/handoff-3-job2-pipeline-cypress-pollux.md`) roda via `cron` numa VM Ubuntu
+   dedicada (IP mutável por DHCP, era `172.25.32.31`, depois `172.25.32.3` — confirmar o atual
+   antes de qualquer decisão). Essa suíte:
+   - Não chama os endpoints `[Authorize]`-gated deste ADR — consome o resultado já persistido
+     pelo Job 1 e valida contra o e-forms/Pollux (oráculo SEFAZ-fake), não a API LayoutParser
+     diretamente para gerar a transformação.
+   - Está **estruturalmente isolada da rede de produção**: `handoff-3-job2-pipeline-cypress-pollux.md`
+     documenta que a rede entre essa VM e o servidor de produção (`172.25.32.42`) está quebrada
+     (bridge Hyper-V preso em IP link-local, achado de 2026-07-31, não resolvido por SSH) — a VM
+     **não pode** hoje ser o caminho de co-localização, mesmo se fosse a suíte certa.
+   - Não deve ser confundida com a suíte de `execute-lowcode` ao decidir a topologia — são dois
+     runners candidatos diferentes, com dois problemas de rede diferentes.
+
+4. **Existe, sim, um runner self-hosted de GitHub Actions já em produção neste repositório**
+   (`LayoutParserApi`), rodando na **mesma máquina onde a API de dev é implantada**: o CI de dev
+   (`ci-dev.yml`) usa o label `dev-local`, cuja máquina é `NDD-NOT-10910`
+   (`.claude/agent-memory/lp-devops/runner-isolation-rollout.md`) — e é essa mesma máquina que
+   recebe o deploy da API de dev como serviço Windows nativo, escutando em
+   `http://localhost:5100` (bind padrão de loopback, `API_URL_DEV` não setado — confirmado em
+   `.github/workflows/ci-dev.yml:355-357`). Ou seja: **já existe hoje, neste ecossistema, um
+   runner de CI co-localizado com uma instância da API** — só não é (ainda) o runner que executa
+   Cypress, porque Cypress não tem CI nenhum configurado.
+
+### O que não dá para confirmar a partir deste repositório
+
+- Se/quando `LayoutParserCypress` ganhar CI, qual runner será usado — self-hosted (`dev-local`
+  ou um novo) ou GitHub-hosted. Essa é uma decisão de config do futuro workflow, não um fato já
+  registrado em nenhum lugar acessível daqui.
+- Se o plano é reaproveitar o runner `dev-local` (mesma máquina do serviço de dev da API) para
+  também rodar Cypress, ou provisionar um runner novo.
+- O detalhe de "WSL" citado no corpo original deste ADR (`http://172.19.176.1:5100` "visto do
+  WSL") não tem origem rastreável neste repo — não há evidência de que a suíte relevante
+  (`nfe-emissao-normal.cy.js`) tenha rodado de dentro do WSL contra a porta 5100; a única
+  execução documentada (QA, 2026-07-29) foi Windows nativo contra `dotnet run` na porta 5000.
+  Tratar a menção a WSL/5100 no ADR original como **hipótese ilustrativa do arquiteto**, não como
+  fato verificado — se for esse o plano real, precisa ser confirmado/registrado à parte.
+
+### Veredito
+
+**Não há hoje uma "topologia real do runner Cypress" para confirmar, porque não há runner —
+a suíte roda manualmente.** Isso não é uma resposta evasiva: é o estado real do projeto, e muda
+a pergunta de "onde o runner está" para "onde o runner **vai** estar quando a automação for
+criada".
+
+Dentro do que é decidível hoje:
+
+- **Caminho 1 (co-localização) é tecnicamente viável e é a rota de menor esforço**, porque a
+  infraestrutura de runner self-hosted `dev-local` já existe, já roda na mesma máquina do
+  serviço de dev da API, e já é usada por este mesmo repositório (`ci-dev.yml`). Se o workflow de
+  CI que vier a ser criado em `LayoutParserCypress` for configurado para usar esse mesmo runner
+  (ou um runner novo posto na mesma máquina), o Cypress passa a rodar como processo nativo
+  Windows na mesma máquina do serviço `LayoutParserApi` de dev — atingindo `http://127.0.0.1:5100`
+  como loopback real, sem precisar de exceção de rede nem de WSL/NAT no meio. Isso é uma
+  possibilidade concreta, não uma confirmação de que é o que vai acontecer.
+- **Caminho 2 (exceção de IP) só entraria em jogo se o dono decidir usar um runner GitHub-hosted
+  (genérico, fora da rede da NDD) para o CI do `LayoutParserCypress`** — cenário possível, mas
+  não indicado por nenhuma evidência coletada nesta investigação; seria uma escolha nova, não uma
+  restrição já existente.
+- **A VM do Job 2 (172.25.32.3x) não é candidata a runner para esta suíte** — é uma máquina
+  diferente, com rede já comprovadamente quebrada para o servidor de produção, dedicada a um
+  problema diferente (validação de candidatos IA vs. Pollux, não auth M2M da API).
+
+### Pergunta que precisa ser respondida numa sessão do `LayoutParserCypress` (ou pelo dono, diretamente)
+
+> Quando o CI do `LayoutParserCypress` for criado: (a) vai usar um runner self-hosted na mesma
+> rede/máquina da API de dev (`dev-local`/`NDD-NOT-10910`, ou equivalente), ou um runner
+> GitHub-hosted genérico? (b) A suíte `nfe-emissao-normal.cy.js` (a que depende do mecanismo M2M
+> deste ADR) vai rodar contra a instância de dev implantada (porta 5100) ou contra uma API local
+> ad hoc (`dotnet run`, como foi testado manualmente)?
+
+A resposta a essas duas perguntas decide entre o Caminho 1 e o Caminho 2 sem ambiguidade. Até lá,
+a recomendação operacional é: **implementar a Parte 1 do plano (client credentials via Entra) sem
+tocar na trava de rede `127.0.0.1`** — a Opção A não depende de abrir rede para funcionar em si
+(a validação do JWT independe de onde a chamada se origina); a decisão de rede só se torna
+obrigatória no momento em que um runner real e não-co-localizado precisar alcançar a API, o que
+ainda não existe.
 
 ## Nota sobre #219 — frente separada, não depende deste ADR
 
