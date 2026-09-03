@@ -108,7 +108,8 @@ namespace LayoutParserApi.Tests.Controllers
                 aiUserInstructionStore: new LayoutParserApi.Services.Transformation.Ai.AiUserInstructionStore(),
                 aiUserSessionStore: new LayoutParserApi.Services.Database.SqlAiUserSessionStore(
                     NullLogger<LayoutParserApi.Services.Database.SqlAiUserSessionStore>.Instance,
-                    new ConfigurationBuilder().Build()),
+                    new ConfigurationBuilder().Build(),
+                    Microsoft.Extensions.Options.Options.Create(new LayoutParserApi.Services.Database.AiUserSessionHistoryOptions())),
                 currentUser: user,
                 mapperDb: null!,
                 layoutParser: null!,

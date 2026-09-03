@@ -1,6 +1,7 @@
 using LayoutParserApi.Services.Logging;
 
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Options;
 
 namespace LayoutParserApi.Services.Database
 {
@@ -41,10 +42,21 @@ namespace LayoutParserApi.Services.Database
         private readonly ILogger<SqlAiUserSessionStore> _logger;
         private readonly string _connectionString;
 
+        /// <summary>
+        /// Retenção efetiva do histórico (issue #97), já resolvida com o fallback para o default —
+        /// mesma convenção de <c>AiCandidateStore.Ttl</c>, exposta para o background service de
+        /// limpeza não precisar reler o <see cref="IOptions{TOptions}"/> nem duplicar a lógica de
+        /// fallback.
+        /// </summary>
+        public TimeSpan HistoryRetention { get; }
+
         private static bool _schemaEnsured;
         private static readonly SemaphoreSlim _schemaLock = new(1, 1);
 
-        public SqlAiUserSessionStore(ILogger<SqlAiUserSessionStore> logger, IConfiguration configuration)
+        public SqlAiUserSessionStore(
+            ILogger<SqlAiUserSessionStore> logger,
+            IConfiguration configuration,
+            IOptions<AiUserSessionHistoryOptions> historyOptions)
         {
             _logger = logger;
             var server = configuration["IdentityDatabase:Server"];
@@ -53,6 +65,10 @@ namespace LayoutParserApi.Services.Database
             var password = configuration["IdentityDatabase:Password"];
 
             _connectionString = $"Server={server};Database={database};User Id={userId};Password={password};TrustServerCertificate=True;";
+
+            var dias = historyOptions.Value.HistoryRetentionDays;
+            HistoryRetention = TimeSpan.FromDays(
+                dias > 0 ? dias : AiUserSessionHistoryOptions.DefaultHistoryRetentionDays);
         }
 
         /// <summary>
@@ -180,6 +196,39 @@ namespace LayoutParserApi.Services.Database
             {
                 _logger.LogWarning(ex, "Falha ao ler histórico de sessão de IA — degradado (lista vazia)");
                 return Array.Empty<AiUserSessionHistoryEntry>();
+            }
+        }
+
+        /// <summary>
+        /// Purga entradas de histórico mais antigas que <see cref="HistoryRetention"/> (issue #97 —
+        /// gap de TTL/retenção, "no mesmo espírito" do TTL do <c>AiCandidateStore</c>, issue #51).
+        /// Chamado periodicamente por <see cref="AiUserSessionHistoryCleanupBackgroundService"/>.
+        /// </summary>
+        /// <remarks>
+        /// Resiliência: mesma degradação graciosa do resto da store — falha de SQL aqui é auditoria
+        /// de manutenção, não pode derrubar o host nem interromper o loop de limpeza.
+        /// </remarks>
+        public async Task<int> PurgeExpiredHistoryAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync(cancellationToken);
+                await EnsureSchemaAsync(connection, cancellationToken);
+
+                using var command = new SqlCommand(
+                    @"DELETE FROM dbo.tbLpAiUserSessionHistoryEntry
+                      WHERE CreatedAt < DATEADD(SECOND, -@RetentionSeconds, SYSUTCDATETIME());",
+                    connection);
+                command.Parameters.AddWithValue("@RetentionSeconds", (int)HistoryRetention.TotalSeconds);
+
+                var removidos = await command.ExecuteNonQueryAsync(cancellationToken);
+                return removidos;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Falha ao purgar histórico expirado de sessão de IA (degradado — não afeta o pathway de IA em si)");
+                return 0;
             }
         }
 

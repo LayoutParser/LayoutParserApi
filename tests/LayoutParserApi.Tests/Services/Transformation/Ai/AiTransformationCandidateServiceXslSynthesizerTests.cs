@@ -275,7 +275,8 @@ namespace LayoutParserApi.Tests.Services.Transformation.Ai
         // Issue #102: mesma justificativa de AiTransformationCandidateServiceTests.CreateSessionStore.
         private static LayoutParserApi.Services.Database.SqlAiUserSessionStore CreateSessionStore()
             => new(NullLogger<LayoutParserApi.Services.Database.SqlAiUserSessionStore>.Instance,
-                   new ConfigurationBuilder().Build());
+                   new ConfigurationBuilder().Build(),
+                   Microsoft.Extensions.Options.Options.Create(new LayoutParserApi.Services.Database.AiUserSessionHistoryOptions()));
 
         private sealed class FakeXslSynthesizerService : IXslSynthesizerService
         {
