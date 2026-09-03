@@ -150,7 +150,12 @@ namespace LayoutParserApi.Controllers
                 if (layoutPath is null || !System.IO.File.Exists(layoutPath))
                     return NotFound($"Layout {fileName} não encontrado");
 
+                // SCS0018 (issue #88): falso positivo confirmado — o SCS não reconhece
+                // SafePathResolver.Resolve (canonicalização + checagem de base) como sanitizador,
+                // mas o caminho lido aqui já saiu validado/nulo (null tratado acima) do helper único.
+#pragma warning disable SCS0018
                 var content = System.IO.File.ReadAllText(layoutPath);
+#pragma warning restore SCS0018
                 return Ok(new
                 {
                     success = true,
@@ -180,7 +185,11 @@ namespace LayoutParserApi.Controllers
                 if (documentPath is null || !System.IO.File.Exists(documentPath))
                     return NotFound($"Documento {fileName} não encontrado");
 
+                // SCS0018 (issue #88): mesmo falso positivo de GetLayout — path já saiu de
+                // SafePathResolver.Resolve, o SCS não reconhece o sanitizador custom.
+#pragma warning disable SCS0018
                 var content = System.IO.File.ReadAllText(documentPath);
+#pragma warning restore SCS0018
                 return Ok(new
                 {
                     success = true,
@@ -211,7 +220,10 @@ namespace LayoutParserApi.Controllers
                 if (excelPath is null || !System.IO.File.Exists(excelPath))
                     return NotFound($"Arquivo Excel {fileName} não encontrado");
 
+                // SCS0018 (issue #88): mesmo falso positivo de GetLayout/GetDocument.
+#pragma warning disable SCS0018
                 var fileBytes = System.IO.File.ReadAllBytes(excelPath);
+#pragma warning restore SCS0018
                 return File(fileBytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
             }
             catch (Exception ex)
