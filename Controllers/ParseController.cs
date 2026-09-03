@@ -91,28 +91,10 @@ namespace LayoutParserApi.Controllers
 
             try
             {
-                // Detectar tipo de arquivo pela extensão e conteúdo
-                var fileExtension = Path.GetExtension(txtFile.FileName).ToLower();
-                var isXmlFile = fileExtension == ".xml";
-
-                // Ler conteúdo do arquivo para detecção de tipo
-                using var txtStreamForDetection = txtFile.OpenReadStream();
-                using var reader = new StreamReader(txtStreamForDetection, leaveOpen: true);
-                var sample = await reader.ReadToEndAsync();
-                var detectedType = _layoutDetector.DetectType(sample);
-
-                // ✅ Overrides por contexto (extensão / layout selecionado)
-                // Quando o documento MQSeries tem linha com 601 chars, o detector por conteúdo pode falhar.
-                // Nesses casos, a extensão e/ou o layout selecionado são a fonte de verdade.
-                if (fileExtension == ".mq_series" ||
-                    (!string.IsNullOrWhiteSpace(layoutName) && layoutName.Contains("MQ", StringComparison.OrdinalIgnoreCase)))
-                {
-                    detectedType = "mqseries";
-                }
-                else if (fileExtension == ".idoc")
-                {
-                    detectedType = "idoc";
-                }
+                // Detecção de tipo extraída para método privado reutilizável (issue #216) —
+                // o novo endpoint /api/parse/detect chama o mesmo método, evitando duplicar os
+                // "casos especiais" hardcoded (linha com 601 chars → mqseries, extensão .idoc, etc.).
+                var (detectedType, sample, fileExtension, isXmlFile) = await DetectDocumentTypeAsync(txtFile, layoutName);
 
                 var isXmlInput = isXmlFile || detectedType == "xml";
 
@@ -536,6 +518,98 @@ namespace LayoutParserApi.Controllers
                 message = ParseFailure.ResolveClientMessage(causa, motivoInterno),
                 correlationId
             });
+        }
+
+        /// <summary>
+        /// Detecta o tipo do documento (txt/mqseries/idoc/xml) lendo o conteúdo e aplicando os
+        /// overrides por contexto (extensão / layout selecionado). Extraído do fluxo de
+        /// <see cref="Upload"/> (issue #216) para ser reutilizado também por <see cref="Detect"/>,
+        /// sem duplicar os "casos especiais" hardcoded (ex.: linha com 601 chars → mqseries).
+        /// </summary>
+        /// <returns>
+        /// Tupla com o tipo detectado, o conteúdo lido (amostra), a extensão do arquivo e se o
+        /// arquivo é XML puro.
+        /// </returns>
+        private async Task<(string DetectedType, string Sample, string FileExtension, bool IsXmlFile)> DetectDocumentTypeAsync(
+            IFormFile txtFile, string layoutName)
+        {
+            var fileExtension = Path.GetExtension(txtFile.FileName).ToLower();
+            var isXmlFile = fileExtension == ".xml";
+
+            // Ler conteúdo do arquivo para detecção de tipo
+            using var txtStreamForDetection = txtFile.OpenReadStream();
+            using var reader = new StreamReader(txtStreamForDetection, leaveOpen: true);
+            var sample = await reader.ReadToEndAsync();
+            var detectedType = _layoutDetector.DetectType(sample);
+
+            // ✅ Overrides por contexto (extensão / layout selecionado)
+            // Quando o documento MQSeries tem linha com 601 chars, o detector por conteúdo pode falhar.
+            // Nesses casos, a extensão e/ou o layout selecionado são a fonte de verdade.
+            if (fileExtension == ".mq_series" ||
+                (!string.IsNullOrWhiteSpace(layoutName) && layoutName.Contains("MQ", StringComparison.OrdinalIgnoreCase)))
+            {
+                detectedType = "mqseries";
+            }
+            else if (fileExtension == ".idoc")
+            {
+                detectedType = "idoc";
+            }
+
+            return (detectedType, sample, fileExtension, isXmlFile);
+        }
+
+        /// <summary>
+        /// Endpoint de detecção isolada (issue #216): recebe um documento e retorna só o tipo
+        /// detectado (txt/mqseries/idoc/xml) + confiança, sem disparar parse completo nem gravar
+        /// amostra de aprendizado. Útil para um agente/consumidor decidir o que fazer antes de
+        /// chamar <see cref="Upload"/>.
+        /// </summary>
+        /// <param name="documentFile">Documento a analisar.</param>
+        /// <param name="layoutName">
+        /// Nome do layout (opcional) — mesmo override de detecção usado no upload (ex.: contém "MQ").
+        /// </param>
+        /// <remarks>
+        /// <c>suggestedLayouts</c> é um MVP honesto: hoje não existe, isolado do fluxo de parse,
+        /// um mecanismo de "matching" que pontue quais layouts do catálogo combinam com o conteúdo
+        /// do documento (o que existe é o aprendizado de máquina acoplado ao parse completo). Em vez
+        /// de inventar um score, o endpoint retorna a lista vazia — sugestão de layout com score real
+        /// fica para uma issue de acompanhamento, conforme já registrado no plano técnico (#216).
+        /// </remarks>
+        /// <response code="200">Detecção concluída (mesmo quando o tipo não pôde ser identificado — retorna confidence "low").</response>
+        /// <response code="400">Documento ausente.</response>
+        [ServiceFilter(typeof(AuditActionFilter))]
+        [HttpPost("detect")]
+        public async Task<IActionResult> Detect(IFormFile documentFile, [FromForm] string layoutName = null)
+        {
+            if (documentFile == null)
+                return BadRequest("Documento é obrigatório.");
+
+            try
+            {
+                var (detectedType, sample, fileExtension, isXmlFile) = await DetectDocumentTypeAsync(documentFile, layoutName);
+                var isXmlInput = isXmlFile || detectedType == "xml";
+
+                // O LayoutDetector retorna "unknown" quando nenhum padrão (xml/mqseries/idoc) bate —
+                // na prática, o fluxo de upload trata isso como TXT posicional genérico (ver
+                // GetLearningExtension/linha 602 acima: idoc/mqseries/_ → "txt").
+                var normalizedType = isXmlInput ? "xml" : detectedType == "unknown" ? "txt" : detectedType;
+                var confidence = detectedType == "unknown" ? "low" : "high";
+
+                _logger.LogInformation("Detect: {FileName} -> {DetectedType} (confidence={Confidence})",
+                    documentFile.FileName, normalizedType, confidence);
+
+                return Ok(new
+                {
+                    detectedType = normalizedType,
+                    confidence,
+                    suggestedLayouts = Array.Empty<object>()
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Falha ao detectar tipo do documento {FileName}", documentFile.FileName);
+                return StatusCode(500, new { success = false, message = "Falha ao detectar o tipo do documento." });
+            }
         }
 
         /// <summary>
