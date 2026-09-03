@@ -134,7 +134,8 @@ namespace LayoutParserApi.Tests.Controllers
                 aiUserInstructionStore: new AiUserInstructionStore(),
                 aiUserSessionStore: new SqlAiUserSessionStore(
                     NullLogger<SqlAiUserSessionStore>.Instance,
-                    new ConfigurationBuilder().Build()),
+                    new ConfigurationBuilder().Build(),
+                    Options.Create(new AiUserSessionHistoryOptions())),
                 currentUser: user,
                 mapperDb: null!,
                 layoutParser: null!,
