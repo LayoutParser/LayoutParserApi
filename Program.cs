@@ -463,7 +463,15 @@ try
             HealthStatus.Unhealthy, new[] { "ready" }))
         .Add(new HealthCheckRegistration("catalog",
             sp => new CatalogHealthCheck(sp.GetRequiredService<CatalogWarmupState>()),
-            HealthStatus.Unhealthy, new[] { "ready" }));
+            HealthStatus.Unhealthy, new[] { "ready" }))
+        // ✅ Issue #90: gate de capacidade dos 3 adapters de explicação de mapeamento (sysmiddle/
+        // tcl/xslt) — a implementação nunca reporta Unhealthy (ver classe), então o failureStatus
+        // aqui só é o piso de segurança caso o contrato seja violado no futuro.
+        .Add(new HealthCheckRegistration("mapping-explanation-capabilities",
+            sp => new MappingExplanationCapabilityHealthCheck(
+                sp.GetRequiredService<IEnumerable<LayoutParserApi.Services.Interfaces.IMappingExplanationAdapter>>(),
+                sp.GetRequiredService<ILogger<MappingExplanationCapabilityHealthCheck>>()),
+            HealthStatus.Degraded, new[] { "ready" }));
 
     // XML Analysis Services
     builder.Services.AddScoped<XmlAnalysisService>();
@@ -471,6 +479,8 @@ try
     builder.Services.AddScoped<XmlDocumentTypeDetector>();
     // Leitura de PDF de orientações XSD (issue #172) — sem estado, seguro como Scoped junto do resto.
     builder.Services.AddScoped<LayoutParserApi.Services.XmlAnalysis.PdfOrientationReader>();
+    // Reconstrução reversa best-effort XML->TXT (issue #151, Fase 4) — sem estado, mesmo grupo.
+    builder.Services.AddScoped<LayoutParserApi.Services.XmlAnalysis.ReverseReconstructionService>();
     builder.Services.AddScoped<MqSeriesToXmlTransformer>();
     builder.Services.AddScoped<TransformationPipelineService>();
     builder.Services.AddScoped<TclGeneratorService>();

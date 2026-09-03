@@ -106,7 +106,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
                     sourceDocumentType, targetDocumentType);
 
                 // Carregar XSL apropriado
-                var xslPath = FindXslFile(sourceDocumentType, targetDocumentType, layoutName);
+                var xslPath = FindXslFile(layoutName);
                 if (string.IsNullOrEmpty(xslPath) || !File.Exists(xslPath))
                 {
                     result.Success = false;
@@ -308,7 +308,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
             try
             {
                 // Encontrar arquivo XSL apropriado
-                var xslPath = FindXslFile("Intermediate", targetDocumentType, layoutName);
+                var xslPath = FindXslFile(layoutName);
                 if (string.IsNullOrEmpty(xslPath) || !File.Exists(xslPath))
                 {
                     result.ErrorCode = "xsl_not_found";
@@ -414,16 +414,21 @@ namespace LayoutParserApi.Services.XmlAnalysis
         /// <c>*_{layoutName}.xsl</c>, que casa com a convenção real sem depender do prefixo do mapper.
         /// Sem <paramref name="layoutName"/>, ou sem nenhum arquivo casando o padrão, retorna
         /// <see langword="null"/> com log de erro claro — não há mais fallback silencioso para "qualquer XSL".
+        ///
+        /// <para><b>Issue #96:</b> os parâmetros <c>sourceType</c>/<c>targetType</c> foram removidos —
+        /// nunca influenciaram a busca (o padrão de arquivo usa só <paramref name="layoutName"/>,
+        /// ver linha do <c>pattern</c> abaixo); apareciam apenas no log de erro do caminho "sem
+        /// layoutName", que os dois call-sites já registram por conta própria antes de chamar este
+        /// método.</para>
         /// </summary>
-        private string FindXslFile(string sourceType, string targetType, string layoutName = null)
+        private string FindXslFile(string layoutName = null)
         {
             try
             {
                 if (string.IsNullOrEmpty(layoutName))
                 {
                     _logger.LogError(
-                        "Não é possível localizar o XSL sem o nome do layout (convenção real é {{mapperName}}_{{layoutName}}.xsl). Source: {SourceType}, Target: {TargetType}",
-                        sourceType, targetType);
+                        "Não é possível localizar o XSL sem o nome do layout (convenção real é {{mapperName}}_{{layoutName}}.xsl).");
                     return null;
                 }
 

@@ -33,6 +33,32 @@ namespace LayoutParserApi.Services.Fiscal
             _logger = logger;
         }
 
+        /// <summary>
+        /// Dependência real: <see cref="IMappingDraftStore"/> (SQL). Consulta um Guid inexistente de
+        /// propósito — exercita o round-trip real sem depender de haver draft cadastrado. Timeout
+        /// curto (issue #90), nunca lança.
+        /// </summary>
+        public async Task<CapabilityHealth> CheckAvailabilityAsync(CancellationToken cancellationToken)
+        {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(3));
+
+            try
+            {
+                await _store.GetDraftIfMemberAsync(Guid.Empty, Guid.Empty, timeoutCts.Token);
+                return new CapabilityHealth(CapabilityStatus.Healthy, "MappingDraftStore respondeu.");
+            }
+            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            {
+                return new CapabilityHealth(CapabilityStatus.Unavailable, "MappingDraftStore não respondeu dentro do timeout (3s).");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Gate de capacidade (#90): MappingDraftStore indisponível para engine=tcl.");
+                return new CapabilityHealth(CapabilityStatus.Unavailable, $"MappingDraftStore falhou: {ex.Message}");
+            }
+        }
+
         public async Task<MappingExplanation?> ExplainAsync(MappingExplanationRequest request, CancellationToken cancellationToken)
         {
             if (!Guid.TryParse(request.MappingId, out var draftId))

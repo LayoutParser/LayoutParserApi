@@ -226,4 +226,59 @@ namespace LayoutParserApi.Services.Health
             return Task.FromResult(resultado);
         }
     }
+
+    /// <summary>
+    /// Issue #90 — gate de capacidade explícito para os 3 adapters de <c>IMappingExplanationAdapter</c>
+    /// (sysmiddle/tcl/xslt): antes, "registrado no DI" era tratado como "disponível", e a dependência
+    /// real (catálogo de mappers, SQL) só falhava tarde, no primeiro request. Cada adapter roda seu
+    /// próprio <see cref="IMappingExplanationAdapter.CheckAvailabilityAsync"/> (timeout curto, nunca
+    /// lança); esta sonda agrega o pior status entre os 3.
+    ///
+    /// <para><b>Nunca Unhealthy</b> — MVP de observabilidade (design §"O que falta de decisão externa"):
+    /// o objetivo é reportar capacidade degradada, não recusar requests nem travar o boot/deploy.
+    /// Pior caso agregado vira <c>Degraded</c> (200 em <c>/health/ready</c>), nunca <c>Unhealthy</c>.</para>
+    /// </summary>
+    public sealed class MappingExplanationCapabilityHealthCheck : IHealthCheck
+    {
+        private readonly IEnumerable<IMappingExplanationAdapter> _adapters;
+        private readonly ILogger<MappingExplanationCapabilityHealthCheck> _logger;
+
+        public MappingExplanationCapabilityHealthCheck(
+            IEnumerable<IMappingExplanationAdapter> adapters,
+            ILogger<MappingExplanationCapabilityHealthCheck> logger)
+        {
+            _adapters = adapters;
+            _logger = logger;
+        }
+
+        public async Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken cancellationToken = default)
+        {
+            var data = new Dictionary<string, object>();
+            var anyDegraded = false;
+
+            foreach (var adapter in _adapters)
+            {
+                CapabilityHealth health;
+                try
+                {
+                    health = await adapter.CheckAvailabilityAsync(cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    // Defesa extra: mesmo que a implementação quebre o contrato "nunca lança", o gate
+                    // de capacidade em si não pode derrubar a sonda inteira (princípio de resiliência).
+                    _logger.LogWarning(ex, "CheckAvailabilityAsync do adapter {Engine} lançou — tratado como degradado.", adapter.Engine);
+                    health = new CapabilityHealth(CapabilityStatus.Unavailable, $"CheckAvailabilityAsync lançou: {ex.Message}");
+                }
+
+                data[adapter.Engine] = new { status = health.Status.ToString(), reason = health.Reason };
+                if (health.Status != CapabilityStatus.Healthy)
+                    anyDegraded = true;
+            }
+
+            return anyDegraded
+                ? HealthCheckResult.Degraded("Uma ou mais capacidades de explicação de mapeamento estão degradadas — ver detalhe por engine.", data: data)
+                : HealthCheckResult.Healthy("Todas as capacidades de explicação de mapeamento estão saudáveis.", data);
+        }
+    }
 }
