@@ -742,8 +742,13 @@ namespace LayoutParserApi.Controllers
         [ProducesResponseType(typeof(AutomaticParseResponse), StatusCodes.Status200OK)]
         [ProducesResponseType(typeof(AutomaticParseResponse), StatusCodes.Status422UnprocessableEntity)]
 #pragma warning disable SCS0016 // A API não usa autenticação por cookie: aceita identidade apenas do BFF em loopback.
+        // ✅ FIX (2026-09-03): documentFile NÃO leva [FromForm] explícito — o model binding do
+        // ASP.NET Core já trata IFormFile como multipart/form-data automaticamente, e o
+        // Swashbuckle não sabe gerar schema para [FromForm] + IFormFile combinados (quebrava
+        // /api/swagger/v1/swagger.json com 500 em produção). Mesmo padrão já usado em
+        // Upload/Detect deste controller — não reintroduza o atributo aqui.
         public async Task<IActionResult> Auto(
-            [FromForm] IFormFile? documentFile,
+            IFormFile? documentFile,
             [FromForm] string? layoutGuidOverride,
             [FromServices] IAutomaticLayoutDetectionService automaticLayoutDetection,
             CancellationToken cancellationToken)
