@@ -43,6 +43,9 @@ namespace LayoutParserApi.Controllers
         /// </summary>
         // Limite de tamanho total do request: 10 artefatos * limite por artefato — margem generosa
         // sobre MaxArtifactsPerUpload, rejeitado explicitamente antes de bufferizar tudo em memória.
+        // SCS0016 (issue #88): mesmo padrão já aceito em ParseController.Upload — sem cookie de
+        // sessão, identidade via BFF/TrustedIdentityMiddleware com guarda de loopback.
+#pragma warning disable SCS0016
         [HttpPost("projects/{projectId:guid}/mapping-packages")]
         [RequestSizeLimit(10 * Services.Validation.MultipartUploadValidator.MaxArtifactSizeBytes)]
         public async Task<IActionResult> CreatePackage(
@@ -50,6 +53,7 @@ namespace LayoutParserApi.Controllers
             Guid projectId,
             [FromForm] string? name,
             CancellationToken cancellationToken)
+#pragma warning restore SCS0016
         {
             if (_currentUser.UserId is not Guid userId)
                 return NotFound(); // Fail-closed uniforme — mesmo padrão do Slice 1.

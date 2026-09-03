@@ -79,9 +79,16 @@ namespace LayoutParserApi.Controllers
         /// <response code="400">Layout XML ou documento ausente, ou layout não é <c>.xml</c>.</response>
         /// <response code="422">Entrada inválida/irrecuperável (documento vazio, malformado) — culpa do arquivo enviado, não da API.</response>
         /// <response code="500">Falha não catalogada (defeito nosso) — mensagem segura no corpo, causa real no log via <c>correlationId</c>.</response>
+        // SCS0016 (issue #88): sem [ValidateAntiForgeryToken] por design — a API não usa autenticação
+        // por cookie de sessão (o vetor clássico de CSRF); a identidade vem do BFF via
+        // TrustedIdentityMiddleware, que só confia nos headers x-iis-user/x-iis-roles quando a origem
+        // é loopback (ver .claude/rules/security.md). Isso fecha a forja de identidade cross-site que
+        // o SCS0016 pressupõe.
+#pragma warning disable SCS0016
         [ServiceFilter(typeof(AuditActionFilter))]
         [HttpPost("upload")]
         public async Task<IActionResult> Upload(IFormFile layoutFile, IFormFile txtFile, [FromForm] string layoutName = null)
+#pragma warning restore SCS0016
         {
             if (layoutFile == null || txtFile == null)
                 return BadRequest("Layout XML e arquivo são obrigatórios.");
@@ -577,13 +584,23 @@ namespace LayoutParserApi.Controllers
         /// </remarks>
         /// <response code="200">Detecção concluída (mesmo quando o tipo não pôde ser identificado — retorna confidence "low").</response>
         /// <response code="400">Documento ausente.</response>
+        // SCS0016 (issue #88): mesmo padrão de Upload — sem cookie de sessão, identidade via BFF/
+        // TrustedIdentityMiddleware com guarda de loopback.
+#pragma warning disable SCS0016
         [ServiceFilter(typeof(AuditActionFilter))]
         [HttpPost("detect")]
         public async Task<IActionResult> Detect(IFormFile documentFile, [FromForm] string layoutName = null)
+#pragma warning restore SCS0016
         {
             if (documentFile == null)
                 return BadRequest("Documento é obrigatório.");
 
+            // SCS0018 (issue #88): a linha reportada aqui pelo SCS é resíduo de taint-tracking do
+            // parâmetro documentFile/layoutName propagado até o sink real de escrita em
+            // SaveFileForLearningAsync (FileStream abaixo) — DetectDocumentTypeAsync, chamada logo
+            // adiante, não grava nenhum arquivo, só lê o conteúdo em memória. Sink real já sanitizado
+            // por SafePathResolver.Resolve + IsInsideBase.
+#pragma warning disable SCS0018
             try
             {
                 var (detectedType, sample, fileExtension, isXmlFile) = await DetectDocumentTypeAsync(documentFile, layoutName);
@@ -610,6 +627,7 @@ namespace LayoutParserApi.Controllers
                 _logger.LogError(ex, "Falha ao detectar tipo do documento {FileName}", documentFile.FileName);
                 return StatusCode(500, new { success = false, message = "Falha ao detectar o tipo do documento." });
             }
+#pragma warning restore SCS0018
         }
 
         /// <summary>
@@ -657,10 +675,14 @@ namespace LayoutParserApi.Controllers
                     return;
                 }
 
+                // SCS0018 (issue #88): sink real do finding acima — filePath já validado por
+                // SafePathResolver.Resolve + IsInsideBase logo acima; SCS não reconhece o guard custom.
+#pragma warning disable SCS0018
                 using (var stream = new FileStream(filePath, FileMode.Create))
                 {
                     await txtFile.CopyToAsync(stream);
                 }
+#pragma warning restore SCS0018
 
                 _logger.LogInformation("Arquivo salvo para aprendizado: {Path}", filePath);
 

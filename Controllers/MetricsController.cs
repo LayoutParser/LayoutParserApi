@@ -277,7 +277,11 @@ namespace LayoutParserApi.Controllers
 
             try
             {
+                // SCS0018 (issue #88): falso positivo — tclPath já saiu sanitizado de
+                // SafePathResolver.Resolve(_tclBasePath, ...) no chamador; SCS não reconhece o helper.
+#pragma warning disable SCS0018
                 var tclContent = await System.IO.File.ReadAllTextAsync(tclPath, Encoding.UTF8);
+#pragma warning restore SCS0018
                 
                 // Parse do TCL (XML)
                 var tclDoc = XDocument.Parse(tclContent);
@@ -335,7 +339,11 @@ namespace LayoutParserApi.Controllers
 
             try
             {
+                // SCS0018 (issue #88): mesmo falso positivo — xslPath já saiu sanitizado de
+                // SafePathResolver.Resolve(_xslBasePath, ...) no chamador.
+#pragma warning disable SCS0018
                 var xslContent = await System.IO.File.ReadAllTextAsync(xslPath, Encoding.UTF8);
+#pragma warning restore SCS0018
                 
                 // Parse do XSL
                 var xslDoc = XDocument.Parse(xslContent);
