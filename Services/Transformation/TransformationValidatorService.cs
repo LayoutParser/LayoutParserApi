@@ -3,6 +3,8 @@ using LayoutParserApi.Services.Transformation.Models;
 
 using System.Xml.Linq;
 
+using XslSynth.Core;
+
 namespace LayoutParserApi.Services.Transformation
 {
     /// <summary>
@@ -15,18 +17,21 @@ namespace LayoutParserApi.Services.Transformation
         private readonly IConfiguration _configuration;
         private readonly TransformationPipelineService _pipelineService;
         private readonly XmlDocumentTypeDetector _documentTypeDetector;
+        private readonly XsdValidationService _xsdValidationService;
         private readonly string _expectedOutputsPath;
 
         public TransformationValidatorService(
             ILogger<TransformationValidatorService> logger,
             IConfiguration configuration,
             TransformationPipelineService pipelineService,
-            XmlDocumentTypeDetector documentTypeDetector)
+            XmlDocumentTypeDetector documentTypeDetector,
+            XsdValidationService xsdValidationService)
         {
             _logger = logger;
             _configuration = configuration;
             _pipelineService = pipelineService;
             _documentTypeDetector = documentTypeDetector;
+            _xsdValidationService = xsdValidationService;
             _expectedOutputsPath = configuration["TransformationPipeline:ExpectedOutputsPath"] ?? @"C:\inetpub\wwwroot\layoutparser\ExpectedOutputs";
 
             Directory.CreateDirectory(_expectedOutputsPath);
@@ -130,6 +135,51 @@ namespace LayoutParserApi.Services.Transformation
                     result.Success = false;
                 }
 
+                // Passo 3.5: Validação de schema XSD (issue #173) — separada da comparação de
+                // conteúdo (Passo 4), pois são preocupações diferentes: "é um NFe/CTe/NFCom/MDFe
+                // válido perante o schema oficial?" vs. "bate com o XML esperado deste teste?".
+                // Reaproveita XsdValidationService (já registrado no DI, mesmo grupo de validação),
+                // sem duplicar lógica de resolução de XSD por documentType.
+                try
+                {
+                    var xsdResult = await _xsdValidationService.ValidateXmlAgainstXsdAsync(
+                        transformationResult.TransformedXml, layoutName: layoutName);
+
+                    result.ValidationSteps.Add(new ValidationStep
+                    {
+                        Step = "XSD Schema Validation",
+                        Success = xsdResult.IsValid,
+                        Message = xsdResult.IsValid
+                            ? $"XML válido contra XSD {xsdResult.XsdVersion ?? xsdResult.DocumentType}"
+                            : $"{xsdResult.Errors.Count} erro(s) de schema encontrados",
+                        Details = xsdResult.Errors.Count > 0
+                            ? string.Join("; ", xsdResult.Errors.Select(e => e.Message))
+                            : ""
+                    });
+
+                    if (!xsdResult.IsValid)
+                    {
+                        // Falha de schema não derruba o Success geral aqui — mantém o comportamento
+                        // anterior (comparação de conteúdo é o gate principal); XSD é reportado como
+                        // Warning para não quebrar consumidores que hoje só olham Errors/Success do
+                        // pipeline de transformação.
+                        result.Warnings.AddRange(xsdResult.Errors.Select(e => $"XSD: {e.Message}"));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // Degrada graciosamente: XSD ausente/config errada não pode derrubar a validação
+                    // de transformação inteira (princípio de resiliência do projeto).
+                    _logger.LogWarning(ex, "Falha ao validar XML contra XSD para layout {LayoutName} — etapa ignorada.", layoutName);
+                    result.ValidationSteps.Add(new ValidationStep
+                    {
+                        Step = "XSD Schema Validation",
+                        Success = false,
+                        Message = "Validação XSD não pôde ser executada",
+                        Details = ex.Message
+                    });
+                }
+
                 // Passo 4: Comparar com saída esperada (se fornecida)
                 if (!string.IsNullOrEmpty(expectedOutputXml))
                 {
@@ -148,6 +198,7 @@ namespace LayoutParserApi.Services.Transformation
                     if (!comparisonResult.Match)
                         result.Warnings.AddRange(comparisonResult.Differences);
 
+                    result.FieldDiffs.AddRange(comparisonResult.FieldDiffs);
                 }
                 else if (IsValidLayoutName(layoutName))
                 {
@@ -177,6 +228,8 @@ namespace LayoutParserApi.Services.Transformation
                         {
                             result.Warnings.AddRange(comparisonResult.Differences);
                         }
+
+                        result.FieldDiffs.AddRange(comparisonResult.FieldDiffs);
                     }
                 }
 
@@ -291,55 +344,47 @@ namespace LayoutParserApi.Services.Transformation
         }
 
         /// <summary>
-        /// Compara XML gerado com XML esperado
+        /// Compara XML gerado com XML esperado, campo a campo (issue #173).
+        ///
+        /// Reaproveita <see cref="CanonicalDiffer"/> (mesmo comparador determinístico do loop de
+        /// IA em <c>Services/Transformation/Ai</c>) em vez do diff raso anterior (só contagem de
+        /// elementos + checagem de 4 nomes fixos) — um único juiz determinístico para
+        /// gerar→validar→corrigir E validação manual, em vez de dois caminhos de comparação
+        /// paralelos.
         /// </summary>
-        private async Task<ComparisonResult> CompareWithExpectedAsync(string actualXml, string expectedXml)
+        private Task<ComparisonResult> CompareWithExpectedAsync(string actualXml, string expectedXml)
         {
             var result = new ComparisonResult
             {
                 Match = true,
-                Differences = new List<string>()
+                Differences = new List<string>(),
+                FieldDiffs = new List<FieldValidationDiff>()
             };
 
             try
             {
-                var actualDoc = XDocument.Parse(actualXml);
-                var expectedDoc = XDocument.Parse(expectedXml);
+                var nodeDiffs = new CanonicalDiffer().Diff(expectedXml, actualXml);
 
-                // Comparar elementos principais
-                var actualElements = actualDoc.Descendants().ToList();
-                var expectedElements = expectedDoc.Descendants().ToList();
+                result.FieldDiffs = nodeDiffs.Select(ToFieldValidationDiff).ToList();
+                result.Match = result.FieldDiffs.Count == 0;
+                // Details rico vai por campo (FieldDiffs); Differences/Message seguem como resumo
+                // textual para não quebrar consumidores existentes do contrato.
+                result.Differences = nodeDiffs.Select(d => d.ToString()).ToList();
+                result.Message = result.Match
+                    ? "XML gerado corresponde ao esperado"
+                    : $"Encontradas {result.FieldDiffs.Count} diferença(s)";
 
-                if (actualElements.Count != expectedElements.Count)
+                // LogDebug com o diff completo; LogInformation só com o resumo (evita log verboso
+                // de payload fiscal por campo, ver dotnet-standards §Logging).
+                _logger.LogDebug("Diff canônico completo: {@FieldDiffs}", result.FieldDiffs);
+                if (!result.Match)
                 {
-                    result.Match = false;
-                    result.Differences.Add(
-                        $"Número de elementos diferente: esperado {expectedElements.Count}, encontrado {actualElements.Count}");
+                    var countsByType = result.FieldDiffs
+                        .GroupBy(d => d.DiffType)
+                        .ToDictionary(g => g.Key.ToString(), g => g.Count());
+                    _logger.LogInformation("Comparação com saída esperada encontrou {DiffCount} divergência(s): {@CountsByType}",
+                        result.FieldDiffs.Count, countsByType);
                 }
-
-                // Comparar estrutura básica
-                if (actualDoc.Root?.Name != expectedDoc.Root?.Name)
-                {
-                    result.Match = false;
-                    result.Differences.Add(
-                        $"Elemento raiz diferente: esperado {expectedDoc.Root?.Name}, encontrado {actualDoc.Root?.Name}");
-                }
-
-                // Comparar elementos críticos
-                var criticalElements = new[] { "infNFe", "ide", "emit", "dest" };
-                foreach (var elementName in criticalElements)
-                {
-                    var actualElement = actualDoc.Descendants().FirstOrDefault(e => e.Name.LocalName == elementName);
-                    var expectedElement = expectedDoc.Descendants().FirstOrDefault(e => e.Name.LocalName == elementName);
-
-                    if (expectedElement != null && actualElement == null)
-                    {
-                        result.Match = false;
-                        result.Differences.Add($"Elemento crítico ausente: {elementName}");
-                    }
-                }
-
-                result.Message = result.Match? "XML gerado corresponde ao esperado" : $"Encontradas {result.Differences.Count} diferenças";
             }
             catch (Exception ex)
             {
@@ -348,7 +393,29 @@ namespace LayoutParserApi.Services.Transformation
                 result.Message = "Erro na comparação";
             }
 
-            return result;
+            return Task.FromResult(result);
+        }
+
+        /// <summary>Mapeia o <c>Kind</c> do diff canônico (texto livre) para o enum fechado <see cref="FieldDiffType"/> exposto no contrato.</summary>
+        private static FieldValidationDiff ToFieldValidationDiff(NodeDiff diff)
+        {
+            var diffType = diff.Kind switch
+            {
+                "missing" => FieldDiffType.MissingInOutput,
+                "extra" => FieldDiffType.UnexpectedInOutput,
+                "name" => FieldDiffType.TypeMismatch,
+                "attr" when diff.Actual is null => FieldDiffType.MissingInOutput,
+                "attr" when diff.Expected is null => FieldDiffType.UnexpectedInOutput,
+                _ => FieldDiffType.ValueMismatch, // "attr" com os dois valores presentes, ou "text".
+            };
+
+            return new FieldValidationDiff
+            {
+                XPath = diff.XPath,
+                Expected = diff.Expected,
+                Actual = diff.Actual,
+                DiffType = diffType
+            };
         }
     }
 }
