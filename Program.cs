@@ -966,3 +966,11 @@ finally
         // Ignore errors during shutdown
     }
 }
+
+// ✅ Issue #90: expõe a classe `Program` gerada implicitamente pelos top-level statements como
+// `public partial`, sem mudar comportamento algum em produção — é só uma declaração de tipo
+// adicional para o compilador mesclar com a gerada automaticamente (que não tem modificador
+// explícito, então herda o `public` daqui em vez de gerar conflito de acessibilidade).
+// Necessário para `WebApplicationFactory<Program>` no projeto de testes, que está em outro
+// assembly e não enxergaria a classe se ela ficasse `internal` (default do gerado).
+public partial class Program;
