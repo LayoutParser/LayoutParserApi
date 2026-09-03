@@ -407,6 +407,13 @@ try
     builder.Services.AddScoped<IIdentityWorkspaceStore, SqlIdentityWorkspaceStore>();
     // Histórico de longo prazo do pathway de IA por usuário (issue #102) — mesmo banco IdentityDatabase.
     builder.Services.AddScoped<LayoutParserApi.Services.Database.SqlAiUserSessionStore>();
+    // ✅ Issue #97 (gap de TTL/retenção): sem isso, tbLpAiUserSessionHistoryEntry crescia
+    // indefinidamente — mesmo espírito do TTL do AiCandidateStore (issue #51). BackgroundService
+    // (Singleton por natureza do IHostedService) resolve SqlAiUserSessionStore via DI a cada ciclo
+    // — o store em si continua Scoped/stateless por chamada (cria SqlConnection por operação).
+    builder.Services.Configure<LayoutParserApi.Services.Database.AiUserSessionHistoryOptions>(
+        builder.Configuration.GetSection("AiUserSessionHistory"));
+    builder.Services.AddHostedService<LayoutParserApi.Services.Database.AiUserSessionHistoryCleanupBackgroundService>();
     builder.Services.AddScoped<IIdentityWorkspaceService, LayoutParserApi.Services.Identity.IdentityWorkspaceService>();
     // ✅ Slice 2 (issue #229): FiscalMappingPackage/Revision/Artifact — mesmo banco, mesmo padrão.
     // WindowsDefenderAntivirusScanner só usa ILogger (sem estado por-requisição) — Scoped por
@@ -966,3 +973,11 @@ finally
         // Ignore errors during shutdown
     }
 }
+
+// ✅ Issue #90: expõe a classe `Program` gerada implicitamente pelos top-level statements como
+// `public partial`, sem mudar comportamento algum em produção — é só uma declaração de tipo
+// adicional para o compilador mesclar com a gerada automaticamente (que não tem modificador
+// explícito, então herda o `public` daqui em vez de gerar conflito de acessibilidade).
+// Necessário para `WebApplicationFactory<Program>` no projeto de testes, que está em outro
+// assembly e não enxergaria a classe se ela ficasse `internal` (default do gerado).
+public partial class Program;
