@@ -50,6 +50,7 @@ namespace LayoutParserApi.Controllers
         private readonly IAiTransformationCandidateService _aiCandidateService;
         private readonly IAiFallbackSuppressionGate _aiFallbackGate;
         private readonly AiUserInstructionStore _aiUserInstructionStore;
+        private readonly Services.Database.SqlAiUserSessionStore _aiUserSessionStore;
         private readonly ICurrentUser _currentUser;
         private readonly MapperDatabaseService _mapperDb;
         private readonly ILayoutParserService _layoutParser;
@@ -69,6 +70,7 @@ namespace LayoutParserApi.Controllers
             IAiTransformationCandidateService aiCandidateService,
             IAiFallbackSuppressionGate aiFallbackGate,
             AiUserInstructionStore aiUserInstructionStore,
+            Services.Database.SqlAiUserSessionStore aiUserSessionStore,
             ICurrentUser currentUser,
             MapperDatabaseService mapperDb,
             ILayoutParserService layoutParser,
@@ -87,6 +89,7 @@ namespace LayoutParserApi.Controllers
             _aiCandidateService = aiCandidateService;
             _aiFallbackGate = aiFallbackGate;
             _aiUserInstructionStore = aiUserInstructionStore;
+            _aiUserSessionStore = aiUserSessionStore;
             _currentUser = currentUser;
             _mapperDb = mapperDb;
             _layoutParser = layoutParser;
@@ -872,6 +875,107 @@ namespace LayoutParserApi.Controllers
         {
             var instruction = _aiUserInstructionStore.Get(CurrentUserId);
             return Ok(new { instruction });
+        }
+
+        /// <summary>
+        /// Issue #97 (fase 2, Passo 3): histórico persistente do usuário atual — <c>Ticket</c>/
+        /// <c>Status</c>/<c>CreatedAt</c> gravados por <see cref="Services.Database.SqlAiUserSessionStore"/>
+        /// (schema já criado pela issue #102) toda vez que um job do pathway IA chega a um status
+        /// terminal. Não é "conversa" nem memória de chamada Ollama entre tickets — é só a lista que
+        /// alimenta <see cref="ResumeAiCandidateTicket"/> para o usuário escolher qual ticket falho
+        /// reabrir.
+        /// </summary>
+        /// <param name="maxEntries">Teto de entradas retornadas (mais recente primeiro); default 50.</param>
+        /// <response code="200">Lista (pode ser vazia) do histórico do usuário autenticado.</response>
+        [Authorize]
+        [HttpGet("ai-session/history")]
+        public async Task<IActionResult> GetAiSessionHistory([FromQuery] int maxEntries, CancellationToken cancellationToken)
+        {
+            var history = await _aiUserSessionStore.GetHistoryAsync(CurrentUserId, maxEntries, cancellationToken);
+            return Ok(history);
+        }
+
+        /// <summary>
+        /// Issue #97 (fase 2, Passo 3): retomada pontual de um ticket falho do pathway IA. Reabre
+        /// SÓ o ticket indicado (single-shot) — não carrega memória de tentativas anteriores para o
+        /// prompt, o loop gerar→validar→corrigir do <see cref="IAiTransformationCandidateService"/>
+        /// recomeça do zero com o conteúdo enviado agora no corpo da requisição. Isso é necessário
+        /// porque o histórico persistente (issue #102) guarda só <c>Ticket</c>/<c>Status</c> — o
+        /// TXT/XML de entrada em si é conteúdo pesado e continua vivendo só no
+        /// <see cref="Services.Transformation.Ai.AiCandidateStore"/> (cache quente, TTL curto), não
+        /// duplicado no SQL (mesmo critério de aceite documentado em
+        /// <see cref="Services.Database.SqlAiUserSessionStore"/>).
+        /// </summary>
+        /// <remarks>
+        /// Isolamento por dono (issue #92): só reabre um ticket que apareça no histórico do PRÓPRIO
+        /// usuário autenticado — <c>404</c> tanto para ticket inexistente quanto para ticket de outro
+        /// usuário (não distinguível de propósito, mesma defesa contra enumeração de
+        /// <see cref="GetAiCandidateStatus"/>).
+        /// </remarks>
+        /// <param name="ticket">Ticket que já apareceu em <c>GET ai-session/history</c> para este usuário.</param>
+        /// <param name="request"><c>InputContent</c>/<c>LayoutName</c> obrigatórios (mesmo conteúdo que originou o ticket, ou uma correção pontual); <c>ExpectedOutput</c> opcional vira gabarito.</param>
+        /// <response code="202">Retomada enfileirada — consulte <c>GET execute-candidates/{ticket}/ia-status</c>.</response>
+        /// <response code="400"><c>InputContent</c>/<c>LayoutName</c> ausente, ou layout não encontrado no catálogo.</response>
+        /// <response code="404">Ticket não encontrado no histórico do usuário autenticado.</response>
+        [Authorize]
+        [HttpPost("ai-session/history/{ticket}/resume")]
+        public async Task<IActionResult> ResumeAiCandidateTicket(string ticket, [FromBody] TransformationRequest request, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(ticket))
+                return NotFound();
+
+            if (request == null || string.IsNullOrEmpty(request.InputContent))
+                return BadRequest(new { success = false, errors = new[] { "InputContent é obrigatório" } });
+
+            if (string.IsNullOrEmpty(request.LayoutName))
+                return BadRequest(new { success = false, errors = new[] { "LayoutName é obrigatório" } });
+
+            // Só reabre ticket que já apareceu no histórico do PRÓPRIO usuário — não confia em ticket
+            // "adivinhado" no path, mesma defesa contra enumeração de GetAiCandidateStatus.
+            var history = await _aiUserSessionStore.GetHistoryAsync(CurrentUserId, maxEntries: 200, cancellationToken);
+            var owned = history.Any(entry => string.Equals(entry.Ticket, ticket, StringComparison.Ordinal));
+            if (!owned)
+                return NotFound();
+
+            LayoutRecord? layoutRecord;
+            try
+            {
+                var searchResponse = await _layoutDb.SearchLayoutsAsync(new LayoutSearchRequest { SearchTerm = request.LayoutName });
+                if (!searchResponse.Success)
+                    throw new InvalidOperationException(searchResponse.ErrorMessage);
+
+                layoutRecord = searchResponse.Layouts
+                    .FirstOrDefault(l => string.Equals(l.Name, request.LayoutName, StringComparison.OrdinalIgnoreCase));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Falha de infraestrutura ao resolver layout {LayoutName} para retomada de ticket IA", request.LayoutName);
+                return StatusCode(500, new { success = false, error = "Falha de infraestrutura ao consultar o catálogo de layouts" });
+            }
+
+            if (layoutRecord == null)
+                return BadRequest(new { success = false, errors = new[] { $"Layout '{request.LayoutName}' não encontrado" } });
+
+            var resolvedLayoutGuidText = LowCodeLayoutGuidResolver.Resolve(request.LayoutGuid, layoutRecord.LayoutGuid);
+            if (resolvedLayoutGuidText == null || !Guid.TryParse(resolvedLayoutGuidText, out var resolvedLayoutGuid))
+                return BadRequest(new { success = false, errors = new[] { $"Layout '{request.LayoutName}' sem LayoutGuid válido para retomada" } });
+
+            var userId = CurrentUserId;
+            var groundTruthXml = string.IsNullOrWhiteSpace(request.ExpectedOutput) ? null : request.ExpectedOutput;
+
+            // Fire-and-forget (mesmo padrão de TryEnqueueAiCandidate/TryEnqueueAiFallback): nunca
+            // atrasa nem derruba a resposta HTTP; EnqueueAsync já não lança para o chamador.
+            _ = _aiCandidateService.EnqueueAsync(
+                userId,
+                ticket,
+                request.LayoutName,
+                resolvedLayoutGuid,
+                mapperGuid: resolvedLayoutGuidText,
+                request.InputContent,
+                groundTruthXml,
+                CancellationToken.None);
+
+            return Accepted(new { ticket, resumed = true });
         }
 
         /// <summary>
