@@ -463,7 +463,15 @@ try
             HealthStatus.Unhealthy, new[] { "ready" }))
         .Add(new HealthCheckRegistration("catalog",
             sp => new CatalogHealthCheck(sp.GetRequiredService<CatalogWarmupState>()),
-            HealthStatus.Unhealthy, new[] { "ready" }));
+            HealthStatus.Unhealthy, new[] { "ready" }))
+        // ✅ Issue #90: gate de capacidade dos 3 adapters de explicação de mapeamento (sysmiddle/
+        // tcl/xslt) — a implementação nunca reporta Unhealthy (ver classe), então o failureStatus
+        // aqui só é o piso de segurança caso o contrato seja violado no futuro.
+        .Add(new HealthCheckRegistration("mapping-explanation-capabilities",
+            sp => new MappingExplanationCapabilityHealthCheck(
+                sp.GetRequiredService<IEnumerable<LayoutParserApi.Services.Interfaces.IMappingExplanationAdapter>>(),
+                sp.GetRequiredService<ILogger<MappingExplanationCapabilityHealthCheck>>()),
+            HealthStatus.Degraded, new[] { "ready" }));
 
     // XML Analysis Services
     builder.Services.AddScoped<XmlAnalysisService>();
