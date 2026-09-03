@@ -75,4 +75,58 @@ public static class ParseTools
             return $"ERRO ao chamar a API ({client.BaseAddress}): {ex.Message}";
         }
     }
+
+    /// <summary>
+    /// Detecta o tipo de um documento (TXT/MQSeries/IDOC/XML) sem disparar o parse completo,
+    /// chamando POST /api/parse/detect. Útil para um agente decidir o que fazer antes de
+    /// disparar parse_document.
+    /// </summary>
+    [McpServerTool(Name = "detect_layout")]
+    [Description("Detecta o tipo de um documento (txt/mqseries/idoc/xml) sem disparar o parse completo e retorna o resultado (JSON). " +
+                 "Detects a document's type (txt/mqseries/idoc/xml) without running a full parse and returns the result as JSON.")]
+    public static async Task<string> DetectLayoutAsync(
+        IHttpClientFactory httpClientFactory,
+        ILogger<ParseToolsLog> logger,
+        [Description("Caminho local do documento a analisar (.txt, .mq_series, .idoc, .xml).")] string documentPath,
+        [Description("Nome do layout (opcional) — usado como override de detecção quando contém \"MQ\".")] string? layoutName = null,
+        CancellationToken cancellationToken = default)
+    {
+        var correlationId = CorrelationContext.NewId();
+        using var _ = LogContext.PushProperty("CorrelationId", correlationId);
+
+        if (!File.Exists(documentPath))
+        {
+            logger.LogWarning("Tool detect_layout: documento não encontrado em {DocumentPath}", documentPath);
+            return $"ERRO: documento não encontrado: {documentPath}";
+        }
+
+        var client = httpClientFactory.CreateClient("api");
+        client.DefaultRequestHeaders.TryAddWithoutValidation(CorrelationContext.HeaderName, correlationId);
+
+        using var form = new MultipartFormDataContent();
+
+        var docBytes = await File.ReadAllBytesAsync(documentPath, cancellationToken);
+        var docContent = new ByteArrayContent(docBytes);
+        form.Add(docContent, "documentFile", Path.GetFileName(documentPath));
+
+        if (!string.IsNullOrWhiteSpace(layoutName))
+            form.Add(new StringContent(layoutName), "layoutName");
+
+        try
+        {
+            logger.LogInformation("Tool detect_layout: {DocumentPath} (layoutName={LayoutName})", documentPath, layoutName);
+            var response = await client.PostAsync("/api/parse/detect", form, cancellationToken);
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (!response.IsSuccessStatusCode)
+                logger.LogWarning("Tool detect_layout: HTTP {StatusCode} para {DocumentPath}", (int)response.StatusCode, documentPath);
+            return response.IsSuccessStatusCode
+                ? body
+                : $"ERRO HTTP {(int)response.StatusCode}: {body}";
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Tool detect_layout: falha ao chamar a API ({BaseAddress})", client.BaseAddress);
+            return $"ERRO ao chamar a API ({client.BaseAddress}): {ex.Message}";
+        }
+    }
 }
