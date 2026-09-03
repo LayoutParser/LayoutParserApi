@@ -9,6 +9,7 @@ using LayoutParserApi.Services.Transformation.LowCode;
 using LayoutParserApi.Services.Transformation.Ai;
 
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -105,6 +106,9 @@ namespace LayoutParserApi.Tests.Controllers
                 aiCandidateService: spy,
                 aiFallbackGate: new SpyAiFallbackSuppressionGate(),
                 aiUserInstructionStore: new LayoutParserApi.Services.Transformation.Ai.AiUserInstructionStore(),
+                aiUserSessionStore: new LayoutParserApi.Services.Database.SqlAiUserSessionStore(
+                    NullLogger<LayoutParserApi.Services.Database.SqlAiUserSessionStore>.Instance,
+                    new ConfigurationBuilder().Build()),
                 currentUser: user,
                 mapperDb: null!,
                 layoutParser: null!,
