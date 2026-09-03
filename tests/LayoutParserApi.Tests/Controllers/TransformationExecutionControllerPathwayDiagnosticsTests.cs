@@ -161,6 +161,9 @@ namespace LayoutParserApi.Tests.Controllers
                 aiCandidateService: aiSpy,
                 aiFallbackGate: new SpyAiFallbackSuppressionGate(),
                 aiUserInstructionStore: new LayoutParserApi.Services.Transformation.Ai.AiUserInstructionStore(),
+                aiUserSessionStore: new LayoutParserApi.Services.Database.SqlAiUserSessionStore(
+                    NullLogger<LayoutParserApi.Services.Database.SqlAiUserSessionStore>.Instance,
+                    new ConfigurationBuilder().Build()),
                 currentUser: new FakeCurrentUser(),
                 mapperDb: null!,
                 layoutParser: null!,
