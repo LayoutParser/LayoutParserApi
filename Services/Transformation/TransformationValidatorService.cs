@@ -298,8 +298,26 @@ namespace LayoutParserApi.Services.Transformation
                     result.Message = "TCL inválido";
                 }
 
-                // Verificar estrutura básica do TCL (MAP, LINE, FIELD)
-                // TODO: Implementar validação mais detalhada
+                // Verificar estrutura básica do TCL (MAP, LINE, FIELD) — issue #173: antes só
+                // checava bem-formação XML, sem checar se o TCL de fato tem os elementos/atributos
+                // que o parser posicional exige (o TODO original). Reaproveita
+                // TclStructureValidator (mesma lógica já usada por ImprovedTclGeneratorService),
+                // sem duplicar a checagem. Só roda se a etapa anterior (bem-formação) já passou —
+                // se o TCL nem é XML válido, o erro de parse já foi reportado acima e repetir a
+                // checagem de estrutura só duplicaria a mensagem.
+                if (result.Success)
+                {
+                    var structureValidation = TclStructureValidator.Validate(tclContent);
+                    if (!structureValidation.Success)
+                    {
+                        result.Success = false;
+                        result.Errors.AddRange(structureValidation.Errors);
+                        result.Message = "TCL com estrutura inválida";
+                        result.Details = string.IsNullOrEmpty(result.Details)
+                            ? structureValidation.Details
+                            : $"{result.Details}; {structureValidation.Details}";
+                    }
+                }
             }
             catch (Exception ex)
             {
