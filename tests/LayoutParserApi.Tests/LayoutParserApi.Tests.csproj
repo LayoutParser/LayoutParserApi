@@ -72,4 +72,13 @@
     <None Include="StructuralResolution\fixtures\*.xsd" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Issue #103 Passo 1: fixture SINTÉTICA (não é o Excel real do dono) que espelha a estrutura
+         confirmada em sessão 2026-09-02 contra
+         "Layout_NF-e_Mensageria_Envio_ReformaTritutária_v1 - NT 1.50.xlsx" — conteúdo genérico de
+         domínio fiscal público (tabela CST), sem nomes de cliente. O arquivo real não entra no
+         repo por conter nomes de cliente em outra aba (ver FiscalMappingRuleExtractorTests). -->
+    <None Include="Fixtures\Fiscal\*.xlsx" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>
