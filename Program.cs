@@ -17,6 +17,7 @@ using LayoutParserApi.Services.Transformation.LowCode;
 using LayoutParserApi.Services.XmlAnalysis;
 
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Http.Features;
@@ -188,9 +189,73 @@ try
     // "TrustedHeader" não autentica nada por conta própria — só formaliza o que o middleware
     // preencheu para o AuthorizationMiddleware conseguir desafiar (401)/negar (403) via
     // [Authorize(Roles = "...")] nos controllers marcados.
-    builder.Services.AddAuthentication(TrustedHeaderAuthenticationHandler.SchemeName)
+    // ✅ ADR M2M (docs/architecture/adr-autenticacao-m2m-e2e-cypress-2026-09-03.md), Parte 1:
+    // segundo AuthenticationScheme, PARALELO ao TrustedHeader acima — não o estende. TrustedHeader
+    // confia por REDE (loopback = BFF); ServiceClient confia por CRIPTOGRAFIA (assinatura do JWT
+    // contra o tenant Entra). São dois modelos de confiança diferentes, por desenho.
+    //
+    // Esquema "SmartAuth" (AddPolicyScheme) decide por requisição qual dos dois autentica, sem
+    // exigir AuthenticationSchemes= explícito em cada [Authorize] existente (nenhum atributo foi
+    // alterado). Authority/Audience só existem quando o App Registration "de serviço" for criado
+    // no Entra (pré-requisito externo, fora do alcance de qualquer agente) — até lá,
+    // serviceClientOptions.IsConfigured é false e o SmartAuthSchemeSelector sempre cai em
+    // TrustedHeader, ou seja, o comportamento de hoje não muda.
+    var serviceClientOptions = builder.Configuration
+        .GetSection(ServiceClientAuthenticationOptions.SectionName)
+        .Get<ServiceClientAuthenticationOptions>() ?? new ServiceClientAuthenticationOptions();
+    var serviceClientConfigured = serviceClientOptions.IsConfigured;
+
+    var authenticationBuilder = builder.Services.AddAuthentication(options =>
+        {
+            options.DefaultScheme = SmartAuthenticationDefaults.SchemeName;
+            options.DefaultAuthenticateScheme = SmartAuthenticationDefaults.SchemeName;
+            options.DefaultChallengeScheme = SmartAuthenticationDefaults.SchemeName;
+        })
+        .AddPolicyScheme(SmartAuthenticationDefaults.SchemeName, "TrustedHeader ou ServiceClient (M2M)", options =>
+        {
+            options.ForwardDefaultSelector = context =>
+                SmartAuthSchemeSelector.Select(context.Request.Headers.Authorization.ToString(), serviceClientConfigured);
+        })
         .AddScheme<AuthenticationSchemeOptions, TrustedHeaderAuthenticationHandler>(
             TrustedHeaderAuthenticationHandler.SchemeName, options => { });
+
+    if (serviceClientConfigured)
+    {
+        authenticationBuilder.AddJwtBearer(ServiceClientAuthenticationDefaults.SchemeName, options =>
+        {
+            options.Authority = serviceClientOptions.Authority;
+            options.Audience = serviceClientOptions.Audience;
+            options.Events = new JwtBearerEvents
+            {
+                // Mapeia a App Role "Service.E2E" do Entra para ClaimTypes.Role "servico-e2e" —
+                // mesmo formato de role que [Authorize(Roles = "...")] já entende em todo o
+                // pipeline. Escopo mínimo por desenho: ver ServiceClientRoleMapper.
+                OnTokenValidated = tokenContext =>
+                {
+                    ServiceClientRoleMapper.MapAppRolesToInternalRoles(tokenContext.Principal);
+                    return Task.CompletedTask;
+                },
+                // Resiliência: falha de validação (token expirado, JWKS indisponível, etc.) nunca
+                // derruba o request — só nega a autenticação por este esquema (o SmartAuth já
+                // trata isso como "não autenticado", 401/403 seguem o fluxo normal do ASP.NET).
+                OnAuthenticationFailed = failedContext =>
+                {
+                    var failureLogger = failedContext.HttpContext.RequestServices
+                        .GetService<ILoggerFactory>()?.CreateLogger("ServiceClientAuthentication");
+                    failureLogger?.LogWarning(failedContext.Exception,
+                        "Falha ao validar token ServiceClient (M2M)");
+                    return Task.CompletedTask;
+                }
+            };
+        });
+    }
+    else
+    {
+        Log.Warning("Authentication:ServiceClient não configurado (Authority/Audience vazios) — " +
+            "esquema M2M (JWT Bearer) desabilitado nesta instância; endpoints [Authorize] continuam " +
+            "aceitando só a identidade do BFF (TrustedHeader). Ver ADR autenticacao-m2m-e2e-cypress.");
+    }
+
     builder.Services.AddAuthorization();
 
     builder.Services.AddControllers(options =>
