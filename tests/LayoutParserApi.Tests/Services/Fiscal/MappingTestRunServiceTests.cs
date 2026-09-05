@@ -30,6 +30,9 @@ namespace LayoutParserApi.Tests.Services.Fiscal
             public Task<MappingReleaseDetail?> GetReleaseIfMemberAsync(Guid releaseId, Guid userId, CancellationToken cancellationToken)
                 => Task.FromResult(Release?.ReleaseId == releaseId ? Release : null);
 
+            public Task<(IReadOnlyList<MappingReleaseDetail> Items, int TotalCount)> ListByWorkspaceAsync(Guid workspaceId, int page, int pageSize, CancellationToken cancellationToken)
+                => throw new NotSupportedException();
+
             public Task<MappingReleaseDetail?> ApplyTestRunResultAsync(Guid releaseId, MappingTestRunSummary summary, CancellationToken cancellationToken)
             {
                 LastAppliedSummary = summary;

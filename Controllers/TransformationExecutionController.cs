@@ -56,6 +56,7 @@ namespace LayoutParserApi.Controllers
         private readonly ILayoutParserService _layoutParser;
         private readonly FieldMappingCompositionService _fieldMappingComposition;
         private readonly IServiceScopeFactory _scopeFactory;
+        private readonly Services.Security.ICanaryAlertService _canaryAlert;
 
         public TransformationExecutionController(
             ILogger<TransformationExecutionController> logger,
@@ -75,7 +76,8 @@ namespace LayoutParserApi.Controllers
             MapperDatabaseService mapperDb,
             ILayoutParserService layoutParser,
             FieldMappingCompositionService fieldMappingComposition,
-            IServiceScopeFactory scopeFactory)
+            IServiceScopeFactory scopeFactory,
+            Services.Security.ICanaryAlertService canaryAlert)
         {
             _logger = logger;
             _pipelineService = pipelineService;
@@ -95,6 +97,7 @@ namespace LayoutParserApi.Controllers
             _layoutParser = layoutParser;
             _fieldMappingComposition = fieldMappingComposition;
             _scopeFactory = scopeFactory;
+            _canaryAlert = canaryAlert;
         }
 
         // Issue #92: chave de particionamento da AiCandidateStore. ICurrentUser.Name é null quando
@@ -195,6 +198,34 @@ namespace LayoutParserApi.Controllers
                 _logger.LogError(ex, "Erro ao executar transformação");
                 return StatusCode(500, new { error = ex.Message });
             }
+        }
+
+        /// <summary>
+        /// Endpoint-isca (honeypot) — ADR M2M
+        /// (<c>docs/architecture/adr-autenticacao-m2m-e2e-cypress-2026-09-03.md</c>), Parte 2.
+        /// </summary>
+        /// <remarks>
+        /// <para>🔴 <b>ISTO É DETECÇÃO, NÃO PREVENÇÃO — não implementa nenhuma lógica de negócio
+        /// real.</b> Não substitui os controles de auth reais (<see cref="TrustedIdentityMiddleware"/>,
+        /// esquema <c>ServiceClient</c> da Parte 1). Imita, de propósito, um endpoint "legado"
+        /// plausível dado o padrão de nomes já existente neste controller (<c>execute</c>,
+        /// <c>execute-lowcode</c>, <c>execute-candidates</c>) — nenhum consumidor legítimo (React,
+        /// MCP, Cypress real) jamais deveria chamar esta rota.</para>
+        ///
+        /// <para>Aceita QUALQUER requisição, sem exigir <c>[Authorize]</c> — é isso que torna a
+        /// rota atrativa para quem está enumerando endpoints. Não parseia nem repassa o corpo a
+        /// nenhum serviço real (risco zero de virar vetor de fato). Todo hit — independente do
+        /// conteúdo — dispara <see cref="ICanaryAlertService"/> e responde com algo plausível
+        /// (202), para não denunciar a armadilha por um comportamento diferente do resto da API.</para>
+        /// </remarks>
+        /// <response code="202">Sempre retornado — resposta genérica, propositalmente plausível.</response>
+        [HttpPost("execute-legacy")]
+        public IActionResult ExecuteLegacyHoneypot()
+        {
+            _canaryAlert.Raise(Services.Security.CanaryConstants.EndpointCanaryType, HttpContext);
+
+            // Resposta plausível e genérica — não denuncia a detecção nem executa nada real.
+            return Accepted(new { success = true, ticket = Guid.NewGuid().ToString() });
         }
 
         /// <summary>

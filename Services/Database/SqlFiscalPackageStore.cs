@@ -400,6 +400,162 @@ namespace LayoutParserApi.Services.Database
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
 
+        public async Task<IReadOnlyList<ProjectSummary>> ListProjectsForMemberAsync(Guid workspaceId, Guid userId, CancellationToken cancellationToken)
+        {
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await EnsureSchemaAsync(connection, cancellationToken);
+
+            // Join com tbWorkspaceMembership: defesa em profundidade — o controller já checou
+            // membership antes de chamar, mas a store nunca confia cegamente no WorkspaceId da rota.
+            using var command = new SqlCommand(
+                @"SELECT p.ProjectId, p.WorkspaceId, p.Name, p.CreatedAt
+                  FROM dbo.tbFiscalProject p
+                  JOIN dbo.tbWorkspaceMembership m ON m.WorkspaceId = p.WorkspaceId AND m.UserId = @UserId
+                  WHERE p.WorkspaceId = @WorkspaceId
+                  ORDER BY p.CreatedAt DESC;",
+                connection);
+            command.Parameters.AddWithValue("@WorkspaceId", workspaceId);
+            command.Parameters.AddWithValue("@UserId", userId);
+
+            var projects = new List<ProjectSummary>();
+            using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                projects.Add(new ProjectSummary(
+                    reader.GetGuid(reader.GetOrdinal("ProjectId")),
+                    reader.GetGuid(reader.GetOrdinal("WorkspaceId")),
+                    reader.GetString(reader.GetOrdinal("Name")),
+                    new DateTimeOffset(reader.GetDateTime(reader.GetOrdinal("CreatedAt")), TimeSpan.Zero)));
+            }
+
+            return projects;
+        }
+
+        public async Task<PackageDetail> CreateRevisionAsync(
+            Guid packageId,
+            Guid createdByUserId,
+            IReadOnlyList<PackageArtifact> artifacts,
+            CancellationToken cancellationToken)
+        {
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await EnsureSchemaAsync(connection, cancellationToken);
+
+            var revisionId = Guid.NewGuid();
+            var createdAt = DateTimeOffset.UtcNow;
+
+            using var tx = connection.BeginTransaction();
+            try
+            {
+                int revisionNumber;
+                using (var selectMax = new SqlCommand(
+                    "SELECT ISNULL(MAX(RevisionNumber), 0) FROM dbo.tbFiscalMappingPackageRevision WHERE PackageId = @PackageId;",
+                    connection, tx))
+                {
+                    selectMax.Parameters.AddWithValue("@PackageId", packageId);
+                    revisionNumber = (int)await selectMax.ExecuteScalarAsync(cancellationToken) + 1;
+                }
+
+                using (var insertRevision = new SqlCommand(
+                    @"INSERT INTO dbo.tbFiscalMappingPackageRevision (RevisionId, PackageId, RevisionNumber, CreatedByUserId, CreatedAt)
+                      VALUES (@RevisionId, @PackageId, @RevisionNumber, @CreatedByUserId, SYSUTCDATETIME());",
+                    connection, tx))
+                {
+                    insertRevision.Parameters.AddWithValue("@RevisionId", revisionId);
+                    insertRevision.Parameters.AddWithValue("@PackageId", packageId);
+                    insertRevision.Parameters.AddWithValue("@RevisionNumber", revisionNumber);
+                    insertRevision.Parameters.AddWithValue("@CreatedByUserId", createdByUserId);
+                    await insertRevision.ExecuteNonQueryAsync(cancellationToken);
+                }
+
+                foreach (var artifact in artifacts)
+                {
+                    artifact.ArtifactId = artifact.ArtifactId == Guid.Empty ? Guid.NewGuid() : artifact.ArtifactId;
+                    artifact.RevisionId = revisionId;
+
+                    using var insertArtifact = new SqlCommand(
+                        @"INSERT INTO dbo.tbPackageArtifact
+                            (ArtifactId, RevisionId, Kind, Sha256, SizeBytes, OriginalFileName, MimeDeclared, MimeSniffed,
+                             UploadedByUserId, UploadedAt, Classification, RetentionPolicy, InspectionStatus, StoragePath)
+                          VALUES
+                            (@ArtifactId, @RevisionId, @Kind, @Sha256, @SizeBytes, @OriginalFileName, @MimeDeclared, @MimeSniffed,
+                             @UploadedByUserId, SYSUTCDATETIME(), @Classification, @RetentionPolicy, @InspectionStatus, @StoragePath);",
+                        connection, tx);
+
+                    insertArtifact.Parameters.AddWithValue("@ArtifactId", artifact.ArtifactId);
+                    insertArtifact.Parameters.AddWithValue("@RevisionId", revisionId);
+                    insertArtifact.Parameters.AddWithValue("@Kind", artifact.Kind);
+                    insertArtifact.Parameters.AddWithValue("@Sha256", artifact.Sha256);
+                    insertArtifact.Parameters.AddWithValue("@SizeBytes", artifact.SizeBytes);
+                    insertArtifact.Parameters.AddWithValue("@OriginalFileName", artifact.OriginalFileName);
+                    insertArtifact.Parameters.AddWithValue("@MimeDeclared", artifact.MimeDeclared);
+                    insertArtifact.Parameters.AddWithValue("@MimeSniffed", artifact.MimeSniffed);
+                    insertArtifact.Parameters.AddWithValue("@UploadedByUserId", artifact.UploadedByUserId);
+                    insertArtifact.Parameters.AddWithValue("@Classification", (object?)artifact.Classification ?? DBNull.Value);
+                    insertArtifact.Parameters.AddWithValue("@RetentionPolicy", (object?)artifact.RetentionPolicy ?? DBNull.Value);
+                    insertArtifact.Parameters.AddWithValue("@InspectionStatus", artifact.InspectionStatus);
+                    insertArtifact.Parameters.AddWithValue("@StoragePath", artifact.StoragePath);
+                    await insertArtifact.ExecuteNonQueryAsync(cancellationToken);
+                }
+
+                await tx.CommitAsync(cancellationToken);
+
+                var packageDetail = await LoadPackageHeaderAsync(connection, packageId, cancellationToken)
+                    ?? throw new InvalidOperationException($"Pacote {packageId} sumiu durante a criação da revisão.");
+
+                return packageDetail with
+                {
+                    LatestRevision = new RevisionSummary(
+                        revisionId,
+                        revisionNumber,
+                        createdAt,
+                        artifacts.Select(a => new ArtifactSummary(a.ArtifactId, a.Kind, a.Sha256, a.SizeBytes, a.OriginalFileName, a.InspectionStatus, createdAt)).ToList())
+                };
+            }
+            catch
+            {
+                await tx.RollbackAsync(cancellationToken);
+                throw;
+            }
+        }
+
+        /// <summary>Só o cabeçalho do pacote (sem revisão) — usado internamente por <see cref="CreateRevisionAsync"/>.</summary>
+        private static async Task<PackageDetail?> LoadPackageHeaderAsync(SqlConnection connection, Guid packageId, CancellationToken cancellationToken)
+        {
+            using var command = new SqlCommand(
+                "SELECT WorkspaceId, ProjectId, Name, CreatedAt FROM dbo.tbFiscalMappingPackage WHERE PackageId = @PackageId;",
+                connection);
+            command.Parameters.AddWithValue("@PackageId", packageId);
+
+            using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken))
+                return null;
+
+            return new PackageDetail(
+                packageId,
+                reader.GetGuid(reader.GetOrdinal("WorkspaceId")),
+                reader.GetGuid(reader.GetOrdinal("ProjectId")),
+                reader.GetString(reader.GetOrdinal("Name")),
+                new DateTimeOffset(reader.GetDateTime(reader.GetOrdinal("CreatedAt")), TimeSpan.Zero),
+                null!); // LatestRevision preenchida pelo chamador.
+        }
+
+        public async Task<string?> GetArtifactStoragePathAsync(Guid artifactId, CancellationToken cancellationToken)
+        {
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await EnsureSchemaAsync(connection, cancellationToken);
+
+            using var command = new SqlCommand(
+                "SELECT StoragePath FROM dbo.tbPackageArtifact WHERE ArtifactId = @ArtifactId;",
+                connection);
+            command.Parameters.AddWithValue("@ArtifactId", artifactId);
+
+            var result = await command.ExecuteScalarAsync(cancellationToken);
+            return result as string;
+        }
+
         private static async Task EnsureSchemaAsync(SqlConnection connection, CancellationToken cancellationToken)
         {
             if (_schemaEnsured)
