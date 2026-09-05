@@ -258,6 +258,12 @@ try
 
     builder.Services.AddAuthorization();
 
+    // ✅ ADR M2M, Parte 2 (Honeypots/Canary Tokens) — camada de DETECÇÃO complementar aos
+    // controles de auth reais acima; NÃO os substitui. Scoped por padrão (só usa ILogger<T>,
+    // sem estado compartilhado).
+    builder.Services.AddScoped<LayoutParserApi.Services.Security.ICanaryAlertService,
+        LayoutParserApi.Services.Security.CanaryAlertService>();
+
     builder.Services.AddControllers(options =>
         {
             // A porta de entrada da API é a REDE (a API só aceita o BFF, trava do @lp-devops) somada à
@@ -891,6 +897,13 @@ try
             await next();
         }
     });
+
+    // ✅ ADR M2M, Parte 2 (Honeypots/Canary Tokens): detecção da credencial-isca "aposentada"
+    // (X-Service-Credential). Roda ANTES de qualquer middleware de auth real — inclusive antes do
+    // TrustedIdentityMiddleware abaixo — para garantir que o alarme dispara mesmo que o valor
+    // canary por acaso colida com alguma validação futura. Nunca autentica, nunca bloqueia por
+    // conta própria: só loga Critical e deixa o pipeline seguir. Ver CanaryCredentialDetectionMiddleware.
+    app.UseMiddleware<LayoutParserApi.Services.Security.CanaryCredentialDetectionMiddleware>();
 
     // ✅ Identidade injetada pelo BFF (x-iis-user/x-iis-roles), sob a guarda de loopback. Vem DEPOIS do
     // CorrelationId (para o log de arranque/diagnóstico compartilhar o contexto) e ANTES dos endpoints,
