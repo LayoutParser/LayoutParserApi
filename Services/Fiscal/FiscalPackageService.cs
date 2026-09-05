@@ -16,6 +16,7 @@ namespace LayoutParserApi.Services.Fiscal
     {
         private readonly IFiscalPackageStore _store;
         private readonly IAntivirusScanner _antivirusScanner;
+        private readonly IFiscalMappingRuleExtractor _ruleExtractor;
         private readonly ILogger<FiscalPackageService> _logger;
         private readonly string _storePath;
         private readonly MultipartUploadValidator _validator = new();
@@ -26,11 +27,13 @@ namespace LayoutParserApi.Services.Fiscal
         public FiscalPackageService(
             IFiscalPackageStore store,
             IAntivirusScanner antivirusScanner,
+            IFiscalMappingRuleExtractor ruleExtractor,
             ILogger<FiscalPackageService> logger,
             IConfiguration configuration)
         {
             _store = store;
             _antivirusScanner = antivirusScanner;
+            _ruleExtractor = ruleExtractor;
             _logger = logger;
             _storePath = configuration["ML:FiscalMappingPackagesPath"]
                 ?? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "MLData", "FiscalMappingPackages");
@@ -50,28 +53,15 @@ namespace LayoutParserApi.Services.Fiscal
 
             // 1. Valida CADA artefato antes de tocar em disco/SQL — 422 sem inferência silenciosa
             //    (aceite explícito da issue: divergência de MIME/tamanho/tipo obrigatório = rejeita).
-            var validated = new List<(UploadedArtifactInput Input, UploadValidationResult Result, string Sha256)>();
-            foreach (var artifact in artifacts)
-            {
-                var result = _validator.Validate(artifact.Content, artifact.OriginalFileName, artifact.Kind);
-                if (!result.IsValid)
-                {
-                    // Nunca logar o conteúdo — só metadado (nome sanitizado, kind, tamanho).
-                    _logger.LogWarning(
-                        "Upload rejeitado (workspace={WorkspaceId}, kind={Kind}, tamanho={Size}): {Error}",
-                        workspaceId, artifact.Kind, artifact.Content.Length, result.Error);
-                    return new CreatePackageOutcome(false, $"Artefato \"{artifact.Kind}\": {result.Error}", null);
-                }
-
-                var sha256 = ComputeSha256(artifact.Content);
-                validated.Add((artifact, result, sha256));
-            }
+            var (validationOk, validationError, validated) = ValidateArtifacts(artifacts, workspaceId);
+            if (!validationOk)
+                return new CreatePackageOutcome(false, validationError, null);
 
             // Chave de idempotência: header explícito OU hash determinístico do conjunto de hashes
             // (ordenado, para não depender da ordem de envio no multipart).
             var effectiveKey = !string.IsNullOrWhiteSpace(idempotencyKey)
                 ? idempotencyKey
-                : ComputeSha256(System.Text.Encoding.UTF8.GetBytes(string.Join('|', validated.Select(v => v.Sha256).OrderBy(s => s, StringComparer.Ordinal))));
+                : ComputeSha256(System.Text.Encoding.UTF8.GetBytes(string.Join('|', validated!.Select(v => v.Sha256).OrderBy(s => s, StringComparer.Ordinal))));
 
             var existing = await _store.FindPackageByIdempotencyKeyAsync(workspaceId, projectId, effectiveKey, cancellationToken);
             if (existing != null)
@@ -92,7 +82,7 @@ namespace LayoutParserApi.Services.Fiscal
 
             try
             {
-                foreach (var (input, result, sha256) in validated)
+                foreach (var (input, result, sha256) in validated!)
                 {
                     var safeName = SanitizeFileName(input.OriginalFileName);
                     var artifactId = Guid.NewGuid();
@@ -141,6 +131,160 @@ namespace LayoutParserApi.Services.Fiscal
 
         public Task<PackageDetail?> GetPackageIfMemberAsync(Guid packageId, Guid userId, CancellationToken cancellationToken)
             => _store.GetPackageIfMemberAsync(packageId, userId, cancellationToken);
+
+        public Task<IReadOnlyList<ProjectSummary>> ListProjectsAsync(Guid workspaceId, Guid userId, CancellationToken cancellationToken)
+            => _store.ListProjectsForMemberAsync(workspaceId, userId, cancellationToken);
+
+        /// <summary>
+        /// Cria uma nova revisão de um pacote existente (Gap 2 — issue #201): mesma validação/gravação
+        /// em disco/antivírus assíncrono de <see cref="CreatePackageAsync"/>, sem idempotência (uma
+        /// revisão nova é sempre uma intenção explícita de correção, não um reenvio de rede).
+        /// </summary>
+        public async Task<CreateRevisionOutcome> CreateRevisionAsync(
+            Guid workspaceId,
+            Guid packageId,
+            Guid userId,
+            IReadOnlyList<UploadedArtifactInput> artifacts,
+            CancellationToken cancellationToken)
+        {
+            if (artifacts.Count == 0)
+                return new CreateRevisionOutcome(false, "Nenhum artefato enviado.", false, null);
+
+            // Confirma existência + membership ANTES de tocar em disco — "não existe" e "não é seu"
+            // respondem o mesmo 404, mesmo padrão do GET.
+            var existingPackage = await _store.GetPackageIfMemberAsync(packageId, userId, cancellationToken);
+            if (existingPackage == null || existingPackage.WorkspaceId != workspaceId)
+                return new CreateRevisionOutcome(false, null, true, null);
+
+            var (validationOk, validationError, validated) = ValidateArtifacts(artifacts, workspaceId);
+            if (!validationOk)
+                return new CreateRevisionOutcome(false, validationError, false, null);
+
+            var revisionId = Guid.NewGuid(); // usado só para o path físico — a store gera o RevisionId real.
+            var entities = new List<PackageArtifact>();
+            var writtenPaths = new List<string>();
+
+            try
+            {
+                foreach (var (input, result, sha256) in validated!)
+                {
+                    var safeName = SanitizeFileName(input.OriginalFileName);
+                    var artifactId = Guid.NewGuid();
+                    var relativePath = Path.Combine(
+                        workspaceId.ToString(), packageId.ToString(), revisionId.ToString(), $"{artifactId}_{safeName}");
+                    var absolutePath = Path.Combine(_storePath, relativePath);
+
+                    Directory.CreateDirectory(Path.GetDirectoryName(absolutePath)!);
+                    await File.WriteAllBytesAsync(absolutePath, input.Content, cancellationToken);
+                    writtenPaths.Add(absolutePath);
+
+                    entities.Add(new PackageArtifact
+                    {
+                        ArtifactId = artifactId,
+                        Kind = input.Kind,
+                        Sha256 = sha256,
+                        SizeBytes = input.Content.Length,
+                        OriginalFileName = safeName,
+                        MimeDeclared = input.ContentType ?? "unknown",
+                        MimeSniffed = result.MimeSniffed,
+                        UploadedByUserId = userId,
+                        UploadedAt = DateTimeOffset.UtcNow,
+                        InspectionStatus = Models.Entities.Fiscal.InspectionStatus.Pending,
+                        StoragePath = relativePath,
+                    });
+                }
+
+                var packageDetail = await _store.CreateRevisionAsync(packageId, userId, entities, cancellationToken);
+
+                foreach (var (entity, absolutePath) in entities.Zip(writtenPaths))
+                    DispatchAntivirusScan(entity.ArtifactId, absolutePath, _antivirusScanner, _store, _logger);
+
+                return new CreateRevisionOutcome(true, null, false, packageDetail);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Falha ao criar nova revisão do pacote de mapeamento fiscal {PackageId}.", packageId);
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Inventário de estrutura (abas/colunas/linhas) de um artefato <c>spec</c> (XLSX) — reusa
+        /// <see cref="IFiscalMappingRuleExtractor"/> (issue #103), sem parser de Excel novo. Nunca
+        /// devolve conteúdo bruto da planilha, só a estrutura reconhecida.
+        /// </summary>
+        public async Task<ExcelInventoryOutcome> GetExcelInventoryAsync(
+            Guid workspaceId,
+            Guid packageId,
+            Guid artifactId,
+            Guid userId,
+            CancellationToken cancellationToken)
+        {
+            var package = await _store.GetPackageIfMemberAsync(packageId, userId, cancellationToken);
+            if (package == null || package.WorkspaceId != workspaceId)
+                return new ExcelInventoryOutcome(false, null, true, null);
+
+            var artifact = package.LatestRevision.Artifacts.FirstOrDefault(a => a.ArtifactId == artifactId);
+            if (artifact == null)
+                return new ExcelInventoryOutcome(false, null, true, null);
+
+            if (artifact.Kind != ArtifactKind.Spec)
+                return new ExcelInventoryOutcome(false, $"Inventário de estrutura só está disponível para artefatos do tipo \"{ArtifactKind.Spec}\" — este é \"{artifact.Kind}\".", false, null);
+
+            var relativePath = await _store.GetArtifactStoragePathAsync(artifactId, cancellationToken);
+            if (relativePath == null)
+                return new ExcelInventoryOutcome(false, null, true, null);
+
+            var absolutePath = Path.Combine(_storePath, relativePath);
+            try
+            {
+                using var stream = File.OpenRead(absolutePath);
+                var extraction = _ruleExtractor.Extract(stream);
+
+                var decisionSheets = extraction.Rules
+                    .GroupBy(r => r.SheetName)
+                    .Select(g => new ExcelSheetInventory(
+                        g.Key,
+                        g.SelectMany(r => r.Conditions.Select(c => c.Field)).Distinct().ToList(),
+                        g.Count()))
+                    .ToList();
+
+                return new ExcelInventoryOutcome(true, null, false, new ExcelInventoryResult(decisionSheets, extraction.SkippedSheets));
+            }
+            catch (Exception ex)
+            {
+                // Nunca logar o conteúdo do Excel — só metadado (artifactId/packageId).
+                _logger.LogError(ex, "Falha ao gerar inventário do artefato {ArtifactId} do pacote {PackageId}.", artifactId, packageId);
+                return new ExcelInventoryOutcome(false, "Não foi possível ler a estrutura do arquivo Excel — pode estar corrompido.", false, null);
+            }
+        }
+
+        /// <summary>
+        /// Valida cada artefato do upload (compartilhado por <see cref="CreatePackageAsync"/> e
+        /// <see cref="CreateRevisionAsync"/>) — para na primeira falha, 422 sem inferência silenciosa.
+        /// </summary>
+        private (bool Success, string? Error, List<(UploadedArtifactInput Input, UploadValidationResult Result, string Sha256)>? Validated) ValidateArtifacts(
+            IReadOnlyList<UploadedArtifactInput> artifacts, Guid workspaceId)
+        {
+            var validated = new List<(UploadedArtifactInput Input, UploadValidationResult Result, string Sha256)>();
+            foreach (var artifact in artifacts)
+            {
+                var result = _validator.Validate(artifact.Content, artifact.OriginalFileName, artifact.Kind);
+                if (!result.IsValid)
+                {
+                    // Nunca logar o conteúdo — só metadado (nome sanitizado, kind, tamanho).
+                    _logger.LogWarning(
+                        "Upload rejeitado (workspace={WorkspaceId}, kind={Kind}, tamanho={Size}): {Error}",
+                        workspaceId, artifact.Kind, artifact.Content.Length, result.Error);
+                    return (false, $"Artefato \"{artifact.Kind}\": {result.Error}", null);
+                }
+
+                var sha256 = ComputeSha256(artifact.Content);
+                validated.Add((artifact, result, sha256));
+            }
+
+            return (true, null, validated);
+        }
 
         private Task EnsureProjectAsync(Guid workspaceId, Guid projectId, CancellationToken cancellationToken)
             // Projeto mínimo criado sob demanda — Slice 2 não expõe CRUD de projeto. A store garante a

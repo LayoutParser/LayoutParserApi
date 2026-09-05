@@ -2,6 +2,7 @@ using LayoutParserApi.Controllers;
 using LayoutParserApi.Models.Entities.Fiscal;
 using LayoutParserApi.Services.Interfaces;
 
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -42,6 +43,9 @@ namespace LayoutParserApi.Tests.Controllers
         private sealed class FakePackageService : IFiscalPackageService
         {
             public Dictionary<Guid, (PackageDetail Detail, Guid OwnerUserId)> Packages { get; } = new();
+            public Dictionary<Guid, List<ProjectSummary>> ProjectsByWorkspace { get; } = new();
+            public CreateRevisionOutcome? NextCreateRevisionOutcome { get; set; }
+            public ExcelInventoryOutcome? NextExcelInventoryOutcome { get; set; }
 
             public Task<CreatePackageOutcome> CreatePackageAsync(Guid workspaceId, Guid projectId, Guid userId, string packageName, string? idempotencyKey, IReadOnlyList<UploadedArtifactInput> artifacts, CancellationToken cancellationToken)
                 => throw new NotSupportedException("Não exercitado neste conjunto de testes.");
@@ -53,6 +57,16 @@ namespace LayoutParserApi.Tests.Controllers
 
                 return Task.FromResult<PackageDetail?>(entry.Detail);
             }
+
+            public Task<IReadOnlyList<ProjectSummary>> ListProjectsAsync(Guid workspaceId, Guid userId, CancellationToken cancellationToken)
+                => Task.FromResult<IReadOnlyList<ProjectSummary>>(
+                    ProjectsByWorkspace.TryGetValue(workspaceId, out var projects) ? projects : new List<ProjectSummary>());
+
+            public Task<CreateRevisionOutcome> CreateRevisionAsync(Guid workspaceId, Guid packageId, Guid userId, IReadOnlyList<UploadedArtifactInput> artifacts, CancellationToken cancellationToken)
+                => Task.FromResult(NextCreateRevisionOutcome ?? throw new NotSupportedException("Configure NextCreateRevisionOutcome antes de chamar."));
+
+            public Task<ExcelInventoryOutcome> GetExcelInventoryAsync(Guid workspaceId, Guid packageId, Guid artifactId, Guid userId, CancellationToken cancellationToken)
+                => Task.FromResult(NextExcelInventoryOutcome ?? throw new NotSupportedException("Configure NextExcelInventoryOutcome antes de chamar."));
         }
 
         private static FiscalMappingPackagesController BuildController(FakePackageService packageService, FakeIdentityWorkspaceService identityService, FakeCurrentUser user)
@@ -156,6 +170,193 @@ namespace LayoutParserApi.Tests.Controllers
             var result = await controller.GetPackage(workspaceForjado, packageId, CancellationToken.None);
 
             Assert.IsType<NotFoundResult>(result);
+        }
+
+        // ---- Gap 1 (issue #201): listagem de projetos fiscais ----
+
+        [Fact]
+        public async Task ListProjects_membro_recebe_200_com_a_lista_do_workspace()
+        {
+            var packageService = new FakePackageService();
+            var identityService = new FakeIdentityWorkspaceService();
+            var userId = Guid.NewGuid();
+            var workspaceId = Guid.NewGuid();
+            identityService.Memberships.Add((workspaceId, userId));
+            packageService.ProjectsByWorkspace[workspaceId] = new List<ProjectSummary>
+            {
+                new(Guid.NewGuid(), workspaceId, "Projeto A", DateTimeOffset.UtcNow)
+            };
+
+            var controller = BuildController(packageService, identityService, new FakeCurrentUser { UserId = userId });
+
+            var result = await controller.ListProjects(workspaceId, CancellationToken.None);
+
+            Assert.IsType<OkObjectResult>(result);
+        }
+
+        [Fact]
+        public async Task ListProjects_nao_membro_recebe_404()
+        {
+            var packageService = new FakePackageService();
+            var identityService = new FakeIdentityWorkspaceService(); // sem membership cadastrada.
+            var controller = BuildController(packageService, identityService, new FakeCurrentUser { UserId = Guid.NewGuid() });
+
+            var result = await controller.ListProjects(Guid.NewGuid(), CancellationToken.None);
+
+            Assert.IsType<NotFoundResult>(result);
+        }
+
+        [Fact]
+        public async Task ListProjects_sem_identidade_resolvida_retorna_404_uniforme()
+        {
+            var controller = BuildController(new FakePackageService(), new FakeIdentityWorkspaceService(), new FakeCurrentUser { UserId = null });
+
+            var result = await controller.ListProjects(Guid.NewGuid(), CancellationToken.None);
+
+            Assert.IsType<NotFoundResult>(result);
+        }
+
+        // ---- Gap 2 (issue #201): nova revisão de pacote existente ----
+
+        [Fact]
+        public async Task CreateRevision_pacote_inexistente_ou_alheio_recebe_404()
+        {
+            var packageService = new FakePackageService
+            {
+                NextCreateRevisionOutcome = new CreateRevisionOutcome(false, null, true, null)
+            };
+            var controller = BuildController(packageService, new FakeIdentityWorkspaceService(), new FakeCurrentUser { UserId = Guid.NewGuid() });
+            AttachMultipartForm(controller, ("sample", "sample.txt", "text/plain", new byte[] { 1, 2, 3 }));
+
+            var result = await controller.CreateRevision(Guid.NewGuid(), Guid.NewGuid(), CancellationToken.None);
+
+            Assert.IsType<NotFoundResult>(result);
+        }
+
+        [Fact]
+        public async Task CreateRevision_artefato_invalido_recebe_422()
+        {
+            var packageService = new FakePackageService
+            {
+                NextCreateRevisionOutcome = new CreateRevisionOutcome(false, "Artefato \"sample\": extensão errada.", false, null)
+            };
+            var controller = BuildController(packageService, new FakeIdentityWorkspaceService(), new FakeCurrentUser { UserId = Guid.NewGuid() });
+            AttachMultipartForm(controller, ("sample", "sample.txt", "text/plain", new byte[] { 1, 2, 3 }));
+
+            var result = await controller.CreateRevision(Guid.NewGuid(), Guid.NewGuid(), CancellationToken.None);
+
+            Assert.IsType<UnprocessableEntityObjectResult>(result);
+        }
+
+        [Fact]
+        public async Task CreateRevision_sucesso_recebe_201_com_revisionNumber_incrementado()
+        {
+            var packageId = Guid.NewGuid();
+            var workspaceId = Guid.NewGuid();
+            var detail = new PackageDetail(packageId, workspaceId, Guid.NewGuid(), "Pacote", DateTimeOffset.UtcNow,
+                new RevisionSummary(Guid.NewGuid(), 2, DateTimeOffset.UtcNow, Array.Empty<ArtifactSummary>()));
+            var packageService = new FakePackageService
+            {
+                NextCreateRevisionOutcome = new CreateRevisionOutcome(true, null, false, detail)
+            };
+            var controller = BuildController(packageService, new FakeIdentityWorkspaceService(), new FakeCurrentUser { UserId = Guid.NewGuid() });
+            AttachMultipartForm(controller, ("sample", "sample.txt", "text/plain", new byte[] { 1, 2, 3 }));
+
+            var result = await controller.CreateRevision(workspaceId, packageId, CancellationToken.None);
+
+            var created = Assert.IsType<CreatedAtActionResult>(result);
+            Assert.Equal(nameof(FiscalMappingPackagesController.GetPackage), created.ActionName);
+        }
+
+        [Fact]
+        public async Task CreateRevision_sem_identidade_resolvida_retorna_404_uniforme()
+        {
+            var controller = BuildController(new FakePackageService(), new FakeIdentityWorkspaceService(), new FakeCurrentUser { UserId = null });
+            AttachMultipartForm(controller, ("sample", "sample.txt", "text/plain", new byte[] { 1, 2, 3 }));
+
+            var result = await controller.CreateRevision(Guid.NewGuid(), Guid.NewGuid(), CancellationToken.None);
+
+            Assert.IsType<NotFoundResult>(result);
+        }
+
+        // ---- Gap 3 (issue #201): inventário de estrutura do Excel ----
+
+        [Fact]
+        public async Task GetExcelInventory_pacote_ou_artefato_inexistente_recebe_404()
+        {
+            var packageService = new FakePackageService
+            {
+                NextExcelInventoryOutcome = new ExcelInventoryOutcome(false, null, true, null)
+            };
+            var controller = BuildController(packageService, new FakeIdentityWorkspaceService(), new FakeCurrentUser { UserId = Guid.NewGuid() });
+
+            var result = await controller.GetExcelInventory(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), CancellationToken.None);
+
+            Assert.IsType<NotFoundResult>(result);
+        }
+
+        [Fact]
+        public async Task GetExcelInventory_artefato_que_nao_e_spec_recebe_422()
+        {
+            var packageService = new FakePackageService
+            {
+                NextExcelInventoryOutcome = new ExcelInventoryOutcome(false, "Inventário de estrutura só está disponível para artefatos do tipo \"spec\".", false, null)
+            };
+            var controller = BuildController(packageService, new FakeIdentityWorkspaceService(), new FakeCurrentUser { UserId = Guid.NewGuid() });
+
+            var result = await controller.GetExcelInventory(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), CancellationToken.None);
+
+            Assert.IsType<UnprocessableEntityObjectResult>(result);
+        }
+
+        [Fact]
+        public async Task GetExcelInventory_sucesso_recebe_200_com_abas_e_colunas()
+        {
+            var inventory = new ExcelInventoryResult(
+                new List<ExcelSheetInventory> { new("Regra-CST", new[] { "orig", "CST" }, 3) },
+                new List<string> { "Layout-Emissao" });
+            var packageService = new FakePackageService
+            {
+                NextExcelInventoryOutcome = new ExcelInventoryOutcome(true, null, false, inventory)
+            };
+            var controller = BuildController(packageService, new FakeIdentityWorkspaceService(), new FakeCurrentUser { UserId = Guid.NewGuid() });
+
+            var result = await controller.GetExcelInventory(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), CancellationToken.None);
+
+            Assert.IsType<OkObjectResult>(result);
+        }
+
+        [Fact]
+        public async Task GetExcelInventory_sem_identidade_resolvida_retorna_404_uniforme()
+        {
+            var controller = BuildController(new FakePackageService(), new FakeIdentityWorkspaceService(), new FakeCurrentUser { UserId = null });
+
+            var result = await controller.GetExcelInventory(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), CancellationToken.None);
+
+            Assert.IsType<NotFoundResult>(result);
+        }
+
+        /// <summary>Monta um <c>Request.Form.Files</c> multipart mínimo para exercitar <c>CreateRevision</c> sem servidor HTTP real.</summary>
+        private static void AttachMultipartForm(FiscalMappingPackagesController controller, params (string FieldName, string FileName, string ContentType, byte[] Content)[] files)
+        {
+            var formFiles = new FormFileCollection();
+            foreach (var (fieldName, fileName, contentType, content) in files)
+            {
+                var stream = new MemoryStream(content);
+                var formFile = new FormFile(stream, 0, content.Length, fieldName, fileName)
+                {
+                    Headers = new HeaderDictionary(),
+                    ContentType = contentType,
+                };
+                formFiles.Add(formFile);
+            }
+
+            var httpContext = new DefaultHttpContext
+            {
+                Request = { Form = new FormCollection(new Dictionary<string, Microsoft.Extensions.Primitives.StringValues>(), formFiles) }
+            };
+
+            controller.ControllerContext = new ControllerContext { HttpContext = httpContext };
         }
     }
 }
