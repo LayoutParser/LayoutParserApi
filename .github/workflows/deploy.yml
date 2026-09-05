@@ -1161,13 +1161,36 @@ jobs:
         # Mesma cadencia do ci-dev: ate 24 tentativas x 5s = ~2min de folga para o warm-up.
         $status = $null
         $tentativas = 24
+        $corpo = $null
         for ($i = 1; $i -le $tentativas; $i++) {
+          $corpo = $null
           try {
-            $resp = Invoke-WebRequest -Uri $smokeUrl -UseBasicParsing -TimeoutSec 5 -Headers $smokeHeaders
+            # TimeoutSec=10 (era 5): o pior caso do proprio SqlServerHealthCheck (Connection
+            # Timeout=3 + Command Timeout=3, ate ~6s) e maior que os 5s antigos, o que confundia
+            # "SQL um pouco lento" com "sem resposta". 10s da margem sem alargar a janela total
+            # de tentativas (investigacao docs/architecture/investigacao-instabilidade-sql-deploy-2026-09-05.md).
+            $resp = Invoke-WebRequest -Uri $smokeUrl -UseBasicParsing -TimeoutSec 10 -Headers $smokeHeaders
             $status = [int]$resp.StatusCode
+            $corpo = $resp.Content
           } catch {
             $r = $_.Exception.Response
             $status = if ($r -and $r.StatusCode) { [int]$r.StatusCode } else { $null }
+            if ($r) {
+              try {
+                # GetResponseStream() pode vir vazio/fechado (WebException ja consumido pelo
+                # Invoke-WebRequest), o que fazia o corpo do 503 nunca aparecer no log (achado #4
+                # da investigacao 2026-09-05). $_.ErrorDetails.Message preserva o corpo em erro
+                # de forma confiavel no PowerShell 7 (pwsh, ja e o shell usado aqui) - tenta
+                # primeiro, cai no stream como fallback.
+                if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+                  $corpo = $_.ErrorDetails.Message
+                } else {
+                  $stream = $r.GetResponseStream()
+                  $reader = New-Object System.IO.StreamReader($stream)
+                  $corpo = $reader.ReadToEnd()
+                }
+              } catch { }
+            }
           }
 
           if ($status -eq 200) {
@@ -1176,6 +1199,9 @@ jobs:
           }
 
           $descr = if ($null -eq $status) { "sem resposta" } else { "HTTP $status" }
+          # Corpo do /health/ready mostra QUAL dependencia esta Unhealthy (sql/redis/decryptor/
+          # lowcode-runner/catalog) - sem isso so se descobre a causa lendo o log do host depois.
+          if ($corpo) { Write-Host "    corpo: $corpo" }
           if ($i -lt $tentativas) {
             Write-Host "  tentativa $i/$($tentativas): readiness ainda nao pronta ($descr), aguardando 5s..."
             Start-Sleep -Seconds 5
@@ -1238,7 +1264,9 @@ jobs:
               # o servico de volta, nao revalida o warm-up completo.
               $statusRollback = $null
               try {
-                $respRollback = Invoke-WebRequest -Uri $smokeUrl -UseBasicParsing -TimeoutSec 5
+                # TimeoutSec=10 (era 5) - mesma margem aplicada ao smoke test principal acima,
+                # coerente com o pior caso do SqlServerHealthCheck (~6s).
+                $respRollback = Invoke-WebRequest -Uri $smokeUrl -UseBasicParsing -TimeoutSec 10
                 $statusRollback = [int]$respRollback.StatusCode
               } catch {
                 $r = $_.Exception.Response
