@@ -1,0 +1,7 @@
+{
+  "_comment": "Config de ambiente de integração legado, anterior à migração para o esquema ServiceClient (client credentials via Entra). Descontinuado — mantido só como referência histórica.",
+  "Security": {
+    "LegacyServiceCredentialHeader": "X-Service-Credential",
+    "LegacyServiceCredentialValue": "svc_e2e_legacy_2026-06-30_9f3a2c81d4e07b6c"
+  }
+}

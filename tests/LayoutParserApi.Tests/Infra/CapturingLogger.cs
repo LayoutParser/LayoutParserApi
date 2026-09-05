@@ -27,12 +27,23 @@ namespace LayoutParserApi.Tests.Infra
     {
         public List<string> Messages { get; } = new();
 
+        /// <summary>
+        /// Nível de cada entrada de <see cref="Messages"/>, no mesmo índice — aditivo (não quebra
+        /// os testes existentes que só usam <see cref="Messages"/>). Necessário para os testes do
+        /// honeypot/canary (ADR M2M, Parte 2), que precisam distinguir <c>LogCritical</c> de
+        /// qualquer outro nível.
+        /// </summary>
+        public List<LogLevel> Levels { get; } = new();
+
         public IDisposable BeginScope<TState>(TState state) where TState : notnull => NoOpScope.Instance;
 
         public bool IsEnabled(LogLevel logLevel) => true;
 
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
-            => Messages.Add(formatter(state, exception));
+        {
+            Messages.Add(formatter(state, exception));
+            Levels.Add(logLevel);
+        }
 
         private sealed class NoOpScope : IDisposable
         {
