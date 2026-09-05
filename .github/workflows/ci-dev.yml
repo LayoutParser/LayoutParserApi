@@ -785,7 +785,11 @@ jobs:
           for ($i = 1; $i -le $Tentativas; $i++) {
             $corpo = $null
             try {
-              $resp = Invoke-WebRequest -Uri $smokeUrl -UseBasicParsing -TimeoutSec 5 -Headers $smokeHeaders
+              # TimeoutSec=10 (era 5): o pior caso do proprio SqlServerHealthCheck (Connection
+              # Timeout=3 + Command Timeout=3, ate ~6s) e maior que os 5s antigos, o que confundia
+              # "SQL um pouco lento" com "sem resposta". 10s da margem sem alargar a janela total
+              # de tentativas (investigacao docs/architecture/investigacao-instabilidade-sql-deploy-2026-09-05.md).
+              $resp = Invoke-WebRequest -Uri $smokeUrl -UseBasicParsing -TimeoutSec 10 -Headers $smokeHeaders
               $statusLocal = [int]$resp.StatusCode
               $corpo = $resp.Content
             } catch {
@@ -793,9 +797,18 @@ jobs:
               $statusLocal = if ($r -and $r.StatusCode) { [int]$r.StatusCode } else { $null }
               if ($r) {
                 try {
-                  $stream = $r.GetResponseStream()
-                  $reader = New-Object System.IO.StreamReader($stream)
-                  $corpo = $reader.ReadToEnd()
+                  # GetResponseStream() pode vir vazio/fechado (WebException ja consumido pelo
+                  # Invoke-WebRequest), o que fazia o corpo do 503 nunca aparecer no log (achado #4
+                  # da investigacao 2026-09-05). $_.ErrorDetails.Message preserva o corpo em erro
+                  # de forma confiavel no PowerShell 7 (pwsh, ja e o shell usado aqui) - tenta
+                  # primeiro, cai no stream como fallback.
+                  if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+                    $corpo = $_.ErrorDetails.Message
+                  } else {
+                    $stream = $r.GetResponseStream()
+                    $reader = New-Object System.IO.StreamReader($stream)
+                    $corpo = $reader.ReadToEnd()
+                  }
                 } catch { }
               }
             }
