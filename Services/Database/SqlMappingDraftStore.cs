@@ -357,22 +357,16 @@ namespace LayoutParserApi.Services.Database
                 Convert.ToBase64String(rowVersion));
         }
 
-        private static async Task EnsureSchemaAsync(SqlConnection connection, CancellationToken cancellationToken)
-        {
-            if (_schemaEnsured)
-                return;
-
-            await _schemaLock.WaitAsync(cancellationToken);
-            try
-            {
-                if (_schemaEnsured)
-                    return;
-
-                const string ddl = @"
+        // ✅ Campo público-de-assembly (não mais `const string` local) — ver comentário equivalente
+        // em <see cref="SqlFiscalPackageStore.SchemaDdl"/> sobre o `FiscalSchemaInitializer` e sobre a
+        // remoção da FK inválida `REFERENCES dbo.tbFiscalWorkspace`. Além disso, `PackageId`/`RevisionId`
+        // referenciam tabelas criadas por <see cref="SqlFiscalPackageStore"/> — ESTE store depende de
+        // aquele ter rodado primeiro (mesmo banco `Database:*`), daí a ordem imposta pelo initializer.
+        public static readonly string SchemaDdl = @"
 IF OBJECT_ID('dbo.tbMappingDraft', 'U') IS NULL
 CREATE TABLE dbo.tbMappingDraft (
     DraftId UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
-    WorkspaceId UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.tbFiscalWorkspace(WorkspaceId),
+    WorkspaceId UNIQUEIDENTIFIER NOT NULL,
     PackageId UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.tbFiscalMappingPackage(PackageId),
     RevisionId UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.tbFiscalMappingPackageRevision(RevisionId),
     Engine NVARCHAR(16) NOT NULL,
@@ -416,7 +410,18 @@ CREATE TABLE dbo.tbMappingDraftRuleDecision (
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_tbMappingDraftRuleDecision_RuleId' AND object_id = OBJECT_ID('dbo.tbMappingDraftRuleDecision'))
 CREATE INDEX IX_tbMappingDraftRuleDecision_RuleId ON dbo.tbMappingDraftRuleDecision(RuleId);";
 
-                using var command = new SqlCommand(ddl, connection);
+        internal static async Task EnsureSchemaAsync(SqlConnection connection, CancellationToken cancellationToken)
+        {
+            if (_schemaEnsured)
+                return;
+
+            await _schemaLock.WaitAsync(cancellationToken);
+            try
+            {
+                if (_schemaEnsured)
+                    return;
+
+                using var command = new SqlCommand(SchemaDdl, connection);
                 await command.ExecuteNonQueryAsync(cancellationToken);
                 _schemaEnsured = true;
             }

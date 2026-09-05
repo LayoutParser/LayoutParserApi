@@ -507,6 +507,12 @@ try
     // Lab. Mesmo banco/padrão ADO.NET; compile/test-run reaproveitam CanonicalDiffer/XsdValidationService
     // (já registrados/disponíveis via DI) sem I/O externo/Ollama.
     builder.Services.AddScoped<IMappingReleaseStore, SqlMappingReleaseStore>();
+    // ✅ Investigação PR #310 (2026-09-05): schema fiscal criado em ordem de dependência de FK no
+    // startup, em vez de depender de qual store acima uma requisição real exercita primeiro. Ver
+    // <see cref="LayoutParserApi.Services.Database.FiscalSchemaInitializer"/> para o grafo completo.
+    builder.Services.AddScoped<IFiscalSchemaInitializer, LayoutParserApi.Services.Database.FiscalSchemaInitializer>();
+    // Roda uma vez em background, após o app subir — não bloqueia o startup se o SQL estiver lento/fora do ar.
+    builder.Services.AddHostedService<LayoutParserApi.Services.Database.FiscalSchemaInitializerBackgroundService>();
     builder.Services.AddScoped<IMappingCompileService, LayoutParserApi.Services.Fiscal.MappingCompileService>();
     builder.Services.AddScoped<IMappingTestRunService, LayoutParserApi.Services.Fiscal.MappingTestRunService>();
     // ✅ Issue #103 Passo 1: extração determinística (sem LLM) de tabelas de decisão fiscal a
