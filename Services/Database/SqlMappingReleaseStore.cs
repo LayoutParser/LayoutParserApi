@@ -123,6 +123,43 @@ namespace LayoutParserApi.Services.Database
             return ReadReleaseDetail(reader);
         }
 
+        public async Task<(IReadOnlyList<MappingReleaseDetail> Items, int TotalCount)> ListByWorkspaceAsync(
+            Guid workspaceId, int page, int pageSize, CancellationToken cancellationToken)
+        {
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await EnsureSchemaAsync(connection, cancellationToken);
+
+            var items = new List<MappingReleaseDetail>();
+            var totalCount = 0;
+
+            // COUNT(*) OVER() traz o total na mesma ida ao banco — evita um segundo round-trip só
+            // para paginação. Isolamento por WorkspaceId direto na cláusula WHERE (nunca em memória).
+            using var command = new SqlCommand(
+                @"SELECT ReleaseId, WorkspaceId, DraftId, Engine, ArtifactsJson, SourceRuleIdsJson,
+                         CompileDiagnosticsJson, RulesSnapshotHash, TestRunSummaryJson, Status, CorrelationId,
+                         CreatedAt, RowVersion, Environment, ApprovedByUserId, ApprovedAt, ApprovalJustification,
+                         PublishedByUserId, PublishedAt, PreviousPublishedReleaseId,
+                         COUNT(*) OVER() AS TotalCount
+                  FROM dbo.tbMappingRelease
+                  WHERE WorkspaceId = @WorkspaceId
+                  ORDER BY CreatedAt DESC
+                  OFFSET @Offset ROWS FETCH NEXT @PageSize ROWS ONLY;",
+                connection);
+            command.Parameters.AddWithValue("@WorkspaceId", workspaceId);
+            command.Parameters.AddWithValue("@Offset", (page - 1) * pageSize);
+            command.Parameters.AddWithValue("@PageSize", pageSize);
+
+            using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                items.Add(ReadReleaseDetail(reader));
+                totalCount = reader.GetInt32(reader.GetOrdinal("TotalCount"));
+            }
+
+            return (items, totalCount);
+        }
+
         public async Task<MappingReleaseDetail?> ApplyTestRunResultAsync(Guid releaseId, MappingTestRunSummary summary, CancellationToken cancellationToken)
         {
             using var connection = new SqlConnection(_connectionString);

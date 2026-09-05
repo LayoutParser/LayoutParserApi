@@ -204,6 +204,9 @@ namespace LayoutParserApi.Tests.Integration
             public Task<MappingReleaseDetail?> GetReleaseIfMemberAsync(Guid releaseId, Guid userId, CancellationToken cancellationToken)
                 => Task.FromResult(ById.TryGetValue(releaseId, out var r) ? r : null);
 
+            public Task<(IReadOnlyList<MappingReleaseDetail> Items, int TotalCount)> ListByWorkspaceAsync(Guid workspaceId, int page, int pageSize, CancellationToken cancellationToken)
+                => throw new NotSupportedException();
+
             public Task<MappingReleaseDetail?> ApplyTestRunResultAsync(Guid releaseId, MappingTestRunSummary summary, CancellationToken cancellationToken)
             {
                 if (!ById.TryGetValue(releaseId, out var existing))
