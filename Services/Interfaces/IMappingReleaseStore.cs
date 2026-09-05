@@ -59,6 +59,15 @@ namespace LayoutParserApi.Services.Interfaces
 
         Task<MappingReleaseDetail?> GetReleaseIfMemberAsync(Guid releaseId, Guid userId, CancellationToken cancellationToken);
 
+        /// <summary>
+        /// Lista releases do workspace, paginado e ordenado por <c>CreatedAt DESC</c> (mais recente
+        /// primeiro). Isolamento por <paramref name="workspaceId"/> feito na query SQL — nunca filtra
+        /// em memória (RBAC de acesso ao workspace já é responsabilidade de
+        /// <c>RequireWorkspaceRoleAttribute</c> no controller).
+        /// </summary>
+        Task<(IReadOnlyList<MappingReleaseDetail> Items, int TotalCount)> ListByWorkspaceAsync(
+            Guid workspaceId, int page, int pageSize, CancellationToken cancellationToken);
+
         /// <summary>Atualiza o resultado do Fiscal Test Lab — <c>test_passed</c>/<c>test_failed</c> conforme <see cref="MappingTestRunSummary.RequiredGatesPassed"/>.</summary>
         Task<MappingReleaseDetail?> ApplyTestRunResultAsync(Guid releaseId, MappingTestRunSummary summary, CancellationToken cancellationToken);
 
