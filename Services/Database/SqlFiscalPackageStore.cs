@@ -6,9 +6,14 @@ using Microsoft.Data.SqlClient;
 namespace LayoutParserApi.Services.Database
 {
     /// <summary>
-    /// Implementação SQL de <see cref="IFiscalPackageStore"/> — Slice 2 (issue #229). Mesmo banco
-    /// <c>ConnectUS_Macgyver</c> e mesmo padrão ADO.NET cru de <see cref="SqlIdentityWorkspaceStore"/>
-    /// (DDL idempotente por processo, connection string montada de <c>Database:*</c>).
+    /// Implementação SQL de <see cref="IFiscalPackageStore"/> — Slice 2 (issue #229). Migrado do
+    /// banco compartilhado <c>ConnectUS_Macgyver</c> (<c>Database:*</c>) para o banco DEDICADO do
+    /// projeto (<c>IdentityDatabase:*</c>, mesmo usado por <see cref="SqlIdentityWorkspaceStore"/>)
+    /// — a raiz do bug de FK cross-database investigado na PR #312 era justamente essas tabelas
+    /// fiscais morarem no banco compartilhado enquanto o workspace real mora em outro servidor
+    /// físico. Mesmo padrão ADO.NET cru de <see cref="SqlIdentityWorkspaceStore"/> (DDL idempotente
+    /// por processo). Ver <c>.claude/rules/security.md</c> para o histórico da credencial
+    /// compartilhada que motivou a separação original de identidade.
     /// </summary>
     public sealed class SqlFiscalPackageStore : IFiscalPackageStore
     {
@@ -23,10 +28,12 @@ namespace LayoutParserApi.Services.Database
         public SqlFiscalPackageStore(ILogger<SqlFiscalPackageStore> logger, IConfiguration configuration)
         {
             _logger = logger;
-            var server = configuration["Database:Server"];
-            var database = configuration["Database:Database"];
-            var userId = configuration["Database:UserId"];
-            var password = configuration["Database:Password"];
+            // ✅ Banco dedicado do projeto (não mais o ConnectUS_Macgyver compartilhado) — mesmo
+            // padrão de SqlIdentityWorkspaceStore.
+            var server = configuration["IdentityDatabase:Server"];
+            var database = configuration["IdentityDatabase:Database"];
+            var userId = configuration["IdentityDatabase:UserId"];
+            var password = configuration["IdentityDatabase:Password"];
 
             _connectionString = $"Server={server};Database={database};User Id={userId};Password={password};TrustServerCertificate=True;";
         }
@@ -197,7 +204,7 @@ namespace LayoutParserApi.Services.Database
             using var selectPackage = new SqlCommand(
                 @"SELECT p.PackageId, p.WorkspaceId, p.ProjectId, p.Name, p.CreatedAt
                   FROM dbo.tbFiscalMappingPackage p
-                  JOIN dbo.tbWorkspaceMembership m ON m.WorkspaceId = p.WorkspaceId AND m.UserId = @UserId
+                  JOIN dbo.tbLpWorkspaceMembership m ON m.WorkspaceId = p.WorkspaceId AND m.UserId = @UserId
                   WHERE p.PackageId = @PackageId;",
                 connection);
             selectPackage.Parameters.AddWithValue("@PackageId", packageId);
@@ -406,12 +413,12 @@ namespace LayoutParserApi.Services.Database
             await connection.OpenAsync(cancellationToken);
             await EnsureSchemaAsync(connection, cancellationToken);
 
-            // Join com tbWorkspaceMembership: defesa em profundidade — o controller já checou
+            // Join com tbLpWorkspaceMembership: defesa em profundidade — o controller já checou
             // membership antes de chamar, mas a store nunca confia cegamente no WorkspaceId da rota.
             using var command = new SqlCommand(
                 @"SELECT p.ProjectId, p.WorkspaceId, p.Name, p.CreatedAt
                   FROM dbo.tbFiscalProject p
-                  JOIN dbo.tbWorkspaceMembership m ON m.WorkspaceId = p.WorkspaceId AND m.UserId = @UserId
+                  JOIN dbo.tbLpWorkspaceMembership m ON m.WorkspaceId = p.WorkspaceId AND m.UserId = @UserId
                   WHERE p.WorkspaceId = @WorkspaceId
                   ORDER BY p.CreatedAt DESC;",
                 connection);
@@ -562,13 +569,16 @@ namespace LayoutParserApi.Services.Database
         // real (causa raiz do 503 "MappingDraftStore falhou: FK ... references invalid table" da
         // PR #310: `tbMappingDraft` podia ser criado antes de `tbFiscalMappingPackage` existir).
         //
-        // ⚠️ `WorkspaceId` NÃO tem mais `REFERENCES dbo.tbFiscalWorkspace(WorkspaceId)`: essa FK
-        // nunca funcionou, em nenhuma ordem de execução — `tbFiscalWorkspace` não existe neste banco
-        // (`Database:*`, ConnectUS_Macgyver/Sysmiddle). O workspace fiscal real (`tbLpFiscalWorkspace`)
-        // mora num banco FISICAMENTE diferente (`IdentityDatabase:*`, ver <see cref="SqlIdentityWorkspaceStore"/>),
-        // e o SQL Server não suporta FK entre bancos distintos. A validação de que o `WorkspaceId`
-        // existe/pertence ao usuário é responsabilidade da camada de aplicação (via
-        // `IIdentityWorkspaceStore`), não do banco fiscal.
+        // ⚠️ `WorkspaceId` NÃO tem `REFERENCES dbo.tbLpFiscalWorkspace(WorkspaceId)` mesmo agora que
+        // este store mora no MESMO banco (`IdentityDatabase:*`) que `tbLpFiscalWorkspace` (ver
+        // <see cref="SqlIdentityWorkspaceStore"/>). Historicamente essa FK nunca funcionou (apontava
+        // para `dbo.tbFiscalWorkspace`, tabela que não existia em banco nenhum) porque este store
+        // vivia fisicamente separado (`Database:*`, ConnectUS_Macgyver/Sysmiddle) antes da migração
+        // documentada no cabeçalho da classe. Agora que os dois moram juntos, uma FK real seria
+        // tecnicamente possível — mantida de fora por ora para não acoplar a ordem de schema deste
+        // store à de `SqlIdentityWorkspaceStore` sem necessidade; a validação de que o `WorkspaceId`
+        // existe/pertence ao usuário continua responsabilidade da camada de aplicação (via
+        // `IIdentityWorkspaceStore`).
         public static readonly string SchemaDdl = @"
 IF OBJECT_ID('dbo.tbFiscalProject', 'U') IS NULL
 CREATE TABLE dbo.tbFiscalProject (
