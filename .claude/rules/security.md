@@ -4,6 +4,28 @@ description: Regras de segurança e a pendência crítica de segredos versionado
 
 # Segurança — LayoutParser API
 
+## 🔴 REGRA NÃO-NEGOCIÁVEL (2026-09-06): `172.31.249.51` é SOMENTE LEITURA
+
+O SQL Server em `172.31.249.51` (banco `ConnectUS_Macgyver`, login `macgyver`, config
+`Database:*` do projeto) é uma credencial **compartilhada por ~231.890 times dentro da NDD
+inteira** — nunca exclusiva deste projeto (ver seção "rotação descartada" abaixo). O dono
+determinou explicitamente: **nenhum agente pode fazer `CREATE TABLE`, `ALTER TABLE`,
+`CREATE INDEX`, `INSERT`, `UPDATE`, `DELETE` ou qualquer outra escrita/DDL nesse servidor.**
+É só consulta.
+
+**Contexto do porquê:** descobrimos em 2026-09-06 que várias tabelas fiscais do projeto
+(`tbFiscalProject`, `tbFiscalMappingPackage`, `tbFiscalMappingPackageRevision`,
+`tbPackageArtifact`, `tbMappingDraft*`, `tbMappingRelease`) estavam sendo criadas via DDL
+lazy nesse banco compartilhado, por config errada (`Database:*` em vez de
+`IdentityDatabase:*`). Corrigido na PR #314 — essas tabelas agora vivem em
+`IdentityDatabase:*` (banco dedicado do projeto, migrando para o Docker SQL na VM Ubuntu,
+`elson@172.25.32.5:1433`, container `layoutparser-identity-sql`).
+
+**Regra prática para qualquer agente:** se uma tarefa parecer exigir escrever/criar algo em
+`172.31.249.51` ou na config `Database:*`, isso é sinal de config apontando pro banco errado
+— não é uma tarefa legítima. Reporte ao dono, não implemente. Dado do projeto sempre vai em
+`IdentityDatabase:*`.
+
 ## Segredos versionados — status da remediação
 
 Os segredos estavam em texto plano no [`appsettings.json`](../../appsettings.json) **e** em fallbacks
