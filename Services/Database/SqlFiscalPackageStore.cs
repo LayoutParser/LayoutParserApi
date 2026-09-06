@@ -556,22 +556,24 @@ namespace LayoutParserApi.Services.Database
             return result as string;
         }
 
-        private static async Task EnsureSchemaAsync(SqlConnection connection, CancellationToken cancellationToken)
-        {
-            if (_schemaEnsured)
-                return;
-
-            await _schemaLock.WaitAsync(cancellationToken);
-            try
-            {
-                if (_schemaEnsured)
-                    return;
-
-                const string ddl = @"
+        // ✅ Exposta como campo (não mais `const string` local) para o
+        // `FiscalSchemaInitializer` poder inicializar o schema fiscal inteiro, em ORDEM, uma única
+        // vez no startup — em vez de depender de qual store é exercitado primeiro por uma requisição
+        // real (causa raiz do 503 "MappingDraftStore falhou: FK ... references invalid table" da
+        // PR #310: `tbMappingDraft` podia ser criado antes de `tbFiscalMappingPackage` existir).
+        //
+        // ⚠️ `WorkspaceId` NÃO tem mais `REFERENCES dbo.tbFiscalWorkspace(WorkspaceId)`: essa FK
+        // nunca funcionou, em nenhuma ordem de execução — `tbFiscalWorkspace` não existe neste banco
+        // (`Database:*`, ConnectUS_Macgyver/Sysmiddle). O workspace fiscal real (`tbLpFiscalWorkspace`)
+        // mora num banco FISICAMENTE diferente (`IdentityDatabase:*`, ver <see cref="SqlIdentityWorkspaceStore"/>),
+        // e o SQL Server não suporta FK entre bancos distintos. A validação de que o `WorkspaceId`
+        // existe/pertence ao usuário é responsabilidade da camada de aplicação (via
+        // `IIdentityWorkspaceStore`), não do banco fiscal.
+        public static readonly string SchemaDdl = @"
 IF OBJECT_ID('dbo.tbFiscalProject', 'U') IS NULL
 CREATE TABLE dbo.tbFiscalProject (
     ProjectId UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
-    WorkspaceId UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.tbFiscalWorkspace(WorkspaceId),
+    WorkspaceId UNIQUEIDENTIFIER NOT NULL,
     Name NVARCHAR(256) NOT NULL,
     CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
 );
@@ -579,7 +581,7 @@ CREATE TABLE dbo.tbFiscalProject (
 IF OBJECT_ID('dbo.tbFiscalMappingPackage', 'U') IS NULL
 CREATE TABLE dbo.tbFiscalMappingPackage (
     PackageId UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
-    WorkspaceId UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.tbFiscalWorkspace(WorkspaceId),
+    WorkspaceId UNIQUEIDENTIFIER NOT NULL,
     ProjectId UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.tbFiscalProject(ProjectId),
     Name NVARCHAR(256) NOT NULL,
     IdempotencyKey NVARCHAR(128) NOT NULL,
@@ -618,7 +620,20 @@ CREATE TABLE dbo.tbPackageArtifact (
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_tbPackageArtifact_RevisionId' AND object_id = OBJECT_ID('dbo.tbPackageArtifact'))
 CREATE INDEX IX_tbPackageArtifact_RevisionId ON dbo.tbPackageArtifact(RevisionId);";
 
-                using var command = new SqlCommand(ddl, connection);
+        // internal (não mais private): chamado também pelo FiscalSchemaInitializer no startup, além
+        // do próprio store por requisição (idempotente — safety net se o initializer não rodou/falhou).
+        internal static async Task EnsureSchemaAsync(SqlConnection connection, CancellationToken cancellationToken)
+        {
+            if (_schemaEnsured)
+                return;
+
+            await _schemaLock.WaitAsync(cancellationToken);
+            try
+            {
+                if (_schemaEnsured)
+                    return;
+
+                using var command = new SqlCommand(SchemaDdl, connection);
                 await command.ExecuteNonQueryAsync(cancellationToken);
                 _schemaEnsured = true;
             }

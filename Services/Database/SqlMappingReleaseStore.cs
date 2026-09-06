@@ -233,22 +233,15 @@ namespace LayoutParserApi.Services.Database
                 reader.IsDBNull(reader.GetOrdinal("PreviousPublishedReleaseId")) ? null : reader.GetGuid(reader.GetOrdinal("PreviousPublishedReleaseId")));
         }
 
-        private static async Task EnsureSchemaAsync(SqlConnection connection, CancellationToken cancellationToken)
-        {
-            if (_schemaEnsured)
-                return;
-
-            await _schemaLock.WaitAsync(cancellationToken);
-            try
-            {
-                if (_schemaEnsured)
-                    return;
-
-                const string ddl = @"
+        // ✅ Campo público-de-assembly — mesma justificativa de <see cref="SqlFiscalPackageStore.SchemaDdl"/>
+        // (FiscalSchemaInitializer + remoção da FK cross-database inválida). `DraftId` referencia
+        // `tbMappingDraft`, criada por <see cref="SqlMappingDraftStore"/> — ESTE store depende daquele
+        // ter rodado primeiro (mesmo banco `Database:*`).
+        public static readonly string SchemaDdl = @"
 IF OBJECT_ID('dbo.tbMappingRelease', 'U') IS NULL
 CREATE TABLE dbo.tbMappingRelease (
     ReleaseId UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
-    WorkspaceId UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.tbFiscalWorkspace(WorkspaceId),
+    WorkspaceId UNIQUEIDENTIFIER NOT NULL,
     DraftId UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.tbMappingDraft(DraftId),
     Engine NVARCHAR(16) NOT NULL,
     ArtifactsJson NVARCHAR(MAX) NOT NULL,
@@ -307,7 +300,18 @@ CREATE TABLE dbo.tbMappingTransition (
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_tbMappingTransition_ReleaseId' AND object_id = OBJECT_ID('dbo.tbMappingTransition'))
 CREATE INDEX IX_tbMappingTransition_ReleaseId ON dbo.tbMappingTransition(ReleaseId);";
 
-                using var command = new SqlCommand(ddl, connection);
+        internal static async Task EnsureSchemaAsync(SqlConnection connection, CancellationToken cancellationToken)
+        {
+            if (_schemaEnsured)
+                return;
+
+            await _schemaLock.WaitAsync(cancellationToken);
+            try
+            {
+                if (_schemaEnsured)
+                    return;
+
+                using var command = new SqlCommand(SchemaDdl, connection);
                 await command.ExecuteNonQueryAsync(cancellationToken);
                 _schemaEnsured = true;
             }
