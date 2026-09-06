@@ -4,6 +4,7 @@ using LayoutParserApi.Services.Interfaces;
 
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace LayoutParserApi.Tests.Services.Fiscal
 {
@@ -21,6 +22,9 @@ namespace LayoutParserApi.Tests.Services.Fiscal
         private sealed class FakeStore : IFiscalPackageStore
         {
             public int CreateCallCount;
+            public int CreateRevisionCallCount;
+            public PackageDetail? PackageForMember { get; set; }
+            public string? ArtifactStoragePath { get; set; }
             private readonly Dictionary<string, PackageDetail> _byIdempotencyKey = new();
 
             public Task<bool> EnsureProjectExistsAsync(Guid workspaceId, Guid projectId, CancellationToken cancellationToken)
@@ -41,7 +45,7 @@ namespace LayoutParserApi.Tests.Services.Fiscal
             }
 
             public Task<PackageDetail?> GetPackageIfMemberAsync(Guid packageId, Guid userId, CancellationToken cancellationToken)
-                => Task.FromResult<PackageDetail?>(null);
+                => Task.FromResult(PackageForMember);
 
             public Task<PackageDetail?> FindPackageByIdempotencyKeyAsync(Guid workspaceId, Guid projectId, string idempotencyKey, CancellationToken cancellationToken)
                 => Task.FromResult(_byIdempotencyKey.TryGetValue($"{workspaceId}|{projectId}|{idempotencyKey}", out var d) ? d : null);
@@ -51,6 +55,25 @@ namespace LayoutParserApi.Tests.Services.Fiscal
 
             public Task UpdateInspectionStatusAsync(Guid artifactId, string inspectionStatus, CancellationToken cancellationToken)
                 => Task.CompletedTask;
+
+            public Task<IReadOnlyList<ProjectSummary>> ListProjectsForMemberAsync(Guid workspaceId, Guid userId, CancellationToken cancellationToken)
+                => Task.FromResult<IReadOnlyList<ProjectSummary>>(Array.Empty<ProjectSummary>());
+
+            public Task<PackageDetail> CreateRevisionAsync(Guid packageId, Guid createdByUserId, IReadOnlyList<PackageArtifact> artifacts, CancellationToken cancellationToken)
+            {
+                CreateRevisionCallCount++;
+                var nextRevisionNumber = PackageForMember!.LatestRevision.RevisionNumber + 1;
+                var detail = PackageForMember with
+                {
+                    LatestRevision = new RevisionSummary(Guid.NewGuid(), nextRevisionNumber, DateTimeOffset.UtcNow,
+                        artifacts.Select(a => new ArtifactSummary(a.ArtifactId, a.Kind, a.Sha256, a.SizeBytes, a.OriginalFileName, a.InspectionStatus, DateTimeOffset.UtcNow)).ToList())
+                };
+                PackageForMember = detail; // próxima revisão parte deste novo estado.
+                return Task.FromResult(detail);
+            }
+
+            public Task<string?> GetArtifactStoragePathAsync(Guid artifactId, CancellationToken cancellationToken)
+                => Task.FromResult(ArtifactStoragePath);
         }
 
         private sealed class FakeScanner : IAntivirusScanner
@@ -76,7 +99,7 @@ namespace LayoutParserApi.Tests.Services.Fiscal
                 .AddInMemoryCollection(new Dictionary<string, string?> { ["ML:FiscalMappingPackagesPath"] = storePath })
                 .Build();
 
-            return new FiscalPackageService(store, new FakeScanner(), logger, config);
+            return new FiscalPackageService(store, new FakeScanner(), new FiscalMappingRuleExtractor(NullLogger<FiscalMappingRuleExtractor>.Instance), logger, config);
         }
 
         // --- idempotência ---
@@ -114,6 +137,140 @@ namespace LayoutParserApi.Tests.Services.Fiscal
 
             Assert.Equal(1, store.CreateCallCount);
             Assert.Equal(first.Package!.PackageId, second.Package!.PackageId);
+        }
+
+        // --- Gap 2 (issue #201): nova revisão de pacote existente ---
+
+        [Fact]
+        public async Task CreateRevisionAsync_pacote_inexistente_ou_alheio_devolve_NotFound()
+        {
+            var store = new FakeStore(); // PackageForMember não configurado — simula "não existe/não é seu".
+            var service = BuildService(store, new CapturingLogger(), _tempStorePath);
+            var artifacts = new[] { new UploadedArtifactInput(ArtifactKind.Sample, "sample.txt", "text/plain", System.Text.Encoding.UTF8.GetBytes("linha 1")) };
+
+            var outcome = await service.CreateRevisionAsync(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), artifacts, CancellationToken.None);
+
+            Assert.False(outcome.Success);
+            Assert.True(outcome.NotFound);
+            Assert.Equal(0, store.CreateRevisionCallCount);
+        }
+
+        [Fact]
+        public async Task CreateRevisionAsync_workspaceId_divergente_do_dono_real_tambem_NotFound()
+        {
+            var packageId = Guid.NewGuid();
+            var workspaceReal = Guid.NewGuid();
+            var store = new FakeStore
+            {
+                PackageForMember = new PackageDetail(packageId, workspaceReal, Guid.NewGuid(), "Pacote", DateTimeOffset.UtcNow,
+                    new RevisionSummary(Guid.NewGuid(), 1, DateTimeOffset.UtcNow, Array.Empty<ArtifactSummary>()))
+            };
+            var service = BuildService(store, new CapturingLogger(), _tempStorePath);
+            var artifacts = new[] { new UploadedArtifactInput(ArtifactKind.Sample, "sample.txt", "text/plain", System.Text.Encoding.UTF8.GetBytes("linha 1")) };
+
+            var outcome = await service.CreateRevisionAsync(Guid.NewGuid(), packageId, Guid.NewGuid(), artifacts, CancellationToken.None);
+
+            Assert.True(outcome.NotFound);
+        }
+
+        [Fact]
+        public async Task CreateRevisionAsync_artefato_invalido_devolve_422_sem_criar_revisao()
+        {
+            var packageId = Guid.NewGuid();
+            var workspaceId = Guid.NewGuid();
+            var store = new FakeStore
+            {
+                PackageForMember = new PackageDetail(packageId, workspaceId, Guid.NewGuid(), "Pacote", DateTimeOffset.UtcNow,
+                    new RevisionSummary(Guid.NewGuid(), 1, DateTimeOffset.UtcNow, Array.Empty<ArtifactSummary>()))
+            };
+            var service = BuildService(store, new CapturingLogger(), _tempStorePath);
+            // Extensão errada de propósito (kind Sample espera .txt).
+            var artifacts = new[] { new UploadedArtifactInput(ArtifactKind.Sample, "sample.xml", "text/xml", System.Text.Encoding.UTF8.GetBytes("<a/>")) };
+
+            var outcome = await service.CreateRevisionAsync(workspaceId, packageId, Guid.NewGuid(), artifacts, CancellationToken.None);
+
+            Assert.False(outcome.Success);
+            Assert.False(outcome.NotFound);
+            Assert.NotNull(outcome.Error);
+            Assert.Equal(0, store.CreateRevisionCallCount);
+        }
+
+        [Fact]
+        public async Task CreateRevisionAsync_sucesso_incrementa_o_numero_da_revisao()
+        {
+            var packageId = Guid.NewGuid();
+            var workspaceId = Guid.NewGuid();
+            var store = new FakeStore
+            {
+                PackageForMember = new PackageDetail(packageId, workspaceId, Guid.NewGuid(), "Pacote", DateTimeOffset.UtcNow,
+                    new RevisionSummary(Guid.NewGuid(), 1, DateTimeOffset.UtcNow, Array.Empty<ArtifactSummary>()))
+            };
+            var service = BuildService(store, new CapturingLogger(), _tempStorePath);
+            var artifacts = new[] { new UploadedArtifactInput(ArtifactKind.Sample, "sample.txt", "text/plain", System.Text.Encoding.UTF8.GetBytes("linha 1")) };
+
+            var outcome = await service.CreateRevisionAsync(workspaceId, packageId, Guid.NewGuid(), artifacts, CancellationToken.None);
+
+            Assert.True(outcome.Success);
+            Assert.Equal(1, store.CreateRevisionCallCount);
+            Assert.Equal(2, outcome.Package!.LatestRevision.RevisionNumber); // 🔴 se a store parar de incrementar, isto quebra.
+        }
+
+        // --- Gap 3 (issue #201): inventário de estrutura do Excel ---
+
+        [Fact]
+        public async Task GetExcelInventoryAsync_pacote_inexistente_ou_alheio_devolve_NotFound()
+        {
+            var store = new FakeStore();
+            var service = BuildService(store, new CapturingLogger(), _tempStorePath);
+
+            var outcome = await service.GetExcelInventoryAsync(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), CancellationToken.None);
+
+            Assert.True(outcome.NotFound);
+        }
+
+        [Fact]
+        public async Task GetExcelInventoryAsync_artefato_que_nao_e_spec_devolve_422()
+        {
+            var packageId = Guid.NewGuid();
+            var workspaceId = Guid.NewGuid();
+            var artifactId = Guid.NewGuid();
+            var store = new FakeStore
+            {
+                PackageForMember = new PackageDetail(packageId, workspaceId, Guid.NewGuid(), "Pacote", DateTimeOffset.UtcNow,
+                    new RevisionSummary(Guid.NewGuid(), 1, DateTimeOffset.UtcNow,
+                        new[] { new ArtifactSummary(artifactId, ArtifactKind.Sample, "hash", 10, "sample.txt", InspectionStatus.Pending, DateTimeOffset.UtcNow) }))
+            };
+            var service = BuildService(store, new CapturingLogger(), _tempStorePath);
+
+            var outcome = await service.GetExcelInventoryAsync(workspaceId, packageId, artifactId, Guid.NewGuid(), CancellationToken.None);
+
+            Assert.False(outcome.Success);
+            Assert.False(outcome.NotFound);
+            Assert.Contains("spec", outcome.Error);
+        }
+
+        [Fact]
+        public async Task GetExcelInventoryAsync_planilha_real_devolve_abas_e_colunas_reconhecidas()
+        {
+            var packageId = Guid.NewGuid();
+            var workspaceId = Guid.NewGuid();
+            var artifactId = Guid.NewGuid();
+            var fixturePath = Path.Combine(AppContext.BaseDirectory, "Fixtures", "Fiscal", "regra-cst-decision-table.xlsx");
+            var store = new FakeStore
+            {
+                PackageForMember = new PackageDetail(packageId, workspaceId, Guid.NewGuid(), "Pacote", DateTimeOffset.UtcNow,
+                    new RevisionSummary(Guid.NewGuid(), 1, DateTimeOffset.UtcNow,
+                        new[] { new ArtifactSummary(artifactId, ArtifactKind.Spec, "hash", 10, "spec.xlsx", InspectionStatus.Pending, DateTimeOffset.UtcNow) })),
+                // Caminho absoluto direto — a service compõe com _storePath, então usa caminho relativo vazio e storePath = pasta da fixture.
+                ArtifactStoragePath = "regra-cst-decision-table.xlsx",
+            };
+            var service = BuildService(store, new CapturingLogger(), Path.Combine(AppContext.BaseDirectory, "Fixtures", "Fiscal"));
+
+            var outcome = await service.GetExcelInventoryAsync(workspaceId, packageId, artifactId, Guid.NewGuid(), CancellationToken.None);
+
+            Assert.True(outcome.Success, outcome.Error);
+            Assert.NotNull(outcome.Inventory);
+            Assert.NotEmpty(outcome.Inventory!.DecisionSheets.Concat(outcome.Inventory.SkippedSheets.Select(s => new ExcelSheetInventory(s, Array.Empty<string>(), 0))));
         }
 
         // --- conteúdo bruto nunca em log ---
@@ -213,6 +370,15 @@ namespace LayoutParserApi.Tests.Services.Fiscal
 
             public Task UpdateInspectionStatusAsync(Guid artifactId, string inspectionStatus, CancellationToken cancellationToken)
                 => Task.CompletedTask;
+
+            public Task<IReadOnlyList<ProjectSummary>> ListProjectsForMemberAsync(Guid workspaceId, Guid userId, CancellationToken cancellationToken)
+                => Task.FromResult<IReadOnlyList<ProjectSummary>>(Array.Empty<ProjectSummary>());
+
+            public Task<PackageDetail> CreateRevisionAsync(Guid packageId, Guid createdByUserId, IReadOnlyList<PackageArtifact> artifacts, CancellationToken cancellationToken)
+                => throw new NotSupportedException("Não exercitado neste conjunto de testes.");
+
+            public Task<string?> GetArtifactStoragePathAsync(Guid artifactId, CancellationToken cancellationToken)
+                => Task.FromResult<string?>(null);
         }
 
         [Fact]

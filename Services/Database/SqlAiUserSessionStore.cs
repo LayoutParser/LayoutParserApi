@@ -232,18 +232,10 @@ namespace LayoutParserApi.Services.Database
             }
         }
 
-        private static async Task EnsureSchemaAsync(SqlConnection connection, CancellationToken cancellationToken)
-        {
-            if (_schemaEnsured)
-                return;
-
-            await _schemaLock.WaitAsync(cancellationToken);
-            try
-            {
-                if (_schemaEnsured)
-                    return;
-
-                const string ddl = @"
+        // ✅ Campo público-de-assembly — ver justificativa equivalente em
+        // <see cref="SqlIdentityWorkspaceStore.SchemaDdl"/>. Autossuficiente (FK só aponta para tabela
+        // criada no mesmo bloco).
+        public static readonly string SchemaDdl = @"
 IF OBJECT_ID('dbo.tbLpAiUserSession', 'U') IS NULL
 CREATE TABLE dbo.tbLpAiUserSession (
     UserId NVARCHAR(256) NOT NULL PRIMARY KEY,
@@ -264,7 +256,18 @@ CREATE TABLE dbo.tbLpAiUserSessionHistoryEntry (
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_tbLpAiUserSessionHistoryEntry_UserId_CreatedAt' AND object_id = OBJECT_ID('dbo.tbLpAiUserSessionHistoryEntry'))
 CREATE INDEX IX_tbLpAiUserSessionHistoryEntry_UserId_CreatedAt ON dbo.tbLpAiUserSessionHistoryEntry(UserId, CreatedAt DESC);";
 
-                using var command = new SqlCommand(ddl, connection);
+        internal static async Task EnsureSchemaAsync(SqlConnection connection, CancellationToken cancellationToken)
+        {
+            if (_schemaEnsured)
+                return;
+
+            await _schemaLock.WaitAsync(cancellationToken);
+            try
+            {
+                if (_schemaEnsured)
+                    return;
+
+                using var command = new SqlCommand(SchemaDdl, connection);
                 await command.ExecuteNonQueryAsync(cancellationToken);
                 _schemaEnsured = true;
             }

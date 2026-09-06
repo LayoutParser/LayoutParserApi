@@ -295,7 +295,9 @@ namespace LayoutParserApi.Tests.Controllers
                 mapperDb: mapperDb,
                 layoutParser: parserFake,
                 fieldMappingComposition: BuildFieldMappingComposition(),
-                scopeFactory: scopeFactory);
+                scopeFactory: scopeFactory,
+                canaryAlert: new LayoutParserApi.Services.Security.CanaryAlertService(
+                    NullLogger<LayoutParserApi.Services.Security.CanaryAlertService>.Instance));
 
             return (controller, parserFake, runner);
         }

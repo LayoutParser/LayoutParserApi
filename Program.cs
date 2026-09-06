@@ -258,6 +258,12 @@ try
 
     builder.Services.AddAuthorization();
 
+    // ✅ ADR M2M, Parte 2 (Honeypots/Canary Tokens) — camada de DETECÇÃO complementar aos
+    // controles de auth reais acima; NÃO os substitui. Scoped por padrão (só usa ILogger<T>,
+    // sem estado compartilhado).
+    builder.Services.AddScoped<LayoutParserApi.Services.Security.ICanaryAlertService,
+        LayoutParserApi.Services.Security.CanaryAlertService>();
+
     builder.Services.AddControllers(options =>
         {
             // A porta de entrada da API é a REDE (a API só aceita o BFF, trava do @lp-devops) somada à
@@ -501,6 +507,12 @@ try
     // Lab. Mesmo banco/padrão ADO.NET; compile/test-run reaproveitam CanonicalDiffer/XsdValidationService
     // (já registrados/disponíveis via DI) sem I/O externo/Ollama.
     builder.Services.AddScoped<IMappingReleaseStore, SqlMappingReleaseStore>();
+    // ✅ Investigação PR #310 (2026-09-05): schema fiscal criado em ordem de dependência de FK no
+    // startup, em vez de depender de qual store acima uma requisição real exercita primeiro. Ver
+    // <see cref="LayoutParserApi.Services.Database.FiscalSchemaInitializer"/> para o grafo completo.
+    builder.Services.AddScoped<IFiscalSchemaInitializer, LayoutParserApi.Services.Database.FiscalSchemaInitializer>();
+    // Roda uma vez em background, após o app subir — não bloqueia o startup se o SQL estiver lento/fora do ar.
+    builder.Services.AddHostedService<LayoutParserApi.Services.Database.FiscalSchemaInitializerBackgroundService>();
     builder.Services.AddScoped<IMappingCompileService, LayoutParserApi.Services.Fiscal.MappingCompileService>();
     builder.Services.AddScoped<IMappingTestRunService, LayoutParserApi.Services.Fiscal.MappingTestRunService>();
     // ✅ Issue #103 Passo 1: extração determinística (sem LLM) de tabelas de decisão fiscal a
@@ -891,6 +903,13 @@ try
             await next();
         }
     });
+
+    // ✅ ADR M2M, Parte 2 (Honeypots/Canary Tokens): detecção da credencial-isca "aposentada"
+    // (X-Service-Credential). Roda ANTES de qualquer middleware de auth real — inclusive antes do
+    // TrustedIdentityMiddleware abaixo — para garantir que o alarme dispara mesmo que o valor
+    // canary por acaso colida com alguma validação futura. Nunca autentica, nunca bloqueia por
+    // conta própria: só loga Critical e deixa o pipeline seguir. Ver CanaryCredentialDetectionMiddleware.
+    app.UseMiddleware<LayoutParserApi.Services.Security.CanaryCredentialDetectionMiddleware>();
 
     // ✅ Identidade injetada pelo BFF (x-iis-user/x-iis-roles), sob a guarda de loopback. Vem DEPOIS do
     // CorrelationId (para o log de arranque/diagnóstico compartilhar o contexto) e ANTES dos endpoints,

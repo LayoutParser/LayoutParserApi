@@ -8,10 +8,12 @@ using Microsoft.Data.SqlClient;
 namespace LayoutParserApi.Services.Database
 {
     /// <summary>
-    /// Implementação SQL de <see cref="IMappingDraftStore"/> — Slice 3 (issue #230). Mesmo banco
-    /// <c>ConnectUS_Macgyver</c> e mesmo padrão ADO.NET cru de <see cref="SqlFiscalPackageStore"/>
-    /// (DDL idempotente por processo). Só LÊ as tabelas do Slice 2 (revisão/artefato) — nunca escreve
-    /// nelas, respeitando "não tocar código dos Slices 1/2 além de reaproveitar".
+    /// Implementação SQL de <see cref="IMappingDraftStore"/> — Slice 3 (issue #230). Migrado do
+    /// banco compartilhado <c>ConnectUS_Macgyver</c> (<c>Database:*</c>) para o banco DEDICADO do
+    /// projeto (<c>IdentityDatabase:*</c>), junto com <see cref="SqlFiscalPackageStore"/> — mesma
+    /// justificativa (raiz do bug de FK cross-database da PR #312). Mesmo padrão ADO.NET cru. Só LÊ
+    /// as tabelas do Slice 2 (revisão/artefato) — nunca escreve nelas, respeitando "não tocar código
+    /// dos Slices 1/2 além de reaproveitar".
     /// </summary>
     public sealed class SqlMappingDraftStore : IMappingDraftStore
     {
@@ -26,10 +28,11 @@ namespace LayoutParserApi.Services.Database
         public SqlMappingDraftStore(ILogger<SqlMappingDraftStore> logger, IConfiguration configuration)
         {
             _logger = logger;
-            var server = configuration["Database:Server"];
-            var database = configuration["Database:Database"];
-            var userId = configuration["Database:UserId"];
-            var password = configuration["Database:Password"];
+            // ✅ Banco dedicado do projeto (não mais o ConnectUS_Macgyver compartilhado).
+            var server = configuration["IdentityDatabase:Server"];
+            var database = configuration["IdentityDatabase:Database"];
+            var userId = configuration["IdentityDatabase:UserId"];
+            var password = configuration["IdentityDatabase:Password"];
 
             _connectionString = $"Server={server};Database={database};User Id={userId};Password={password};TrustServerCertificate=True;";
         }
@@ -109,7 +112,7 @@ namespace LayoutParserApi.Services.Database
             using (var selectDraft = new SqlCommand(
                 @"SELECT d.WorkspaceId, d.PackageId, d.RevisionId, d.Engine, d.CreatedAt
                   FROM dbo.tbMappingDraft d
-                  JOIN dbo.tbWorkspaceMembership m ON m.WorkspaceId = d.WorkspaceId AND m.UserId = @UserId
+                  JOIN dbo.tbLpWorkspaceMembership m ON m.WorkspaceId = d.WorkspaceId AND m.UserId = @UserId
                   WHERE d.DraftId = @DraftId;",
                 connection))
             {
@@ -141,7 +144,7 @@ namespace LayoutParserApi.Services.Database
                          r.Cardinality, r.EvidenceJson, r.Confidence, r.Status, r.OpenQuestionsJson, r.CreatedAt, r.RowVersion
                   FROM dbo.tbMappingDraftRule r
                   JOIN dbo.tbMappingDraft d ON d.DraftId = r.DraftId
-                  JOIN dbo.tbWorkspaceMembership m ON m.WorkspaceId = d.WorkspaceId AND m.UserId = @UserId
+                  JOIN dbo.tbLpWorkspaceMembership m ON m.WorkspaceId = d.WorkspaceId AND m.UserId = @UserId
                   WHERE r.RuleId = @RuleId AND r.DraftId = @DraftId;",
                 connection);
             command.Parameters.AddWithValue("@RuleId", ruleId);
@@ -252,7 +255,7 @@ namespace LayoutParserApi.Services.Database
                           r.Operation = COALESCE(@EditedOperation, r.Operation)
                       FROM dbo.tbMappingDraftRule r
                       JOIN dbo.tbMappingDraft d ON d.DraftId = r.DraftId
-                      JOIN dbo.tbWorkspaceMembership m ON m.WorkspaceId = d.WorkspaceId AND m.UserId = @UserId
+                      JOIN dbo.tbLpWorkspaceMembership m ON m.WorkspaceId = d.WorkspaceId AND m.UserId = @UserId
                       WHERE r.RuleId = @RuleId AND r.DraftId = @DraftId AND r.RowVersion = @ExpectedRowVersion;",
                     connection, tx))
                 {
@@ -273,7 +276,7 @@ namespace LayoutParserApi.Services.Database
                         using var existsCheck = new SqlCommand(
                             @"SELECT 1 FROM dbo.tbMappingDraftRule r
                               JOIN dbo.tbMappingDraft d ON d.DraftId = r.DraftId
-                              JOIN dbo.tbWorkspaceMembership m ON m.WorkspaceId = d.WorkspaceId AND m.UserId = @UserId
+                              JOIN dbo.tbLpWorkspaceMembership m ON m.WorkspaceId = d.WorkspaceId AND m.UserId = @UserId
                               WHERE r.RuleId = @RuleId AND r.DraftId = @DraftId;",
                             connection, tx);
                         existsCheck.Parameters.AddWithValue("@RuleId", ruleId);
@@ -357,22 +360,17 @@ namespace LayoutParserApi.Services.Database
                 Convert.ToBase64String(rowVersion));
         }
 
-        private static async Task EnsureSchemaAsync(SqlConnection connection, CancellationToken cancellationToken)
-        {
-            if (_schemaEnsured)
-                return;
-
-            await _schemaLock.WaitAsync(cancellationToken);
-            try
-            {
-                if (_schemaEnsured)
-                    return;
-
-                const string ddl = @"
+        // ✅ Campo público-de-assembly (não mais `const string` local) — ver comentário equivalente
+        // em <see cref="SqlFiscalPackageStore.SchemaDdl"/> sobre o `FiscalSchemaInitializer` e sobre a
+        // remoção da FK inválida `REFERENCES dbo.tbFiscalWorkspace`. Além disso, `PackageId`/`RevisionId`
+        // referenciam tabelas criadas por <see cref="SqlFiscalPackageStore"/> — ESTE store depende de
+        // aquele ter rodado primeiro (mesmo banco `IdentityDatabase:*`, desde a migração descrita no
+        // cabeçalho da classe), daí a ordem imposta pelo initializer.
+        public static readonly string SchemaDdl = @"
 IF OBJECT_ID('dbo.tbMappingDraft', 'U') IS NULL
 CREATE TABLE dbo.tbMappingDraft (
     DraftId UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
-    WorkspaceId UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.tbFiscalWorkspace(WorkspaceId),
+    WorkspaceId UNIQUEIDENTIFIER NOT NULL,
     PackageId UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.tbFiscalMappingPackage(PackageId),
     RevisionId UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.tbFiscalMappingPackageRevision(RevisionId),
     Engine NVARCHAR(16) NOT NULL,
@@ -416,7 +414,18 @@ CREATE TABLE dbo.tbMappingDraftRuleDecision (
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_tbMappingDraftRuleDecision_RuleId' AND object_id = OBJECT_ID('dbo.tbMappingDraftRuleDecision'))
 CREATE INDEX IX_tbMappingDraftRuleDecision_RuleId ON dbo.tbMappingDraftRuleDecision(RuleId);";
 
-                using var command = new SqlCommand(ddl, connection);
+        internal static async Task EnsureSchemaAsync(SqlConnection connection, CancellationToken cancellationToken)
+        {
+            if (_schemaEnsured)
+                return;
+
+            await _schemaLock.WaitAsync(cancellationToken);
+            try
+            {
+                if (_schemaEnsured)
+                    return;
+
+                using var command = new SqlCommand(SchemaDdl, connection);
                 await command.ExecuteNonQueryAsync(cancellationToken);
                 _schemaEnsured = true;
             }

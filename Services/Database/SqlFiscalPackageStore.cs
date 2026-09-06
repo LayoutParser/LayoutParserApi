@@ -6,9 +6,14 @@ using Microsoft.Data.SqlClient;
 namespace LayoutParserApi.Services.Database
 {
     /// <summary>
-    /// Implementação SQL de <see cref="IFiscalPackageStore"/> — Slice 2 (issue #229). Mesmo banco
-    /// <c>ConnectUS_Macgyver</c> e mesmo padrão ADO.NET cru de <see cref="SqlIdentityWorkspaceStore"/>
-    /// (DDL idempotente por processo, connection string montada de <c>Database:*</c>).
+    /// Implementação SQL de <see cref="IFiscalPackageStore"/> — Slice 2 (issue #229). Migrado do
+    /// banco compartilhado <c>ConnectUS_Macgyver</c> (<c>Database:*</c>) para o banco DEDICADO do
+    /// projeto (<c>IdentityDatabase:*</c>, mesmo usado por <see cref="SqlIdentityWorkspaceStore"/>)
+    /// — a raiz do bug de FK cross-database investigado na PR #312 era justamente essas tabelas
+    /// fiscais morarem no banco compartilhado enquanto o workspace real mora em outro servidor
+    /// físico. Mesmo padrão ADO.NET cru de <see cref="SqlIdentityWorkspaceStore"/> (DDL idempotente
+    /// por processo). Ver <c>.claude/rules/security.md</c> para o histórico da credencial
+    /// compartilhada que motivou a separação original de identidade.
     /// </summary>
     public sealed class SqlFiscalPackageStore : IFiscalPackageStore
     {
@@ -23,10 +28,12 @@ namespace LayoutParserApi.Services.Database
         public SqlFiscalPackageStore(ILogger<SqlFiscalPackageStore> logger, IConfiguration configuration)
         {
             _logger = logger;
-            var server = configuration["Database:Server"];
-            var database = configuration["Database:Database"];
-            var userId = configuration["Database:UserId"];
-            var password = configuration["Database:Password"];
+            // ✅ Banco dedicado do projeto (não mais o ConnectUS_Macgyver compartilhado) — mesmo
+            // padrão de SqlIdentityWorkspaceStore.
+            var server = configuration["IdentityDatabase:Server"];
+            var database = configuration["IdentityDatabase:Database"];
+            var userId = configuration["IdentityDatabase:UserId"];
+            var password = configuration["IdentityDatabase:Password"];
 
             _connectionString = $"Server={server};Database={database};User Id={userId};Password={password};TrustServerCertificate=True;";
         }
@@ -197,7 +204,7 @@ namespace LayoutParserApi.Services.Database
             using var selectPackage = new SqlCommand(
                 @"SELECT p.PackageId, p.WorkspaceId, p.ProjectId, p.Name, p.CreatedAt
                   FROM dbo.tbFiscalMappingPackage p
-                  JOIN dbo.tbWorkspaceMembership m ON m.WorkspaceId = p.WorkspaceId AND m.UserId = @UserId
+                  JOIN dbo.tbLpWorkspaceMembership m ON m.WorkspaceId = p.WorkspaceId AND m.UserId = @UserId
                   WHERE p.PackageId = @PackageId;",
                 connection);
             selectPackage.Parameters.AddWithValue("@PackageId", packageId);
@@ -400,22 +407,183 @@ namespace LayoutParserApi.Services.Database
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
 
-        private static async Task EnsureSchemaAsync(SqlConnection connection, CancellationToken cancellationToken)
+        public async Task<IReadOnlyList<ProjectSummary>> ListProjectsForMemberAsync(Guid workspaceId, Guid userId, CancellationToken cancellationToken)
         {
-            if (_schemaEnsured)
-                return;
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await EnsureSchemaAsync(connection, cancellationToken);
 
-            await _schemaLock.WaitAsync(cancellationToken);
+            // Join com tbLpWorkspaceMembership: defesa em profundidade — o controller já checou
+            // membership antes de chamar, mas a store nunca confia cegamente no WorkspaceId da rota.
+            using var command = new SqlCommand(
+                @"SELECT p.ProjectId, p.WorkspaceId, p.Name, p.CreatedAt
+                  FROM dbo.tbFiscalProject p
+                  JOIN dbo.tbLpWorkspaceMembership m ON m.WorkspaceId = p.WorkspaceId AND m.UserId = @UserId
+                  WHERE p.WorkspaceId = @WorkspaceId
+                  ORDER BY p.CreatedAt DESC;",
+                connection);
+            command.Parameters.AddWithValue("@WorkspaceId", workspaceId);
+            command.Parameters.AddWithValue("@UserId", userId);
+
+            var projects = new List<ProjectSummary>();
+            using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                projects.Add(new ProjectSummary(
+                    reader.GetGuid(reader.GetOrdinal("ProjectId")),
+                    reader.GetGuid(reader.GetOrdinal("WorkspaceId")),
+                    reader.GetString(reader.GetOrdinal("Name")),
+                    new DateTimeOffset(reader.GetDateTime(reader.GetOrdinal("CreatedAt")), TimeSpan.Zero)));
+            }
+
+            return projects;
+        }
+
+        public async Task<PackageDetail> CreateRevisionAsync(
+            Guid packageId,
+            Guid createdByUserId,
+            IReadOnlyList<PackageArtifact> artifacts,
+            CancellationToken cancellationToken)
+        {
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await EnsureSchemaAsync(connection, cancellationToken);
+
+            var revisionId = Guid.NewGuid();
+            var createdAt = DateTimeOffset.UtcNow;
+
+            using var tx = connection.BeginTransaction();
             try
             {
-                if (_schemaEnsured)
-                    return;
+                int revisionNumber;
+                using (var selectMax = new SqlCommand(
+                    "SELECT ISNULL(MAX(RevisionNumber), 0) FROM dbo.tbFiscalMappingPackageRevision WHERE PackageId = @PackageId;",
+                    connection, tx))
+                {
+                    selectMax.Parameters.AddWithValue("@PackageId", packageId);
+                    revisionNumber = (int)await selectMax.ExecuteScalarAsync(cancellationToken) + 1;
+                }
 
-                const string ddl = @"
+                using (var insertRevision = new SqlCommand(
+                    @"INSERT INTO dbo.tbFiscalMappingPackageRevision (RevisionId, PackageId, RevisionNumber, CreatedByUserId, CreatedAt)
+                      VALUES (@RevisionId, @PackageId, @RevisionNumber, @CreatedByUserId, SYSUTCDATETIME());",
+                    connection, tx))
+                {
+                    insertRevision.Parameters.AddWithValue("@RevisionId", revisionId);
+                    insertRevision.Parameters.AddWithValue("@PackageId", packageId);
+                    insertRevision.Parameters.AddWithValue("@RevisionNumber", revisionNumber);
+                    insertRevision.Parameters.AddWithValue("@CreatedByUserId", createdByUserId);
+                    await insertRevision.ExecuteNonQueryAsync(cancellationToken);
+                }
+
+                foreach (var artifact in artifacts)
+                {
+                    artifact.ArtifactId = artifact.ArtifactId == Guid.Empty ? Guid.NewGuid() : artifact.ArtifactId;
+                    artifact.RevisionId = revisionId;
+
+                    using var insertArtifact = new SqlCommand(
+                        @"INSERT INTO dbo.tbPackageArtifact
+                            (ArtifactId, RevisionId, Kind, Sha256, SizeBytes, OriginalFileName, MimeDeclared, MimeSniffed,
+                             UploadedByUserId, UploadedAt, Classification, RetentionPolicy, InspectionStatus, StoragePath)
+                          VALUES
+                            (@ArtifactId, @RevisionId, @Kind, @Sha256, @SizeBytes, @OriginalFileName, @MimeDeclared, @MimeSniffed,
+                             @UploadedByUserId, SYSUTCDATETIME(), @Classification, @RetentionPolicy, @InspectionStatus, @StoragePath);",
+                        connection, tx);
+
+                    insertArtifact.Parameters.AddWithValue("@ArtifactId", artifact.ArtifactId);
+                    insertArtifact.Parameters.AddWithValue("@RevisionId", revisionId);
+                    insertArtifact.Parameters.AddWithValue("@Kind", artifact.Kind);
+                    insertArtifact.Parameters.AddWithValue("@Sha256", artifact.Sha256);
+                    insertArtifact.Parameters.AddWithValue("@SizeBytes", artifact.SizeBytes);
+                    insertArtifact.Parameters.AddWithValue("@OriginalFileName", artifact.OriginalFileName);
+                    insertArtifact.Parameters.AddWithValue("@MimeDeclared", artifact.MimeDeclared);
+                    insertArtifact.Parameters.AddWithValue("@MimeSniffed", artifact.MimeSniffed);
+                    insertArtifact.Parameters.AddWithValue("@UploadedByUserId", artifact.UploadedByUserId);
+                    insertArtifact.Parameters.AddWithValue("@Classification", (object?)artifact.Classification ?? DBNull.Value);
+                    insertArtifact.Parameters.AddWithValue("@RetentionPolicy", (object?)artifact.RetentionPolicy ?? DBNull.Value);
+                    insertArtifact.Parameters.AddWithValue("@InspectionStatus", artifact.InspectionStatus);
+                    insertArtifact.Parameters.AddWithValue("@StoragePath", artifact.StoragePath);
+                    await insertArtifact.ExecuteNonQueryAsync(cancellationToken);
+                }
+
+                await tx.CommitAsync(cancellationToken);
+
+                var packageDetail = await LoadPackageHeaderAsync(connection, packageId, cancellationToken)
+                    ?? throw new InvalidOperationException($"Pacote {packageId} sumiu durante a criação da revisão.");
+
+                return packageDetail with
+                {
+                    LatestRevision = new RevisionSummary(
+                        revisionId,
+                        revisionNumber,
+                        createdAt,
+                        artifacts.Select(a => new ArtifactSummary(a.ArtifactId, a.Kind, a.Sha256, a.SizeBytes, a.OriginalFileName, a.InspectionStatus, createdAt)).ToList())
+                };
+            }
+            catch
+            {
+                await tx.RollbackAsync(cancellationToken);
+                throw;
+            }
+        }
+
+        /// <summary>Só o cabeçalho do pacote (sem revisão) — usado internamente por <see cref="CreateRevisionAsync"/>.</summary>
+        private static async Task<PackageDetail?> LoadPackageHeaderAsync(SqlConnection connection, Guid packageId, CancellationToken cancellationToken)
+        {
+            using var command = new SqlCommand(
+                "SELECT WorkspaceId, ProjectId, Name, CreatedAt FROM dbo.tbFiscalMappingPackage WHERE PackageId = @PackageId;",
+                connection);
+            command.Parameters.AddWithValue("@PackageId", packageId);
+
+            using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken))
+                return null;
+
+            return new PackageDetail(
+                packageId,
+                reader.GetGuid(reader.GetOrdinal("WorkspaceId")),
+                reader.GetGuid(reader.GetOrdinal("ProjectId")),
+                reader.GetString(reader.GetOrdinal("Name")),
+                new DateTimeOffset(reader.GetDateTime(reader.GetOrdinal("CreatedAt")), TimeSpan.Zero),
+                null!); // LatestRevision preenchida pelo chamador.
+        }
+
+        public async Task<string?> GetArtifactStoragePathAsync(Guid artifactId, CancellationToken cancellationToken)
+        {
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await EnsureSchemaAsync(connection, cancellationToken);
+
+            using var command = new SqlCommand(
+                "SELECT StoragePath FROM dbo.tbPackageArtifact WHERE ArtifactId = @ArtifactId;",
+                connection);
+            command.Parameters.AddWithValue("@ArtifactId", artifactId);
+
+            var result = await command.ExecuteScalarAsync(cancellationToken);
+            return result as string;
+        }
+
+        // ✅ Exposta como campo (não mais `const string` local) para o
+        // `FiscalSchemaInitializer` poder inicializar o schema fiscal inteiro, em ORDEM, uma única
+        // vez no startup — em vez de depender de qual store é exercitado primeiro por uma requisição
+        // real (causa raiz do 503 "MappingDraftStore falhou: FK ... references invalid table" da
+        // PR #310: `tbMappingDraft` podia ser criado antes de `tbFiscalMappingPackage` existir).
+        //
+        // ⚠️ `WorkspaceId` NÃO tem `REFERENCES dbo.tbLpFiscalWorkspace(WorkspaceId)` mesmo agora que
+        // este store mora no MESMO banco (`IdentityDatabase:*`) que `tbLpFiscalWorkspace` (ver
+        // <see cref="SqlIdentityWorkspaceStore"/>). Historicamente essa FK nunca funcionou (apontava
+        // para `dbo.tbFiscalWorkspace`, tabela que não existia em banco nenhum) porque este store
+        // vivia fisicamente separado (`Database:*`, ConnectUS_Macgyver/Sysmiddle) antes da migração
+        // documentada no cabeçalho da classe. Agora que os dois moram juntos, uma FK real seria
+        // tecnicamente possível — mantida de fora por ora para não acoplar a ordem de schema deste
+        // store à de `SqlIdentityWorkspaceStore` sem necessidade; a validação de que o `WorkspaceId`
+        // existe/pertence ao usuário continua responsabilidade da camada de aplicação (via
+        // `IIdentityWorkspaceStore`).
+        public static readonly string SchemaDdl = @"
 IF OBJECT_ID('dbo.tbFiscalProject', 'U') IS NULL
 CREATE TABLE dbo.tbFiscalProject (
     ProjectId UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
-    WorkspaceId UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.tbFiscalWorkspace(WorkspaceId),
+    WorkspaceId UNIQUEIDENTIFIER NOT NULL,
     Name NVARCHAR(256) NOT NULL,
     CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
 );
@@ -423,7 +591,7 @@ CREATE TABLE dbo.tbFiscalProject (
 IF OBJECT_ID('dbo.tbFiscalMappingPackage', 'U') IS NULL
 CREATE TABLE dbo.tbFiscalMappingPackage (
     PackageId UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
-    WorkspaceId UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.tbFiscalWorkspace(WorkspaceId),
+    WorkspaceId UNIQUEIDENTIFIER NOT NULL,
     ProjectId UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.tbFiscalProject(ProjectId),
     Name NVARCHAR(256) NOT NULL,
     IdempotencyKey NVARCHAR(128) NOT NULL,
@@ -462,7 +630,20 @@ CREATE TABLE dbo.tbPackageArtifact (
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_tbPackageArtifact_RevisionId' AND object_id = OBJECT_ID('dbo.tbPackageArtifact'))
 CREATE INDEX IX_tbPackageArtifact_RevisionId ON dbo.tbPackageArtifact(RevisionId);";
 
-                using var command = new SqlCommand(ddl, connection);
+        // internal (não mais private): chamado também pelo FiscalSchemaInitializer no startup, além
+        // do próprio store por requisição (idempotente — safety net se o initializer não rodou/falhou).
+        internal static async Task EnsureSchemaAsync(SqlConnection connection, CancellationToken cancellationToken)
+        {
+            if (_schemaEnsured)
+                return;
+
+            await _schemaLock.WaitAsync(cancellationToken);
+            try
+            {
+                if (_schemaEnsured)
+                    return;
+
+                using var command = new SqlCommand(SchemaDdl, connection);
                 await command.ExecuteNonQueryAsync(cancellationToken);
                 _schemaEnsured = true;
             }

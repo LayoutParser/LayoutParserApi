@@ -41,6 +41,34 @@ namespace LayoutParserApi.Controllers
             _logger = logger;
         }
 
+        /// <summary>
+        /// Lista releases do workspace, paginado (issue #198 do front — não havia NENHUM endpoint de
+        /// descoberta: os 3 endpoints de governança abaixo exigem <c>releaseId</c> já conhecido).
+        /// Rota própria (sem <c>{releaseId}</c>) via <c>~/</c> porque a rota base do controller já fixa
+        /// esse segmento. Qualquer papel do workspace pode ler — só as mutações (approve/publish/
+        /// rollback) exigem papel elevado.
+        /// </summary>
+        [HttpGet("~/api/workspaces/{workspaceId:guid}/mapping-releases")]
+        [RequireWorkspaceRole(WorkspaceRole.Owner, WorkspaceRole.FiscalAdmin, WorkspaceRole.Mapper, WorkspaceRole.Reviewer, WorkspaceRole.Operator, WorkspaceRole.Viewer)]
+        public async Task<IActionResult> List(Guid workspaceId, [FromQuery] int page = 1, [FromQuery] int pageSize = 20, CancellationToken cancellationToken = default)
+        {
+            if (page < 1)
+                return BadRequest(new { error = "\"page\" deve ser >= 1." });
+
+            if (pageSize < 1 || pageSize > 100)
+                return BadRequest(new { error = "\"pageSize\" deve estar entre 1 e 100." });
+
+            var (items, totalCount) = await _releaseStore.ListByWorkspaceAsync(workspaceId, page, pageSize, cancellationToken);
+
+            return Ok(new
+            {
+                items = items.Select(ToReleaseResponse),
+                page,
+                pageSize,
+                totalCount,
+            });
+        }
+
         /// <summary><c>test_passed → in_review → approved</c>. Bloqueado se a release estiver <c>test_failed</c> (ou qualquer status diferente de <c>test_passed</c>).</summary>
         [HttpPost("approve")]
         [RequireWorkspaceRole(WorkspaceRole.Reviewer, WorkspaceRole.FiscalAdmin)]

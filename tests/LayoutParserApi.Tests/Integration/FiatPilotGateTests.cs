@@ -97,6 +97,15 @@ namespace LayoutParserApi.Tests.Integration
                 => Task.FromResult<ArtifactSummary?>(null);
 
             public Task UpdateInspectionStatusAsync(Guid artifactId, string inspectionStatus, CancellationToken cancellationToken) => Task.CompletedTask;
+
+            public Task<IReadOnlyList<ProjectSummary>> ListProjectsForMemberAsync(Guid workspaceId, Guid userId, CancellationToken cancellationToken)
+                => Task.FromResult<IReadOnlyList<ProjectSummary>>(Array.Empty<ProjectSummary>());
+
+            public Task<PackageDetail> CreateRevisionAsync(Guid packageId, Guid createdByUserId, IReadOnlyList<PackageArtifact> artifacts, CancellationToken cancellationToken)
+                => throw new NotSupportedException("Não exercitado neste conjunto de testes.");
+
+            public Task<string?> GetArtifactStoragePathAsync(Guid artifactId, CancellationToken cancellationToken)
+                => Task.FromResult<string?>(null);
         }
 
         private sealed class NoOpAntivirusScanner : IAntivirusScanner
@@ -194,6 +203,9 @@ namespace LayoutParserApi.Tests.Integration
 
             public Task<MappingReleaseDetail?> GetReleaseIfMemberAsync(Guid releaseId, Guid userId, CancellationToken cancellationToken)
                 => Task.FromResult(ById.TryGetValue(releaseId, out var r) ? r : null);
+
+            public Task<(IReadOnlyList<MappingReleaseDetail> Items, int TotalCount)> ListByWorkspaceAsync(Guid workspaceId, int page, int pageSize, CancellationToken cancellationToken)
+                => throw new NotSupportedException();
 
             public Task<MappingReleaseDetail?> ApplyTestRunResultAsync(Guid releaseId, MappingTestRunSummary summary, CancellationToken cancellationToken)
             {
@@ -327,7 +339,7 @@ namespace LayoutParserApi.Tests.Integration
             var configuration = new ConfigurationBuilder()
                 .AddInMemoryCollection(new Dictionary<string, string?> { ["ML:FiscalMappingPackagesPath"] = tempStorePath })
                 .Build();
-            var packageService = new FiscalPackageService(packageStore, new NoOpAntivirusScanner(), NullLogger<FiscalPackageService>.Instance, configuration);
+            var packageService = new FiscalPackageService(packageStore, new NoOpAntivirusScanner(), new FiscalMappingRuleExtractor(NullLogger<FiscalMappingRuleExtractor>.Instance), NullLogger<FiscalPackageService>.Instance, configuration);
 
             var artifacts = new List<UploadedArtifactInput>
             {

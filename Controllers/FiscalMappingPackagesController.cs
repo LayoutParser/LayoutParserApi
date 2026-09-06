@@ -119,6 +119,156 @@ namespace LayoutParserApi.Controllers
             return CreatedAtAction(nameof(GetPackage), new { workspaceId, packageId = package.PackageId }, ToResponse(package));
         }
 
+        /// <summary>
+        /// Lista os projetos fiscais do workspace (Gap 1 — issue #201/#229). Leitura pura — NÃO é o
+        /// CRUD completo de projeto descartado na decisão original da issue #229 (ver
+        /// <see cref="FiscalProject"/>); existe só para o front-end navegar/selecionar projeto sem
+        /// exigir o GUID colado manualmente.
+        /// </summary>
+        [HttpGet("projects")]
+        public async Task<IActionResult> ListProjects(Guid workspaceId, CancellationToken cancellationToken)
+        {
+            if (_currentUser.UserId is not Guid userId)
+                return NotFound();
+
+            WorkspaceSummary? membership;
+            try
+            {
+                membership = await _identityWorkspaceService.GetWorkspaceForMemberAsync(workspaceId, userId, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Falha ao verificar membership do workspace {WorkspaceId} para listar projetos.", workspaceId);
+                return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "Não foi possível listar os projetos no momento." });
+            }
+
+            if (membership == null)
+                return NotFound();
+
+            IReadOnlyList<Services.Interfaces.ProjectSummary> projects;
+            try
+            {
+                projects = await _packageService.ListProjectsAsync(workspaceId, userId, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Falha ao listar projetos do workspace {WorkspaceId}.", workspaceId);
+                return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "Não foi possível listar os projetos no momento." });
+            }
+
+            return Ok(new
+            {
+                projects = projects.Select(p => new
+                {
+                    projectId = p.ProjectId,
+                    workspaceId = p.WorkspaceId,
+                    name = p.Name,
+                    createdAt = p.CreatedAt
+                })
+            });
+        }
+
+        /// <summary>
+        /// Cria uma nova revisão de um pacote já existente (Gap 2 — issue #201). Mesmo formato
+        /// multipart de <see cref="CreatePackage"/> — cada arquivo identificado pelo NOME DO CAMPO.
+        /// </summary>
+#pragma warning disable SCS0016
+        [HttpPost("mapping-packages/{packageId:guid}/revisions")]
+        [RequestSizeLimit(10 * Services.Validation.MultipartUploadValidator.MaxArtifactSizeBytes)]
+        public async Task<IActionResult> CreateRevision(
+            Guid workspaceId,
+            Guid packageId,
+            CancellationToken cancellationToken)
+#pragma warning restore SCS0016
+        {
+            if (_currentUser.UserId is not Guid userId)
+                return NotFound();
+
+            if (Request.Form.Files.Count == 0)
+                return UnprocessableEntity(new { error = "Nenhum artefato enviado." });
+
+            if (Request.Form.Files.Count > MaxArtifactsPerUpload)
+                return UnprocessableEntity(new { error = $"Excede o limite de {MaxArtifactsPerUpload} artefatos por upload." });
+
+            var artifacts = new List<UploadedArtifactInput>();
+            foreach (var file in Request.Form.Files)
+            {
+                if (!ArtifactKind.IsValid(file.Name))
+                    return UnprocessableEntity(new { error = $"Campo de upload desconhecido: \"{file.Name}\". Esperado um de: {string.Join(", ", ArtifactKind.All)}." });
+
+                if (file.Length == 0)
+                    return UnprocessableEntity(new { error = $"Artefato \"{file.Name}\" está vazio." });
+
+                if (file.Length > Services.Validation.MultipartUploadValidator.MaxArtifactSizeBytes)
+                    return UnprocessableEntity(new { error = $"Artefato \"{file.Name}\" excede o limite de tamanho." });
+
+                using var memoryStream = new MemoryStream();
+                await file.CopyToAsync(memoryStream, cancellationToken);
+
+                artifacts.Add(new UploadedArtifactInput(file.Name, file.FileName, file.ContentType, memoryStream.ToArray()));
+            }
+
+            CreateRevisionOutcome outcome;
+            try
+            {
+                outcome = await _packageService.CreateRevisionAsync(workspaceId, packageId, userId, artifacts, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Falha ao criar revisão do pacote de mapeamento fiscal {PackageId} (workspace={WorkspaceId}).", packageId, workspaceId);
+                return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "Não foi possível criar a revisão no momento." });
+            }
+
+            if (outcome.NotFound)
+                return NotFound();
+
+            if (!outcome.Success)
+                return UnprocessableEntity(new { error = outcome.Error });
+
+            return CreatedAtAction(nameof(GetPackage), new { workspaceId, packageId }, ToResponse(outcome.Package!));
+        }
+
+        /// <summary>
+        /// Inventário de estrutura (abas/colunas/linhas) de um artefato <c>spec</c> (XLSX) da revisão
+        /// mais recente (Gap 3 — issue #201) — reusa <see cref="Services.Fiscal.FiscalMappingRuleExtractor"/>,
+        /// sem devolver o conteúdo bruto da planilha.
+        /// </summary>
+        [HttpGet("mapping-packages/{packageId:guid}/artifacts/{artifactId:guid}/excel-inventory")]
+        public async Task<IActionResult> GetExcelInventory(Guid workspaceId, Guid packageId, Guid artifactId, CancellationToken cancellationToken)
+        {
+            if (_currentUser.UserId is not Guid userId)
+                return NotFound();
+
+            ExcelInventoryOutcome outcome;
+            try
+            {
+                outcome = await _packageService.GetExcelInventoryAsync(workspaceId, packageId, artifactId, userId, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Falha ao gerar inventário do artefato {ArtifactId} (pacote={PackageId}).", artifactId, packageId);
+                return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "Não foi possível gerar o inventário no momento." });
+            }
+
+            if (outcome.NotFound)
+                return NotFound();
+
+            if (!outcome.Success)
+                return UnprocessableEntity(new { error = outcome.Error });
+
+            var inventory = outcome.Inventory!;
+            return Ok(new
+            {
+                decisionSheets = inventory.DecisionSheets.Select(s => new
+                {
+                    sheetName = s.SheetName,
+                    columns = s.Columns,
+                    ruleCount = s.RuleCount
+                }),
+                skippedSheets = inventory.SkippedSheets
+            });
+        }
+
         /// <summary>Pacote + inventário de artefatos da revisão mais recente. Nunca expõe conteúdo bruto.</summary>
         [HttpGet("mapping-packages/{packageId:guid}")]
         public async Task<IActionResult> GetPackage(Guid workspaceId, Guid packageId, CancellationToken cancellationToken)

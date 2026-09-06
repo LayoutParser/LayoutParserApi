@@ -73,6 +73,13 @@ namespace LayoutParserApi.Tests.Controllers
             public Task<MappingReleaseDetail?> GetReleaseIfMemberAsync(Guid releaseId, Guid userId, CancellationToken cancellationToken)
                 => Task.FromResult(ById.TryGetValue(releaseId, out var r) ? r : null);
 
+            public Task<(IReadOnlyList<MappingReleaseDetail> Items, int TotalCount)> ListByWorkspaceAsync(Guid workspaceId, int page, int pageSize, CancellationToken cancellationToken)
+            {
+                var doWorkspace = ById.Values.Where(r => r.WorkspaceId == workspaceId).OrderByDescending(r => r.CreatedAt).ToList();
+                var pagina = doWorkspace.Skip((page - 1) * pageSize).Take(pageSize).ToList();
+                return Task.FromResult(((IReadOnlyList<MappingReleaseDetail>)pagina, doWorkspace.Count));
+            }
+
             public Task<MappingReleaseDetail?> ApplyTestRunResultAsync(Guid releaseId, MappingTestRunSummary summary, CancellationToken cancellationToken)
                 => throw new NotSupportedException();
 
@@ -352,6 +359,101 @@ namespace LayoutParserApi.Tests.Controllers
             var result = await RunFilterAsync(filter, workspaceId, userId, currentUser);
 
             Assert.IsType<NotFoundResult>(result);
+        }
+
+        // --- Listagem (issue #198 do front) ---
+
+        [Fact]
+        public async Task List_workspace_sem_releases_retorna_vazio()
+        {
+            var store = new FakeReleaseStore();
+            var workspaceId = Guid.NewGuid();
+            var controller = BuildController(store, new FakeCurrentUser { UserId = Guid.NewGuid() });
+
+            var result = await controller.List(workspaceId, 1, 20, CancellationToken.None);
+
+            var ok = Assert.IsType<OkObjectResult>(result);
+            var payload = Assert.IsAssignableFrom<object>(ok.Value);
+            var totalCount = (int)payload.GetType().GetProperty("totalCount")!.GetValue(payload)!;
+            var items = (System.Collections.IEnumerable)payload.GetType().GetProperty("items")!.GetValue(payload)!;
+            Assert.Equal(0, totalCount);
+            Assert.Empty(items.Cast<object>());
+        }
+
+        [Fact]
+        public async Task List_pagina_multiplas_releases_do_workspace()
+        {
+            var store = new FakeReleaseStore();
+            var workspaceId = Guid.NewGuid();
+            for (var i = 0; i < 5; i++)
+            {
+                var release = NewRelease(workspaceId, Guid.NewGuid(), MappingReleaseStatus.DraftCompiled);
+                store.ById[release.ReleaseId] = release;
+            }
+
+            var controller = BuildController(store, new FakeCurrentUser { UserId = Guid.NewGuid() });
+            var result = await controller.List(workspaceId, 1, 2, CancellationToken.None);
+
+            var ok = Assert.IsType<OkObjectResult>(result);
+            var payload = ok.Value!;
+            var totalCount = (int)payload.GetType().GetProperty("totalCount")!.GetValue(payload)!;
+            var items = ((System.Collections.IEnumerable)payload.GetType().GetProperty("items")!.GetValue(payload)!).Cast<object>().ToList();
+            Assert.Equal(5, totalCount); // total real, mesmo a página trazendo só 2.
+            Assert.Equal(2, items.Count);
+        }
+
+        [Fact]
+        public async Task List_isola_releases_de_outro_workspace()
+        {
+            var store = new FakeReleaseStore();
+            var workspaceId = Guid.NewGuid();
+            var outroWorkspaceId = Guid.NewGuid();
+            var releaseDoWorkspace = NewRelease(workspaceId, Guid.NewGuid(), MappingReleaseStatus.DraftCompiled);
+            var releaseDeOutro = NewRelease(outroWorkspaceId, Guid.NewGuid(), MappingReleaseStatus.DraftCompiled);
+            store.ById[releaseDoWorkspace.ReleaseId] = releaseDoWorkspace;
+            store.ById[releaseDeOutro.ReleaseId] = releaseDeOutro;
+
+            var controller = BuildController(store, new FakeCurrentUser { UserId = Guid.NewGuid() });
+            var result = await controller.List(workspaceId, 1, 20, CancellationToken.None);
+
+            var ok = Assert.IsType<OkObjectResult>(result);
+            var payload = ok.Value!;
+            var totalCount = (int)payload.GetType().GetProperty("totalCount")!.GetValue(payload)!;
+            Assert.Equal(1, totalCount); // a release do outro workspace não aparece.
+        }
+
+        [Theory]
+        [InlineData(0, 20)]
+        [InlineData(-1, 20)]
+        [InlineData(1, 0)]
+        [InlineData(1, 101)]
+        public async Task List_parametros_invalidos_retorna_400(int page, int pageSize)
+        {
+            var store = new FakeReleaseStore();
+            var controller = BuildController(store, new FakeCurrentUser { UserId = Guid.NewGuid() });
+
+            var result = await controller.List(Guid.NewGuid(), page, pageSize, CancellationToken.None);
+
+            Assert.IsType<BadRequestObjectResult>(result);
+        }
+
+        // --- RBAC do endpoint de leitura: Viewer (papel mais baixo) tem acesso, diferente das mutações ---
+
+        [Fact]
+        public async Task RequireWorkspaceRole_leitura_aceita_viewer()
+        {
+            var workspaceId = Guid.NewGuid();
+            var userId = Guid.NewGuid();
+            var workspaceStore = new FakeIdentityWorkspaceStore();
+            workspaceStore.Memberships[(workspaceId, userId)] = WorkspaceRole.Viewer;
+            var currentUser = new FakeCurrentUser { UserId = userId };
+            var filter = new RequireWorkspaceRoleFilter(
+                new[] { WorkspaceRole.Owner, WorkspaceRole.FiscalAdmin, WorkspaceRole.Mapper, WorkspaceRole.Reviewer, WorkspaceRole.Operator, WorkspaceRole.Viewer },
+                currentUser, workspaceStore, NullLogger<RequireWorkspaceRoleFilter>.Instance);
+
+            var result = await RunFilterAsync(filter, workspaceId, userId, currentUser);
+
+            Assert.IsType<OkResult>(result);
         }
     }
 }

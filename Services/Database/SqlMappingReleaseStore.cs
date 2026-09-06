@@ -8,9 +8,12 @@ using Microsoft.Data.SqlClient;
 namespace LayoutParserApi.Services.Database
 {
     /// <summary>
-    /// Implementação SQL de <see cref="IMappingReleaseStore"/> — Slice 5 (issue #231). Mesmo banco
-    /// <c>ConnectUS_Macgyver</c> e mesmo padrão ADO.NET cru de <see cref="SqlMappingDraftStore"/> (DDL
-    /// idempotente por processo, JSON em <c>NVARCHAR(MAX)</c> para as coleções).
+    /// Implementação SQL de <see cref="IMappingReleaseStore"/> — Slice 5 (issue #231). Migrado do
+    /// banco compartilhado <c>ConnectUS_Macgyver</c> (<c>Database:*</c>) para o banco DEDICADO do
+    /// projeto (<c>IdentityDatabase:*</c>), junto com <see cref="SqlFiscalPackageStore"/> e
+    /// <see cref="SqlMappingDraftStore"/> — mesma justificativa (raiz do bug de FK cross-database
+    /// da PR #312). Mesmo padrão ADO.NET cru (DDL idempotente por processo, JSON em
+    /// <c>NVARCHAR(MAX)</c> para as coleções).
     /// </summary>
     public sealed class SqlMappingReleaseStore : IMappingReleaseStore
     {
@@ -25,10 +28,11 @@ namespace LayoutParserApi.Services.Database
         public SqlMappingReleaseStore(ILogger<SqlMappingReleaseStore> logger, IConfiguration configuration)
         {
             _logger = logger;
-            var server = configuration["Database:Server"];
-            var database = configuration["Database:Database"];
-            var userId = configuration["Database:UserId"];
-            var password = configuration["Database:Password"];
+            // ✅ Banco dedicado do projeto (não mais o ConnectUS_Macgyver compartilhado).
+            var server = configuration["IdentityDatabase:Server"];
+            var database = configuration["IdentityDatabase:Database"];
+            var userId = configuration["IdentityDatabase:UserId"];
+            var password = configuration["IdentityDatabase:Password"];
 
             _connectionString = $"Server={server};Database={database};User Id={userId};Password={password};TrustServerCertificate=True;";
         }
@@ -111,7 +115,7 @@ namespace LayoutParserApi.Services.Database
                          r.CreatedAt, r.RowVersion, r.Environment, r.ApprovedByUserId, r.ApprovedAt, r.ApprovalJustification,
                          r.PublishedByUserId, r.PublishedAt, r.PreviousPublishedReleaseId
                   FROM dbo.tbMappingRelease r
-                  JOIN dbo.tbWorkspaceMembership m ON m.WorkspaceId = r.WorkspaceId AND m.UserId = @UserId
+                  JOIN dbo.tbLpWorkspaceMembership m ON m.WorkspaceId = r.WorkspaceId AND m.UserId = @UserId
                   WHERE r.ReleaseId = @ReleaseId;",
                 connection);
             command.Parameters.AddWithValue("@ReleaseId", releaseId);
@@ -121,6 +125,43 @@ namespace LayoutParserApi.Services.Database
                 return null; // Não existe OU não é seu — indistinguível, mesmo padrão dos Slices anteriores.
 
             return ReadReleaseDetail(reader);
+        }
+
+        public async Task<(IReadOnlyList<MappingReleaseDetail> Items, int TotalCount)> ListByWorkspaceAsync(
+            Guid workspaceId, int page, int pageSize, CancellationToken cancellationToken)
+        {
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await EnsureSchemaAsync(connection, cancellationToken);
+
+            var items = new List<MappingReleaseDetail>();
+            var totalCount = 0;
+
+            // COUNT(*) OVER() traz o total na mesma ida ao banco — evita um segundo round-trip só
+            // para paginação. Isolamento por WorkspaceId direto na cláusula WHERE (nunca em memória).
+            using var command = new SqlCommand(
+                @"SELECT ReleaseId, WorkspaceId, DraftId, Engine, ArtifactsJson, SourceRuleIdsJson,
+                         CompileDiagnosticsJson, RulesSnapshotHash, TestRunSummaryJson, Status, CorrelationId,
+                         CreatedAt, RowVersion, Environment, ApprovedByUserId, ApprovedAt, ApprovalJustification,
+                         PublishedByUserId, PublishedAt, PreviousPublishedReleaseId,
+                         COUNT(*) OVER() AS TotalCount
+                  FROM dbo.tbMappingRelease
+                  WHERE WorkspaceId = @WorkspaceId
+                  ORDER BY CreatedAt DESC
+                  OFFSET @Offset ROWS FETCH NEXT @PageSize ROWS ONLY;",
+                connection);
+            command.Parameters.AddWithValue("@WorkspaceId", workspaceId);
+            command.Parameters.AddWithValue("@Offset", (page - 1) * pageSize);
+            command.Parameters.AddWithValue("@PageSize", pageSize);
+
+            using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                items.Add(ReadReleaseDetail(reader));
+                totalCount = reader.GetInt32(reader.GetOrdinal("TotalCount"));
+            }
+
+            return (items, totalCount);
         }
 
         public async Task<MappingReleaseDetail?> ApplyTestRunResultAsync(Guid releaseId, MappingTestRunSummary summary, CancellationToken cancellationToken)
@@ -196,22 +237,15 @@ namespace LayoutParserApi.Services.Database
                 reader.IsDBNull(reader.GetOrdinal("PreviousPublishedReleaseId")) ? null : reader.GetGuid(reader.GetOrdinal("PreviousPublishedReleaseId")));
         }
 
-        private static async Task EnsureSchemaAsync(SqlConnection connection, CancellationToken cancellationToken)
-        {
-            if (_schemaEnsured)
-                return;
-
-            await _schemaLock.WaitAsync(cancellationToken);
-            try
-            {
-                if (_schemaEnsured)
-                    return;
-
-                const string ddl = @"
+        // ✅ Campo público-de-assembly — mesma justificativa de <see cref="SqlFiscalPackageStore.SchemaDdl"/>
+        // (FiscalSchemaInitializer + remoção da FK cross-database inválida). `DraftId` referencia
+        // `tbMappingDraft`, criada por <see cref="SqlMappingDraftStore"/> — ESTE store depende daquele
+        // ter rodado primeiro (mesmo banco `IdentityDatabase:*`).
+        public static readonly string SchemaDdl = @"
 IF OBJECT_ID('dbo.tbMappingRelease', 'U') IS NULL
 CREATE TABLE dbo.tbMappingRelease (
     ReleaseId UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
-    WorkspaceId UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.tbFiscalWorkspace(WorkspaceId),
+    WorkspaceId UNIQUEIDENTIFIER NOT NULL,
     DraftId UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.tbMappingDraft(DraftId),
     Engine NVARCHAR(16) NOT NULL,
     ArtifactsJson NVARCHAR(MAX) NOT NULL,
@@ -270,7 +304,18 @@ CREATE TABLE dbo.tbMappingTransition (
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_tbMappingTransition_ReleaseId' AND object_id = OBJECT_ID('dbo.tbMappingTransition'))
 CREATE INDEX IX_tbMappingTransition_ReleaseId ON dbo.tbMappingTransition(ReleaseId);";
 
-                using var command = new SqlCommand(ddl, connection);
+        internal static async Task EnsureSchemaAsync(SqlConnection connection, CancellationToken cancellationToken)
+        {
+            if (_schemaEnsured)
+                return;
+
+            await _schemaLock.WaitAsync(cancellationToken);
+            try
+            {
+                if (_schemaEnsured)
+                    return;
+
+                using var command = new SqlCommand(SchemaDdl, connection);
                 await command.ExecuteNonQueryAsync(cancellationToken);
                 _schemaEnsured = true;
             }
