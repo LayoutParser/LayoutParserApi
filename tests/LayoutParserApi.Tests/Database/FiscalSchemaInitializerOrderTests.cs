@@ -26,10 +26,11 @@ namespace LayoutParserApi.Tests.Database
         private static readonly Regex CreateTableRegex = new(@"CREATE TABLE dbo\.(\w+)", RegexOptions.Compiled);
         private static readonly Regex ReferencesRegex = new(@"REFERENCES dbo\.(\w+)\(", RegexOptions.Compiled);
 
-        // Ordem real usada por FiscalSchemaInitializer.InitializeFiscalSchemaAsync — mesmo banco
-        // Database:* (ConnectUS_Macgyver/Sysmiddle). Mantida em sincronia manualmente com o initializer;
-        // qualquer divergência de ordem é pega pelo teste abaixo mesmo assim, porque a validação real
-        // é sobre "tabela criada antes de referenciada", não sobre esta lista em si.
+        // Ordem real usada por FiscalSchemaInitializer.InitializeAsync — desde a migração para o
+        // banco dedicado (IdentityDatabase:*), estes 3 stores não moram mais no ConnectUS_Macgyver.
+        // Mantida em sincronia manualmente com o initializer; qualquer divergência de ordem é pega
+        // pelo teste abaixo mesmo assim, porque a validação real é sobre "tabela criada antes de
+        // referenciada", não sobre esta lista em si.
         private static readonly string[] SysmiddleDbDdlInOrder =
         {
             SqlFiscalPackageStore.SchemaDdl,
