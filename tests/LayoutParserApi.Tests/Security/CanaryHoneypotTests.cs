@@ -96,13 +96,12 @@ namespace LayoutParserApi.Tests.Security
             var canaryAlert = new CanaryAlertService(logger);
             var proximoChamado = false;
             var middleware = new CanaryCredentialDetectionMiddleware(
-                next: _ => { proximoChamado = true; return Task.CompletedTask; },
-                canaryAlert: canaryAlert);
+                next: _ => { proximoChamado = true; return Task.CompletedTask; });
 
             var context = new DefaultHttpContext();
             context.Request.Headers[CanaryConstants.LegacyCredentialHeader] = CanaryConstants.LegacyCredentialValue;
 
-            await middleware.InvokeAsync(context);
+            await middleware.InvokeAsync(context, canaryAlert);
 
             Assert.True(proximoChamado); // pipeline sempre segue — nunca bloqueia por conta própria
             Assert.Single(logger.Messages);
@@ -117,13 +116,12 @@ namespace LayoutParserApi.Tests.Security
             var logger = new CapturingLogger<CanaryAlertService>();
             var canaryAlert = new CanaryAlertService(logger);
             var middleware = new CanaryCredentialDetectionMiddleware(
-                next: _ => Task.CompletedTask,
-                canaryAlert: canaryAlert);
+                next: _ => Task.CompletedTask);
 
             var context = new DefaultHttpContext();
             context.Request.Headers[CanaryConstants.LegacyCredentialHeader] = "qualquer-outro-valor-invalido";
 
-            await middleware.InvokeAsync(context);
+            await middleware.InvokeAsync(context, canaryAlert);
 
             Assert.Empty(logger.Messages);
         }
@@ -134,15 +132,14 @@ namespace LayoutParserApi.Tests.Security
             var logger = new CapturingLogger<CanaryAlertService>();
             var canaryAlert = new CanaryAlertService(logger);
             var middleware = new CanaryCredentialDetectionMiddleware(
-                next: _ => Task.CompletedTask,
-                canaryAlert: canaryAlert);
+                next: _ => Task.CompletedTask);
 
             // Requisição comum: sem X-Service-Credential, com um Authorization Bearer normal
             // (esquema ServiceClient da Parte 1) — não deveria acionar o canary.
             var context = new DefaultHttpContext();
             context.Request.Headers["Authorization"] = "Bearer eyJhbGciOi...";
 
-            await middleware.InvokeAsync(context);
+            await middleware.InvokeAsync(context, canaryAlert);
 
             Assert.Empty(logger.Messages);
         }
@@ -153,13 +150,12 @@ namespace LayoutParserApi.Tests.Security
             var logger = new CapturingLogger<CanaryAlertService>();
             var canaryAlert = new CanaryAlertService(logger);
             var middleware = new CanaryCredentialDetectionMiddleware(
-                next: _ => Task.CompletedTask,
-                canaryAlert: canaryAlert);
+                next: _ => Task.CompletedTask);
 
             var context = new DefaultHttpContext();
             context.Request.Headers[CanaryConstants.LegacyCredentialHeader] = string.Empty;
 
-            await middleware.InvokeAsync(context);
+            await middleware.InvokeAsync(context, canaryAlert);
 
             Assert.Empty(logger.Messages);
         }
