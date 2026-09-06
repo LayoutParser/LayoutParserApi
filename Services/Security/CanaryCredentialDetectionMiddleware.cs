@@ -31,21 +31,24 @@ namespace LayoutParserApi.Services.Security
     public sealed class CanaryCredentialDetectionMiddleware
     {
         private readonly RequestDelegate _next;
-        private readonly ICanaryAlertService _canaryAlert;
 
-        public CanaryCredentialDetectionMiddleware(RequestDelegate next, ICanaryAlertService canaryAlert)
+        public CanaryCredentialDetectionMiddleware(RequestDelegate next)
         {
             _next = next;
-            _canaryAlert = canaryAlert;
         }
 
-        public async Task InvokeAsync(HttpContext context)
+        // ICanaryAlertService é Scoped — middleware convencional é construído uma única vez no
+        // boot, resolvendo do provider raiz (Singleton). Injeção por parâmetro de InvokeAsync
+        // resolve corretamente por request, a partir do RequestServices (scope da requisição).
+        // Sem isso, o app falha ao subir (ValidateScopes) ou, pior, silenciosamente reusa a mesma
+        // instância entre requisições quando essa validação está desligada (ex.: Production).
+        public async Task InvokeAsync(HttpContext context, ICanaryAlertService canaryAlert)
         {
             var recebido = context.Request.Headers[CanaryConstants.LegacyCredentialHeader].ToString();
 
             if (!string.IsNullOrEmpty(recebido) && ValorConfere(recebido, CanaryConstants.LegacyCredentialValue))
             {
-                _canaryAlert.Raise(CanaryConstants.CredentialCanaryType, context);
+                canaryAlert.Raise(CanaryConstants.CredentialCanaryType, context);
             }
 
             // Sempre segue — nunca autentica, nunca bloqueia por conta própria. Ver remarks acima.
