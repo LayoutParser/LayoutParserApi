@@ -1316,13 +1316,13 @@ jobs:
 
         if ($status -ne 200) {
           $ultimo = if ($null -eq $status) { "sem resposta" } else { "HTTP $status" }
-          # ✅ FIX (2026-09-07): era Write-Error. Com $ErrorActionPreference="Stop" (topo do
-          # step), Write-Error é SEMPRE terminante — o script abortava exatamente aqui, ANTES
+          # FIX (2026-09-07): era Write-Error. Com $ErrorActionPreference="Stop" (topo do
+          # step), Write-Error e SEMPRE terminante - o script abortava exatamente aqui, ANTES
           # do bloco de rollback abaixo rodar. Ou seja, o rollback automatico prometido pelo
           # incidente de 2026-08-15/PR #114 nunca chegava a executar; producao ficava presa na
           # versao quebrada com o service Windows "Running" mas sem responder. Descoberto ao
-          # vivo no deploy que ativou MIGRATE_CONFIG_TO_REPO (issue #112) — Write-Host non-
-          # terminante deixa o fluxo continuar até o rollback de verdade, abaixo.
+          # vivo no deploy que ativou MIGRATE_CONFIG_TO_REPO (issue #112) - Write-Host nao-
+          # terminante deixa o fluxo continuar ate o rollback de verdade, abaixo.
           Write-Host ("ATENCAO: Readiness nao ficou 200 em $smokeUrl apos $tentativas tentativas (ultimo: $ultimo). " +
             "A versao nova falhou o smoke test - iniciando rollback automatico para nao deixar producao no ar " +
             "quebrada (incidente de 2026-08-15, PR #114, motivou este mecanismo).")
