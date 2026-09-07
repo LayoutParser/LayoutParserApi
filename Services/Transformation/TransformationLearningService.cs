@@ -1,5 +1,7 @@
 using System.Xml.Linq;
 
+using LayoutParserApi.Services.Logging;
+using LayoutParserApi.Services.Security;
 using LayoutParserApi.Services.Transformation.Models;
 
 namespace LayoutParserApi.Services.Transformation
@@ -776,12 +778,27 @@ namespace LayoutParserApi.Services.Transformation
         {
             try
             {
-                var modelPath = Path.Combine(_learningModelsPath, $"tcl_{layoutName}.json");
+                // ✅ SCS0018 (issue #88, achado real): layoutName chega cru de
+                // MetricsController.GetLearningMetrics ([HttpGet("learning/{layoutName}")], sem
+                // validação nenhuma antes deste método) e de ImprovedTclGeneratorService. Diferente
+                // do que o baseline documentava para SaveLearnedModelAsync (modelName supostamente
+                // só interno), aqui o nome do arquivo é montado diretamente com o parâmetro de rota —
+                // "..\..\..\Windows\win.ini" (prefixado por "tcl_/") chegava direto ao
+                // File.ReadAllTextAsync. Fechado com SafePathResolver, mesmo padrão do projeto.
+                var modelPath = SafePathResolver.Resolve(_learningModelsPath, $"tcl_{layoutName}.json");
+                if (modelPath == null)
+                {
+                    _logger.LogWarning("Layout rejeitado para leitura de modelo TCL aprendido: {LayoutName}", LogMessageSanitizer.Sanitize(layoutName));
+                    return null;
+                }
+
+#pragma warning disable SCS0018
                 if (File.Exists(modelPath))
                 {
                     var json = await File.ReadAllTextAsync(modelPath);
                     return System.Text.Json.JsonSerializer.Deserialize<LearnedTclModel>(json);
                 }
+#pragma warning restore SCS0018
             }
             catch (Exception ex)
             {
@@ -798,12 +815,21 @@ namespace LayoutParserApi.Services.Transformation
         {
             try
             {
-                var modelPath = Path.Combine(_learningModelsPath, $"xsl_{layoutName}.json");
+                // ✅ SCS0018 (issue #88, achado real) — mesma justificativa de LoadTclModelAsync acima.
+                var modelPath = SafePathResolver.Resolve(_learningModelsPath, $"xsl_{layoutName}.json");
+                if (modelPath == null)
+                {
+                    _logger.LogWarning("Layout rejeitado para leitura de modelo XSL aprendido: {LayoutName}", LogMessageSanitizer.Sanitize(layoutName));
+                    return null;
+                }
+
+#pragma warning disable SCS0018
                 if (File.Exists(modelPath))
                 {
                     var json = await File.ReadAllTextAsync(modelPath);
                     return System.Text.Json.JsonSerializer.Deserialize<LearnedXslModel>(json);
                 }
+#pragma warning restore SCS0018
             }
             catch (Exception ex)
             {
@@ -1236,12 +1262,26 @@ namespace LayoutParserApi.Services.Transformation
         {
             try
             {
-                var modelPath = Path.Combine(_learningModelsPath, $"{modelName}.json");
+                // ✅ SCS0018 (issue #88, achado real): apesar do baseline anterior descrever
+                // modelName como "definido internamente", os dois chamadores reais (LearnTclPatternsAsync/
+                // LearnXslPatternsAsync) montam modelName como $"tcl_{layoutName}"/$"xsl_{layoutName}",
+                // e layoutName chega cru da requisição (TransformationExecutionController). Path traversal
+                // aqui seria pior que leitura — é File.WriteAllTextAsync (escrita arbitrária). Fechado
+                // com SafePathResolver, mesmo padrão do projeto.
+                var modelPath = SafePathResolver.Resolve(_learningModelsPath, $"{modelName}.json");
+                if (modelPath == null)
+                {
+                    _logger.LogWarning("Nome de modelo rejeitado para gravação: {ModelName}", LogMessageSanitizer.Sanitize(modelName));
+                    return;
+                }
+
                 var json = System.Text.Json.JsonSerializer.Serialize(model, new System.Text.Json.JsonSerializerOptions
                 {
                     WriteIndented = true
                 });
+#pragma warning disable SCS0018
                 await File.WriteAllTextAsync(modelPath, json);
+#pragma warning restore SCS0018
             }
             catch (Exception ex)
             {

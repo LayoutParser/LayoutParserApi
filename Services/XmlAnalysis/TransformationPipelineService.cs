@@ -3,6 +3,8 @@ using System.Xml;
 using System.Xml.Linq;
 using System.Xml.Xsl;
 
+using LayoutParserApi.Services.Logging;
+using LayoutParserApi.Services.Security;
 using LayoutParserApi.Services.XmlAnalysis.Models;
 
 namespace LayoutParserApi.Services.XmlAnalysis
@@ -386,11 +388,25 @@ namespace LayoutParserApi.Services.XmlAnalysis
         {
             try
             {
-                var mapFileName = $"{layoutName}.tcl";
-                var mapPath = Path.Combine(_tclBasePath, mapFileName);
+                // ✅ SCS0018 (issue #88, achado real): layoutName chega sem validação a partir de
+                // TransformTxtToXmlAsync, cujos chamadores incluem
+                // TransformationExecutionController.RunTransformationTest ([FromBody] request.LayoutName
+                // cru). Diferente dos outros sites do projeto (que já usam
+                // IsValidLayoutName+IsWithinBasePath ou SafePathResolver), este nunca teve barreira —
+                // "..\..\..\Windows\win.ini" (sem a extensão .tcl importar, já que Windows aceita
+                // caminho com pontos extras) chegava direto ao Path.Combine/File.ReadAllTextAsync.
+                // Fechado com o mesmo SafePathResolver.Resolve já padronizado no projeto.
+                var mapPath = SafePathResolver.Resolve(_tclBasePath, $"{layoutName}.tcl");
+                if (mapPath == null)
+                {
+                    _logger.LogWarning("Layout rejeitado para leitura de MAP/TCL: {LayoutName}", LogMessageSanitizer.Sanitize(layoutName));
+                    return null;
+                }
 
+#pragma warning disable SCS0018
                 if (File.Exists(mapPath))
                     return await File.ReadAllTextAsync(mapPath, Encoding.UTF8);
+#pragma warning restore SCS0018
 
                 _logger.LogWarning("Arquivo MAP (TCL) não encontrado: {Path}", mapPath);
                 return null;
