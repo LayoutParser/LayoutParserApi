@@ -447,6 +447,54 @@ jobs:
           Write-Warning "Falha ao verificar/encerrar processos orfaos em $API_DEST (best-effort, seguindo): $_"
         }
 
+        # -- Clean deploy: remove do destino o que NAO faz parte do publish atual --------------
+        # Mesma estrategia do deploy.yml (docs/architecture/clean-deploy-estrategia-2026-09-07.md):
+        # sem isso, um arquivo removido/renomeado no repo ficava para sempre em $API_DEST, de
+        # deploy em deploy. Preserva a pasta Logs/logs inteira (Logging:File:Directory aponta para
+        # dentro de $API_DEST\logs) e appsettings.json (ja tratado acima via $preserveAppSettings -
+        # aqui so garante que a limpeza generica nao o apague). Diff entre destino e publish atual,
+        # nao um rm -rf; falha ao remover um arquivo individual e best-effort.
+        if (Test-Path $API_DEST) {
+          $preservarPastasTopo = @('logs')
+          $preservarArquivos = @('appsettings.json')
+
+          $novosRelativos = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+          Get-ChildItem -Path $SRC -Recurse -File | ForEach-Object {
+            [void]$novosRelativos.Add($_.FullName.Substring($SRC.Length + 1))
+          }
+          foreach ($extra in @('LayoutParserDecrypt.exe', 'LayoutParserDecrypt.exe.config', 'LayoutParserLib.dll', 'LayoutParserLowCodeRunner.exe.config')) {
+            [void]$novosRelativos.Add($extra)
+          }
+
+          $removidos = 0
+          Get-ChildItem -Path $API_DEST -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+            $relExistente = $_.FullName.Substring($API_DEST.Length + 1)
+            $primeiraPasta = ($relExistente -split '[\\/]')[0]
+            $preservar = ($preservarPastasTopo -contains $primeiraPasta.ToLowerInvariant()) -or
+                         ($preservarArquivos -contains $relExistente.ToLowerInvariant()) -or
+                         ($relExistente -like 'appsettings.*.local.json') -or
+                         ($relExistente -eq 'appsettings.Local.json') -or
+                         ($novosRelativos.Contains($relExistente))
+            if (-not $preservar) {
+              try {
+                Remove-Item -Path $_.FullName -Force -ErrorAction Stop
+                $removidos++
+              } catch {
+                Write-Warning "Clean deploy: falha ao remover orfao $relExistente (best-effort, seguindo): $($_.Exception.Message)"
+              }
+            }
+          }
+          Write-Host "Clean deploy: $removidos arquivo(s) orfao(s) removido(s) de $API_DEST."
+
+          Get-ChildItem -Path $API_DEST -Recurse -Directory -ErrorAction SilentlyContinue |
+            Where-Object {
+              $preservarPastasTopo -notcontains $_.Name.ToLowerInvariant() -and
+              (Get-ChildItem -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue).Count -eq 0
+            } |
+            Sort-Object { $_.FullName.Length } -Descending |
+            ForEach-Object { Remove-Item -Path $_.FullName -Force -ErrorAction SilentlyContinue }
+        }
+
         Write-Host "Copiando publish-api -> $API_DEST (preservar appsettings: $preserveAppSettings)..."
         if ($preserveAppSettings) {
           Copy-Item -Path (Join-Path $SRC '*') -Destination $API_DEST -Recurse -Force -Exclude 'appsettings.json'
