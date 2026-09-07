@@ -1316,7 +1316,14 @@ jobs:
 
         if ($status -ne 200) {
           $ultimo = if ($null -eq $status) { "sem resposta" } else { "HTTP $status" }
-          Write-Error ("Readiness nao ficou 200 em $smokeUrl apos $tentativas tentativas (ultimo: $ultimo). " +
+          # ✅ FIX (2026-09-07): era Write-Error. Com $ErrorActionPreference="Stop" (topo do
+          # step), Write-Error é SEMPRE terminante — o script abortava exatamente aqui, ANTES
+          # do bloco de rollback abaixo rodar. Ou seja, o rollback automatico prometido pelo
+          # incidente de 2026-08-15/PR #114 nunca chegava a executar; producao ficava presa na
+          # versao quebrada com o service Windows "Running" mas sem responder. Descoberto ao
+          # vivo no deploy que ativou MIGRATE_CONFIG_TO_REPO (issue #112) — Write-Host non-
+          # terminante deixa o fluxo continuar até o rollback de verdade, abaixo.
+          Write-Host ("ATENCAO: Readiness nao ficou 200 em $smokeUrl apos $tentativas tentativas (ultimo: $ultimo). " +
             "A versao nova falhou o smoke test - iniciando rollback automatico para nao deixar producao no ar " +
             "quebrada (incidente de 2026-08-15, PR #114, motivou este mecanismo).")
 
@@ -1347,7 +1354,8 @@ jobs:
               $rollbackMsg = ("ROLLBACK NAO EXECUTADO - nenhum backup pre-deploy encontrado em $BACKUPS_ROOT " +
                 "(primeiro deploy?). Producao permanece na versao que falhou o smoke test - intervencao " +
                 "manual necessaria AGORA no host de producao.")
-              Write-Error $rollbackMsg
+              # Write-Host, nao Write-Error (mesmo motivo do fix acima: precisa chegar no resumo/e-mail abaixo).
+              Write-Host $rollbackMsg
             } else {
               Write-Host "Restaurando backup: $backupPath -> $DEPLOY_API_PATH"
               $serviceName = "LayoutParserApi"
@@ -1387,13 +1395,13 @@ jobs:
                 $descrRollback = if ($null -eq $statusRollback) { "sem resposta" } else { "HTTP $statusRollback" }
                 $rollbackMsg = ("ROLLBACK EXECUTADO mas o servico NAO respondeu 200 apos restaurar ($descrRollback) - " +
                   "situacao MAIS GRAVE que uma falha comum de deploy, requer intervencao manual IMEDIATA no host de producao.")
-                Write-Error $rollbackMsg
+                Write-Host $rollbackMsg
               }
             }
           } catch {
             $rollbackMsg = ("ROLLBACK FALHOU com excecao: $($_.Exception.Message) - producao pode estar em estado " +
               "inconsistente, intervencao manual IMEDIATA necessaria no host de producao.")
-            Write-Error $rollbackMsg
+            Write-Host $rollbackMsg
           }
 
           # Resumo minimo viavel (sem webhook/integracao nova): o proprio GITHUB_STEP_SUMMARY,
