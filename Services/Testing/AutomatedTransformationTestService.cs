@@ -157,7 +157,12 @@ namespace LayoutParserApi.Services.Testing
                     result.Warnings.Add($"Nenhum mapeador encontrado para o layout {layoutName}");
 
                 // Buscar arquivos de exemplo TXT
+                // ✅ SCS0018 (issue #88): examplesDirectory já passou por IsWithinBasePath (linha 126,
+                // contra _examplesBasePath) antes de qualquer ponto de leitura — o SCS não reconhece a
+                // validação custom como sanitizador, mas o caminho nunca escapa da base permitida.
+#pragma warning disable SCS0018
                 var exampleFiles = Directory.GetFiles(examplesDirectory, "*.txt", SearchOption.AllDirectories).Concat(Directory.GetFiles(examplesDirectory, "*.mqseries", SearchOption.AllDirectories)).ToList();
+#pragma warning restore SCS0018
 
                 if (!exampleFiles.Any())
                 {
@@ -165,9 +170,11 @@ namespace LayoutParserApi.Services.Testing
                     return result;
                 }
 
-                // Buscar arquivo XML esperado (se existir)
+                // Buscar arquivo XML esperado (se existir) — mesma justificativa acima.
                 var expectedXmlPath = Path.Combine(examplesDirectory, "expected_output.xml");
+#pragma warning disable SCS0018
                 var expectedXml = File.Exists(expectedXmlPath) ? await File.ReadAllTextAsync(expectedXmlPath) : null;
+#pragma warning restore SCS0018
 
                 // Executar teste para cada arquivo de exemplo
                 foreach (var exampleFile in exampleFiles)
@@ -230,8 +237,11 @@ namespace LayoutParserApi.Services.Testing
 
             try
             {
-                // Ler conteúdo do arquivo de exemplo
+                // Ler conteúdo do arquivo de exemplo — exampleFilePath vem de Directory.GetFiles sobre
+                // examplesDirectory, já confinado por IsWithinBasePath em RunTestsForLayoutAsync.
+#pragma warning disable SCS0018
                 var inputTxt = await File.ReadAllTextAsync(exampleFilePath);
+#pragma warning restore SCS0018
 
                 // Detectar tipo de documento (NFe/CTe/NFCom/MDFe) a partir do nome do layout.
                 // Sem indicador mais forte no pipeline hoje (namespace só existe DEPOIS da

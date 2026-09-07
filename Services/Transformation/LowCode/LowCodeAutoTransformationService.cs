@@ -240,8 +240,13 @@ namespace LayoutParserApi.Services.Transformation.LowCode
             var outputFile = $"{baseName}.lowcode.xml";
             var outPath = Path.Combine(folder, outputFile);
 
+            // ✅ SCS0018 (issue #88): inPath/outPath/metaPath (abaixo) são montados só com
+            // _storePath + dateFolder (DateTime.UtcNow) + baseName (sha do conteúdo + hora) —
+            // nenhum segmento vem cru da requisição.
+#pragma warning disable SCS0018
             await File.WriteAllTextAsync(inPath, txtContent, Encoding.UTF8);
             await File.WriteAllTextAsync(outPath, lowCodeXml ?? "", Encoding.UTF8);
+#pragma warning restore SCS0018
 
             var meta = LowCodeDatasetMetaBuilder.AddPositionalMetadata(new Dictionary<string, object?>
             {
@@ -259,7 +264,11 @@ namespace LayoutParserApi.Services.Transformation.LowCode
                 ["outputLength"] = (lowCodeXml ?? "").Length
             }, positionalMetadata);
             var json = System.Text.Json.JsonSerializer.Serialize(meta, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+            // ✅ SCS0018 (issue #88): mesma justificativa de inPath/outPath acima — metaPath também
+            // é montado só a partir de _storePath/dateFolder/baseName, internos.
+#pragma warning disable SCS0018
             await File.WriteAllTextAsync(metaPath, json, Encoding.UTF8);
+#pragma warning restore SCS0018
 
             var candidato = new LowCodeCandidateResult
             {
@@ -368,7 +377,11 @@ namespace LayoutParserApi.Services.Transformation.LowCode
             var metaPath = Path.Combine(folder, $"{baseName}.meta.json");
             var inPath = Path.Combine(folder, $"{baseName}.input.txt");
 
+            // ✅ SCS0018 (issue #88): mesma justificativa do caminho single-candidato acima —
+            // inPath/metaPath (abaixo) só usam _storePath/dateFolder/baseName, internos.
+#pragma warning disable SCS0018
             await File.WriteAllTextAsync(inPath, txtContent, Encoding.UTF8);
+#pragma warning restore SCS0018
 
             var candidateMeta = new List<object>();
             var paraIndice = new List<(LowCodeCandidateResult candidato, string? outputFile)>();
@@ -412,7 +425,10 @@ namespace LayoutParserApi.Services.Transformation.LowCode
                 ["candidates"] = candidateMeta
             }, positionalMetadata);
             var json = System.Text.Json.JsonSerializer.Serialize(meta, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+            // ✅ SCS0018 (issue #88): metaPath idem — sem segmento controlável pelo request.
+#pragma warning disable SCS0018
             await File.WriteAllTextAsync(metaPath, json, Encoding.UTF8);
+#pragma warning restore SCS0018
 
             // ✅ Índice de leitura (spec §2.3). "parcial" quando o chamador cancelou: o que ficou
             // pronto continua consultável por ticket, mas um conjunto truncado NUNCA vira cache.

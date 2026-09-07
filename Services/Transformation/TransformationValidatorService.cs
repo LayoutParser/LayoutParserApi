@@ -207,9 +207,11 @@ namespace LayoutParserApi.Services.Transformation
                     // sanitização; IsValidLayoutName barra separadores/".." antes do Path.Combine e o
                     // IsWithinBasePath confirma que o caminho final não escapou de _expectedOutputsPath.
                     var expectedPath = Path.Combine(_expectedOutputsPath, $"{layoutName}_expected.xml");
+#pragma warning disable SCS0018
                     if (IsWithinBasePath(expectedPath, _expectedOutputsPath) && File.Exists(expectedPath))
                     {
                         var expectedXml = await File.ReadAllTextAsync(expectedPath);
+#pragma warning restore SCS0018
                         var comparisonResult = await CompareWithExpectedAsync(
                             transformationResult.TransformedXml,
                             expectedXml);
@@ -282,7 +284,12 @@ namespace LayoutParserApi.Services.Transformation
 
             try
             {
+                // ✅ SCS0018 (issue #88): ValidateTclAsync só é chamada (linha 69) depois que
+                // ValidateTransformationAsync confirma IsWithinBasePath(tclPath, TclPath) —
+                // tclPath nunca chega aqui sem passar pela barreira.
+#pragma warning disable SCS0018
                 var tclContent = await File.ReadAllTextAsync(tclPath);
+#pragma warning restore SCS0018
 
                 // Verificar se o TCL é XML válido
                 try
