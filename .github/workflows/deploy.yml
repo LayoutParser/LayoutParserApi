@@ -510,9 +510,20 @@ jobs:
           }
         }
 
+        # Defesa em profundidade contra a causa raiz registrada em #112 (comentario de @lp-devops,
+        # 2026-09-06): o appsettings.json do repo teve comentarios `// ...` (commit 0a2162b) e
+        # ConvertFrom-Json nao aceita comentario - falhava silenciosamente sob continue-on-error,
+        # deixando $mapaRepo vazio e o relatorio de drift mentiroso. O arquivo do repo ja foi
+        # corrigido para JSON estrito (comentarios viraram chaves "_comment"), mas o parser aqui
+        # fica tolerante de qualquer forma - remove linha que comeca (so espacos antes) com `//`,
+        # o padrao usado neste repo. Nao mexe em `//` dentro de string de valor.
+        function RemoverComentarios($caminho) {
+          return ((Get-Content $caminho) | Where-Object { $_ -notmatch '^\s*//' }) -join "`n"
+        }
+
         $mapaRepo = @{}; $mapaDestino = @{}
-        Flatten (Get-Content $repo -Raw | ConvertFrom-Json) '' $mapaRepo
-        Flatten (Get-Content $destino -Raw | ConvertFrom-Json) '' $mapaDestino
+        Flatten (RemoverComentarios $repo | ConvertFrom-Json) '' $mapaRepo
+        Flatten (RemoverComentarios $destino | ConvertFrom-Json) '' $mapaDestino
 
         # NUNCA ecoar valor de chave sensivel: o destino carrega Database:Password em texto plano.
         function EhSensivel($chave) {
@@ -652,6 +663,7 @@ jobs:
         IDENTITY_DB_NAME: ${{ vars.IDENTITY_DB_NAME }}
         IDENTITY_DB_USERID: ${{ secrets.IDENTITY_DB_USERID }}
         IDENTITY_DB_PASSWORD: ${{ secrets.IDENTITY_DB_PASSWORD }}
+        DB_PASSWORD_PROD: ${{ secrets.DB_PASSWORD_PROD }}
       run: |
         $ErrorActionPreference = "Stop"
         $serviceName = "LayoutParserApi"
@@ -737,6 +749,28 @@ jobs:
           Write-Warning ("Secret IDENTITY_DB_PASSWORD ausente - IdentityDatabase:Password nao sera gerenciada (valor existente, se houver, fica preservado). " +
             "Sem ela e sem valor manual no destino, a API sobe fail-closed negando UserId. " +
             "Crie em: GitHub -> Settings -> Secrets and variables -> Actions -> aba Secrets.")
+        }
+
+        # Database__Password: fecha o pre-requisito #1 registrado na issue #112 (comentario de
+        # @lp-devops, 2026-09-06) para ativar vars.MIGRATE_CONFIG_TO_REPO=true. O guard-rail de
+        # segredo do step "Config drift" aborta a migracao enquanto Database:Password divergir do
+        # repo (repo tem "") e NAO existir Database__Password no Environment do servico - hoje a
+        # senha do SQL (172.31.249.51, credencial compartilhada org-wide, ver
+        # .claude/rules/security.md) so existe em texto plano no appsettings.json do disco.
+        #
+        # O valor NAO pode ser obtido por este workflow (host de producao sem SSH/WinRM/SMB) nem
+        # inventado por um agente - precisa ser o mesmo valor ja em uso, provisionado manualmente
+        # pelo dono do projeto como secret DB_PASSWORD_PROD. Enquanto o secret nao existir, esta
+        # chave simplesmente NAO entra em $managed (mesma semantica de upsert das demais acima) -
+        # nada muda no Environment e a senha continua vindo do appsettings.json ate a migracao
+        # ser desbloqueada.
+        if (-not [string]::IsNullOrWhiteSpace($env:DB_PASSWORD_PROD)) {
+          $managed['Database__Password'] = $env:DB_PASSWORD_PROD
+        } else {
+          Write-Warning ("Secret DB_PASSWORD_PROD ausente - Database__Password nao sera gerenciada. " +
+            "E pre-requisito para ativar vars.MIGRATE_CONFIG_TO_REPO=true (issue #112): crie o secret " +
+            "com o MESMO valor de senha ja em uso hoje (nao e rotacao) em GitHub -> Settings -> " +
+            "Secrets and variables -> Actions -> aba Secrets.")
         }
 
         # Kestrel__Endpoints__Http__Url: TRAVA DE REDE (2026-08-12, plano em
@@ -1010,6 +1044,78 @@ jobs:
           Write-Warning "Nenhum arquivo encontrado em: $DEPLOY_API_SOURCE"
           Write-Host "Conteudo do diretorio de origem:"
           Get-ChildItem -Path $DEPLOY_API_SOURCE -Recurse | Select-Object FullName | Format-Table
+        }
+
+        # -- Clean deploy: remove do destino o que NAO faz parte do publish atual --------------
+        #
+        # POR QUE ESTE BLOCO EXISTE: ate aqui o deploy so SOBRESCREVIA arquivos - um arquivo que
+        # saiu do repo (renomeado, movido, ou uma DLL de dependencia removida) continuava para
+        # sempre no `<deploy>\api` do servidor, de release em release. Decisao do dono
+        # (2026-09-07, ver docs/architecture/clean-deploy-estrategia-2026-09-07.md): o destino deve
+        # corresponder exatamente ao que o `dotnet publish` deste commit produz - reprodutivel,
+        # sem acumulo.
+        #
+        # O QUE E PRESERVADO DE PROPOSITO (nao e "limpo"): a pasta Logs/logs inteira (historico de
+        # log sobrevive a um redeploy - Logging:File:Directory aponta para
+        # `<deploy>\api\logs`, DENTRO desta pasta) e appsettings.json/appsettings.Production.json
+        # (canal de config local/migrado, ja tratado acima pela flag CONFIG_MIGRATED - aqui so
+        # garante que uma limpeza generica nao os apague por engano). Nao mexe em nada fora de
+        # `<deploy>\api` (backups/, MLData/, Exemplo/, xsd/, tcl/, xsl/, sysmiddle/, globalfolder/
+        # etc. sao pastas IRMAS de `api/`, fora do escopo deste bloco - ver o doc para o
+        # levantamento completo dos diretorios de runtime).
+        #
+        # NAO e um `rm -rf` seguido de copia: e um diff entre o que existe no destino e o que o
+        # publish atual contem, removendo so os arquivos ORFAOS (existem no destino, nao existem
+        # no publish nem estao na allowlist acima). Erro ao remover um arquivo individual e
+        # best-effort (nao aborta o deploy) - o objetivo e reduzir acumulo, nao e tao critico
+        # quanto a copia em si.
+        if (Test-Path $DEPLOY_API_PATH) {
+          $preservarPastasTopo = @('logs')  # comparado case-insensitive; cobre "Logs" e "logs"
+          $preservarArquivos = @('appsettings.json', 'appsettings.production.json')
+
+          $novosRelativos = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+          foreach ($file in $apiFiles) {
+            [void]$novosRelativos.Add($file.FullName.Substring($DEPLOY_API_SOURCE.Length + 1))
+          }
+          # LayoutParserDecrypt.exe/.config e LayoutParserLib.dll sao copiados por um passo
+          # separado logo abaixo (fora de $apiFiles) - registrados aqui tambem para nao virarem
+          # "orfaos" na mesma passada em que acabaram de ser publicados.
+          foreach ($extra in @('LayoutParserDecrypt.exe', 'LayoutParserDecrypt.exe.config', 'LayoutParserLib.dll')) {
+            [void]$novosRelativos.Add($extra)
+          }
+
+          $removidos = 0
+          $existentes = Get-ChildItem -Path $DEPLOY_API_PATH -Recurse -File -ErrorAction SilentlyContinue
+          foreach ($existente in $existentes) {
+            $relExistente = $existente.FullName.Substring($DEPLOY_API_PATH.Length + 1)
+            $primeiraPasta = ($relExistente -split '[\\/]')[0]
+            if ($preservarPastasTopo -contains $primeiraPasta.ToLowerInvariant()) { continue }
+            if ($preservarArquivos -contains $relExistente.ToLowerInvariant()) { continue }
+            if ($relExistente -like 'appsettings.*.local.json' -or $relExistente -eq 'appsettings.Local.json') { continue }
+            if ($novosRelativos.Contains($relExistente)) { continue }
+
+            try {
+              Remove-Item -Path $existente.FullName -Force -ErrorAction Stop
+              $removidos++
+            } catch {
+              Write-Warning "Clean deploy: falha ao remover orfao $relExistente (best-effort, seguindo): $($_.Exception.Message)"
+            }
+          }
+
+          if ($removidos -gt 0) {
+            Write-Host "Clean deploy: $removidos arquivo(s) orfao(s) removido(s) de $DEPLOY_API_PATH (fora do publish atual e fora da allowlist Logs/appsettings)."
+          } else {
+            Write-Host "Clean deploy: nenhum arquivo orfao encontrado em $DEPLOY_API_PATH."
+          }
+
+          # Diretorios vazios remanescentes (exceto os preservados) - cosmetico, best-effort.
+          Get-ChildItem -Path $DEPLOY_API_PATH -Recurse -Directory -ErrorAction SilentlyContinue |
+            Where-Object {
+              $preservarPastasTopo -notcontains $_.Name.ToLowerInvariant() -and
+              (Get-ChildItem -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue).Count -eq 0
+            } |
+            Sort-Object { $_.FullName.Length } -Descending |
+            ForEach-Object { Remove-Item -Path $_.FullName -Force -ErrorAction SilentlyContinue }
         }
         
         $copiedCount = 0
