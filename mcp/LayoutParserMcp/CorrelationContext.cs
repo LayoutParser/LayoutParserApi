@@ -26,4 +26,8 @@ namespace LayoutParserMcp.Tools
     public sealed class ParseToolsLog
     {
     }
+
+    public sealed class DetectLayoutToolsLog
+    {
+    }
 }
