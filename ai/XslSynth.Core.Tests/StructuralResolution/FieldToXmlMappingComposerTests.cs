@@ -256,4 +256,125 @@ public sealed class FieldToXmlMappingComposerTests
         Assert.Single(result.Targets); // resolveu (nome único), mas não é authoritative
         Assert.Contains(result.Limitations!, l => l.Contains("heurística de nome"));
     }
+
+    // ---- Fase B da issue #151 — Direction ---------------------------------------------------
+
+    [Fact]
+    public void Direction_Default_EhForward_ComportamentoIdenticoAoExistente()
+    {
+        var candidate = new MappingCandidate(
+            MappingId: "M12",
+            Sources: new[] { Src("CAMPO_A") },
+            Kind: MappingKind.Direct,
+            TargetPath: "Doc/Cabecalho/CampoA",
+            TargetPathIsFullPath: true,
+            Functions: Array.Empty<string>(),
+            LoopType: null,
+            AllSourcesResolvedFromOriginLayout: true,
+            SourcesHavePositionalGroupRepetition: false,
+            KnownFunctions: new HashSet<string>());
+
+        var result = Composer().Compose(candidate);
+
+        Assert.Equal(Direction.Forward, result.Direction);
+        Assert.Equal(Confidence.Authoritative, result.Confidence);
+    }
+
+    [Fact]
+    public void Direction_Reverse_SemFuncao_AuthoritativeIgualForward()
+    {
+        // Direct (sem função) é reversível por natureza (design §3) — condição 6 satisfeita
+        // trivialmente mesmo em Reverse.
+        var candidate = new MappingCandidate(
+            MappingId: "M13",
+            Sources: new[] { Src("CAMPO_A") },
+            Kind: MappingKind.Direct,
+            TargetPath: "Doc/Cabecalho/CampoA",
+            TargetPathIsFullPath: true,
+            Functions: Array.Empty<string>(),
+            LoopType: null,
+            AllSourcesResolvedFromOriginLayout: true,
+            SourcesHavePositionalGroupRepetition: false,
+            KnownFunctions: new HashSet<string>(),
+            Direction: Direction.Reverse,
+            Reversibility: new BranchReversibility(true, null));
+
+        var result = Composer().Compose(candidate);
+
+        Assert.Equal(Direction.Reverse, result.Direction);
+        Assert.Equal(Confidence.Authoritative, result.Confidence);
+    }
+
+    [Fact]
+    public void Direction_Reverse_SemReversibilidadeConfirmada_CaiEmBestEffort()
+    {
+        // Mesmo candidato que seria Authoritative em Forward — em Reverse, sem confirmar que a
+        // função é bijetora (Fase A), cai em best-effort (condição 6 nova).
+        var candidate = new MappingCandidate(
+            MappingId: "M14",
+            Sources: new[] { Src("CAMPO_A") },
+            Kind: MappingKind.Transformed,
+            TargetPath: "Doc/Chave",
+            TargetPathIsFullPath: true,
+            Functions: new[] { "CalculateVerifierDigit" },
+            LoopType: null,
+            AllSourcesResolvedFromOriginLayout: true,
+            SourcesHavePositionalGroupRepetition: false,
+            KnownFunctions: new HashSet<string> { "CalculateVerifierDigit" },
+            Direction: Direction.Reverse,
+            Reversibility: new BranchReversibility(false, "Dígito verificador — perde o valor original."));
+
+        var result = Composer().Compose(candidate);
+
+        Assert.Equal(Confidence.BestEffort, result.Confidence);
+        Assert.Contains(result.Limitations!, l => l.Contains("Dígito verificador"));
+    }
+
+    [Fact]
+    public void Direction_Reverse_ComFuncaoBijetoraConfirmada_ResolveAuthoritative()
+    {
+        var candidate = new MappingCandidate(
+            MappingId: "M15",
+            Sources: new[] { Src("CAMPO_A") },
+            Kind: MappingKind.Transformed,
+            TargetPath: "Doc/Cabecalho/CampoA",
+            TargetPathIsFullPath: true,
+            Functions: new[] { "UriEscape" },
+            LoopType: null,
+            AllSourcesResolvedFromOriginLayout: true,
+            SourcesHavePositionalGroupRepetition: false,
+            KnownFunctions: new HashSet<string> { "UriEscape" },
+            Direction: Direction.Reverse,
+            Reversibility: new BranchReversibility(true, null));
+
+        var result = Composer().Compose(candidate);
+
+        Assert.Equal(Confidence.Authoritative, result.Confidence);
+        Assert.Null(result.Limitations);
+    }
+
+    [Fact]
+    public void Direction_Reverse_ReversibilityNaoInformada_TrataComoNaoReversivel()
+    {
+        // Reversibility null em Reverse não deve ser interpretado como "confia por padrão" —
+        // mesma filosofia conservadora da Fase A (default false quando não curado/confirmado).
+        var candidate = new MappingCandidate(
+            MappingId: "M16",
+            Sources: new[] { Src("CAMPO_A") },
+            Kind: MappingKind.Direct,
+            TargetPath: "Doc/Cabecalho/CampoA",
+            TargetPathIsFullPath: true,
+            Functions: Array.Empty<string>(),
+            LoopType: null,
+            AllSourcesResolvedFromOriginLayout: true,
+            SourcesHavePositionalGroupRepetition: false,
+            KnownFunctions: new HashSet<string>(),
+            Direction: Direction.Reverse,
+            Reversibility: null);
+
+        var result = Composer().Compose(candidate);
+
+        Assert.Equal(Confidence.BestEffort, result.Confidence);
+        Assert.NotNull(result.Limitations);
+    }
 }
