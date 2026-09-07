@@ -135,3 +135,132 @@ spike não conseguiu confirmar nem refutar por falta de acesso ao corpus real ne
 
 `dotnet build`/`dotnet test` (solução completa e `ai/XslSynth.Core.Tests` isolado) limpos — 80/80
 testes verdes em `XslSynth.Core.Tests`, incluindo os 15 novos desta issue.
+
+## Refinamento por engine (TCL/XSLT) — 2026-09-07
+
+Pedido do dono: a reconstrução reversa importa, na prática, só para transformações publicadas
+nas engines **TCL** e **XSL/XSLT** (`MappingRelease.Engine ∈ {"tcl","xslt"}`, Slice 5 / issue
+#231 — `Services/Fiscal/MappingCompileService.cs`, `Services/Fiscal/MappingDraftRuleTranspiler.cs`).
+Sysmiddle é read-only e fora de escopo por definição (#200/#205). A medição da §2 acima foi feita
+contra o catálogo de **173 funções do Sysmiddle** — universo errado para essa pergunta. Este
+refinamento troca o universo de medição para o que as engines TCL/XSLT realmente usam.
+
+### Achado principal: TCL/XSLT (Slice 5) não usa o catálogo de 173 funções do Sysmiddle
+
+Lendo `MappingDraftRuleTranspiler.cs` (gerador determinístico de ambas as engines, sem LLM) e
+`FiscalMappingRuleExtractor.cs` (fonte das regras, extraídas de planilha .xlsx de autoria fiscal,
+não do Sysmiddle) ponta a ponta: **as engines TCL e XSLT deste repositório são um subsistema novo
+e auto-contido (issue #231), sem qualquer dependência do `FunctionCatalog`/
+`FunctionReversibilityCatalog` do Sysmiddle.** O universo de operações é fechado e pequeno:
+
+```csharp
+// Services/Fiscal/MappingDraftRuleTranspiler.cs:44
+private static readonly HashSet<string> SupportedOperations = new(StringComparer.OrdinalIgnoreCase)
+    { "copy", "concat", "lookup", "conditional", "constant" };
+```
+
+Toda `MappingDraftRule` fora dessas 5 operações vira diagnóstico `error` ("fora do catálogo
+determinístico suportado") e nunca chega a ser emitida como TCL (`BuildTclField`) ou XSLT
+(`BuildXsltRuleElement`) — ou seja, **é estruturalmente impossível** uma regra publicada em TCL/
+XSLT usar `CalculateVerifierDigit`, `ConcatString` (a função Sysmiddle) ou qualquer uma das outras
+172 funções do catálogo antigo. Essas funções pertencem exclusivamente à engine `"sysmiddle"`
+(`SysmiddleExplanationAdapter.cs`), que é read-only e já está fora de escopo por decisão prévia
+(#200/#205). A `"concat"` que existe em TCL/XSLT é uma operação própria do transpiler (gera
+`concat(...)` XPath ou `campo1+campo2` em TCL a partir de `SourceRefs`) — sintaticamente parecida
+mas semanticamente independente da função `ConcatString` do Sysmiddle medida na §2.
+
+**Consequência direta para as perguntas 1 e 2 do pedido:** `CalculateVerifierDigit` tem frequência
+**zero** garantida no universo TCL/XSLT — não é um "achado de frequência baixa", é impossibilidade
+estrutural (a operação nem está em `SupportedOperations`). `Concat`/`ConcatString` também não
+aparecem — o que existe é a operação `"concat"` do transpiler, avaliada separadamente abaixo.
+
+### Reversibilidade das 5 operações (análise estrutural — universo fechado, não amostral)
+
+Como o universo tem só 5 operações (não 173), dá para analisar reversibilidade de cada uma
+individualmente em vez de amostrar frequência de uso:
+
+| Operação | Reversível? | Motivo |
+|----------|-------------|--------|
+| `copy` | **Sim** (bijetora) | `<xsl:value-of select="sourceRef"/>` / TCL `source direto` — cópia 1:1 sem transformação, mesmo padrão de `MappingKind.Direct` já tratado como reversível em Fase B. |
+| `lookup` | **Condicional** | Reversível só se a tabela (`ReadLookupTable`) for injetora (nenhum valor de destino repetido para chaves diferentes) — precisaria da mesma curadoria manual por regra que `FunctionReversibilityCatalog` já faz para funções Sysmiddle, só que aplicada a `lookup.Table` em vez de classe de função. Tabelas fiscais reais (UF→código, por ex.) tendem a ser injetoras, mas isso não foi confirmado contra dado publicado real (ver limitação abaixo). |
+| `concat` | **Parcial/condicional** | Reversível (splitável) só se houver separador não-vazio e esse separador não ocorrer dentro dos valores de origem — caso contrário a junção é ambígua (`"AB"+"C"` vs `"A"+"BC"` sem separador são indistinguíveis). Sem acesso às regras reais publicadas, não dá pra saber que fração usa separador seguro. |
+| `conditional` | **Não, em geral** | O `<xsl:choose>`/`|`-list gerado não preserva qual `test` foi avaliado — só o valor resultante. Se dois ramos puderem produzir o mesmo valor de saída a partir de entradas diferentes (comum em regras fiscais com fallback/default), a reconstrução é ambígua. |
+| `constant` | **Não** | Por definição descarta o campo de origem — não há entrada pra reconstruir (o valor é fixo, independente do TXT original). |
+
+Sem contar `lookup`/`concat` como reversíveis (caso conservador, exigindo curadoria que não foi
+feita): **1 de 5 operações claramente reversível (20%)** — mais alto que os 13,3% da medição
+antiga, mas por um motivo diferente: aqui não há as ~70 funções de I/O/efeito colateral que
+inflavam o denominador do catálogo Sysmiddle; o universo é pequeno e cada item pesa mais.
+Contando `lookup` como potencialmente reversível com curadoria (caso otimista): até **2 de 5
+(40%)**. Isso é uma cota estrutural teórica, não uma medição de uso real — ver limitação abaixo.
+
+### Medição de frequência real: BLOQUEADA por falta de dado real nesta sessão
+
+Tentativas concretas nesta sessão, todas sem sucesso:
+
+1. **Banco de dados real** (`tbMappingRelease`, `IdentityDatabase:*`, `172.25.32.5,1433`,
+   `Services/Database/SqlMappingReleaseStore.cs`) — teria a query natural
+   (`SELECT Engine, ArtifactsJson FROM tbMappingRelease WHERE Status = 'published' AND Engine IN
+   ('tcl','xslt')`). Sem credencial disponível nesta sessão: `dotnet user-secrets list` só expõe
+   `Database:Password` (o SQL antigo compartilhado, read-only por regra própria — não o
+   `IdentityDatabase:*` deste subsistema); nenhuma env var `IdentityDatabase__*` presente.
+2. **Corpus de fixture local** — não há `.xlsx`/pacote real de `FiscalMappingRuleExtractor` no
+   repo (a extração é feita a partir de planilha fornecida pelo dono, não versionada); não há
+   export de `MappingDraftRule`/`MappingRelease` real em `.claude/tmp/` (diretório não existe
+   nesta sessão) nem em fixtures de teste com dado "de produção" (os testes de
+   `MappingDraftRuleTranspiler`/`MappingCompileService` usam regras sintéticas, não reais).
+3. O dataset real mais próximo disponível localmente (`ai/XslSynth/training-data/sysmiddle-dsl-
+   dataset-2026-09-02.jsonl`, 6044 exemplos reais extraídos de mapeadores Sysmiddle de produção)
+   **não serve para esta pergunta** — é DSL da engine `"sysmiddle"` (fora de escopo), não TCL/XSLT
+   do Slice 5. Confirmado grep: o dataset contém `CalculateVerifierDigit`/`ConcatString`
+   fartamente, mas isso só reforça que essas funções vivem no subsistema errado para esta medição.
+
+**Não foi possível medir frequência de uso real das 5 operações em releases publicadas de TCL/
+XSLT.** É plausível que o volume publicado seja pequeno ou zero — o Slice 5 (issue #231) é recente
+— mas isso não foi confirmado (exigiria acesso ao `IdentityDatabase` real ou export do dono).
+Reportar isso como bloqueio de dado, não como "poucas funções não-reversíveis" — não inventar número.
+
+### Recomendação atualizada
+
+O achado mais importante deste refinamento **não é um número de frequência** — é que **a pergunta
+original do spike A/B mediu o subsistema errado**. Para o escopo real de #151 (TCL/XSLT, Slice 5):
+
+1. **`CalculateVerifierDigit`/`ConcatString` são não-questões neste escopo** — não podem aparecer
+   em regra TCL/XSLT publicada, o transpiler as bloqueia estruturalmente. A preocupação levantada
+   no critério de aceite da issue (essas duas funções) se aplica ao Sysmiddle, não ao Slice 5.
+2. **O problema de reversibilidade em TCL/XSLT é bem menor e mais tratável**: 5 operações, não
+   173. Fase C/D (se avançar) deveria implementar reversibilidade **nessas 5 operações do
+   `MappingDraftRuleTranspiler`**, não reaproveitar `FunctionReversibilityCatalog`/
+   `FunctionCatalog` do Sysmiddle — são universos de código diferentes.
+3. **Antes de comprometer Fase C/D, ainda falta o número real**: qual fração das regras
+   publicadas é `copy` (reversível de graça) vs `concat`/`lookup`/`conditional`/`constant`. Por
+   design de UI/autoria assistida (issue #103, planilha de decisão fiscal → regra), a expectativa
+   qualitativa é que `conditional`/`lookup` sejam relativamente comuns (é o propósito das abas de
+   "tabela de decisão" que `FiscalMappingRuleExtractor` extrai) — o que empurraria a fração
+   reversível para perto do piso de 20%, não do teto de 40%. Mas isso é uma hipótese qualitativa,
+   não medição.
+4. **Próximo passo concreto**: pedir ao `@lp-devops` acesso de leitura ao `IdentityDatabase`
+   (172.25.32.5,1433, `LayoutParserIdentity`) para rodar a query real contra `tbMappingRelease
+   WHERE Status = 'published' AND Engine IN ('tcl','xslt')` e contar `Operation` por
+   `MappingDraftRule` das releases publicadas — ou, se ainda não há releases publicadas em
+   produção, aguardar volume real antes de investir em Fase C/D (não vale medir contra dado
+   sintético/de teste como se fosse produção).
+
+**Veredito para o dono:** não avançar Fase C/D ainda, mas por motivo diferente do spike original —
+não é "baixa taxa de reversibilidade" (essa taxa, no universo certo, é estruturalmente mais alta:
+20-40% vs 13,3%), é **falta de acesso a dado publicado real** para saber se vale o investimento.
+Medição bloqueada por dado, não por inviabilidade.
+
+### Arquivos lidos/analisados neste refinamento (sem alteração de código)
+
+- `Services/Fiscal/MappingDraftRuleTranspiler.cs` — `SupportedOperations`, `BuildXsltRuleElement`,
+  `BuildTclField`, `BuildCopy/Concat/Lookup/Conditional/Constant`.
+- `Services/Fiscal/MappingCompileService.cs`, `Services/Fiscal/TclExplanationAdapter.cs`,
+  `Services/Fiscal/XsltExplanationAdapter.cs`, `Services/Fiscal/SysmiddleExplanationAdapter.cs` —
+  confirmação dos 3 valores de `Engine` (`"tcl"`, `"xslt"`, `"sysmiddle"`) e que só o primeiro par
+  está em escopo.
+- `Services/Database/SqlMappingReleaseStore.cs`, `Services/Interfaces/IMappingReleaseStore.cs` —
+  confirmação de que `tbMappingRelease` é o dado real a consultar, e que exige `IdentityDatabase:*`
+  (indisponível nesta sessão).
+- `Services/Fiscal/FiscalMappingRuleExtractor.cs` — confirmação de que não há corpus real
+  versionado no repo (extração parte de `.xlsx` fornecido pelo dono, fora do controle de versão).
