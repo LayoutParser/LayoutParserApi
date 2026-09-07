@@ -226,6 +226,10 @@ namespace LayoutParserApi.Services.XmlAnalysis
                     };
                 }
 
+                // ✅ SCS0018 (issue #88, achado real corrigido): xsdPath vem de FindXsdFile(finalXsdVersion),
+                // que agora resolve a versão com SafePathResolver.Resolve (mesmo padrão do projeto) antes
+                // de qualquer Directory.GetFiles — o SCS não reconhece o resolver como sanitizador.
+#pragma warning disable SCS0018
                 using (var reader = XmlReader.Create(xsdPath))
                 {
                     var schema = XmlSchema.Read(reader, (sender, e) =>
@@ -246,6 +250,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
                         }
                     }
                 }
+#pragma warning restore SCS0018
 
                 schemas.Compile();
 
@@ -336,7 +341,21 @@ namespace LayoutParserApi.Services.XmlAnalysis
         /// </summary>
         private string FindXsdFile(string version)
         {
-            var versionPath = Path.Combine(_xsdBasePath, version);
+            // ✅ SCS0018 (issue #88, achado real — não era só drift de linha): "version" chega
+            // sem validação a partir de ValidateXmlAgainstXsdAsync(xsdVersion), que por sua vez é
+            // ["FromBody"] cru em XmlAnalysisController.ValidateXsd (request.XsdVersion) e
+            // MappingTestRunService. Diferente de GetOrientationsAsync (já usa SafePathResolver
+            // desde a PR #278/issue #172), este caminho nunca ganhou o mesmo tratamento — um
+            // xsdVersion como "..\..\..\Windows\win.ini" (ou qualquer pasta fora de _xsdBasePath)
+            // chegava direto ao Path.Combine/Directory.GetFiles. Fechado com o mesmo
+            // SafePathResolver.Resolve já usado em GetOrientationsAsync/DocumentController/
+            // MetricsController/ParseController.
+            var versionPath = SafePathResolver.Resolve(_xsdBasePath, version);
+            if (versionPath == null)
+            {
+                _logger.LogWarning("Versão de XSD rejeitada para leitura de schema: {XsdVersion}", LogMessageSanitizer.Sanitize(version));
+                return null;
+            }
 
             if (!Directory.Exists(versionPath))
             {
@@ -345,7 +364,11 @@ namespace LayoutParserApi.Services.XmlAnalysis
             }
 
             // Procurar arquivo .xsd (pode ter vários)
+            // ✅ SCS0018 (issue #88, achado real corrigido): versionPath já é o retorno do
+            // SafePathResolver.Resolve acima — confinado a _xsdBasePath.
+#pragma warning disable SCS0018
             var xsdFiles = Directory.GetFiles(versionPath, "*.xsd", SearchOption.AllDirectories);
+#pragma warning restore SCS0018
 
             // Priorizar arquivo principal (geralmente o maior ou com nome específico)
             var mainXsd = xsdFiles
