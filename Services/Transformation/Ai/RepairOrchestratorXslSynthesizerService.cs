@@ -124,6 +124,12 @@ namespace LayoutParserApi.Services.Transformation.Ai
 
                 var synthesizer = CreateOllamaSynthesizer();
 
+                // F1 (ADR issue #151, seção 3.2): antes de sempre partir do transpilador
+                // determinístico, tenta reaproveitar um XSLT já convergido numa execução
+                // anterior para o mesmo mapper/layout — mesma convenção de nome que
+                // TryPersistXslt já usa para gravar (issue #55).
+                var seedXslt = TryLoadSeedXslt(mapper.Name, layoutName);
+
                 var report = await _orchestrator.RunAsync(
                     mapperVo,
                     input,
@@ -132,7 +138,8 @@ namespace LayoutParserApi.Services.Transformation.Ai
                     synthesizer,
                     log => _logger.LogInformation("[RepairOrchestrator] {Message}", log),
                     maxIterations,
-                    cancellationToken);
+                    cancellationToken,
+                    seedXslt);
 
                 if (report.Converged && !string.IsNullOrWhiteSpace(layoutName))
                     TryPersistXslt(mapper.Name, layoutName!, report.FinalXslt);
@@ -198,6 +205,39 @@ namespace LayoutParserApi.Services.Transformation.Ai
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "MapeadorVO do mapper {MapperGuid} não é XML bem-formado", Services.Logging.LogMessageSanitizer.Sanitize(mapperGuid));
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// F1 (ADR issue #151, seção 3.2): tenta ler <c>{XslPath}/{mapperName}_{layoutName}.xsl</c>
+        /// de uma convergência anterior (mesma convenção de <see cref="TryPersistXslt"/>) para
+        /// reaproveitar como ponto de partida do <see cref="RepairOrchestrator"/>, em vez de
+        /// recomeçar sempre do transpilador determinístico.
+        /// <para>Best-effort (5.4 do ADR): arquivo ausente ou XML inválido apenas perde a
+        /// otimização — nunca impede a síntese, que cai para o comportamento atual (baseline).</para>
+        /// </summary>
+        private XDocument? TryLoadSeedXslt(string? mapperName, string? layoutName)
+        {
+            if (string.IsNullOrWhiteSpace(mapperName) || string.IsNullOrWhiteSpace(layoutName))
+                return null;
+
+            var safeLayoutName = Services.Logging.LogMessageSanitizer.Sanitize(layoutName);
+            try
+            {
+                var path = Path.Combine(_xslBasePath, $"{mapperName}_{layoutName}.xsl");
+                if (!File.Exists(path))
+                    return null;
+
+                var seed = XDocument.Load(path);
+                _logger.LogInformation(
+                    "Seed de XSLT convergido reaproveitado de {Path} (layout={LayoutName})",
+                    Services.Logging.LogMessageSanitizer.Sanitize(path), safeLayoutName);
+                return seed;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Falha ao ler seed de XSLT convergido — síntese seguirá sem reaproveitamento (layout={LayoutName})", safeLayoutName);
                 return null;
             }
         }
