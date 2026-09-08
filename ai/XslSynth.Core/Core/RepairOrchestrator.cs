@@ -35,20 +35,49 @@ public sealed class RepairOrchestrator
         IXslSynthesizer synthesizer,
         Action<string> log,
         int maxIterations = 5,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        XDocument? seedXslt = null)
     {
         var totalFields = mapper.LinkMappings.Count + mapper.Rules.Count;
 
         // ── Passo 2: baseline determinístico (sem IA) ────────────────────────
+        // Sempre transpila (barato, sem IA) — mantém as métricas de MappedFields e
+        // serve de fallback para o F2 (anti-armadilha) abaixo, mesmo quando um seed
+        // convergido é usado como ponto de partida real do loop.
         var baseline = _transpiler.Transpile(mapper);
-        var xslt = baseline.Xslt;
 
-        log("== Baseline (transpilador determinístico) ==");
+        // ── F1 (ADR issue #151, seção 3.2): reaproveitar XSLT já convergido ───
+        // como ponto de partida, em vez de sempre recomeçar do transpilador.
+        var xslt = seedXslt ?? baseline.Xslt;
+        var usedSeed = seedXslt is not null;
+
+        log(usedSeed
+            ? "== Seed reaproveitado (convergência anterior persistida) =="
+            : "== Baseline (transpilador determinístico) ==");
         log($"   Campos diretos transpilados: {baseline.MappedFields}/{totalFields} " +
             $"({Pct(baseline.MappedFields, totalFields)})");
 
         var (output, diffs, xsd) = Evaluate(xslt, input, expectedXml, xsdPath);
         Report(log, output, diffs, xsd);
+
+        // ── F2 (ADR issue #151, seção 5.5): anti-armadilha ─────────────────────
+        // Se o seed reaproveitado não converge de cara, compara contra o baseline
+        // determinístico (sem custo de IA) e só mantém o seed se ele não for PIOR
+        // que recomeçar do zero. Evita propagar um seed ruim (convergido por
+        // acidente contra um gabarito atípico) para todos os documentos seguintes.
+        if (usedSeed && (diffs.Count > 0 || !xsd.IsValid))
+        {
+            var (baseOutput, baseDiffs, baseXsd) = Evaluate(baseline.Xslt, input, expectedXml, xsdPath);
+            if (baseDiffs.Count < diffs.Count)
+            {
+                log($"   ! seed pior que o baseline determinístico ({diffs.Count} vs {baseDiffs.Count} diffs) — descartando seed, recomeçando do zero.");
+                xslt = baseline.Xslt;
+                output = baseOutput;
+                diffs = baseDiffs;
+                xsd = baseXsd;
+                usedSeed = false;
+            }
+        }
 
         var briefing = new SynthesisBriefing
         {
@@ -58,7 +87,11 @@ public sealed class RepairOrchestrator
         };
 
         var iterations = 0;
-        var rulesSynthesized = false;
+        // Quando um seed reaproveitado é usado (e não foi descartado pelo F2), as
+        // Rules já foram sintetizadas numa convergência anterior — pula direto para
+        // o reparo por diff (passo 6), em vez de reaplicar SynthesizeRulesAsync
+        // (passo 3) sobre uma árvore que já tem as regras mescladas.
+        var rulesSynthesized = usedSeed;
 
         while ((diffs.Count > 0 || !xsd.IsValid) && iterations < maxIterations)
         {
