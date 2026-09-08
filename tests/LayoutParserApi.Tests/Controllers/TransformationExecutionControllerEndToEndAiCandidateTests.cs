@@ -142,7 +142,8 @@ namespace LayoutParserApi.Tests.Controllers
                 fieldMappingComposition: null!,
                 scopeFactory: scopeProvider.GetRequiredService<IServiceScopeFactory>(),
                 canaryAlert: new LayoutParserApi.Services.Security.CanaryAlertService(
-                    NullLogger<LayoutParserApi.Services.Security.CanaryAlertService>.Instance));
+                    NullLogger<LayoutParserApi.Services.Security.CanaryAlertService>.Instance),
+                fieldCorrectionStore: null!);
 
             var request = new TransformationRequest
             {

@@ -116,7 +116,8 @@ namespace LayoutParserApi.Tests.Controllers
                 fieldMappingComposition: null!,
                 scopeFactory: null!,
                 canaryAlert: new LayoutParserApi.Services.Security.CanaryAlertService(
-                    NullLogger<LayoutParserApi.Services.Security.CanaryAlertService>.Instance));
+                    NullLogger<LayoutParserApi.Services.Security.CanaryAlertService>.Instance),
+                fieldCorrectionStore: null!);
 
             return (controller, spy, user);
         }
