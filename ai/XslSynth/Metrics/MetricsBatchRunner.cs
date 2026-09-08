@@ -348,7 +348,10 @@ public static class MetricsBatchRunner
         }
     }
 
-    private static string BuildPrompt(DatasetPair caso, IReadOnlyList<DatasetFewShotMatch> recuperados)
+    /// <summary>Interno (não privado) — reaproveitado por <see cref="RepairBatchRunner"/> para
+    /// montar o prompt inicial do modo <c>--mode=repair-batch</c> (mesmo prompt few-shot,
+    /// candidato de partida do loop de reparo completo).</summary>
+    internal static string BuildPrompt(DatasetPair caso, IReadOnlyList<DatasetFewShotMatch> recuperados)
     {
         var sb = new System.Text.StringBuilder();
         sb.AppendLine("Você é um especialista em XSLT 1.0 e nos leiautes fiscais brasileiros (NFe/CTe/MDFe).");
@@ -372,7 +375,8 @@ public static class MetricsBatchRunner
         return sb.ToString();
     }
 
-    private static string ExtractXml(string raw)
+    /// <summary>Interno (não privado) — reaproveitado por <see cref="RepairBatchRunner"/>.</summary>
+    internal static string ExtractXml(string raw)
     {
         var fenced = System.Text.RegularExpressions.Regex.Match(raw, "```(?:xml|xslt)?\\s*(.*?)```",
             System.Text.RegularExpressions.RegexOptions.Singleline);
