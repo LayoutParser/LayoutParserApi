@@ -377,6 +377,16 @@ namespace LayoutParserApi.Controllers
                 recommendedId = bestScored?.CandidateId ?? candidates[0].CandidateId;
             }
 
+            // DocumentId (ADR docs/architecture/adr-contrato-correcao-guiada-humano-2026-09-08.md §4,
+            // Gap 1): identificador estável derivado de hash, mesma resolução de LayoutGuid já usada
+            // pelo pathway sysmiddle (request.LayoutGuid tem precedência sobre o catálogo, que pode
+            // vir Guid.Empty). Quando nenhum dos dois resolve, cai no LayoutGuid cru do catálogo —
+            // ainda determinístico, nunca lança.
+            var resolvedLayoutGuidForDocumentId =
+                LowCodeLayoutGuidResolver.Resolve(request.LayoutGuid, layoutRecord.LayoutGuid)
+                ?? layoutRecord.LayoutGuid.ToString();
+            var documentId = DocumentIdCalculator.Calculate(request.InputContent, resolvedLayoutGuidForDocumentId);
+
             return Ok(new TransformationExecutionCandidatesResponse
             {
                 Success = true,
@@ -386,7 +396,8 @@ namespace LayoutParserApi.Controllers
                 // pathwayDiagnostics (Issue #86): populado na origem por cada pathway (sysmiddle,
                 // tcl-xsl, ai-fallback) — ver docs/architecture/diagnostico-issue-86-*.md §4.
                 PathwayDiagnostics = pathwayDiagnostics.ToList(),
-                CorrelationId = Services.Logging.CorrelationContext.CurrentId
+                CorrelationId = Services.Logging.CorrelationContext.CurrentId,
+                DocumentId = documentId
             });
         }
 
