@@ -26,6 +26,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\XslSynth.Core\XslSynth.Core.csproj" />
+    <!-- RepairBatchRunner.Summarize (issue #352) — agregação da taxa de convergência real. -->
+    <ProjectReference Include="..\XslSynth\XslSynth.csproj" />
   </ItemGroup>
 
   <ItemGroup>
