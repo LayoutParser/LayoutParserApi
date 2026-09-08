@@ -638,6 +638,10 @@ try
     builder.Services.AddScoped<LayoutParserApi.Services.Transformation.Ai.IXslSynthesizerService,
         LayoutParserApi.Services.Transformation.Ai.RepairOrchestratorXslSynthesizerService>();
 
+    // ✅ Issue #338 (F3): captura best-effort de cada convergência real como exemplo do dataset
+    // de treino incremental (ai/XslSynth/training-data/*.jsonl).
+    builder.Services.AddScoped<LayoutParserApi.Services.Transformation.Ai.TrainingDataCaptureService>();
+
     // Transformation Services (ML)
     builder.Services.AddScoped<TransformationLearningService>();
     builder.Services.AddScoped<PatternComparisonService>();

@@ -29,6 +29,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
         private readonly ICachedMapperService _mapperService;
         private readonly XmlDocumentTypeDetector _documentTypeDetector;
         private readonly OllamaOptions _ollamaOptions;
+        private readonly TrainingDataCaptureService _trainingDataCapture;
         private readonly string _xsdBasePath;
         private readonly string _xslBasePath;
         private readonly RepairOrchestrator _orchestrator = new();
@@ -40,12 +41,14 @@ namespace LayoutParserApi.Services.Transformation.Ai
             ICachedMapperService mapperService,
             XmlDocumentTypeDetector documentTypeDetector,
             IOptions<OllamaOptions> ollamaOptions,
-            IConfiguration configuration)
+            IConfiguration configuration,
+            TrainingDataCaptureService trainingDataCapture)
         {
             _logger = logger;
             _mapperService = mapperService;
             _documentTypeDetector = documentTypeDetector;
             _ollamaOptions = ollamaOptions.Value;
+            _trainingDataCapture = trainingDataCapture;
             _xsdBasePath = configuration["XsdValidation:BasePath"] ?? @"C:\inetpub\wwwroot\layoutparser\xsd";
             // Mesma convenção de TransformationPipelineService/AutoTransformationGeneratorService —
             // {mapperName}_{layoutName}.xsl (issue #55) — pra persistir o XSLT sintetizado no lugar
@@ -143,6 +146,20 @@ namespace LayoutParserApi.Services.Transformation.Ai
 
                 if (report.Converged && !string.IsNullOrWhiteSpace(layoutName))
                     TryPersistXslt(mapper.Name, layoutName!, report.FinalXslt);
+
+                // ✅ Issue #338 (F3 do ADR de convergência TCL/XSLT): toda convergência real vira
+                // exemplo do dataset de treino incremental — best-effort, nunca falha a síntese.
+                if (report.Converged)
+                {
+                    _trainingDataCapture.TryCapture(
+                        mapperGuid,
+                        mapper.Name,
+                        layoutName,
+                        input.ToString(),
+                        groundTruthXml,
+                        report.FinalXslt,
+                        report.Iterations);
+                }
 
                 return new XslSynthesisResult
                 {
