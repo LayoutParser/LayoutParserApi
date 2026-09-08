@@ -507,6 +507,9 @@ try
     // Lab. Mesmo banco/padrão ADO.NET; compile/test-run reaproveitam CanonicalDiffer/XsdValidationService
     // (já registrados/disponíveis via DI) sem I/O externo/Ollama.
     builder.Services.AddScoped<IMappingReleaseStore, SqlMappingReleaseStore>();
+    // ✅ Issue #345 (ADR docs/architecture/adr-contrato-correcao-guiada-humano-2026-09-08.md):
+    // contexto de documento + reporte de correção humana — mesmo banco/padrão ADO.NET.
+    builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.IFieldCorrectionStore, LayoutParserApi.Services.Database.SqlFieldCorrectionStore>();
     // ✅ Investigação PR #310 (2026-09-05): schema fiscal criado em ordem de dependência de FK no
     // startup, em vez de depender de qual store acima uma requisição real exercita primeiro. Ver
     // <see cref="LayoutParserApi.Services.Database.FiscalSchemaInitializer"/> para o grafo completo.
