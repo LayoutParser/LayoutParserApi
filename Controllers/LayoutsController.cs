@@ -57,9 +57,12 @@ namespace LayoutParserApi.Controllers
         /// <response code="400"><c>layoutGuid</c> não corresponde a nenhum layout conhecido.</response>
         /// <response code="404">Layout existe, mas não há mapper (TCL/XSL/XSLT) vinculado — geração de exemplo requer mapeamento existente.</response>
         /// <response code="501">Layout do tipo <c>Xml</c> — cobertura fica para a issue #356 (parser de árvore ainda não existe).</response>
-        // Issue #32/#355: mesma classe de privilégio de DataGenerationController (geração de dado
-        // sintético é operação restrita) — admin.
-        [Authorize(Roles = "admin")]
+        // Issue #355: confirmado com o dono (2026-09-09) que o botão "Gerar documento de
+        // exemplo" é para qualquer usuário autenticado, não admin-only — diferente do padrão
+        // de DataGenerationController (geração a partir de planilha real, essa sim restrita).
+        // Aqui o dado é 100% sintético e a pré-condição de mapper já existente (abaixo) já
+        // limita o uso a layouts em desenvolvimento ativo.
+        [Authorize]
         [HttpPost("{layoutGuid}/generate-sample")]
         public async Task<IActionResult> GenerateSample(string layoutGuid, [FromBody] GenerateSampleRequest? request)
         {
