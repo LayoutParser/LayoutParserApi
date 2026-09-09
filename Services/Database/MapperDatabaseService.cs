@@ -184,7 +184,10 @@ namespace LayoutParserApi.Services.Database
         /// Busca o "melhor" mapeador para um layoutGuid, restrito a ProjectId e uma lista de PackageGuids permitidos.
         /// Prioriza mappers onde o layoutGuid é InputLayoutGuid; se não encontrar, tenta TargetLayoutGuid.
         /// </summary>
-        public async Task<Mapper?> GetBestMapperForLayoutGuidAsync(string layoutGuid, int projectId, IReadOnlyCollection<string> allowedPackageGuids)
+        // virtual: mesmo ponto de substituição de GetRankedMapperCandidatesForLayoutGuidAsync —
+        // testes de endpoints que decidem 404 "sem mapper" (ex.: LayoutsController.GenerateSample,
+        // issue #355) precisam exercitar essa decisão sem SQL Server real.
+        public virtual async Task<Mapper?> GetBestMapperForLayoutGuidAsync(string layoutGuid, int projectId, IReadOnlyCollection<string> allowedPackageGuids)
         {
             var candidates = await GetMappersByLayoutGuidForPackagesAsync(layoutGuid, projectId, allowedPackageGuids);
             if (candidates.Count == 0)
