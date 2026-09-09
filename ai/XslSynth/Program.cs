@@ -29,6 +29,12 @@ using XslSynth.Synthesis;
 //                                RAG (TF-IDF) → Ollama → validação estrutural → Serilog Source=AiMetrics
 //                                + publica o RUN DIR do Job 2 (manifest.json + candidates/*.xml)
 //                                quando --run-dir / LP_METRICS_RUN_DIR / METRICS_HOME é dado.
+//   dotnet run -- --mode=repair-batch [--dataset <jsonl>] [--model <nome>] [--fewshot-k <n>]
+//                                      [--limit <n>] [--max-iterations <n>] [--instances <dir>]
+//                                      [--nfe-xsd <xsd>]
+//                              → issue #352 (Fase B): taxa de convergência REAL (diff==0 + XSD
+//                                válido, critério de produção) por modelo, rodando o loop de
+//                                reparo completo — mais caro que metrics-batch, nightly/semanal.
 //
 // Arquitetura: docs/architecture/ia-xslt-synthesis.md · poc-excel-generator.md
 //              docs/architecture/plano-metricas-ia-servidor-producao.md (metrics-batch)
@@ -43,6 +49,9 @@ Log("");
 
 if (args.Any(a => a.StartsWith("--mode=metrics-batch", StringComparison.Ordinal)) || args.Contains("--metrics-batch"))
     return await RunMetricsBatchAsync();
+
+if (args.Any(a => a.StartsWith("--mode=repair-batch", StringComparison.Ordinal)) || args.Contains("--repair-batch"))
+    return await RunRepairBatchAsync();
 
 if (args.Contains("--xsd-diff"))
     return RunXsdDiff();
@@ -818,6 +827,53 @@ async Task<int> RunMetricsBatchAsync()
         RunDirectory: runDir, RunId: runId, InstancesDirectory: instancesDir,
         NfeXsdPath: File.Exists(nfeXsd) ? nfeXsd : null, DryRun: dryRun);
     return await MetricsBatchRunner.RunAsync(opts, Log);
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// Fluxo REPAIR-BATCH (issue #352 — Fase B do plano de eval/benchmark): eleva o
+// critério de "acertou" para o mesmo usado em produção (diff==0 + XSD válido,
+// via RepairOrchestrator/CanonicalDiffer), em vez da similaridade tolerante do
+// metrics-batch. Mais caro (várias chamadas de LLM por caso, não 1) — pensado
+// para rodar nightly/semanal, não em CI a cada PR. Ver limitação de cobertura
+// documentada em RepairBatchRunner.cs (só mede convergência real quando há
+// instância TXT real compatível com o schema TCL do caso).
+// ══════════════════════════════════════════════════════════════════════════
+async Task<int> RunRepairBatchAsync()
+{
+    var claudeTmp = Path.GetDirectoryName(ResolveExportDir())!; // …/.claude/tmp
+    var datasetPath = FindArgAfter("--dataset")
+        ?? Path.Combine(claudeTmp, "dataset-finetuning", "dataset_pairs_filtered_v2.jsonl");
+    var model = FindArgAfter("--model") ?? Environment.GetEnvironmentVariable("OLLAMA_MODEL") ?? "qwen2.5-coder:7b";
+    var fewShotK = int.TryParse(FindArgAfter("--fewshot-k"), out var k) ? k : 3;
+    var limit = int.TryParse(FindArgAfter("--limit"), out var lim) ? lim : (int?)null;
+    var maxIterations = int.TryParse(FindArgAfter("--max-iterations"), out var mi) ? mi : 5;
+
+    var instancesDir = FindArgAfter("--instances")
+        ?? Environment.GetEnvironmentVariable("LP_METRICS_INSTANCES_DIR")
+        ?? (Directory.Exists(Path.Combine(claudeTmp, "metrics-instances"))
+            ? Path.Combine(claudeTmp, "metrics-instances")
+            : null);
+    var nfeXsd = FindArgAfter("--nfe-xsd") ?? Path.Combine(claudeTmp, "servidor", "layoutparser",
+        "xsd", "PL_010b_NT2025_002_v1.30", "nfe_v4.00.xsd");
+
+    var repoRoot = new DirectoryInfo(claudeTmp).Parent;
+    var logDir = FindArgAfter("--log-dir")
+        ?? (repoRoot?.Parent is { } raiz && Directory.Exists(Path.Combine(raiz.FullName, "Logs"))
+            ? Path.Combine(raiz.FullName, "Logs")
+            : Path.Combine(AppContext.BaseDirectory, "Logs"));
+
+    Log("Modo      : REPAIR-BATCH (RAG → Ollama → loop de reparo diff==0/XSD → Serilog Source=AiMetrics)");
+    Log($"Dataset   : {datasetPath}");
+    Log($"Modelo    : {model}");
+    Log($"Few-shot k: {fewShotK}  ·  máx. iterações/caso: {maxIterations}");
+    Log($"Instâncias: {instancesDir ?? "(não configurado — nenhum caso terá convergência real medida)"}");
+    Log($"Log dir   : {logDir}" + (limit is not null ? $"  ·  LIMITE de teste: {limit} caso(s)" : ""));
+    Log("");
+
+    var opts = new RepairBatchOptions(datasetPath, model, fewShotK, limit, logDir, "layoutparserapi.log",
+        InstancesDirectory: instancesDir, NfeXsdPath: File.Exists(nfeXsd) ? nfeXsd : null,
+        MaxIterations: maxIterations);
+    return await RepairBatchRunner.RunAsync(opts, Log);
 }
 
 // ══════════════════════════════════════════════════════════════════════════
