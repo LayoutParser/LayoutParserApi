@@ -606,6 +606,24 @@ O texto original do prompt que originou os 7 slices está preservado em
 **🇺🇸** Additional context and an honest status audit (what was merged vs. what was still backlog
 at the time each slice doc was written) lives in the two docs linked above.
 
+### 8.1 Contrato para o front: RBAC, erro otimista e diff estruturado / Front-end contract
+
+**🇧🇷** Referência do que a API **já expõe hoje** para o [LayoutParserReact](#2-ecossistema-de-projetos--project-ecosystem)
+consumir sem esperar backend novo (issue #376, derivada do cross-check #226/#198):
+
+- **Matriz de RBAC** dos endpoints de mapping (`approve` = `reviewer`/`fiscal_admin`;
+  `publish`/`rollback` = `fiscal_admin`/`owner`; `List` = todos os membros; draft/compile/edição
+  de regra = só membership). **Não existe `401`** — "não autenticado" responde **404** fail-closed.
+- **Vocabulário de erro otimista** do `PATCH .../mapping-drafts/{id}/rules/{ruleId}`
+  (200 + `eTag` no corpo, 412 com `{ current }`, 428 sem `If-Match`, 400 malformado, 422 semântico).
+- **Diff estruturado** já existente (`NodeDiff` → `MappingTestRunDivergence` com `Kind`/`XPath`/
+  `Expected`/`Actual` + provenance `RuleId`/`SourceRefs`/`Evidence`), exposto em
+  `testRunSummary.divergences` no `GET .../releases/{releaseId}`.
+
+**🇺🇸** Reference for what the API **already exposes today** for the front-end to consume without
+waiting on new backend work (issue #376). Full detail, JSON examples and file/line pointers:
+[`docs/architecture/contrato-rbac-erro-diff-mapping-fiscal-2026-09-10.md`](docs/architecture/contrato-rbac-erro-diff-mapping-fiscal-2026-09-10.md).
+
 ---
 
 ## 9. Configuração / Configuration
