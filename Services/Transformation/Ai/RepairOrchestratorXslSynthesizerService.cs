@@ -1,10 +1,14 @@
+using System.Diagnostics;
 using System.Xml.Linq;
 
 using LayoutParserApi.Models.Entities;
 using LayoutParserApi.Services.Interfaces;
+using LayoutParserApi.Services.Transformation.Ai.Retraining;
 using LayoutParserApi.Services.XmlAnalysis;
 
 using Microsoft.Extensions.Options;
+
+using Serilog.Context;
 
 using XslSynth.Core;
 using XslSynth.Synthesis;
@@ -30,6 +34,9 @@ namespace LayoutParserApi.Services.Transformation.Ai
         private readonly XmlDocumentTypeDetector _documentTypeDetector;
         private readonly OllamaOptions _ollamaOptions;
         private readonly TrainingDataCaptureService _trainingDataCapture;
+        // F4.3 (issue #351): exclusão mútua com o treino LoRA na mesma VM. Opcional (nullable) —
+        // sem o serviço registrado, a checagem é ignorada e o comportamento é o de hoje.
+        private readonly IRetrainingLock? _retrainingLock;
         private readonly string _xsdBasePath;
         private readonly string _xslBasePath;
         private readonly RepairOrchestrator _orchestrator = new();
@@ -42,13 +49,15 @@ namespace LayoutParserApi.Services.Transformation.Ai
             XmlDocumentTypeDetector documentTypeDetector,
             IOptions<OllamaOptions> ollamaOptions,
             IConfiguration configuration,
-            TrainingDataCaptureService trainingDataCapture)
+            TrainingDataCaptureService trainingDataCapture,
+            IRetrainingLock? retrainingLock = null)
         {
             _logger = logger;
             _mapperService = mapperService;
             _documentTypeDetector = documentTypeDetector;
             _ollamaOptions = ollamaOptions.Value;
             _trainingDataCapture = trainingDataCapture;
+            _retrainingLock = retrainingLock;
             _xsdBasePath = configuration["XsdValidation:BasePath"] ?? @"C:\inetpub\wwwroot\layoutparser\xsd";
             // Mesma convenção de TransformationPipelineService/AutoTransformationGeneratorService —
             // {mapperName}_{layoutName}.xsl (issue #55) — pra persistir o XSLT sintetizado no lugar
@@ -71,6 +80,21 @@ namespace LayoutParserApi.Services.Transformation.Ai
             var safeLayoutName = Services.Logging.LogMessageSanitizer.Sanitize(layoutName);
             try
             {
+                // F4.3 (issue #351, ADR §6.2): se o treino LoRA está rodando na VM (retraining.lock
+                // presente), a síntese via Ollama fica suspensa — treino + inferência juntos na
+                // mesma CPU degradam a convergência pelas ~40h inteiras. Degrada graciosamente
+                // (não lança): o ticket de IA volta como não-convergido e pode ser retentado depois.
+                if (_retrainingLock?.IsHeld() == true)
+                {
+                    _logger.LogWarning(
+                        "Síntese de XSLT suspensa: retraining LoRA em andamento na VM ({LockPath}) — " +
+                        "Ollama de inferência não é acionado enquanto o treino roda (mapperGuid={MapperGuid})",
+                        Services.Logging.LogMessageSanitizer.Sanitize(_retrainingLock.LockFilePath), safeMapperGuid);
+                    return Failed(
+                        "Retraining do modelo em andamento na VM — síntese via Ollama suspensa até o treino " +
+                        "terminar (retraining.lock presente). Retente mais tarde.");
+                }
+
                 var mapper = await ResolveMapperAsync(mapperGuid, cancellationToken);
                 if (mapper is null)
                 {
@@ -133,6 +157,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
                 // TryPersistXslt já usa para gravar (issue #55).
                 var seedXslt = TryLoadSeedXslt(mapper.Name, layoutName);
 
+                var stopwatch = Stopwatch.StartNew();
                 var report = await _orchestrator.RunAsync(
                     mapperVo,
                     input,
@@ -143,6 +168,13 @@ namespace LayoutParserApi.Services.Transformation.Ai
                     maxIterations,
                     cancellationToken,
                     seedXslt);
+                stopwatch.Stop();
+
+                // F4.1 (issue #351, ADR §8/§10): telemetria de duração/iterações do RepairOrchestrator
+                // no caminho de PRODUÇÃO — até agora só o CLI offline (MetricsBatchRunner) media isso.
+                // Mesmo canal de F3 (Source=AiMetrics), pré-requisito pra calibrar o N do gatilho de F4.2.
+                LogRuntimeMetrics(safeMapperGuid, safeLayoutName, stopwatch.Elapsed.TotalSeconds, report.Iterations,
+                    report.Converged, report.FinalXsd.IsValid);
 
                 if (report.Converged && !string.IsNullOrWhiteSpace(layoutName))
                     TryPersistXslt(mapper.Name, layoutName!, report.FinalXslt);
@@ -324,6 +356,32 @@ namespace LayoutParserApi.Services.Transformation.Ai
                 Environment.SetEnvironmentVariable("OLLAMA_MODEL", _ollamaOptions.Model);
 
             return new OllamaXslSynthesizer(message => _logger.LogDebug("[Ollama] {Message}", message));
+        }
+
+        /// <summary>
+        /// F4.1 (issue #351): grava a linha estruturada de duração/iterações do RepairOrchestrator
+        /// em runtime, com <c>Source=AiMetrics</c> (mesmo canal que o job <c>--mode=metrics-batch</c>
+        /// e a ingestão externa já usam). Pares Chave=Valor, cultura invariante no double — o leitor
+        /// de métricas tokeniza por espaço e ignora chave desconhecida, então é aditivo.
+        /// </summary>
+        private void LogRuntimeMetrics(
+            string safeMapperGuid, string? safeLayoutName, double durationSeconds, int iterations,
+            bool converged, bool xsdValid)
+        {
+            using (LogContext.PushProperty("Source", "AiMetrics"))
+            {
+                _logger.LogInformation(
+                    "RepairOrchestrator runtime concluido. MapperGuid={MapperGuid} Layout={Layout} " +
+                    "DuracaoSegundos={DurationSeconds} Iteracoes={Iterations} Convergiu={Converged} " +
+                    "XsdValido={XsdValid} Origem={Origem}",
+                    safeMapperGuid,
+                    safeLayoutName ?? string.Empty,
+                    durationSeconds.ToString("F3", System.Globalization.CultureInfo.InvariantCulture),
+                    iterations,
+                    converged,
+                    xsdValid,
+                    "repair-orchestrator-runtime");
+            }
         }
 
         private static XslSynthesisResult Failed(string error) => new()
