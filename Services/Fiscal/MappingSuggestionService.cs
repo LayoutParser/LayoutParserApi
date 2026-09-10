@@ -5,7 +5,7 @@ using System.Text.Json;
 
 using LayoutParserApi.Models.Entities.Fiscal;
 using LayoutParserApi.Services.Interfaces;
-using LayoutParserApi.Services.XmlAnalysis;
+using LayoutParserApi.Services.Llm;
 
 using Microsoft.Extensions.Options;
 
@@ -14,14 +14,17 @@ namespace LayoutParserApi.Services.Fiscal
     /// <summary>
     /// Implementação de <see cref="IMappingSuggestionService"/> — Slice 3 (issue #230). Prompt novo,
     /// upstream do <c>RepairOrchestrator</c> (que sintetiza XSLT executável — não se aplica aqui).
-    /// Reaproveita só a infra Ollama de baixo nível (<see cref="HttpClient"/>/<see cref="OllamaOptions"/>),
-    /// nunca nuvem (Gemini/OpenAI decomissionados — dado fiscal sensível, ver <c>security.md</c>).
+    /// ✅ Issue #340 (F1): consome <see cref="ILlmProvider"/> via <see cref="LlmProviderResolver"/>
+    /// em vez de <see cref="HttpClient"/>/<see cref="XmlAnalysis.OllamaOptions"/> diretos (mesmo
+    /// motor Ollama por trás — ver ADR docs/architecture/adr-llm-provider-plugavel-2026-09-08.md).
+    /// Nunca nuvem (Gemini/OpenAI decomissionados — dado fiscal sensível, ver <c>security.md</c>);
+    /// declara <see cref="DataSensitivity.RealFiscalDocument"/> explicitamente (artefatos do draft
+    /// podem conter amostra real — ADR §1.1, tratado como REAL até provar o contrário).
     /// </summary>
     public sealed class MappingSuggestionService : IMappingSuggestionService
     {
         private readonly ILogger<MappingSuggestionService> _logger;
-        private readonly HttpClient _httpClient;
-        private readonly OllamaOptions _ollamaOptions;
+        private readonly LlmProviderResolver _providerResolver;
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly string _artifactStorePath;
 
@@ -39,14 +42,12 @@ namespace LayoutParserApi.Services.Fiscal
 
         public MappingSuggestionService(
             ILogger<MappingSuggestionService> logger,
-            HttpClient httpClient,
-            IOptions<OllamaOptions> ollamaOptions,
+            LlmProviderResolver providerResolver,
             IServiceScopeFactory scopeFactory,
             IConfiguration configuration)
         {
             _logger = logger;
-            _httpClient = httpClient;
-            _ollamaOptions = ollamaOptions.Value;
+            _providerResolver = providerResolver;
             _scopeFactory = scopeFactory;
             _artifactStorePath = configuration["ML:FiscalMappingPackagesPath"]
                 ?? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "MLData", "FiscalMappingPackages");
@@ -145,26 +146,13 @@ namespace LayoutParserApi.Services.Fiscal
 
             var prompt = await BuildPromptAsync(relevant, cancellationToken);
 
-            var payload = new
-            {
-                model = _ollamaOptions.Model,
-                prompt,
-                stream = false,
-                format = "json",
-                options = new { temperature = 0.0 }
-            };
+            var llmRequest = new LlmRequest(prompt, DataSensitivity.RealFiscalDocument, JsonSchema: "\"json\"", Temperature: 0.0);
+            var provider = _providerResolver.Resolve(DataSensitivity.RealFiscalDocument);
 
-            string raw;
+            LlmResponse response;
             try
             {
-                using var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
-                var response = await _httpClient.PostAsync($"{_ollamaOptions.Url.TrimEnd('/')}/api/generate", content, cancellationToken);
-                if (!response.IsSuccessStatusCode)
-                {
-                    _logger.LogWarning("Ollama respondeu {StatusCode} ao gerar sugestões de mapeamento.", response.StatusCode);
-                    return Array.Empty<MappingDraftRuleProposal>();
-                }
-                raw = await response.Content.ReadAsStringAsync(cancellationToken);
+                response = await provider.GenerateAsync(llmRequest, cancellationToken);
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
             {
@@ -174,10 +162,13 @@ namespace LayoutParserApi.Services.Fiscal
                 return Array.Empty<MappingDraftRuleProposal>();
             }
 
-            using var doc = JsonDocument.Parse(raw);
-            var modelText = doc.RootElement.TryGetProperty("response", out var r) ? r.GetString() ?? "" : "";
+            if (!response.Success)
+            {
+                _logger.LogWarning("Falha ao gerar sugestões de mapeamento via {Provider}: {Error}", provider.Name, response.ErrorMessage);
+                return Array.Empty<MappingDraftRuleProposal>();
+            }
 
-            return ParseProposals(modelText);
+            return ParseProposals(response.Text);
         }
 
         private async Task<string> BuildPromptAsync(IReadOnlyList<ArtifactFileRef> artifacts, CancellationToken cancellationToken)

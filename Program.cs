@@ -493,10 +493,10 @@ try
     builder.Services.AddScoped<IAntivirusScanner, LayoutParserApi.Services.Fiscal.WindowsDefenderAntivirusScanner>();
     builder.Services.AddScoped<IFiscalPackageService, LayoutParserApi.Services.Fiscal.FiscalPackageService>();
     // ✅ Slice 3 (issue #230): MappingDraft human-in-the-loop — mesmo banco/padrão ADO.NET.
-    // MappingSuggestionService usa HttpClient (Ollama) — AddHttpClient para pooling correto de conexão,
-    // mesmo padrão de OllamaValidationDiagnosticService.
+    // MappingSuggestionService consome ILlmProvider (issue #340/F1) — sem HttpClient direto aqui;
+    // o pooling de conexão HTTP fica encapsulado dentro do registro do OllamaLlmProvider (grupo Llm, abaixo).
     builder.Services.AddScoped<IMappingDraftStore, SqlMappingDraftStore>();
-    builder.Services.AddHttpClient<IMappingSuggestionService, LayoutParserApi.Services.Fiscal.MappingSuggestionService>();
+    builder.Services.AddScoped<IMappingSuggestionService, LayoutParserApi.Services.Fiscal.MappingSuggestionService>();
     builder.Services.AddScoped<LayoutParserApi.Services.Filters.MappingEngineGuardFilter>();
     // ✅ Slice 4 (issue #226/#227): MappingExplanation — 3 adapters determinísticos (sem LLM),
     // resolvidos por Engine no controller via IEnumerable<IMappingExplanationAdapter>.
@@ -599,16 +599,20 @@ try
     // docs/architecture/multi-candidato-e-diagnostico-ia-contrato.md. Não usa GeminiAIService
     // (decomissionado, sem registro no DI — ver generation-services-unregistered-di.md).
     builder.Services.Configure<OllamaOptions>(builder.Configuration.GetSection("Ollama"));
-    // ✅ Desliga o HttpClient.Timeout padrão (100s) do client tipado: o timeout real de
-    // diagnóstico é o nosso próprio CancellationTokenSource (Ollama:DiagnosisTimeoutSeconds,
-    // dentro de OllamaValidationDiagnosticService). Descoberto em teste manual: sem isso, o
-    // timeout de 100s do HttpClient dispara ANTES do nosso e lança TaskCanceledException/
-    // TimeoutException que o catch dedicado de timeout não reconhecia — caía no 500 genérico
-    // em vez do 504 esperado pelo contrato (Gap 2).
-    builder.Services.AddHttpClient<OllamaValidationDiagnosticService>(client =>
+
+    // ✅ Issue #340 (F1, ADR docs/architecture/adr-llm-provider-plugavel-2026-09-08.md): abstração
+    // ILlmProvider/LlmProviderResolver — único provider registrado nesta fase é o Ollama local.
+    // Desliga o HttpClient.Timeout padrão (100s) do client tipado: cada serviço consumidor controla
+    // seu próprio timeout via CancellationToken (ex.: Ollama:DiagnosisTimeoutSeconds dentro de
+    // OllamaValidationDiagnosticService). Descoberto em teste manual (Gap 2): sem isso, o timeout de
+    // 100s do HttpClient dispara ANTES do timeout dedicado e lança TaskCanceledException/
+    // TimeoutException que o catch dedicado de timeout não reconhecia — caía no 500 genérico em
+    // vez do 504 esperado pelo contrato.
+    builder.Services.AddHttpClient<LayoutParserApi.Services.Llm.ILlmProvider, LayoutParserApi.Services.Llm.OllamaLlmProvider>(client =>
     {
         client.Timeout = Timeout.InfiniteTimeSpan;
     });
+    builder.Services.AddScoped<LayoutParserApi.Services.Llm.LlmProviderResolver>();
 
     // ✅ Pathway IA de execute-candidates (Issue #40) — loop gerar → validar XSD → comparar com o
     // gabarito sysmiddle → corrigir, assíncrono/desacoplado do ciclo síncrono do endpoint (ver
