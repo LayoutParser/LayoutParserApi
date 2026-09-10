@@ -61,9 +61,9 @@ namespace LayoutParserApi.Tests.Controllers
         {
             public MapperDbVazio(IConfiguration config) : base(NullLogger<MapperDatabaseService>.Instance, null!, config) { }
 
-            public override Task<List<Models.Entities.Mapper>> GetRankedMapperCandidatesForLayoutGuidAsync(
+            public override Task<List<LayoutParserApi.Models.Entities.Mapper>> GetRankedMapperCandidatesForLayoutGuidAsync(
                 string layoutGuid, int projectId, IReadOnlyCollection<string> allowedPackageGuids)
-                => Task.FromResult(new List<Models.Entities.Mapper>());
+                => Task.FromResult(new List<LayoutParserApi.Models.Entities.Mapper>());
         }
 
         private sealed class SpyAiCandidateService : IAiTransformationCandidateService
@@ -71,7 +71,7 @@ namespace LayoutParserApi.Tests.Controllers
             public int EnqueueCount { get; private set; }
             public Task EnqueueAsync(string userId, string ticket, string layoutName, Guid layoutGuid, string mapperGuid,
                 string inputContent, string? groundTruthXml, CancellationToken cancellationToken,
-                IReadOnlyList<Models.Entities.ParsedField>? parsedFields = null)
+                IReadOnlyList<LayoutParserApi.Models.Entities.ParsedField>? parsedFields = null)
             {
                 EnqueueCount++;
                 return Task.CompletedTask;

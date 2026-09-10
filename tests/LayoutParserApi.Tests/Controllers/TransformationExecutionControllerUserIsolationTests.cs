@@ -53,7 +53,7 @@ namespace LayoutParserApi.Tests.Controllers
             public Task EnqueueAsync(
                 string userId, string ticket, string layoutName, Guid layoutGuid, string mapperGuid,
                 string inputContent, string? groundTruthXml, CancellationToken cancellationToken,
-                IReadOnlyList<Models.Entities.ParsedField>? parsedFields = null)
+                IReadOnlyList<LayoutParserApi.Models.Entities.ParsedField>? parsedFields = null)
             {
                 LastEnqueueUserId = userId;
                 return Task.CompletedTask;
