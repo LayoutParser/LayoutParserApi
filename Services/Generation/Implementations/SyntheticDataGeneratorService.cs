@@ -9,11 +9,14 @@ namespace LayoutParserApi.Services.Generation.Implementations
     public class SyntheticDataGeneratorService : ISyntheticDataGeneratorService
     {
         private readonly ILogger<SyntheticDataGeneratorService> _logger;
-        private readonly Random _random = new();
+        private readonly ITypedValueGenerator _valueGenerator;
 
-        public SyntheticDataGeneratorService(ILogger<SyntheticDataGeneratorService> logger)
+        public SyntheticDataGeneratorService(
+            ILogger<SyntheticDataGeneratorService> logger,
+            ITypedValueGenerator valueGenerator)
         {
             _logger = logger;
+            _valueGenerator = valueGenerator;
         }
 
         public async Task<GeneratedDataResult> GenerateSyntheticDataAsync(SyntheticDataRequest request)
@@ -75,30 +78,11 @@ namespace LayoutParserApi.Services.Generation.Implementations
         {
             try
             {
-                var fieldType = InferFieldType(field, dataType);
-
-                switch (fieldType)
-                {
-                    case "cnpj":
-                        return GenerateCnpj();
-                    case "cpf":
-                        return GenerateCpf();
-                    case "date":
-                        return GenerateDate();
-                    case "datetime":
-                        return GenerateDateTime();
-                    case "decimal":
-                        return GenerateDecimal(field.LengthField);
-                    case "integer":
-                        return GenerateInteger(field.LengthField);
-                    case "email":
-                        return GenerateEmail();
-                    case "phone":
-                        return GeneratePhone();
-                    case "text":
-                    default:
-                        return GenerateText(field.LengthField, context, excelContext);
-                }
+                // ✅ Geração de valor por tipo agora vive no componente compartilhado
+                // ITypedValueGenerator (issue #356) — consumido também pelo caminho Xml,
+                // sem duplicar CPF/CNPJ/data/decimal.
+                var fieldType = _valueGenerator.InferType(field.Name, dataType);
+                return _valueGenerator.Generate(fieldType, field.LengthField, context);
             }
             catch (Exception ex)
             {
@@ -125,7 +109,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
             var requirements = new Dictionary<string, object>
             {
                 ["fieldName"] = field.Name,
-                ["fieldType"] = InferFieldType(field),
+                ["fieldType"] = _valueGenerator.InferType(field.Name),
                 ["length"] = field.LengthField,
                 ["isSequential"] = field.IsSequential,
                 ["isRequired"] = field.IsRequired,
@@ -243,135 +227,6 @@ namespace LayoutParserApi.Services.Generation.Implementations
             // Implementar lógica para extrair valores de exemplo do Excel
             // baseado no mapeamento de campos
             return new List<string>();
-        }
-
-        private string InferFieldType(FieldElement field, string dataType = null)
-        {
-            if (!string.IsNullOrEmpty(dataType))
-                return dataType.ToLower();
-
-            var name = field.Name.ToLower();
-
-            if (name.Contains("cnpj")) return "cnpj";
-            if (name.Contains("cpf")) return "cpf";
-            if (name.Contains("data") || name.Contains("date")) return "date";
-            if (name.Contains("hora") || name.Contains("time")) return "datetime";
-            if (name.Contains("valor") || name.Contains("preco") || name.Contains("amount")) return "decimal";
-            if (name.Contains("quantidade") || name.Contains("qtd")) return "integer";
-            if (name.Contains("email")) return "email";
-            if (name.Contains("telefone") || name.Contains("phone")) return "phone";
-
-            return "text";
-        }
-
-        private string GenerateCnpj()
-        {
-            // Gera CNPJ sinteticamente válido: 12 dígitos base (8 aleatórios + "0001" de
-            // filial matriz) seguidos dos 2 dígitos verificadores calculados por módulo 11.
-            var baseDigits = _random.Next(10000000, 99999999).ToString() + "0001";
-            var dv1 = CalculateCnpjCheckDigit(baseDigits);
-            var dv2 = CalculateCnpjCheckDigit(baseDigits + dv1);
-            return baseDigits + dv1 + dv2;
-        }
-
-        private string GenerateCpf()
-        {
-            // Gera CPF sinteticamente válido: 9 dígitos base aleatórios seguidos dos 2
-            // dígitos verificadores calculados por módulo 11.
-            var baseDigits = _random.Next(100000000, 999999999).ToString().PadLeft(9, '0');
-            var dv1 = CalculateCpfCheckDigit(baseDigits);
-            var dv2 = CalculateCpfCheckDigit(baseDigits + dv1);
-            return baseDigits + dv1 + dv2;
-        }
-
-        /// <summary>
-        /// Calcula um dígito verificador de CPF pelo algoritmo padrão de módulo 11.
-        /// Os pesos começam em (tamanho do trecho + 1) e decrescem até 2.
-        /// </summary>
-        private static int CalculateCpfCheckDigit(string digits)
-        {
-            var sum = 0;
-            var weight = digits.Length + 1;
-
-            foreach (var c in digits)
-            {
-                sum += (c - '0') * weight;
-                weight--;
-            }
-
-            var remainder = sum % 11;
-            return remainder < 2 ? 0 : 11 - remainder;
-        }
-
-        /// <summary>
-        /// Calcula um dígito verificador de CNPJ pelo algoritmo padrão de módulo 11.
-        /// Os pesos seguem a sequência fixa 2..9 repetida da direita para a esquerda.
-        /// </summary>
-        private static int CalculateCnpjCheckDigit(string digits)
-        {
-            var sum = 0;
-            var weight = 2;
-
-            for (var i = digits.Length - 1; i >= 0; i--)
-            {
-                sum += (digits[i] - '0') * weight;
-                weight = weight == 9 ? 2 : weight + 1;
-            }
-
-            var remainder = sum % 11;
-            return remainder < 2 ? 0 : 11 - remainder;
-        }
-
-        private string GenerateDate()
-        {
-            var startDate = DateTime.Now.AddYears(-5);
-            var endDate = DateTime.Now;
-            var randomDate = startDate.AddDays(_random.Next(0, (int)(endDate - startDate).TotalDays));
-            return randomDate.ToString("yyyyMMdd");
-        }
-
-        private string GenerateDateTime()
-        {
-            var startDate = DateTime.Now.AddYears(-1);
-            var endDate = DateTime.Now;
-            var randomDate = startDate.AddDays(_random.Next(0, (int)(endDate - startDate).TotalDays));
-            return randomDate.ToString("yyyy-MM-ddTHH:mm:ss");
-        }
-
-        private string GenerateDecimal(int length)
-        {
-            var value = (decimal)_random.NextDouble() * 10000;
-            var formatted = value.ToString("F2").Replace(".", "").Replace(",", "");
-            return formatted.PadLeft(length, '0');
-        }
-
-        private string GenerateInteger(int length)
-        {
-            var value = _random.Next(1, 999999);
-            return value.ToString().PadLeft(length, '0');
-        }
-
-        private string GenerateEmail()
-        {
-            var domains = new[] { "gmail.com", "hotmail.com", "outlook.com", "empresa.com.br" };
-            var names = new[] { "joao", "maria", "pedro", "ana", "carlos", "lucia" };
-            var domain = domains[_random.Next(domains.Length)];
-            var name = names[_random.Next(names.Length)];
-            return $"{name}{_random.Next(100, 999)}@{domain}";
-        }
-
-        private string GeneratePhone()
-        {
-            var ddd = _random.Next(11, 99);
-            var number = _random.Next(10000000, 99999999);
-            return $"{ddd}{number}";
-        }
-
-        private string GenerateText(int length, string context, ExcelDataContext excelContext)
-        {
-            var words = new[] { "exemplo", "teste", "dados", "sinteticos", "gerado", "automaticamente" };
-            var word = words[_random.Next(words.Length)];
-            return word.PadRight(length, ' ');
         }
 
     }
