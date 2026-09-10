@@ -17,6 +17,12 @@ namespace LayoutParserApi.Controllers
         public string? Environment { get; set; }
     }
 
+    /// <summary>Corpo opcional das transições de ciclo de vida (deprecate/archive — issue #378).</summary>
+    public sealed class LifecycleTransitionRequest
+    {
+        public string? Justification { get; set; }
+    }
+
     /// <summary>
     /// Governança/publicação de <see cref="MappingRelease"/> — Slice 7 (issue #94, design
     /// <c>design-slice7-governanca-piloto-fiat-2026-09-01.md</c>). Último slice da fundação: promove
@@ -192,6 +198,72 @@ namespace LayoutParserApi.Controllers
             catch (InvalidOperationException ex)
             {
                 _logger.LogWarning(ex, "Rollback recusado para release {ReleaseId}.", releaseId);
+                return UnprocessableEntity(new { error = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// <c>published → deprecated</c> — deprecação manual (issue #378). A release deixa de ser a
+        /// publicação corrente mas continua consultável/auditável. Corpo opcional <c>justification</c>.
+        /// </summary>
+        /// <remarks>
+        /// RBAC: exige papel <c>fiscal_admin</c> ou <c>owner</c> no workspace da rota. Sem membership → 404;
+        /// papel insuficiente → 403. Transição inválida (status de origem ≠ <c>published</c>) → 422 com
+        /// mensagem PT-BR. Idempotente: re-deprecar uma release já <c>deprecated</c> é no-op (200).
+        /// </remarks>
+        [HttpPost("deprecate")]
+        [RequireWorkspaceRole(WorkspaceRole.FiscalAdmin, WorkspaceRole.Owner)]
+        public async Task<IActionResult> Deprecate(Guid workspaceId, Guid releaseId, [FromBody] LifecycleTransitionRequest? request, CancellationToken cancellationToken)
+        {
+            if (_currentUser.UserId is not Guid userId)
+                return NotFound();
+
+            var release = await _releaseStore.GetReleaseIfMemberAsync(releaseId, userId, cancellationToken);
+            if (release == null || release.WorkspaceId != workspaceId)
+                return NotFound();
+
+            try
+            {
+                var deprecated = await _releaseStore.DeprecateAsync(releaseId, userId, request?.Justification, cancellationToken);
+                return Ok(ToReleaseResponse(deprecated));
+            }
+            catch (InvalidOperationException ex)
+            {
+                _logger.LogWarning(ex, "Deprecação recusada para release {ReleaseId}.", releaseId);
+                return UnprocessableEntity(new { error = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// <c>deprecated → archived</c> (também aceita <c>test_failed</c>/<c>in_review</c> abandonados
+        /// como origem — issue #378). Estado terminal: a release fica só para histórico/auditoria.
+        /// Corpo opcional <c>justification</c>.
+        /// </summary>
+        /// <remarks>
+        /// RBAC: exige papel <c>fiscal_admin</c> ou <c>owner</c> no workspace da rota. Sem membership → 404;
+        /// papel insuficiente → 403. Transição inválida (origem fora de <c>deprecated</c>/<c>test_failed</c>/
+        /// <c>in_review</c> — ex.: uma <c>published</c>, que precisa ser deprecada antes) → 422 com mensagem
+        /// PT-BR. Idempotente: re-arquivar uma release já <c>archived</c> é no-op (200).
+        /// </remarks>
+        [HttpPost("archive")]
+        [RequireWorkspaceRole(WorkspaceRole.FiscalAdmin, WorkspaceRole.Owner)]
+        public async Task<IActionResult> Archive(Guid workspaceId, Guid releaseId, [FromBody] LifecycleTransitionRequest? request, CancellationToken cancellationToken)
+        {
+            if (_currentUser.UserId is not Guid userId)
+                return NotFound();
+
+            var release = await _releaseStore.GetReleaseIfMemberAsync(releaseId, userId, cancellationToken);
+            if (release == null || release.WorkspaceId != workspaceId)
+                return NotFound();
+
+            try
+            {
+                var archived = await _releaseStore.ArchiveAsync(releaseId, userId, request?.Justification, cancellationToken);
+                return Ok(ToReleaseResponse(archived));
+            }
+            catch (InvalidOperationException ex)
+            {
+                _logger.LogWarning(ex, "Arquivamento recusado para release {ReleaseId}.", releaseId);
                 return UnprocessableEntity(new { error = ex.Message });
             }
         }
