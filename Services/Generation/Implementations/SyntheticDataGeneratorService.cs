@@ -255,16 +255,60 @@ namespace LayoutParserApi.Services.Generation.Implementations
 
         private string GenerateCnpj()
         {
-            // Gerar CNPJ válido sinteticamente
-            var cnpj = _random.Next(10000000, 99999999).ToString() + "0001" + _random.Next(10, 99).ToString();
-            return cnpj.PadLeft(14, '0');
+            // Gera CNPJ sinteticamente válido: 12 dígitos base (8 aleatórios + "0001" de
+            // filial matriz) seguidos dos 2 dígitos verificadores calculados por módulo 11.
+            var baseDigits = _random.Next(10000000, 99999999).ToString() + "0001";
+            var dv1 = CalculateCnpjCheckDigit(baseDigits);
+            var dv2 = CalculateCnpjCheckDigit(baseDigits + dv1);
+            return baseDigits + dv1 + dv2;
         }
 
         private string GenerateCpf()
         {
-            // Gerar CPF válido sinteticamente
-            var cpf = _random.Next(100000000, 999999999).ToString() + _random.Next(10, 99).ToString();
-            return cpf.PadLeft(11, '0');
+            // Gera CPF sinteticamente válido: 9 dígitos base aleatórios seguidos dos 2
+            // dígitos verificadores calculados por módulo 11.
+            var baseDigits = _random.Next(100000000, 999999999).ToString().PadLeft(9, '0');
+            var dv1 = CalculateCpfCheckDigit(baseDigits);
+            var dv2 = CalculateCpfCheckDigit(baseDigits + dv1);
+            return baseDigits + dv1 + dv2;
+        }
+
+        /// <summary>
+        /// Calcula um dígito verificador de CPF pelo algoritmo padrão de módulo 11.
+        /// Os pesos começam em (tamanho do trecho + 1) e decrescem até 2.
+        /// </summary>
+        private static int CalculateCpfCheckDigit(string digits)
+        {
+            var sum = 0;
+            var weight = digits.Length + 1;
+
+            foreach (var c in digits)
+            {
+                sum += (c - '0') * weight;
+                weight--;
+            }
+
+            var remainder = sum % 11;
+            return remainder < 2 ? 0 : 11 - remainder;
+        }
+
+        /// <summary>
+        /// Calcula um dígito verificador de CNPJ pelo algoritmo padrão de módulo 11.
+        /// Os pesos seguem a sequência fixa 2..9 repetida da direita para a esquerda.
+        /// </summary>
+        private static int CalculateCnpjCheckDigit(string digits)
+        {
+            var sum = 0;
+            var weight = 2;
+
+            for (var i = digits.Length - 1; i >= 0; i--)
+            {
+                sum += (digits[i] - '0') * weight;
+                weight = weight == 9 ? 2 : weight + 1;
+            }
+
+            var remainder = sum % 11;
+            return remainder < 2 ? 0 : 11 - remainder;
         }
 
         private string GenerateDate()
