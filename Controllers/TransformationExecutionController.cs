@@ -59,6 +59,7 @@ namespace LayoutParserApi.Controllers
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly Services.Security.ICanaryAlertService _canaryAlert;
         private readonly IFieldCorrectionStore _fieldCorrectionStore;
+        private readonly TrainingDataCaptureService _trainingDataCapture;
 
         public TransformationExecutionController(
             ILogger<TransformationExecutionController> logger,
@@ -80,7 +81,8 @@ namespace LayoutParserApi.Controllers
             FieldMappingCompositionService fieldMappingComposition,
             IServiceScopeFactory scopeFactory,
             Services.Security.ICanaryAlertService canaryAlert,
-            IFieldCorrectionStore fieldCorrectionStore)
+            IFieldCorrectionStore fieldCorrectionStore,
+            TrainingDataCaptureService trainingDataCapture)
         {
             _logger = logger;
             _pipelineService = pipelineService;
@@ -102,6 +104,7 @@ namespace LayoutParserApi.Controllers
             _scopeFactory = scopeFactory;
             _canaryAlert = canaryAlert;
             _fieldCorrectionStore = fieldCorrectionStore;
+            _trainingDataCapture = trainingDataCapture;
         }
 
         // Issue #92: chave de particionamento da AiCandidateStore. ICurrentUser.Name é null quando
@@ -546,6 +549,140 @@ namespace LayoutParserApi.Controllers
                 status = "queued",
                 message = "Correção registrada. Será usada para refinar o modelo em treinos futuros."
             });
+        }
+
+        // ─────────────────────────────────────────────────────────────────────────────
+        // Curadoria de correção humana (issue #346, ADR §6/§8)
+        //
+        // NOTA DE AUTORIZAÇÃO: não existe hoje um papel dedicado de revisor fiscal no projeto —
+        // os papéis em uso são "admin" (DataGenerationController, LogsController) e "operador"
+        // (MapperDatabaseController). Curar o que vira dado de treino do modelo é uma operação
+        // privilegiada, então cai em "admin". TODO(#346): trocar por um papel "fiscal"/"revisor"
+        // quando o produto definir a matriz de papéis (ver docs/architecture/rollout-p2-autenticacao.md).
+        // ─────────────────────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Fila de curadoria: reportes de correção humana ainda <c>pending</c> (issue #346), mais
+        /// antigos primeiro. Somente <c>admin</c>.
+        /// </summary>
+        /// <param name="limit">Teto de itens retornados (default 100, máx. 500).</param>
+        /// <response code="200"><c>{ success, count, reports[] }</c>.</response>
+        /// <response code="404">Sem identidade resolvida (fail-closed).</response>
+        /// <response code="500">Falha de infraestrutura ao consultar o <c>IdentityDatabase</c>.</response>
+        [Authorize(Roles = "admin")]
+        [HttpGet("field-correction/pending")]
+        public async Task<IActionResult> ListPendingFieldCorrections([FromQuery] int limit = 100, CancellationToken cancellationToken = default)
+        {
+            if (_currentUser.UserId is not Guid)
+                return NotFound(); // fail-closed, mesmo padrão de ReportFieldCorrection.
+
+            if (limit <= 0) limit = 100;
+            if (limit > 500) limit = 500;
+
+            try
+            {
+                var pending = await _fieldCorrectionStore.ListPendingReportsAsync(limit, cancellationToken);
+                return Ok(new { success = true, count = pending.Count, reports = pending });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Falha ao listar reportes de correção pendentes");
+                return StatusCode(500, new { success = false, error = "Falha de infraestrutura ao listar pendências de curadoria" });
+            }
+        }
+
+        /// <summary>
+        /// Transição de curadoria de um reporte: <c>pending → reviewed_accepted | reviewed_rejected</c>
+        /// (issue #346). Grava <c>ReviewedByUserId</c> (via <see cref="ICurrentUser"/>) e
+        /// <c>ReviewedAtUtc</c>. Idempotente: um segundo review do mesmo reporte devolve <c>409</c>.
+        /// Só <c>reviewed_accepted</c> gera uma linha no dataset de treino incremental
+        /// (<c>source = "human-correction-reviewed"</c>); <c>reviewed_rejected</c> apenas encerra o
+        /// ciclo de vida. O <c>GroundTruthXml</c> do contexto NUNCA é tocado — a revisão só decide
+        /// o que vira treino. Somente <c>admin</c>.
+        /// </summary>
+        /// <response code="200"><c>{ reportId, status }</c> — transição efetuada.</response>
+        /// <response code="400"><c>decision</c> ausente ou diferente de <c>accepted</c>/<c>rejected</c>.</response>
+        /// <response code="404">Sem identidade resolvida (fail-closed).</response>
+        /// <response code="409">Reporte inexistente ou já revisado (só <c>pending</c> transiciona).</response>
+        /// <response code="500">Falha de infraestrutura ao gravar a transição.</response>
+        [Authorize(Roles = "admin")]
+        [HttpPost("field-correction/{reportId:guid}/review")]
+        public async Task<IActionResult> ReviewFieldCorrection(Guid reportId, [FromBody] FieldCorrectionReviewRequest request, CancellationToken cancellationToken)
+        {
+            if (_currentUser.UserId is not Guid reviewerId)
+                return NotFound(); // fail-closed.
+
+            var decision = request?.Decision?.Trim().ToLowerInvariant();
+            var newStatus = decision switch
+            {
+                "accepted" => FieldCorrectionReportStatus.ReviewedAccepted,
+                "rejected" => FieldCorrectionReportStatus.ReviewedRejected,
+                _ => null
+            };
+            if (newStatus is null)
+                return BadRequest(new { success = false, error = "decision é obrigatório e deve ser 'accepted' ou 'rejected'" });
+
+            bool transitioned;
+            try
+            {
+                transitioned = await _fieldCorrectionStore.TransitionStatusAsync(reportId, newStatus, reviewerId, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Falha ao transicionar reporte de correção reportId={ReportId}", reportId);
+                return StatusCode(500, new { success = false, error = "Falha de infraestrutura ao registrar a revisão" });
+            }
+
+            if (!transitioned)
+                return Conflict(new { success = false, error = "reporte inexistente ou já revisado — apenas reportes 'pending' podem ser curados" });
+
+            _logger.LogInformation(
+                "Curadoria de correção humana: reportId={ReportId} status={Status} revisor={ReviewerId}",
+                reportId, newStatus, reviewerId);
+
+            // Só o aceite alimenta o dataset incremental. Best-effort: a transição já está gravada,
+            // uma falha aqui (contexto expirado, disco cheio) vira warning, nunca reverte a revisão
+            // nem derruba a resposta.
+            if (newStatus == FieldCorrectionReportStatus.ReviewedAccepted)
+                await TryCaptureAcceptedCorrectionAsync(reportId, cancellationToken);
+
+            return Ok(new { reportId, status = newStatus });
+        }
+
+        /// <summary>
+        /// Monta o exemplo de treino incremental de um reporte recém-aceito: contexto original
+        /// (<c>InputXml</c>/<c>GroundTruthXml</c>) + <c>ExpectedValue</c> do reporte como saída
+        /// esperada. Delega a escrita ao <see cref="TrainingDataCaptureService"/> (mesmo arquivo
+        /// diário e formato do runtime capture). Best-effort — nunca lança.
+        /// </summary>
+        private async Task TryCaptureAcceptedCorrectionAsync(Guid reportId, CancellationToken cancellationToken)
+        {
+            try
+            {
+                var report = await _fieldCorrectionStore.GetReportAsync(reportId, cancellationToken);
+                if (report is null)
+                {
+                    _logger.LogWarning("Reporte aceito não encontrado ao montar o exemplo de treino (reportId={ReportId})", reportId);
+                    return;
+                }
+
+                var context = await _fieldCorrectionStore.GetContextAsync(report.DocumentId, cancellationToken);
+                if (context is null)
+                {
+                    _logger.LogWarning(
+                        "Contexto do documento ausente/expirado ao montar o exemplo de treino do reporte aceito (reportId={ReportId} documentId={DocumentId})",
+                        reportId, report.DocumentId);
+                    return;
+                }
+
+                _trainingDataCapture.TryCaptureHumanCorrection(context, report);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "Falha ao capturar o exemplo de treino do reporte aceito — best-effort, a revisão permanece gravada (reportId={ReportId})",
+                    reportId);
+            }
         }
 
         /// <summary>
@@ -1616,5 +1753,14 @@ namespace LayoutParserApi.Controllers
         public string ExpectedValue { get; set; } = "";
         public string? Justification { get; set; }
         public string? DocumentType { get; set; }
+    }
+
+    /// <summary>
+    /// Body de <c>POST field-correction/{reportId}/review</c> (issue #346). <c>decision</c>
+    /// obrigatório: <c>"accepted"</c> ou <c>"rejected"</c> (case-insensitive).
+    /// </summary>
+    public class FieldCorrectionReviewRequest
+    {
+        public string? Decision { get; set; }
     }
 }
