@@ -18,8 +18,11 @@ namespace LayoutParserApi.Services.Fiscal
     /// em vez de <see cref="HttpClient"/>/<see cref="XmlAnalysis.OllamaOptions"/> diretos (mesmo
     /// motor Ollama por trás — ver ADR docs/architecture/adr-llm-provider-plugavel-2026-09-08.md).
     /// Nunca nuvem (Gemini/OpenAI decomissionados — dado fiscal sensível, ver <c>security.md</c>);
-    /// declara <see cref="DataSensitivity.RealFiscalDocument"/> explicitamente (artefatos do draft
-    /// podem conter amostra real — ADR §1.1, tratado como REAL até provar o contrário).
+    /// ✅ Issue #341 (F2): a sensibilidade NÃO é mais hardcoded incondicional — é resolvida a partir
+    /// da <see cref="ArtifactProvenance"/> declarada em cada artefato via
+    /// <see cref="ArtifactProvenance.ResolveSensitivity"/> (fail-closed: ausência/valor inválido
+    /// resolve para <see cref="DataSensitivity.RealFiscalDocument"/>, nunca para
+    /// <see cref="DataSensitivity.SyntheticOrAnonymized"/> por omissão — ADR §2.3).
     /// </summary>
     public sealed class MappingSuggestionService : IMappingSuggestionService
     {
@@ -146,8 +149,15 @@ namespace LayoutParserApi.Services.Fiscal
 
             var prompt = await BuildPromptAsync(relevant, cancellationToken);
 
-            var llmRequest = new LlmRequest(prompt, DataSensitivity.RealFiscalDocument, JsonSchema: "\"json\"", Temperature: 0.0);
-            var provider = _providerResolver.Resolve(DataSensitivity.RealFiscalDocument);
+            // ✅ issue #341: se QUALQUER artefato relevante não tiver proveniência explícita
+            // "synthetic", o lote inteiro é tratado como RealFiscalDocument — um artefato real
+            // misturado no prompt contamina a sensibilidade de tudo que foi enviado junto ao modelo.
+            var sensitivity = relevant.Any(a => Models.Entities.Fiscal.ArtifactProvenance.ResolveSensitivity(a.Provenance) == DataSensitivity.RealFiscalDocument)
+                ? DataSensitivity.RealFiscalDocument
+                : DataSensitivity.SyntheticOrAnonymized;
+
+            var llmRequest = new LlmRequest(prompt, sensitivity, JsonSchema: "\"json\"", Temperature: 0.0);
+            var provider = _providerResolver.Resolve(sensitivity);
 
             LlmResponse response;
             try

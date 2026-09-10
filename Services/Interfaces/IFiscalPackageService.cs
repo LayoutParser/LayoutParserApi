@@ -1,7 +1,8 @@
 namespace LayoutParserApi.Services.Interfaces
 {
     /// <summary>Um arquivo recebido no upload, já lido em memória pelo controller (até o limite de tamanho).</summary>
-    public sealed record UploadedArtifactInput(string Kind, string OriginalFileName, string ContentType, byte[] Content);
+    /// <summary><paramref name="Provenance"/> ver <see cref="Models.Entities.Fiscal.ArtifactProvenance"/> (issue #341) — opcional, ausência resolve fail-closed como amostra real.</summary>
+    public sealed record UploadedArtifactInput(string Kind, string OriginalFileName, string ContentType, byte[] Content, string? Provenance = null);
 
     /// <summary>Resultado de uma tentativa de criação de pacote — pode falhar por validação (422) sem lançar.</summary>
     public sealed record CreatePackageOutcome(bool Success, string? Error, PackageDetail? Package);

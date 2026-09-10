@@ -95,7 +95,14 @@ namespace LayoutParserApi.Controllers
                 using var memoryStream = new MemoryStream();
                 await file.CopyToAsync(memoryStream, cancellationToken);
 
-                artifacts.Add(new UploadedArtifactInput(file.Name, file.FileName, file.ContentType, memoryStream.ToArray()));
+                // ✅ issue #341: campo de texto opcional "{kind}Provenance" (ex.: "sampleProvenance")
+                // — proveniência declarada pelo analista, NUNCA inferida. Ausente/inválido vira null
+                // e o serviço trata como amostra real (fail-closed, ver ArtifactProvenance.IsValid).
+                var provenance = Request.Form.TryGetValue($"{file.Name}Provenance", out var provenanceValue)
+                    ? provenanceValue.ToString()
+                    : null;
+
+                artifacts.Add(new UploadedArtifactInput(file.Name, file.FileName, file.ContentType, memoryStream.ToArray(), provenance));
             }
 
             var idempotencyKey = Request.Headers.TryGetValue("Idempotency-Key", out var headerValue) ? headerValue.ToString() : null;
@@ -205,7 +212,14 @@ namespace LayoutParserApi.Controllers
                 using var memoryStream = new MemoryStream();
                 await file.CopyToAsync(memoryStream, cancellationToken);
 
-                artifacts.Add(new UploadedArtifactInput(file.Name, file.FileName, file.ContentType, memoryStream.ToArray()));
+                // ✅ issue #341: campo de texto opcional "{kind}Provenance" (ex.: "sampleProvenance")
+                // — proveniência declarada pelo analista, NUNCA inferida. Ausente/inválido vira null
+                // e o serviço trata como amostra real (fail-closed, ver ArtifactProvenance.IsValid).
+                var provenance = Request.Form.TryGetValue($"{file.Name}Provenance", out var provenanceValue)
+                    ? provenanceValue.ToString()
+                    : null;
+
+                artifacts.Add(new UploadedArtifactInput(file.Name, file.FileName, file.ContentType, memoryStream.ToArray(), provenance));
             }
 
             CreateRevisionOutcome outcome;
@@ -319,6 +333,7 @@ namespace LayoutParserApi.Controllers
                         originalFileName = a.OriginalFileName,
                         inspectionStatus = a.InspectionStatus,
                         uploadedAt = a.UploadedAt,
+                        provenance = a.Provenance,
                     })
                 }
             }
