@@ -27,6 +27,14 @@ namespace LayoutParserApi.Services.Generation
         {
             ArgumentNullException.ThrowIfNull(services);
 
+            // Gerador de valor por tipo lógico (CPF/CNPJ/data/decimal…), compartilhado entre o
+            // caminho TextPositional (SyntheticDataGeneratorService) e o Xml
+            // (XmlSampleDocumentGeneratorService) — issue #356, sem duplicar os dígitos verificadores.
+            services.AddScoped<ITypedValueGenerator, TypedValueGenerator>();
+
+            // Geração de documento XML de exemplo (issue #356) — consumido por LayoutsController.
+            services.AddScoped<IXmlSampleDocumentGeneratorService, XmlSampleDocumentGeneratorService>();
+
             // Dependências diretas do construtor do DataGenerationController.
             services.AddScoped<ISyntheticDataGeneratorService, SyntheticDataGeneratorService>();
             services.AddScoped<IExcelDataProcessor, ExcelDataProcessor>();

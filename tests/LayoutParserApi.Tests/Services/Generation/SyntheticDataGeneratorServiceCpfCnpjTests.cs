@@ -17,7 +17,8 @@ namespace LayoutParserApi.Tests.Services.Generation
         private const int Iterations = 100;
 
         private static SyntheticDataGeneratorService CriarServico()
-            => new(NullLogger<SyntheticDataGeneratorService>.Instance);
+            => new(NullLogger<SyntheticDataGeneratorService>.Instance,
+                   new TypedValueGenerator(NullLogger<TypedValueGenerator>.Instance));
 
         [Fact]
         public async Task GenerateFieldValueAsync_cpf_gera_sempre_digito_verificador_valido()
