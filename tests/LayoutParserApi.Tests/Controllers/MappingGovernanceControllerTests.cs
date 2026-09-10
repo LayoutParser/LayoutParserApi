@@ -73,11 +73,19 @@ namespace LayoutParserApi.Tests.Controllers
             public Task<MappingReleaseDetail?> GetReleaseIfMemberAsync(Guid releaseId, Guid userId, CancellationToken cancellationToken)
                 => Task.FromResult(ById.TryGetValue(releaseId, out var r) ? r : null);
 
-            public Task<(IReadOnlyList<MappingReleaseDetail> Items, int TotalCount)> ListByWorkspaceAsync(Guid workspaceId, int page, int pageSize, CancellationToken cancellationToken)
+            public Task<(IReadOnlyList<MappingReleaseDetail> Items, int TotalCount)> ListByWorkspaceAsync(Guid workspaceId, int page, int pageSize, string? status, Guid? draftId, string? environment, CancellationToken cancellationToken)
             {
-                var doWorkspace = ById.Values.Where(r => r.WorkspaceId == workspaceId).OrderByDescending(r => r.CreatedAt).ToList();
-                var pagina = doWorkspace.Skip((page - 1) * pageSize).Take(pageSize).ToList();
-                return Task.FromResult(((IReadOnlyList<MappingReleaseDetail>)pagina, doWorkspace.Count));
+                // Reproduz o WHERE condicional do SqlMappingReleaseStore: filtro nulo/vazio não entra.
+                var doWorkspace = ById.Values.Where(r => r.WorkspaceId == workspaceId);
+                if (!string.IsNullOrWhiteSpace(status))
+                    doWorkspace = doWorkspace.Where(r => r.Status == status);
+                if (draftId is Guid d)
+                    doWorkspace = doWorkspace.Where(r => r.DraftId == d);
+                if (!string.IsNullOrWhiteSpace(environment))
+                    doWorkspace = doWorkspace.Where(r => r.Environment == environment);
+                var filtrado = doWorkspace.OrderByDescending(r => r.CreatedAt).ToList();
+                var pagina = filtrado.Skip((page - 1) * pageSize).Take(pageSize).ToList();
+                return Task.FromResult(((IReadOnlyList<MappingReleaseDetail>)pagina, filtrado.Count));
             }
 
             public Task<MappingReleaseDetail?> ApplyTestRunResultAsync(Guid releaseId, MappingTestRunSummary summary, CancellationToken cancellationToken)
@@ -370,7 +378,7 @@ namespace LayoutParserApi.Tests.Controllers
             var workspaceId = Guid.NewGuid();
             var controller = BuildController(store, new FakeCurrentUser { UserId = Guid.NewGuid() });
 
-            var result = await controller.List(workspaceId, 1, 20, CancellationToken.None);
+            var result = await controller.List(workspaceId, 1, 20, cancellationToken: CancellationToken.None);
 
             var ok = Assert.IsType<OkObjectResult>(result);
             var payload = Assert.IsAssignableFrom<object>(ok.Value);
@@ -392,7 +400,7 @@ namespace LayoutParserApi.Tests.Controllers
             }
 
             var controller = BuildController(store, new FakeCurrentUser { UserId = Guid.NewGuid() });
-            var result = await controller.List(workspaceId, 1, 2, CancellationToken.None);
+            var result = await controller.List(workspaceId, 1, 2, cancellationToken: CancellationToken.None);
 
             var ok = Assert.IsType<OkObjectResult>(result);
             var payload = ok.Value!;
@@ -414,7 +422,7 @@ namespace LayoutParserApi.Tests.Controllers
             store.ById[releaseDeOutro.ReleaseId] = releaseDeOutro;
 
             var controller = BuildController(store, new FakeCurrentUser { UserId = Guid.NewGuid() });
-            var result = await controller.List(workspaceId, 1, 20, CancellationToken.None);
+            var result = await controller.List(workspaceId, 1, 20, cancellationToken: CancellationToken.None);
 
             var ok = Assert.IsType<OkObjectResult>(result);
             var payload = ok.Value!;
@@ -432,7 +440,145 @@ namespace LayoutParserApi.Tests.Controllers
             var store = new FakeReleaseStore();
             var controller = BuildController(store, new FakeCurrentUser { UserId = Guid.NewGuid() });
 
-            var result = await controller.List(Guid.NewGuid(), page, pageSize, CancellationToken.None);
+            var result = await controller.List(Guid.NewGuid(), page, pageSize, cancellationToken: CancellationToken.None);
+
+            Assert.IsType<BadRequestObjectResult>(result);
+        }
+
+        // --- Listagem: filtros opcionais status/draftId/environment (issue #377) ---
+
+        private static (int TotalCount, System.Collections.Generic.List<object> Items) ReadListPayload(IActionResult result)
+        {
+            var ok = Assert.IsType<OkObjectResult>(result);
+            var payload = ok.Value!;
+            var totalCount = (int)payload.GetType().GetProperty("totalCount")!.GetValue(payload)!;
+            var items = ((System.Collections.IEnumerable)payload.GetType().GetProperty("items")!.GetValue(payload)!).Cast<object>().ToList();
+            return (totalCount, items);
+        }
+
+        [Fact]
+        public async Task List_filtra_por_status()
+        {
+            var store = new FakeReleaseStore();
+            var workspaceId = Guid.NewGuid();
+            foreach (var s in new[] { MappingReleaseStatus.DraftCompiled, MappingReleaseStatus.Published, MappingReleaseStatus.Published })
+            {
+                var r = NewRelease(workspaceId, Guid.NewGuid(), s);
+                store.ById[r.ReleaseId] = r;
+            }
+
+            var controller = BuildController(store, new FakeCurrentUser { UserId = Guid.NewGuid() });
+            var (totalCount, items) = ReadListPayload(await controller.List(workspaceId, 1, 20, status: MappingReleaseStatus.Published, cancellationToken: CancellationToken.None));
+
+            Assert.Equal(2, totalCount);
+            Assert.Equal(2, items.Count);
+        }
+
+        [Fact]
+        public async Task List_filtra_por_draftId()
+        {
+            var store = new FakeReleaseStore();
+            var workspaceId = Guid.NewGuid();
+            var draftAlvo = Guid.NewGuid();
+            var rAlvo = NewRelease(workspaceId, draftAlvo, MappingReleaseStatus.DraftCompiled);
+            store.ById[rAlvo.ReleaseId] = rAlvo;
+            var rOutro = NewRelease(workspaceId, Guid.NewGuid(), MappingReleaseStatus.DraftCompiled);
+            store.ById[rOutro.ReleaseId] = rOutro;
+
+            var controller = BuildController(store, new FakeCurrentUser { UserId = Guid.NewGuid() });
+            var (totalCount, items) = ReadListPayload(await controller.List(workspaceId, 1, 20, draftId: draftAlvo.ToString(), cancellationToken: CancellationToken.None));
+
+            Assert.Equal(1, totalCount);
+            Assert.Single(items);
+        }
+
+        [Fact]
+        public async Task List_filtra_por_environment()
+        {
+            var store = new FakeReleaseStore();
+            var workspaceId = Guid.NewGuid();
+            var prod = NewRelease(workspaceId, Guid.NewGuid(), MappingReleaseStatus.Published) with { Environment = "production" };
+            store.ById[prod.ReleaseId] = prod;
+            var dev = NewRelease(workspaceId, Guid.NewGuid(), MappingReleaseStatus.Published); // "development"
+            store.ById[dev.ReleaseId] = dev;
+
+            var controller = BuildController(store, new FakeCurrentUser { UserId = Guid.NewGuid() });
+            var (totalCount, _) = ReadListPayload(await controller.List(workspaceId, 1, 20, environment: "production", cancellationToken: CancellationToken.None));
+
+            Assert.Equal(1, totalCount);
+        }
+
+        [Fact]
+        public async Task List_combina_os_tres_filtros()
+        {
+            var store = new FakeReleaseStore();
+            var workspaceId = Guid.NewGuid();
+            var draftAlvo = Guid.NewGuid();
+
+            var alvo = NewRelease(workspaceId, draftAlvo, MappingReleaseStatus.Published) with { Environment = "production" };
+            store.ById[alvo.ReleaseId] = alvo;
+
+            // Cada um "quase" bate, mas falha em um dos três critérios.
+            var soStatusEEnv = NewRelease(workspaceId, Guid.NewGuid(), MappingReleaseStatus.Published) with { Environment = "production" };
+            store.ById[soStatusEEnv.ReleaseId] = soStatusEEnv;
+            var soDraftEEnv = NewRelease(workspaceId, draftAlvo, MappingReleaseStatus.DraftCompiled) with { Environment = "production" };
+            store.ById[soDraftEEnv.ReleaseId] = soDraftEEnv;
+            var soStatusEDraft = NewRelease(workspaceId, draftAlvo, MappingReleaseStatus.Published); // "development"
+            store.ById[soStatusEDraft.ReleaseId] = soStatusEDraft;
+
+            var controller = BuildController(store, new FakeCurrentUser { UserId = Guid.NewGuid() });
+            var (totalCount, items) = ReadListPayload(await controller.List(
+                workspaceId, 1, 20,
+                status: MappingReleaseStatus.Published,
+                draftId: draftAlvo.ToString(),
+                environment: "production",
+                cancellationToken: CancellationToken.None));
+
+            Assert.Equal(1, totalCount);
+            Assert.Single(items);
+        }
+
+        [Fact]
+        public async Task List_sem_filtro_retorna_todas_do_workspace()
+        {
+            var store = new FakeReleaseStore();
+            var workspaceId = Guid.NewGuid();
+            foreach (var s in new[] { MappingReleaseStatus.DraftCompiled, MappingReleaseStatus.Published, MappingReleaseStatus.TestFailed })
+            {
+                var r = NewRelease(workspaceId, Guid.NewGuid(), s);
+                store.ById[r.ReleaseId] = r;
+            }
+
+            var controller = BuildController(store, new FakeCurrentUser { UserId = Guid.NewGuid() });
+            var (totalCount, items) = ReadListPayload(await controller.List(workspaceId, 1, 20, cancellationToken: CancellationToken.None));
+
+            Assert.Equal(3, totalCount);
+            Assert.Equal(3, items.Count);
+        }
+
+        [Theory]
+        [InlineData("publicado")]
+        [InlineData("PUBLISHED")]
+        [InlineData("draft")]
+        public async Task List_status_invalido_retorna_400(string status)
+        {
+            var store = new FakeReleaseStore();
+            var controller = BuildController(store, new FakeCurrentUser { UserId = Guid.NewGuid() });
+
+            var result = await controller.List(Guid.NewGuid(), 1, 20, status: status, cancellationToken: CancellationToken.None);
+
+            Assert.IsType<BadRequestObjectResult>(result);
+        }
+
+        [Theory]
+        [InlineData("nao-e-guid")]
+        [InlineData("123")]
+        public async Task List_draftId_nao_guid_retorna_400(string draftId)
+        {
+            var store = new FakeReleaseStore();
+            var controller = BuildController(store, new FakeCurrentUser { UserId = Guid.NewGuid() });
+
+            var result = await controller.List(Guid.NewGuid(), 1, 20, draftId: draftId, cancellationToken: CancellationToken.None);
 
             Assert.IsType<BadRequestObjectResult>(result);
         }
