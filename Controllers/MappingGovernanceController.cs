@@ -48,6 +48,12 @@ namespace LayoutParserApi.Controllers
         /// esse segmento. Qualquer papel do workspace pode ler — só as mutações (approve/publish/
         /// rollback) exigem papel elevado.
         /// </summary>
+        /// <remarks>
+        /// RBAC: qualquer papel de membro (<c>owner</c>/<c>fiscal_admin</c>/<c>mapper</c>/
+        /// <c>reviewer</c>/<c>operator</c>/<c>viewer</c>). Não-membro ou sem identidade → 404.
+        /// Só aceita <c>page</c>/<c>pageSize</c> — não há filtro por <c>status</c>/<c>draftId</c>/
+        /// <c>environment</c> ainda (issue #377, backlog).
+        /// </remarks>
         [HttpGet("~/api/workspaces/{workspaceId:guid}/mapping-releases")]
         [RequireWorkspaceRole(WorkspaceRole.Owner, WorkspaceRole.FiscalAdmin, WorkspaceRole.Mapper, WorkspaceRole.Reviewer, WorkspaceRole.Operator, WorkspaceRole.Viewer)]
         public async Task<IActionResult> List(Guid workspaceId, [FromQuery] int page = 1, [FromQuery] int pageSize = 20, CancellationToken cancellationToken = default)
@@ -70,6 +76,10 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary><c>test_passed → in_review → approved</c>. Bloqueado se a release estiver <c>test_failed</c> (ou qualquer status diferente de <c>test_passed</c>).</summary>
+        /// <remarks>
+        /// RBAC: exige papel <c>reviewer</c> ou <c>fiscal_admin</c> no workspace da rota. Sem
+        /// membership → 404; papel insuficiente → 403. Corpo exige <c>justification</c> (422 se ausente).
+        /// </remarks>
         [HttpPost("approve")]
         [RequireWorkspaceRole(WorkspaceRole.Reviewer, WorkspaceRole.FiscalAdmin)]
         public async Task<IActionResult> Approve(Guid workspaceId, Guid releaseId, [FromBody] ApproveReleaseRequest request, CancellationToken cancellationToken)
@@ -97,6 +107,7 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary><c>approved → published</c>. Congela os artefatos — edição posterior exige nova revisão (novo <see cref="MappingRelease"/>).</summary>
+        /// <remarks>RBAC: exige papel <c>fiscal_admin</c> ou <c>owner</c> no workspace da rota. Sem membership → 404; papel insuficiente → 403.</remarks>
         [HttpPost("publish")]
         [RequireWorkspaceRole(WorkspaceRole.FiscalAdmin, WorkspaceRole.Owner)]
         public async Task<IActionResult> Publish(Guid workspaceId, Guid releaseId, [FromBody] PublishReleaseRequest? request, CancellationToken cancellationToken)
@@ -123,6 +134,7 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>Reverte a release publicada para a publicação anterior. Idempotente — repetir a chamada é no-op.</summary>
+        /// <remarks>RBAC: exige papel <c>fiscal_admin</c> ou <c>owner</c> no workspace da rota. Sem membership → 404; papel insuficiente → 403.</remarks>
         [HttpPost("rollback")]
         [RequireWorkspaceRole(WorkspaceRole.FiscalAdmin, WorkspaceRole.Owner)]
         public async Task<IActionResult> Rollback(Guid workspaceId, Guid releaseId, CancellationToken cancellationToken)
