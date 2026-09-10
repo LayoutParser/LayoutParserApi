@@ -202,6 +202,16 @@ namespace LayoutParserApi.Controllers
         /// Aceita/edita/rejeita/responde uma regra. Exige <c>If-Match</c> (428 sem header, 412 se
         /// divergente do <c>ROWVERSION</c> atual) — concorrência otimista greenfield (design §3).
         /// </summary>
+        /// <remarks>
+        /// Vocabulário de erro (reusado pelo futuro editor de artefato, issue #226): <c>200</c> +
+        /// campo <c>eTag</c> no corpo (base64 do novo <c>ROWVERSION</c>); <c>412</c> com
+        /// <c>{ current: &lt;regra atual&gt; }</c>; <c>428</c> se falta <c>If-Match</c>; <c>400</c>
+        /// se <c>If-Match</c> não é base64; <c>422</c> para semântica inválida (status ausente/
+        /// desconhecido, justificativa faltando em rejected/edited); <c>404</c> para sem identidade/
+        /// sem membership/draft de outro workspace/regra inexistente. <b>Não há <c>401</c></b>
+        /// (identidade vem do BFF — "não autenticado" ⇒ 404 fail-closed) nem <c>403</c> neste
+        /// endpoint (autorização só por membership, sem <c>[RequireWorkspaceRole]</c>).
+        /// </remarks>
         [HttpPatch("mapping-drafts/{draftId:guid}/rules/{ruleId:guid}")]
         public async Task<IActionResult> UpdateRule(Guid workspaceId, Guid draftId, Guid ruleId, [FromBody] UpdateRuleRequest request, CancellationToken cancellationToken)
         {

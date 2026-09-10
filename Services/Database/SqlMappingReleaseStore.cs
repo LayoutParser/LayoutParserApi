@@ -128,7 +128,9 @@ namespace LayoutParserApi.Services.Database
         }
 
         public async Task<(IReadOnlyList<MappingReleaseDetail> Items, int TotalCount)> ListByWorkspaceAsync(
-            Guid workspaceId, int page, int pageSize, CancellationToken cancellationToken)
+            Guid workspaceId, int page, int pageSize,
+            string? status, Guid? draftId, string? environment,
+            CancellationToken cancellationToken)
         {
             using var connection = new SqlConnection(_connectionString);
             await connection.OpenAsync(cancellationToken);
@@ -137,22 +139,40 @@ namespace LayoutParserApi.Services.Database
             var items = new List<MappingReleaseDetail>();
             var totalCount = 0;
 
+            // Filtros opcionais (issue #377): a cláusula WHERE é montada só a partir de fragmentos
+            // CONSTANTES no código — nenhum valor vindo do cliente é concatenado. Os valores entram
+            // exclusivamente por SqlParameter, condicionalmente. Sem filtro = WHERE idêntico ao anterior.
+            var conditions = new List<string> { "WorkspaceId = @WorkspaceId" };
+            if (!string.IsNullOrWhiteSpace(status))
+                conditions.Add("Status = @Status");
+            if (draftId is not null)
+                conditions.Add("DraftId = @DraftId");
+            if (!string.IsNullOrWhiteSpace(environment))
+                conditions.Add("Environment = @Environment");
+            var whereClause = string.Join(" AND ", conditions);
+
             // COUNT(*) OVER() traz o total na mesma ida ao banco — evita um segundo round-trip só
             // para paginação. Isolamento por WorkspaceId direto na cláusula WHERE (nunca em memória).
             using var command = new SqlCommand(
-                @"SELECT ReleaseId, WorkspaceId, DraftId, Engine, ArtifactsJson, SourceRuleIdsJson,
+                $@"SELECT ReleaseId, WorkspaceId, DraftId, Engine, ArtifactsJson, SourceRuleIdsJson,
                          CompileDiagnosticsJson, RulesSnapshotHash, TestRunSummaryJson, Status, CorrelationId,
                          CreatedAt, RowVersion, Environment, ApprovedByUserId, ApprovedAt, ApprovalJustification,
                          PublishedByUserId, PublishedAt, PreviousPublishedReleaseId,
                          COUNT(*) OVER() AS TotalCount
                   FROM dbo.tbMappingRelease
-                  WHERE WorkspaceId = @WorkspaceId
+                  WHERE {whereClause}
                   ORDER BY CreatedAt DESC
                   OFFSET @Offset ROWS FETCH NEXT @PageSize ROWS ONLY;",
                 connection);
             command.Parameters.AddWithValue("@WorkspaceId", workspaceId);
             command.Parameters.AddWithValue("@Offset", (page - 1) * pageSize);
             command.Parameters.AddWithValue("@PageSize", pageSize);
+            if (!string.IsNullOrWhiteSpace(status))
+                command.Parameters.AddWithValue("@Status", status);
+            if (draftId is Guid draftIdValue)
+                command.Parameters.AddWithValue("@DraftId", draftIdValue);
+            if (!string.IsNullOrWhiteSpace(environment))
+                command.Parameters.AddWithValue("@Environment", environment);
 
             using var reader = await command.ExecuteReaderAsync(cancellationToken);
             while (await reader.ReadAsync(cancellationToken))

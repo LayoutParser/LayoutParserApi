@@ -47,10 +47,37 @@ namespace LayoutParserApi.Controllers
         /// Rota própria (sem <c>{releaseId}</c>) via <c>~/</c> porque a rota base do controller já fixa
         /// esse segmento. Qualquer papel do workspace pode ler — só as mutações (approve/publish/
         /// rollback) exigem papel elevado.
+        /// <para>
+        /// Filtros opcionais (issue #377), combináveis: <c>status</c> (um valor do ciclo de vida —
+        /// <c>draft_compiled</c>, <c>test_passed</c>, <c>test_failed</c>, <c>in_review</c>,
+        /// <c>approved</c>, <c>published</c>, <c>deprecated</c>, <c>archived</c>), <c>draftId</c> (GUID)
+        /// e <c>environment</c>. Valor de <c>status</c> fora do ciclo de vida ou <c>draftId</c> que não
+        /// seja GUID retornam <c>400</c>. Sem filtro, o resultado é idêntico ao comportamento anterior.
+        /// </para>
         /// </summary>
+        /// <remarks>
+        /// RBAC: qualquer papel de membro (<c>owner</c>/<c>fiscal_admin</c>/<c>mapper</c>/
+        /// <c>reviewer</c>/<c>operator</c>/<c>viewer</c>). Não-membro ou sem identidade → 404.
+        /// Aceita <c>page</c>/<c>pageSize</c> e os filtros opcionais <c>status</c>/<c>draftId</c>/
+        /// <c>environment</c> (issue #377).
+        /// </remarks>
+        /// <param name="workspaceId">Workspace dono das releases.</param>
+        /// <param name="page">Página (1-based). Default 1.</param>
+        /// <param name="pageSize">Tamanho da página (1..100). Default 20.</param>
+        /// <param name="status">Opcional. Filtra por status do ciclo de vida da release.</param>
+        /// <param name="draftId">Opcional. Filtra pelas releases geradas a partir do draft informado (GUID).</param>
+        /// <param name="environment">Opcional. Filtra pelo ambiente de publicação da release.</param>
+        /// <param name="cancellationToken">Token de cancelamento.</param>
         [HttpGet("~/api/workspaces/{workspaceId:guid}/mapping-releases")]
         [RequireWorkspaceRole(WorkspaceRole.Owner, WorkspaceRole.FiscalAdmin, WorkspaceRole.Mapper, WorkspaceRole.Reviewer, WorkspaceRole.Operator, WorkspaceRole.Viewer)]
-        public async Task<IActionResult> List(Guid workspaceId, [FromQuery] int page = 1, [FromQuery] int pageSize = 20, CancellationToken cancellationToken = default)
+        public async Task<IActionResult> List(
+            Guid workspaceId,
+            [FromQuery] int page = 1,
+            [FromQuery] int pageSize = 20,
+            [FromQuery] string? status = null,
+            [FromQuery] string? draftId = null,
+            [FromQuery] string? environment = null,
+            CancellationToken cancellationToken = default)
         {
             if (page < 1)
                 return BadRequest(new { error = "\"page\" deve ser >= 1." });
@@ -58,7 +85,24 @@ namespace LayoutParserApi.Controllers
             if (pageSize < 1 || pageSize > 100)
                 return BadRequest(new { error = "\"pageSize\" deve estar entre 1 e 100." });
 
-            var (items, totalCount) = await _releaseStore.ListByWorkspaceAsync(workspaceId, page, pageSize, cancellationToken);
+            // Valida "status" contra o ciclo de vida da release (issue #377) — valor livre não chega ao SQL.
+            if (!string.IsNullOrWhiteSpace(status) && !MappingReleaseStatus.All.Contains(status))
+                return BadRequest(new { error = $"\"status\" inválido. Valores aceitos: {string.Join(", ", MappingReleaseStatus.All)}." });
+
+            // "draftId" é recebido como string para devolver 400 com mensagem PT-BR (e não o 400
+            // genérico do model binder) quando não for um GUID.
+            Guid? draftIdFilter = null;
+            if (!string.IsNullOrWhiteSpace(draftId))
+            {
+                if (!Guid.TryParse(draftId, out var parsedDraftId))
+                    return BadRequest(new { error = "\"draftId\" deve ser um GUID válido." });
+                draftIdFilter = parsedDraftId;
+            }
+
+            var environmentFilter = string.IsNullOrWhiteSpace(environment) ? null : environment;
+
+            var (items, totalCount) = await _releaseStore.ListByWorkspaceAsync(
+                workspaceId, page, pageSize, status, draftIdFilter, environmentFilter, cancellationToken);
 
             return Ok(new
             {
@@ -70,6 +114,10 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary><c>test_passed → in_review → approved</c>. Bloqueado se a release estiver <c>test_failed</c> (ou qualquer status diferente de <c>test_passed</c>).</summary>
+        /// <remarks>
+        /// RBAC: exige papel <c>reviewer</c> ou <c>fiscal_admin</c> no workspace da rota. Sem
+        /// membership → 404; papel insuficiente → 403. Corpo exige <c>justification</c> (422 se ausente).
+        /// </remarks>
         [HttpPost("approve")]
         [RequireWorkspaceRole(WorkspaceRole.Reviewer, WorkspaceRole.FiscalAdmin)]
         public async Task<IActionResult> Approve(Guid workspaceId, Guid releaseId, [FromBody] ApproveReleaseRequest request, CancellationToken cancellationToken)
@@ -97,6 +145,7 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary><c>approved → published</c>. Congela os artefatos — edição posterior exige nova revisão (novo <see cref="MappingRelease"/>).</summary>
+        /// <remarks>RBAC: exige papel <c>fiscal_admin</c> ou <c>owner</c> no workspace da rota. Sem membership → 404; papel insuficiente → 403.</remarks>
         [HttpPost("publish")]
         [RequireWorkspaceRole(WorkspaceRole.FiscalAdmin, WorkspaceRole.Owner)]
         public async Task<IActionResult> Publish(Guid workspaceId, Guid releaseId, [FromBody] PublishReleaseRequest? request, CancellationToken cancellationToken)
@@ -123,6 +172,7 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>Reverte a release publicada para a publicação anterior. Idempotente — repetir a chamada é no-op.</summary>
+        /// <remarks>RBAC: exige papel <c>fiscal_admin</c> ou <c>owner</c> no workspace da rota. Sem membership → 404; papel insuficiente → 403.</remarks>
         [HttpPost("rollback")]
         [RequireWorkspaceRole(WorkspaceRole.FiscalAdmin, WorkspaceRole.Owner)]
         public async Task<IActionResult> Rollback(Guid workspaceId, Guid releaseId, CancellationToken cancellationToken)
