@@ -2,6 +2,7 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
+using LayoutParserApi.Models.Fiscal;
 using LayoutParserApi.Services.Transformation.Ai.Retraining;
 
 namespace LayoutParserApi.Services.Transformation.Ai
@@ -84,27 +85,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
                     mapperGuid, mapperName, layoutName, inputXml, groundTruthXml, finalXslt,
                     iterationsUsed, DateTime.UtcNow);
 
-                Directory.CreateDirectory(_trainingDataPath);
-                // Rotação diária — mesmo racional do dataset batch (nome com data), evita um
-                // único arquivo monolítico crescendo pra sempre e facilita auditar por dia.
-                var fileName = $"runtime-capture-{DateTime.UtcNow:yyyy-MM-dd}.jsonl";
-                var path = Path.Combine(_trainingDataPath, fileName);
-
-                // Lock só de processo — várias sínteses convergindo ~simultaneamente no mesmo
-                // worker não podem intercalar linhas parciais no arquivo (fire-and-forget, sem
-                // fila/serialização a montante garantindo exclusão mútua).
-                lock (WriteLock)
-                {
-                    File.AppendAllText(path, line + Environment.NewLine);
-                }
-
-                _logger.LogInformation(
-                    "Exemplo de convergência capturado pro dataset de treino incremental em {Path} (mapperGuid={MapperGuid})",
-                    Services.Logging.LogMessageSanitizer.Sanitize(path), safeMapperGuid);
-
-                // F4.2 (issue #351): só conta depois que a linha foi de fato escrita — se a
-                // gravação acima falhar, o contador não avança (cai no catch abaixo).
-                _retrainingCoordinator?.RegisterCapturedExample();
+                AppendJsonlLine(line, $"mapperGuid={safeMapperGuid}");
             }
             catch (Exception ex)
             {
@@ -113,6 +94,85 @@ namespace LayoutParserApi.Services.Transformation.Ai
                     "Falha ao capturar exemplo de convergência pro dataset de treino incremental — best-effort, não afeta a síntese (mapperGuid={MapperGuid})",
                     safeMapperGuid);
             }
+        }
+
+        /// <summary>
+        /// Curadoria humana aceita (issue #346): grava (best-effort) um exemplo incremental a partir
+        /// do contexto original do documento + o valor esperado revisado por um humano. Mesma forma
+        /// (<c>instruction</c>/<c>input</c>/<c>output</c>) e mesmo arquivo diário do
+        /// <see cref="TryCapture"/>, só com <c>source = "human-correction-reviewed"</c>. Nunca lança.
+        /// Chame SÓ depois que a transição para <c>reviewed_accepted</c> foi confirmada.
+        /// </summary>
+        public void TryCaptureHumanCorrection(FieldCorrectionContext context, FieldCorrectionReportSummary report)
+        {
+            try
+            {
+                var line = BuildHumanCorrectionJsonlLine(context, report, DateTime.UtcNow);
+                AppendJsonlLine(line, $"human-correction reportId={report.ReportId}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Falha ao capturar correção humana revisada pro dataset de treino incremental — best-effort (reportId={ReportId})",
+                    report.ReportId);
+            }
+        }
+
+        /// <summary>
+        /// Append + rotação diária + log + contador de retraining — compartilhado por
+        /// <see cref="TryCapture"/> e <see cref="TryCaptureHumanCorrection"/> (um único
+        /// <c>File.AppendAllText</c> e uma única resolução de path/nome de arquivo).
+        /// </summary>
+        private void AppendJsonlLine(string line, string logContext)
+        {
+            Directory.CreateDirectory(_trainingDataPath);
+            // Rotação diária — mesmo racional do dataset batch (nome com data), evita um
+            // único arquivo monolítico crescendo pra sempre e facilita auditar por dia.
+            var fileName = $"runtime-capture-{DateTime.UtcNow:yyyy-MM-dd}.jsonl";
+            var path = Path.Combine(_trainingDataPath, fileName);
+
+            // Lock só de processo — várias capturas ~simultâneas no mesmo worker não podem
+            // intercalar linhas parciais no arquivo (fire-and-forget, sem fila a montante).
+            lock (WriteLock)
+            {
+                File.AppendAllText(path, line + Environment.NewLine);
+            }
+
+            _logger.LogInformation(
+                "Exemplo capturado pro dataset de treino incremental em {Path} ({Context})",
+                Services.Logging.LogMessageSanitizer.Sanitize(path), logContext);
+
+            // F4.2 (issue #351): só conta depois que a linha foi de fato escrita.
+            _retrainingCoordinator?.RegisterCapturedExample();
+        }
+
+        /// <summary>Monta a linha JSONL de uma correção humana revisada. <c>internal</c> pra teste sem I/O.</summary>
+        internal static string BuildHumanCorrectionJsonlLine(
+            FieldCorrectionContext context,
+            FieldCorrectionReportSummary report,
+            DateTime capturedAtUtc)
+        {
+            var mapperLabel = context.MapperName ?? context.MapperGuid ?? "mapeador não identificado";
+            var record = new TrainingExampleRecord
+            {
+                Instruction =
+                    $"No documento do layout '{context.LayoutName}' (mapeador '{mapperLabel}'), o campo " +
+                    $"'{report.FieldPath}' foi gerado como '{report.ObservedValue}', mas o valor correto — " +
+                    $"revisado e aprovado por um humano — é '{report.ExpectedValue}'. Ajuste a transformação " +
+                    "para produzir o valor correto nesse campo a partir do XML de entrada.",
+                Input = context.InputXml,
+                Output = report.ExpectedValue ?? string.Empty,
+                GroundTruthXml = context.GroundTruthXml ?? string.Empty,
+                MapperGuid = context.MapperGuid ?? string.Empty,
+                MapperName = context.MapperName,
+                LayoutName = context.LayoutName,
+                IterationsUsed = 0,
+                Source = "human-correction-reviewed",
+                CapturedAtUtc = capturedAtUtc.ToString("o"),
+            };
+
+            return JsonSerializer.Serialize(record, JsonOptions);
         }
 
         /// <summary>Monta a linha JSONL. <c>internal</c> pra ser testável isoladamente sem I/O.</summary>

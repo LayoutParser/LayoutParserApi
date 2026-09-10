@@ -32,8 +32,28 @@ namespace LayoutParserApi.Models.Fiscal
         string? Justification);
 
     /// <summary>
+    /// Projeção de leitura de uma linha de <c>tbFieldCorrectionReport</c> — usada pela fila de
+    /// curadoria (<c>GET field-correction/pending</c>) e ao montar o exemplo de treino incremental
+    /// quando o reporte é aceito (issue #346).
+    /// </summary>
+    public sealed record FieldCorrectionReportSummary(
+        Guid ReportId,
+        string DocumentId,
+        string CandidateId,
+        string FieldPath,
+        string? ObservedValue,
+        string? ExpectedValue,
+        string? Justification,
+        Guid ReportedByUserId,
+        string Status,
+        DateTimeOffset CreatedAtUtc,
+        Guid? ReviewedByUserId,
+        DateTimeOffset? ReviewedAtUtc);
+
+    /// <summary>
     /// Status do ciclo de vida de um reporte (ADR §6): nunca vira dado de treino direto —
-    /// exige curadoria humana (issue 2, fora do escopo desta issue #345).
+    /// exige curadoria humana (issue #346). <c>Pending → ReviewedAccepted | ReviewedRejected</c>,
+    /// transição única e irreversível; só <c>ReviewedAccepted</c> gera linha no dataset incremental.
     /// </summary>
     public static class FieldCorrectionReportStatus
     {

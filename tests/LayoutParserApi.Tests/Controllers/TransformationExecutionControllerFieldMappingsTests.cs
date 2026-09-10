@@ -298,7 +298,8 @@ namespace LayoutParserApi.Tests.Controllers
                 scopeFactory: scopeFactory,
                 canaryAlert: new LayoutParserApi.Services.Security.CanaryAlertService(
                     NullLogger<LayoutParserApi.Services.Security.CanaryAlertService>.Instance),
-                fieldCorrectionStore: null!);
+                fieldCorrectionStore: null!,
+                trainingDataCapture: null!);
 
             return (controller, parserFake, runner);
         }

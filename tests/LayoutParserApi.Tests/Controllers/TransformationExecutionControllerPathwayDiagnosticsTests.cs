@@ -172,7 +172,8 @@ namespace LayoutParserApi.Tests.Controllers
                 scopeFactory: services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
                 canaryAlert: new LayoutParserApi.Services.Security.CanaryAlertService(
                     NullLogger<LayoutParserApi.Services.Security.CanaryAlertService>.Instance),
-                fieldCorrectionStore: null!);
+                fieldCorrectionStore: null!,
+                trainingDataCapture: null!);
 
             return (controller, aiSpy, tclDir);
         }
