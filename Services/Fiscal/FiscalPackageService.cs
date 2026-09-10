@@ -107,6 +107,9 @@ namespace LayoutParserApi.Services.Fiscal
                         UploadedAt = DateTimeOffset.UtcNow,
                         InspectionStatus = Models.Entities.Fiscal.InspectionStatus.Pending,
                         StoragePath = relativePath,
+                        // ✅ issue #341: só grava a proveniência se for um valor explícito e válido —
+                        // valor ausente/inválido vira null, que a leitura trata como amostra real (fail-closed).
+                        Provenance = Models.Entities.Fiscal.ArtifactProvenance.IsValid(input.Provenance) ? input.Provenance : null,
                     });
                 }
 
@@ -191,6 +194,9 @@ namespace LayoutParserApi.Services.Fiscal
                         UploadedAt = DateTimeOffset.UtcNow,
                         InspectionStatus = Models.Entities.Fiscal.InspectionStatus.Pending,
                         StoragePath = relativePath,
+                        // ✅ issue #341: só grava a proveniência se for um valor explícito e válido —
+                        // valor ausente/inválido vira null, que a leitura trata como amostra real (fail-closed).
+                        Provenance = Models.Entities.Fiscal.ArtifactProvenance.IsValid(input.Provenance) ? input.Provenance : null,
                     });
                 }
 

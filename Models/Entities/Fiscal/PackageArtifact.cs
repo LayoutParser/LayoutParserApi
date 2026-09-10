@@ -46,6 +46,38 @@ namespace LayoutParserApi.Models.Entities.Fiscal
     }
 
     /// <summary>
+    /// Proveniência do CONTEÚDO de um <see cref="PackageArtifact"/> (issue #341 — Fase F2 do ADR
+    /// docs/architecture/adr-llm-provider-plugavel-2026-09-08.md). Explícito e preenchido pelo
+    /// analista ao anexar o arquivo — NUNCA inferido pelo tipo (<see cref="ArtifactKind"/>) ou
+    /// pelo nome do arquivo. Regra central (ADR §2.3, issue #341 critério de aceite): a AUSÊNCIA
+    /// deste valor (<c>null</c>/vazio) resolve para <c>RealCustomerSample</c> — nunca para
+    /// <see cref="Synthetic"/> por omissão/default. Ver <see cref="ResolveSensitivity"/>.
+    /// </summary>
+    public static class ArtifactProvenance
+    {
+        /// <summary>Gerado por regra/fixture — elegível a <c>DataSensitivity.SyntheticOrAnonymized</c> (fases futuras de F3).</summary>
+        public const string Synthetic = "synthetic";
+
+        /// <summary>Amostra real de cliente anexada pelo analista — sempre <c>DataSensitivity.RealFiscalDocument</c>.</summary>
+        public const string RealCustomerSample = "real_customer_sample";
+
+        public static readonly IReadOnlyCollection<string> All = new[] { Synthetic, RealCustomerSample };
+
+        public static bool IsValid(string? value) => value != null && All.Contains(value);
+
+        /// <summary>
+        /// Resolve a <see cref="Services.Llm.DataSensitivity"/> a partir da proveniência declarada.
+        /// Fail-closed: qualquer valor ausente, vazio ou não reconhecido resolve para
+        /// <see cref="Services.Llm.DataSensitivity.RealFiscalDocument"/> — só o valor EXPLÍCITO
+        /// <see cref="Synthetic"/> resolve para <see cref="Services.Llm.DataSensitivity.SyntheticOrAnonymized"/>.
+        /// </summary>
+        public static Services.Llm.DataSensitivity ResolveSensitivity(string? provenance)
+            => provenance == Synthetic
+                ? Services.Llm.DataSensitivity.SyntheticOrAnonymized
+                : Services.Llm.DataSensitivity.RealFiscalDocument;
+    }
+
+    /// <summary>
     /// Um artefato binário dentro de uma revisão imutável de <see cref="FiscalMappingPackage"/>.
     /// Metadado em SQL; conteúdo bruto em filesystem (<c>MLData/FiscalMappingPackages/...</c>) —
     /// nunca no log/erro (ver <c>.claude/rules/security.md</c>).
@@ -88,5 +120,8 @@ namespace LayoutParserApi.Models.Entities.Fiscal
 
         /// <summary>Caminho relativo dentro do store de filesystem (não é o caminho absoluto do host).</summary>
         public string StoragePath { get; set; } = string.Empty;
+
+        /// <summary>Ver <see cref="ArtifactProvenance"/>. <c>null</c> resolve como <see cref="ArtifactProvenance.RealCustomerSample"/> (fail-closed).</summary>
+        public string? Provenance { get; set; }
     }
 }

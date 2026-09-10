@@ -52,8 +52,12 @@ namespace LayoutParserApi.Services.Interfaces
         string Status,
         IReadOnlyList<string> OpenQuestions);
 
-    /// <summary>Referência a um artefato em filesystem — usado pelo job de sugestão para ler o conteúdo-fonte.</summary>
-    public sealed record ArtifactFileRef(Guid ArtifactId, string Kind, string StoragePath, string OriginalFileName);
+    /// <summary>
+    /// Referência a um artefato em filesystem — usado pelo job de sugestão para ler o conteúdo-fonte.
+    /// <paramref name="Provenance"/> ver <see cref="Models.Entities.Fiscal.ArtifactProvenance"/>
+    /// (issue #341) — <c>null</c> é tratado como amostra real (fail-closed) por quem consome este DTO.
+    /// </summary>
+    public sealed record ArtifactFileRef(Guid ArtifactId, string Kind, string StoragePath, string OriginalFileName, string? Provenance = null);
 
     /// <summary>
     /// Acesso a dado de <see cref="MappingDraft"/>/<see cref="MappingDraftRule"/>/

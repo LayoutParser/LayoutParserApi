@@ -130,10 +130,10 @@ namespace LayoutParserApi.Services.Database
                     using var insertArtifact = new SqlCommand(
                         @"INSERT INTO dbo.tbPackageArtifact
                             (ArtifactId, RevisionId, Kind, Sha256, SizeBytes, OriginalFileName, MimeDeclared, MimeSniffed,
-                             UploadedByUserId, UploadedAt, Classification, RetentionPolicy, InspectionStatus, StoragePath)
+                             UploadedByUserId, UploadedAt, Classification, RetentionPolicy, InspectionStatus, StoragePath, Provenance)
                           VALUES
                             (@ArtifactId, @RevisionId, @Kind, @Sha256, @SizeBytes, @OriginalFileName, @MimeDeclared, @MimeSniffed,
-                             @UploadedByUserId, SYSUTCDATETIME(), @Classification, @RetentionPolicy, @InspectionStatus, @StoragePath);",
+                             @UploadedByUserId, SYSUTCDATETIME(), @Classification, @RetentionPolicy, @InspectionStatus, @StoragePath, @Provenance);",
                         connection, tx);
 
                     insertArtifact.Parameters.AddWithValue("@ArtifactId", artifact.ArtifactId);
@@ -149,6 +149,7 @@ namespace LayoutParserApi.Services.Database
                     insertArtifact.Parameters.AddWithValue("@RetentionPolicy", (object?)artifact.RetentionPolicy ?? DBNull.Value);
                     insertArtifact.Parameters.AddWithValue("@InspectionStatus", artifact.InspectionStatus);
                     insertArtifact.Parameters.AddWithValue("@StoragePath", artifact.StoragePath);
+                    insertArtifact.Parameters.AddWithValue("@Provenance", (object?)artifact.Provenance ?? DBNull.Value);
                     await insertArtifact.ExecuteNonQueryAsync(cancellationToken);
                 }
 
@@ -190,7 +191,7 @@ namespace LayoutParserApi.Services.Database
                     revisionId,
                     1,
                     createdAt,
-                    artifacts.Select(a => new ArtifactSummary(a.ArtifactId, a.Kind, a.Sha256, a.SizeBytes, a.OriginalFileName, a.InspectionStatus, createdAt)).ToList()));
+                    artifacts.Select(a => new ArtifactSummary(a.ArtifactId, a.Kind, a.Sha256, a.SizeBytes, a.OriginalFileName, a.InspectionStatus, createdAt, a.Provenance)).ToList()));
         }
 
         public async Task<PackageDetail?> GetPackageIfMemberAsync(Guid packageId, Guid userId, CancellationToken cancellationToken)
@@ -248,7 +249,7 @@ namespace LayoutParserApi.Services.Database
 
             var artifacts = new List<ArtifactSummary>();
             using (var selectArtifacts = new SqlCommand(
-                @"SELECT ArtifactId, Kind, Sha256, SizeBytes, OriginalFileName, InspectionStatus, UploadedAt
+                @"SELECT ArtifactId, Kind, Sha256, SizeBytes, OriginalFileName, InspectionStatus, UploadedAt, Provenance
                   FROM dbo.tbPackageArtifact
                   WHERE RevisionId = @RevisionId
                   ORDER BY UploadedAt ASC;",
@@ -265,7 +266,8 @@ namespace LayoutParserApi.Services.Database
                         reader.GetInt64(reader.GetOrdinal("SizeBytes")),
                         reader.GetString(reader.GetOrdinal("OriginalFileName")),
                         reader.GetString(reader.GetOrdinal("InspectionStatus")),
-                        new DateTimeOffset(reader.GetDateTime(reader.GetOrdinal("UploadedAt")), TimeSpan.Zero)));
+                        new DateTimeOffset(reader.GetDateTime(reader.GetOrdinal("UploadedAt")), TimeSpan.Zero),
+                        reader.IsDBNull(reader.GetOrdinal("Provenance")) ? null : reader.GetString(reader.GetOrdinal("Provenance"))));
                 }
             }
 
@@ -340,7 +342,7 @@ namespace LayoutParserApi.Services.Database
 
             var artifacts = new List<ArtifactSummary>();
             using (var selectArtifacts = new SqlCommand(
-                @"SELECT ArtifactId, Kind, Sha256, SizeBytes, OriginalFileName, InspectionStatus, UploadedAt
+                @"SELECT ArtifactId, Kind, Sha256, SizeBytes, OriginalFileName, InspectionStatus, UploadedAt, Provenance
                   FROM dbo.tbPackageArtifact WHERE RevisionId = @RevisionId ORDER BY UploadedAt ASC;",
                 connection))
             {
@@ -355,7 +357,8 @@ namespace LayoutParserApi.Services.Database
                         reader.GetInt64(reader.GetOrdinal("SizeBytes")),
                         reader.GetString(reader.GetOrdinal("OriginalFileName")),
                         reader.GetString(reader.GetOrdinal("InspectionStatus")),
-                        new DateTimeOffset(reader.GetDateTime(reader.GetOrdinal("UploadedAt")), TimeSpan.Zero)));
+                        new DateTimeOffset(reader.GetDateTime(reader.GetOrdinal("UploadedAt")), TimeSpan.Zero),
+                        reader.IsDBNull(reader.GetOrdinal("Provenance")) ? null : reader.GetString(reader.GetOrdinal("Provenance"))));
                 }
             }
 
@@ -370,7 +373,7 @@ namespace LayoutParserApi.Services.Database
             await EnsureSchemaAsync(connection, cancellationToken);
 
             using var command = new SqlCommand(
-                @"SELECT a.ArtifactId, a.Kind, a.Sha256, a.SizeBytes, a.OriginalFileName, a.InspectionStatus, a.UploadedAt
+                @"SELECT a.ArtifactId, a.Kind, a.Sha256, a.SizeBytes, a.OriginalFileName, a.InspectionStatus, a.UploadedAt, a.Provenance
                   FROM dbo.tbPackageArtifact a
                   JOIN dbo.tbFiscalMappingPackageRevision r ON r.RevisionId = a.RevisionId
                   WHERE r.PackageId = @PackageId AND a.Sha256 = @Sha256
@@ -390,7 +393,8 @@ namespace LayoutParserApi.Services.Database
                 reader.GetInt64(reader.GetOrdinal("SizeBytes")),
                 reader.GetString(reader.GetOrdinal("OriginalFileName")),
                 reader.GetString(reader.GetOrdinal("InspectionStatus")),
-                new DateTimeOffset(reader.GetDateTime(reader.GetOrdinal("UploadedAt")), TimeSpan.Zero));
+                new DateTimeOffset(reader.GetDateTime(reader.GetOrdinal("UploadedAt")), TimeSpan.Zero),
+                reader.IsDBNull(reader.GetOrdinal("Provenance")) ? null : reader.GetString(reader.GetOrdinal("Provenance")));
         }
 
         public async Task UpdateInspectionStatusAsync(Guid artifactId, string inspectionStatus, CancellationToken cancellationToken)
@@ -484,10 +488,10 @@ namespace LayoutParserApi.Services.Database
                     using var insertArtifact = new SqlCommand(
                         @"INSERT INTO dbo.tbPackageArtifact
                             (ArtifactId, RevisionId, Kind, Sha256, SizeBytes, OriginalFileName, MimeDeclared, MimeSniffed,
-                             UploadedByUserId, UploadedAt, Classification, RetentionPolicy, InspectionStatus, StoragePath)
+                             UploadedByUserId, UploadedAt, Classification, RetentionPolicy, InspectionStatus, StoragePath, Provenance)
                           VALUES
                             (@ArtifactId, @RevisionId, @Kind, @Sha256, @SizeBytes, @OriginalFileName, @MimeDeclared, @MimeSniffed,
-                             @UploadedByUserId, SYSUTCDATETIME(), @Classification, @RetentionPolicy, @InspectionStatus, @StoragePath);",
+                             @UploadedByUserId, SYSUTCDATETIME(), @Classification, @RetentionPolicy, @InspectionStatus, @StoragePath, @Provenance);",
                         connection, tx);
 
                     insertArtifact.Parameters.AddWithValue("@ArtifactId", artifact.ArtifactId);
@@ -503,6 +507,7 @@ namespace LayoutParserApi.Services.Database
                     insertArtifact.Parameters.AddWithValue("@RetentionPolicy", (object?)artifact.RetentionPolicy ?? DBNull.Value);
                     insertArtifact.Parameters.AddWithValue("@InspectionStatus", artifact.InspectionStatus);
                     insertArtifact.Parameters.AddWithValue("@StoragePath", artifact.StoragePath);
+                    insertArtifact.Parameters.AddWithValue("@Provenance", (object?)artifact.Provenance ?? DBNull.Value);
                     await insertArtifact.ExecuteNonQueryAsync(cancellationToken);
                 }
 
@@ -517,7 +522,7 @@ namespace LayoutParserApi.Services.Database
                         revisionId,
                         revisionNumber,
                         createdAt,
-                        artifacts.Select(a => new ArtifactSummary(a.ArtifactId, a.Kind, a.Sha256, a.SizeBytes, a.OriginalFileName, a.InspectionStatus, createdAt)).ToList())
+                        artifacts.Select(a => new ArtifactSummary(a.ArtifactId, a.Kind, a.Sha256, a.SizeBytes, a.OriginalFileName, a.InspectionStatus, createdAt, a.Provenance)).ToList())
                 };
             }
             catch
@@ -628,7 +633,12 @@ CREATE TABLE dbo.tbPackageArtifact (
 );
 
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_tbPackageArtifact_RevisionId' AND object_id = OBJECT_ID('dbo.tbPackageArtifact'))
-CREATE INDEX IX_tbPackageArtifact_RevisionId ON dbo.tbPackageArtifact(RevisionId);";
+CREATE INDEX IX_tbPackageArtifact_RevisionId ON dbo.tbPackageArtifact(RevisionId);
+
+-- ✅ issue #341 (F2): coluna nova em tabela que pode já existir num banco antigo — ALTER idempotente
+-- separado do CREATE TABLE acima (que só roda se a tabela ainda não existir).
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.tbPackageArtifact') AND name = 'Provenance')
+ALTER TABLE dbo.tbPackageArtifact ADD Provenance NVARCHAR(32) NULL;";
 
         // internal (não mais private): chamado também pelo FiscalSchemaInitializer no startup, além
         // do próprio store por requisição (idempotente — safety net se o initializer não rodou/falhou).

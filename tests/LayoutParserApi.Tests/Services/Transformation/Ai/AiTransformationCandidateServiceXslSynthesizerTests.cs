@@ -185,7 +185,7 @@ namespace LayoutParserApi.Tests.Services.Transformation.Ai
 
         /// <summary>Mesma infraestrutura mínima de <c>LineInfoAdditiveSignalsTests.ParseAsync</c> —
         /// invoca o <c>LayoutParserService</c> REAL, não um mock/stub de parsing.</summary>
-        private static async Task<Models.Parsing.ParsingResult> ParseTxtRealAsync(string layoutXml, string documento)
+        private static async Task<LayoutParserApi.Models.Parsing.ParsingResult> ParseTxtRealAsync(string layoutXml, string documento)
         {
             var techLogger = new NoOpTechLoggerLocal();
             var config = new Microsoft.Extensions.Configuration.ConfigurationBuilder()
