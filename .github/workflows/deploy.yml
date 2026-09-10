@@ -380,82 +380,71 @@ jobs:
     # Roda ANTES do deploy de proposito: o servico e parado e reiniciado la, entao sobe ja
     # com o ambiente novo. Variavel de ambiente e lida no start do processo.
 
-    # -- Publicacao do runner low-code -----------------------------------------------
+    # -- Publicacao do runner low-code (pasta Functions do repo) --------------------
     #
-    # `LowCode:RunnerPath` aponta para `<deploy>\api\LayoutParserLowCodeRunner.exe` e NENHUM
-    # workflow colocava esse arquivo la - toda a configuracao low-code ficava correta e inerte.
-    # Este step fecha isso, mas NAO copiando para `<deploy>\api`: nao adiantaria.
+    # `LowCode:RunnerPath` historicamente apontava para `<deploy>\api\LayoutParserLowCodeRunner.exe`
+    # e NENHUM workflow colocava o arquivo la - a config low-code ficava correta e inerte (issue
+    # #373: execute-lowcode = 500 "runner .exe nao encontrado no host").
     #
-    # O runner e net481/x86 e resolve dependencias pelo diretorio do PROPRIO .exe. So executa de
-    # dentro de uma Bin do Sysmiddle completa, e "completa" tem um discriminador binario - a versao
-    # do log4net (verificado 2026-08-10 na maquina de dev):
-    #   C:\appconnector\App\Bin        log4net 2.0.17.0  -> APTA (580 arquivos)
-    #   <deploy>\api\Functions         log4net 1.2.13.0  -> estoura em InstanceFactory.Initialize()
+    # O runner e net481/x86 e resolve dependencias pelo diretorio do PROPRIO .exe. Ate a issue
+    # #391/#392 a unica pasta apta no host era a Bin de uma instancia AppConnector de TERCEIROS -
+    # a pasta versionada `tools/LowCodeRunner/Functions/` carregava log4net 1.2.13.0 e estourava
+    # em InstanceFactory.Initialize(). Com o #391/#392 essa pasta passou a ter log4net 2.0.17.0
+    # ao lado de SysMiddle.Base.dll: virou um runtime home completo por si so.
     #
-    # [ATENCAO] ESCOPO: em producao isto escreve na Bin de um produto de TERCEIROS (a instancia do
-    # AppConnector). E deliberadamente aditivo - copia dois arquivos novos e nao sobrescreve
-    # nenhuma DLL existente - e reversivel apagando os dois. Ainda assim, combine com quem opera o
-    # FiatMQ antes do primeiro deploy que rodar este step.
+    # Este step copia `Functions/` INTEIRA (do checkout que o job ja faz) para
+    # `<deploy>\api\lowcode-runner\`, preservando a estrutura, e resolve
+    # LOWCODE_RUNNER_PATH_RESOLVED para o `.exe` nesse local - consumido pelo step de Environment
+    # do servico logo abaixo (o appsettings.json do destino e preservado, entao esse caminho so
+    # chega a API por variavel de ambiente). Nao depende mais de procurar uma Bin de terceiros.
     #
-    # Nao e fatal: sem Bin apta o deploy segue e a API sobe; so o pathway low-code fica
-    # indisponivel, e o diagnostico do fim do workflow explica por que.
-    - name: Publicar runner low-code na Bin do Sysmiddle
+    # O diretorio `<deploy>\api\lowcode-runner` esta na allowlist do clean-deploy (step "Deploy to
+    # server (local)") para nao ser removido como orfao logo em seguida.
+    #
+    # Nao e fatal: se a pasta Functions/ nao vier no checkout ou regredir o log4net, o step avisa
+    # e segue - a API sobe, so o pathway low-code fica indisponivel. O smoke test do runner mais
+    # abaixo (tambem nao-fatal) diz se ele realmente SOBE no host.
+    - name: Publicar runner low-code (pasta Functions do repo)
       continue-on-error: true
       run: |
         $ErrorActionPreference = "Continue"
+        $DEPLOY_PATH = "${{ secrets.DEPLOY_PATH }}".Trim('"', '''', ' ')
+        if ([string]::IsNullOrWhiteSpace($DEPLOY_PATH)) {
+          Write-Warning "DEPLOY_PATH nao configurado - runner low-code nao sera publicado."
+          exit 0
+        }
+
         $runnerSrc = Join-Path $PWD.Path "LayoutParserApi\tools\LowCodeRunner\Functions"
         $runnerExe = Join-Path $runnerSrc "LayoutParserLowCodeRunner.exe"
-
         if (-not (Test-Path $runnerExe)) {
           Write-Warning "Runner nao encontrado no checkout: $runnerExe - pathway low-code seguira indisponivel."
           exit 0
         }
 
-        # Bin apta = tem SysMiddle.Base.dll E log4net 2.x ao lado.
-        $aptas = New-Object System.Collections.Generic.List[string]
-        $raizes = Get-ChildItem -Path 'C:\' -Directory -Force -ErrorAction SilentlyContinue |
-                  Where-Object { $_.Name -notin @('Windows','Users','ProgramData','$Recycle.Bin','System Volume Information','Recovery') }
-        foreach ($r in $raizes) {
-          Get-ChildItem -Path $r.FullName -File -Recurse -Depth 4 -Filter 'SysMiddle.Base.dll' -ErrorAction SilentlyContinue |
-            ForEach-Object {
-              $l4n = Join-Path $_.DirectoryName 'log4net.dll'
-              if ((Test-Path $l4n) -and ((Get-Item $l4n).VersionInfo.FileVersion -like '2.*')) {
-                $aptas.Add($_.DirectoryName)
-              }
-            }
-        }
-
-        # [ATENCAO] Escolha pela Bin MAIS COMPLETA (mais arquivos), nao pela primeira em ordem alfabetica.
-        # Medido no .42 em 2026-08-10: ha QUATRO diretorios com SysMiddle.Base.dll + log4net 2.x -
-        #   C:\appconnector\App\Bin            636 arquivos  <- a Bin real da instancia
-        #   C:\appconnector\Settings           217
-        #   C:\appconnector\Tools              158
-        #   C:\appconnector\App\Bin\Functions  102
-        # Todos passam no teste "apta", mas so o primeiro tem o conjunto completo de dependencias.
-        # Ordem alfabetica acertaria por coincidencia aqui e erraria em qualquer host onde a
-        # instancia esteja sob um caminho de nome menor - escolher por acaso nao e escolher.
-        $ranking = $aptas | Sort-Object -Unique |
-                   ForEach-Object { [PSCustomObject]@{ Caminho = $_; Arquivos = (Get-ChildItem $_ -File -ErrorAction SilentlyContinue).Count } } |
-                   Sort-Object Arquivos -Descending
-
-        $destino = ($ranking | Select-Object -First 1).Caminho
-        if (-not $destino) {
-          Write-Warning "Nenhuma Bin do Sysmiddle APTA neste host (SysMiddle.Base.dll + log4net 2.x)."
-          Write-Warning "O pathway low-code seguira indisponivel. Ver diagnostico no fim do workflow."
+        # Discriminador binario da aptidao (verificado no repo apos issue #391/#392): a pasta
+        # precisa ter SysMiddle.Base.dll E log4net 2.x ao lado do .exe. Se a pasta versionada
+        # regredir, avisa e NAO publica - copiar uma pasta com log4net 1.x so produziria uma
+        # falha em runtime (InstanceFactory.Initialize()), sem erro de deploy.
+        $l4n = Join-Path $runnerSrc "log4net.dll"
+        $l4nVer = if (Test-Path $l4n) { (Get-Item $l4n).VersionInfo.FileVersion } else { "(ausente)" }
+        $temBase = Test-Path (Join-Path $runnerSrc "SysMiddle.Base.dll")
+        if ((-not $temBase) -or ($l4nVer -notlike "2.*")) {
+          Write-Warning "Functions/ nao esta apta (SysMiddle.Base.dll presente=$temBase, log4net=$l4nVer) - runner nao publicado."
           exit 0
         }
 
-        if ($ranking.Count -gt 1) {
-          Write-Host "Bins aptas encontradas ($($ranking.Count)), ordenadas por completude:"
-          $ranking | ForEach-Object { Write-Host "   $($_.Arquivos.ToString().PadLeft(5)) arquivos  $($_.Caminho)" }
-        }
-
-        Copy-Item $runnerExe $destino -Force
-        $cfg = Join-Path $runnerSrc "LayoutParserLowCodeRunner.exe.config"
-        if (Test-Path $cfg) { Copy-Item $cfg $destino -Force }
+        $destino = Join-Path $DEPLOY_PATH "api\lowcode-runner"
+        if (Test-Path $destino) { Remove-Item $destino -Recurse -Force -ErrorAction SilentlyContinue }
+        New-Item -ItemType Directory -Path $destino -Force | Out-Null
+        Copy-Item -Path (Join-Path $runnerSrc "*") -Destination $destino -Recurse -Force
 
         $publicado = Join-Path $destino "LayoutParserLowCodeRunner.exe"
-        Write-Host "Runner publicado em: $publicado"
+        if (-not (Test-Path $publicado)) {
+          Write-Warning "Falha ao copiar o runner para $destino - pathway low-code seguira indisponivel."
+          exit 0
+        }
+        $qtd = (Get-ChildItem $destino -Recurse -File -ErrorAction SilentlyContinue | Measure-Object).Count
+        Write-Host "Runner low-code publicado em: $publicado ($qtd arquivos, log4net $l4nVer)"
 
         Add-Content -Path $env:GITHUB_ENV -Value "LOWCODE_RUNNER_PATH_RESOLVED=$publicado"
 
@@ -694,11 +683,12 @@ jobs:
         # 180s da ~30% de folga sobre o pior caso medido. Ver comentario extenso no ci-dev.yml.
         $managed['LowCode__RunnerTimeoutSeconds'] = '180'
 
-        # LowCode__RunnerPath: resolvido pelo step de publicacao do runner, logo acima. So entra no
-        # conjunto gerenciado quando o runner foi de fato publicado numa Bin apta. Se nao foi, a
-        # chave NAO e gerenciada - e, pela semantica de upsert deste step, um valor que ja exista no
-        # destino (definido manualmente) e PRESERVADO em vez de apagado. Sobrescrever com vazio aqui
-        # quebraria uma instalacao que alguem configurou a mao.
+        # LowCode__RunnerPath: resolvido pelo step de publicacao do runner, logo acima (aponta para
+        # <deploy>\api\lowcode-runner\LayoutParserLowCodeRunner.exe, a copia da pasta Functions/ do
+        # repo). So entra no conjunto gerenciado quando o runner foi de fato publicado. Se nao foi,
+        # a chave NAO e gerenciada - e, pela semantica de upsert deste step, um valor que ja exista
+        # no destino (definido manualmente) e PRESERVADO em vez de apagado. Sobrescrever com vazio
+        # aqui quebraria uma instalacao que alguem configurou a mao.
         if (-not [string]::IsNullOrWhiteSpace($env:LOWCODE_RUNNER_PATH_RESOLVED)) {
           $managed['LowCode__RunnerPath'] = $env:LOWCODE_RUNNER_PATH_RESOLVED
         } else {
@@ -1070,7 +1060,10 @@ jobs:
         # best-effort (nao aborta o deploy) - o objetivo e reduzir acumulo, nao e tao critico
         # quanto a copia em si.
         if (Test-Path $DEPLOY_API_PATH) {
-          $preservarPastasTopo = @('logs')  # comparado case-insensitive; cobre "Logs" e "logs"
+          # 'logs' = historico de log (Logging:File:Directory aponta para dentro);
+          # 'lowcode-runner' = runner low-code publicado por um step anterior (issue #373),
+          # fora do publish da API - clean-deploy nao pode trata-lo como orfao.
+          $preservarPastasTopo = @('logs', 'lowcode-runner')  # comparado case-insensitive
           $preservarArquivos = @('appsettings.json', 'appsettings.production.json')
 
           $novosRelativos = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
@@ -1474,6 +1467,71 @@ jobs:
         from: "LayoutParserApi Deploy <${{ secrets.SMTP_USERNAME }}>"
         body: ${{ steps.smoke_test.outputs.alert_body }}
 
+    # -- Smoke test do runner low-code (NAO-FATAL, ruidoso) -------------------------
+    #
+    # O smoke test de readiness acima so confere que LowCode:RunnerPath aponta para um arquivo
+    # existente (LowCodeRunnerHealthCheck e Degraded->200 quando falta) - NAO prova que o `.exe`
+    # SOBE. A parte sensivel e SysMiddle.Base.InstanceFactory.Initialize() (carga de log4net e do
+    # gate de licenca), que so roda quando o runner chega em CriarExecutor.
+    #
+    # Este step exercita exatamente isso: roda o runner em modo LIST posicional
+    # (<globalFolder> <package> LIST <in> <out>). LIST sobe o SDK e enumera os mapeadores do
+    # package, sem precisar de documento de entrada nem dos 48-137s de uma transformacao real.
+    # Exit 0 = runner apto no host. Qualquer outra coisa = pathway low-code quebrado.
+    #
+    # POR QUE NAO-FATAL (por ora): tornar isto fatal acopla TODO deploy futuro da API - inclusive
+    # correcoes que nao tocam low-code - a um runtime de TERCEIROS (SDK Sysmiddle + gate de
+    # licenca + catalogo globalfolder no host) que nunca foi provado rodar a partir de Functions/
+    # no .42. O caminho seguro e deixar ruidoso agora e, depois de um deploy confirmar que sobe,
+    # promover a fatal (trocar o `exit 0` final por `exit 1` e remover continue-on-error).
+    # Recomendacao registrada para o dono decidir.
+    - name: Smoke test do runner low-code (nao-fatal)
+      continue-on-error: true
+      run: |
+        $ErrorActionPreference = "Continue"
+        $runner = "$env:LOWCODE_RUNNER_PATH_RESOLVED"
+        if ([string]::IsNullOrWhiteSpace($runner) -or -not (Test-Path $runner)) {
+          Write-Warning "Runner low-code nao foi publicado neste deploy (LOWCODE_RUNNER_PATH_RESOLVED vazio) - nada a testar."
+          exit 0
+        }
+
+        $DEPLOY_PATH = "${{ secrets.DEPLOY_PATH }}".Trim('"', '''', ' ')
+        $globalFolder = Join-Path $DEPLOY_PATH 'globalfolder'
+        if (-not (Test-Path $globalFolder)) {
+          Write-Warning "globalfolder nao encontrado em $globalFolder - LIST do runner nao pode rodar. Pathway low-code NAO validado neste deploy."
+          exit 0
+        }
+
+        # Package: mesmo valor gerenciado pelo step de Environment (identificador do projeto
+        # Sysmiddle, nao e segredo).
+        $package = '938f9978-836f-48c1-9c0f-c2898caf4b20'
+        $tmp = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP }
+        $dummy = Join-Path $tmp 'lowcode-smoke-unused.txt'
+
+        Write-Host "Rodando runner em modo LIST: $runner"
+        $saida = & $runner $globalFolder $package 'LIST' $dummy $dummy 2>&1
+        $code = $LASTEXITCODE
+        $saida | ForEach-Object { Write-Host "    $_" }
+        Write-Host "Runner LIST exit=$code"
+
+        if ($code -eq 0) {
+          Write-Host "Runner low-code SOBE no host (LIST enumerou o package sem erro de init)."
+          exit 0
+        }
+
+        $msg = "ATENCAO: runner low-code NAO subiu (LIST exit=$code). O endpoint execute-lowcode segue " +
+          "retornando 500 em producao mesmo com o .exe publicado - provavel falha em " +
+          "InstanceFactory.Initialize() (assembly/licenca) ou globalfolder/package invalido. " +
+          "Deploy NAO foi abortado (step nao-fatal, ver cabecalho)."
+        Write-Host $msg
+        if ($env:GITHUB_STEP_SUMMARY) {
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## Runner low-code: smoke test FALHOU (nao-fatal)"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- LIST exit=$code em ``$runner``"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- O endpoint execute-lowcode continuara retornando 500 ate isto ser resolvido."
+        }
+        exit 0
+
     # -- Diagnostico de pre-requisitos (NAO-FATAL) -----------------------------------
     #
     # Este step nunca falha o deploy. Ele existe porque duas perguntas so podem ser
@@ -1500,14 +1558,22 @@ jobs:
           $DEPLOY_PATH = "${{ secrets.DEPLOY_PATH }}".Trim('"', '''', ' ')
 
           Write-Host "=== 1) Runner low-code no destino ==="
-          $runnerPath = Join-Path $DEPLOY_PATH 'api\LayoutParserLowCodeRunner.exe'
+          # Desde a issue #373 o runner e publicado em <deploy>\api\lowcode-runner\ (copia da pasta
+          # Functions/ do repo). O caminho legado <deploy>\api\LayoutParserLowCodeRunner.exe fica
+          # so como checagem historica.
+          $runnerPath = Join-Path $DEPLOY_PATH 'api\lowcode-runner\LayoutParserLowCodeRunner.exe'
+          $runnerLegado = Join-Path $DEPLOY_PATH 'api\LayoutParserLowCodeRunner.exe'
           if (Test-Path $runnerPath) {
             $info = Get-Item $runnerPath
-            Write-Host "  PRESENTE: $runnerPath ($([math]::Round($info.Length / 1KB, 2)) KB, $($info.LastWriteTime))"
+            $l4n = Join-Path (Split-Path $runnerPath) 'log4net.dll'
+            $l4nVer = if (Test-Path $l4n) { (Get-Item $l4n).VersionInfo.FileVersion } else { '(ausente)' }
+            Write-Host "  PRESENTE: $runnerPath ($([math]::Round($info.Length / 1KB, 2)) KB, $($info.LastWriteTime), log4net $l4nVer)"
+          } elseif (Test-Path $runnerLegado) {
+            Write-Host "  PRESENTE (caminho legado): $runnerLegado - migrar para lowcode-runner\ no proximo deploy."
           } else {
             Write-Host "  AUSENTE: $runnerPath"
             Write-Host "  -> LowCode:RunnerPath aponta para um arquivo que nao existe; toda transformacao low-code falha."
-            Write-Host "  -> Nenhum workflow compila ou copia este exe hoje (decisao pendente - ver o cabecalho deste step)."
+            Write-Host "  -> Ver o step 'Publicar runner low-code (pasta Functions do repo)' - provavel Functions/ ausente/inapta no checkout."
           }
 
           Write-Host "=== 2) Bin do Sysmiddle apta a hospedar o runner ==="
