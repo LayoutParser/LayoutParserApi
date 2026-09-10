@@ -649,6 +649,24 @@ try
     // de treino incremental (ai/XslSynth/training-data/*.jsonl).
     builder.Services.AddScoped<LayoutParserApi.Services.Transformation.Ai.TrainingDataCaptureService>();
 
+    // ✅ Issue #351 (F4): retraining automatizado do modelo fine-tuned.
+    //  - F4.1: telemetria de duração/iterações do RepairOrchestrator em runtime (Source=AiMetrics).
+    //  - F4.2: contador de exemplos novos (alimentado por F3) + gatilho por volume OU teto de 90d.
+    //  - F4.3: exclusão mútua Ollama-inferência × treino (retraining.lock) + validação pós-treino.
+    // Estado durável em arquivo na árvore de XslSynth:TrainingDataPath (mesmo padrão de F3) — nunca
+    // no SQL compartilhado 172.31.249.51 (read-only, ver .claude/rules/security.md). Singletons:
+    // contador compartilhado entre o hook de F3 (escopo de request) e o background service.
+    builder.Services.Configure<LayoutParserApi.Services.Transformation.Ai.Retraining.RetrainingOptions>(
+        builder.Configuration.GetSection(
+            LayoutParserApi.Services.Transformation.Ai.Retraining.RetrainingOptions.SectionName));
+    builder.Services.AddSingleton<LayoutParserApi.Services.Transformation.Ai.Retraining.IRetrainingStateStore,
+        LayoutParserApi.Services.Transformation.Ai.Retraining.FileRetrainingStateStore>();
+    builder.Services.AddSingleton<LayoutParserApi.Services.Transformation.Ai.Retraining.IRetrainingLock,
+        LayoutParserApi.Services.Transformation.Ai.Retraining.FileRetrainingLock>();
+    builder.Services.AddSingleton<LayoutParserApi.Services.Transformation.Ai.Retraining.IRetrainingCoordinator,
+        LayoutParserApi.Services.Transformation.Ai.Retraining.RetrainingCoordinator>();
+    builder.Services.AddHostedService<LayoutParserApi.Services.Transformation.Ai.Retraining.RetrainingSchedulerBackgroundService>();
+
     // Transformation Services (ML)
     builder.Services.AddScoped<TransformationLearningService>();
     builder.Services.AddScoped<PatternComparisonService>();

@@ -28,6 +28,7 @@ namespace LayoutParserApi.Controllers
         private readonly ICachedLayoutService _cachedLayoutService;
         private readonly MapperDatabaseService _mapperDb;
         private readonly ISyntheticDataGeneratorService _dataGenerator;
+        private readonly IXmlSampleDocumentGeneratorService _xmlSampleGenerator;
         private readonly LowCodeRunnerOptions _lowCodeOpt;
         private readonly ILogger<LayoutsController> _logger;
 
@@ -35,19 +36,22 @@ namespace LayoutParserApi.Controllers
             ICachedLayoutService cachedLayoutService,
             MapperDatabaseService mapperDb,
             ISyntheticDataGeneratorService dataGenerator,
+            IXmlSampleDocumentGeneratorService xmlSampleGenerator,
             IOptions<LowCodeRunnerOptions> lowCodeOptions,
             ILogger<LayoutsController> logger)
         {
             _cachedLayoutService = cachedLayoutService;
             _mapperDb = mapperDb;
             _dataGenerator = dataGenerator;
+            _xmlSampleGenerator = xmlSampleGenerator;
             _lowCodeOpt = lowCodeOptions.Value;
             _logger = logger;
         }
 
         /// <summary>
-        /// Gera um documento de exemplo sintético a partir de um layout <c>TextPositional</c> que
-        /// já tem mapper (TCL/XSL/XSLT) vinculado — pré-condição obrigatória (correção do dono no
+        /// Gera um documento de exemplo sintético a partir de um layout <c>TextPositional</c> ou
+        /// <c>Xml</c> (issue #356) que já tem mapper (TCL/XSL/XSLT) vinculado — pré-condição
+        /// obrigatória (correção do dono no
         /// ADR docs/architecture/adr-geracao-documento-exemplo-2026-09-09.md): o exemplo serve
         /// para alimentar/testar um mapper existente, nunca "existe sozinho".
         /// </summary>
@@ -56,7 +60,7 @@ namespace LayoutParserApi.Controllers
         /// <response code="200">Documento gerado, com <c>warnings</c> honestos sobre a qualidade do dado.</response>
         /// <response code="400"><c>layoutGuid</c> não corresponde a nenhum layout conhecido.</response>
         /// <response code="404">Layout existe, mas não há mapper (TCL/XSL/XSLT) vinculado — geração de exemplo requer mapeamento existente.</response>
-        /// <response code="501">Layout do tipo <c>Xml</c> — cobertura fica para a issue #356 (parser de árvore ainda não existe).</response>
+        /// <response code="501">Layout de tipo ainda não coberto (Xml é suportado desde a issue #356; outros tipos, não).</response>
         // Issue #355: confirmado com o dono (2026-09-09) que o botão "Gerar documento de
         // exemplo" é para qualquer usuário autenticado, não admin-only — diferente do padrão
         // de DataGenerationController (geração a partir de planilha real, essa sim restrita).
@@ -121,17 +125,9 @@ namespace LayoutParserApi.Controllers
                 return StatusCode(500, new { error = "Falha ao interpretar o XML do layout" });
             }
 
-            // Escopo desta issue: só TextPositional. Xml fica para a #356 (parser de árvore ainda
-            // não existe no repo C# — ver ADR, Decisão 4).
-            if (!string.Equals(layout.LayoutType, "TextPositional", StringComparison.OrdinalIgnoreCase))
-            {
-                return StatusCode(StatusCodes.Status501NotImplemented, new
-                {
-                    error = $"Geração de exemplo para layout tipo '{layout.LayoutType}' ainda não implementada. " +
-                             "Cobertura de layout Xml é escopo da issue #356 (parser de árvore em C#, ainda não existe)."
-                });
-            }
-
+            // Avisos honestos comuns aos dois formatos (positional e xml) — nunca sobre-prometer
+            // qualidade fiscal (ver ADR §"Decisão 1"). A regra de NÃO-injeção automática em
+            // RepairOrchestrator/RepairBatchRunner vale igual para o caminho Xml (issue #356).
             var warnings = new List<string>
             {
                 "CPF/CNPJ gerados têm dígito verificador matematicamente válido, mas não correspondem a pessoa/empresa real.",
@@ -141,6 +137,35 @@ namespace LayoutParserApi.Controllers
 
             if (request.Seed.HasValue)
                 warnings.Add("O parâmetro 'seed' foi ignorado: o gerador de dados sintéticos atual não suporta geração determinística por semente.");
+
+            // Issue #356: layout tipo Xml — percorre a árvore GroupTag/Tag/Attribute e serializa
+            // XML válido, no MESMO endpoint (sem contrato paralelo).
+            if (string.Equals(layout.LayoutType, "Xml", StringComparison.OrdinalIgnoreCase))
+            {
+                var xmlResult = _xmlSampleGenerator.GenerateSample(layoutRecord.DecryptedContent);
+                if (!xmlResult.Success)
+                {
+                    _logger.LogWarning("Falha ao gerar exemplo XML para layout {LayoutGuid}: {Error}", layoutGuid, xmlResult.ErrorMessage);
+                    return StatusCode(500, new { error = xmlResult.ErrorMessage ?? "Falha na geração do documento de exemplo XML" });
+                }
+
+                warnings.AddRange(xmlResult.Warnings);
+                return Ok(new GenerateSampleResponse
+                {
+                    GeneratedDocument = xmlResult.Xml ?? string.Empty,
+                    Format = "xml",
+                    Warnings = warnings
+                });
+            }
+
+            // Demais tipos continuam sem cobertura.
+            if (!string.Equals(layout.LayoutType, "TextPositional", StringComparison.OrdinalIgnoreCase))
+            {
+                return StatusCode(StatusCodes.Status501NotImplemented, new
+                {
+                    error = $"Geração de exemplo para layout tipo '{layout.LayoutType}' ainda não implementada."
+                });
+            }
 
             var syntheticRequest = new Models.Generation.SyntheticDataRequest
             {

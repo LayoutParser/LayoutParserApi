@@ -2,6 +2,8 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
+using LayoutParserApi.Services.Transformation.Ai.Retraining;
+
 namespace LayoutParserApi.Services.Transformation.Ai
 {
     /// <summary>
@@ -43,11 +45,18 @@ namespace LayoutParserApi.Services.Transformation.Ai
         private readonly ILogger<TrainingDataCaptureService> _logger;
         private readonly string _trainingDataPath;
 
+        // F4.2 (issue #351): a cada exemplo efetivamente gravado no JSONL, o contador de retraining
+        // avança. Opcional (nullable) pra não quebrar quem constrói o serviço só com logger+config
+        // (testes de F3) — sem coordenador, a captura funciona igual, só não alimenta o gatilho.
+        private readonly IRetrainingCoordinator? _retrainingCoordinator;
+
         public TrainingDataCaptureService(
             ILogger<TrainingDataCaptureService> logger,
-            IConfiguration configuration)
+            IConfiguration configuration,
+            IRetrainingCoordinator? retrainingCoordinator = null)
         {
             _logger = logger;
+            _retrainingCoordinator = retrainingCoordinator;
             // Sem convenção de prod existente pra esta pasta (diferente de XSD/XSL — ver
             // XsdValidation:BasePath / TransformationPipeline:XslPath); fica configurável e cai,
             // por padrão, na mesma árvore do dataset batch já versionado no repo.
@@ -92,6 +101,10 @@ namespace LayoutParserApi.Services.Transformation.Ai
                 _logger.LogInformation(
                     "Exemplo de convergência capturado pro dataset de treino incremental em {Path} (mapperGuid={MapperGuid})",
                     Services.Logging.LogMessageSanitizer.Sanitize(path), safeMapperGuid);
+
+                // F4.2 (issue #351): só conta depois que a linha foi de fato escrita — se a
+                // gravação acima falhar, o contador não avança (cai no catch abaixo).
+                _retrainingCoordinator?.RegisterCapturedExample();
             }
             catch (Exception ex)
             {

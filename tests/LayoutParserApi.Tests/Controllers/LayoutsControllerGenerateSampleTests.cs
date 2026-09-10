@@ -51,12 +51,40 @@ namespace LayoutParserApi.Tests.Controllers
   </Elements>
 </LayoutVO>";
 
-        private const string XmlLayoutXml = @"<LayoutVO xmlns:xsi=""http://www.w3.org/2001/XMLSchema-instance"">
+        private const string XmlLayoutXml = @"<?xml version=""1.0"" encoding=""utf-16""?>
+<LayoutVO xmlns:xsi=""http://www.w3.org/2001/XMLSchema-instance"" xsi:type=""XmlLayoutVO"">
   <LayoutGuid>LAY_teste-xml-355</LayoutGuid>
   <LayoutType>Xml</LayoutType>
   <Name>LAYOUT_XML_TESTE_355</Name>
   <Description>Layout XML de teste</Description>
-  <Elements></Elements>
+  <Elements>
+    <Element xsi:type=""GroupTagElementVO"">
+      <ElementGuid>GRT_1</ElementGuid>
+      <Name>Rps</Name>
+      <Sequence>1</Sequence>
+      <Elements>
+        <Element xsi:type=""AttributeElementVO"">
+          <ElementGuid>ATT_1</ElementGuid>
+          <Name>Id</Name>
+          <Sequence>1</Sequence>
+        </Element>
+        <Element xsi:type=""TagElementVO"">
+          <ElementGuid>TAG_1</ElementGuid>
+          <Name>DataEmissao</Name>
+          <Sequence>3</Sequence>
+          <MinimalOccurrence>1</MinimalOccurrence>
+          <MaximumOccurrence>1</MaximumOccurrence>
+          <Elements/>
+        </Element>
+        <Element xsi:type=""TagElementVO"">
+          <ElementGuid>TAG_2</ElementGuid>
+          <Name>Versao</Name>
+          <Sequence>2</Sequence>
+          <Elements/>
+        </Element>
+      </Elements>
+    </Element>
+  </Elements>
 </LayoutVO>";
 
         private static LayoutsController BuildController(
@@ -66,7 +94,10 @@ namespace LayoutParserApi.Tests.Controllers
         {
             var fakeLayoutService = new FakeCachedLayoutService(layoutRecord);
             var fakeMapperDb = new FakeMapperDatabaseService(mapper);
-            var dataGenerator = new SyntheticDataGeneratorService(NullLogger<SyntheticDataGeneratorService>.Instance);
+            var valueGenerator = new TypedValueGenerator(NullLogger<TypedValueGenerator>.Instance);
+            var dataGenerator = new SyntheticDataGeneratorService(NullLogger<SyntheticDataGeneratorService>.Instance, valueGenerator);
+            var xmlSampleGenerator = new XmlSampleDocumentGeneratorService(
+                NullLogger<XmlSampleDocumentGeneratorService>.Instance, valueGenerator);
             var options = Options.Create(new LowCodeRunnerOptions
             {
                 ProjectId = 2,
@@ -77,6 +108,7 @@ namespace LayoutParserApi.Tests.Controllers
                 fakeLayoutService,
                 fakeMapperDb,
                 dataGenerator,
+                xmlSampleGenerator,
                 options,
                 NullLogger<LayoutsController>.Instance);
         }
@@ -154,7 +186,7 @@ namespace LayoutParserApi.Tests.Controllers
         }
 
         [Fact]
-        public async Task GenerateSample_retorna_501_quando_layout_e_Xml()
+        public async Task GenerateSample_gera_documento_xml_quando_layout_e_Xml_com_mapper()
         {
             var layoutRecord = new LayoutRecord
             {
@@ -167,6 +199,35 @@ namespace LayoutParserApi.Tests.Controllers
             var controller = BuildController(layoutRecord, mapper);
 
             var result = await controller.GenerateSample("teste-xml-355", new GenerateSampleRequest());
+
+            var ok = Assert.IsType<OkObjectResult>(result);
+            var response = Assert.IsType<GenerateSampleResponse>(ok.Value);
+            Assert.Equal("xml", response.Format);
+            Assert.NotEmpty(response.Warnings);
+
+            var doc = System.Xml.Linq.XDocument.Parse(response.GeneratedDocument);
+            Assert.Equal("Rps", doc.Root!.Name.LocalName);
+            // Atributo Id vira XML attribute, não elemento filho.
+            Assert.NotNull(doc.Root.Attribute("Id"));
+            // Sequence respeitada: Versao (2) antes de DataEmissao (3).
+            var filhos = doc.Root.Elements().Select(e => e.Name.LocalName).ToList();
+            Assert.Equal(new[] { "Versao", "DataEmissao" }, filhos);
+        }
+
+        [Fact]
+        public async Task GenerateSample_retorna_501_para_tipo_nao_coberto()
+        {
+            var layoutRecord = new LayoutRecord
+            {
+                LayoutGuid = Guid.NewGuid(),
+                Name = "LAYOUT_IDOC",
+                LayoutType = "Idoc",
+                DecryptedContent = "<LayoutVO><LayoutType>Idoc</LayoutType></LayoutVO>"
+            };
+            var mapper = new Mapper { MapperGuid = "mapper-idoc", TargetLayoutGuid = "teste-idoc" };
+            var controller = BuildController(layoutRecord, mapper);
+
+            var result = await controller.GenerateSample("teste-idoc", new GenerateSampleRequest());
 
             var objResult = Assert.IsType<ObjectResult>(result);
             Assert.Equal(StatusCodes.Status501NotImplemented, objResult.StatusCode);
