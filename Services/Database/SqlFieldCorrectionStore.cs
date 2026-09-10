@@ -107,6 +107,93 @@ namespace LayoutParserApi.Services.Database
             return reportId;
         }
 
+        public async Task<IReadOnlyList<FieldCorrectionReportSummary>> ListPendingReportsAsync(int limit, CancellationToken cancellationToken)
+        {
+            if (limit <= 0)
+                limit = 100;
+
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await EnsureSchemaAsync(connection, cancellationToken);
+
+            using var command = new SqlCommand(
+                @"SELECT TOP (@Limit)
+                      ReportId, DocumentId, CandidateId, FieldPath, ObservedValue, ExpectedValue,
+                      Justification, ReportedByUserId, Status, CreatedAtUtc, ReviewedByUserId, ReviewedAtUtc
+                  FROM dbo.tbFieldCorrectionReport
+                  WHERE Status = @Pending
+                  ORDER BY CreatedAtUtc ASC;",
+                connection);
+            command.Parameters.AddWithValue("@Limit", limit);
+            command.Parameters.AddWithValue("@Pending", FieldCorrectionReportStatus.Pending);
+
+            var result = new List<FieldCorrectionReportSummary>();
+            using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+                result.Add(MapReport(reader));
+
+            return result;
+        }
+
+        public async Task<FieldCorrectionReportSummary?> GetReportAsync(Guid reportId, CancellationToken cancellationToken)
+        {
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await EnsureSchemaAsync(connection, cancellationToken);
+
+            using var command = new SqlCommand(
+                @"SELECT ReportId, DocumentId, CandidateId, FieldPath, ObservedValue, ExpectedValue,
+                         Justification, ReportedByUserId, Status, CreatedAtUtc, ReviewedByUserId, ReviewedAtUtc
+                  FROM dbo.tbFieldCorrectionReport WHERE ReportId = @ReportId;",
+                connection);
+            command.Parameters.AddWithValue("@ReportId", reportId);
+
+            using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            return await reader.ReadAsync(cancellationToken) ? MapReport(reader) : null;
+        }
+
+        public async Task<bool> TransitionStatusAsync(Guid reportId, string newStatus, Guid reviewedByUserId, CancellationToken cancellationToken)
+        {
+            if (newStatus != FieldCorrectionReportStatus.ReviewedAccepted &&
+                newStatus != FieldCorrectionReportStatus.ReviewedRejected)
+                throw new ArgumentOutOfRangeException(nameof(newStatus), newStatus, "Só reviewed_accepted/reviewed_rejected são transições válidas.");
+
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await EnsureSchemaAsync(connection, cancellationToken);
+
+            // A cláusula Status = @Pending no WHERE é o que torna a transição idempotente e sem corrida:
+            // um segundo review (ou dois revisores simultâneos) afeta 0 linhas.
+            using var command = new SqlCommand(
+                @"UPDATE dbo.tbFieldCorrectionReport
+                     SET Status = @NewStatus,
+                         ReviewedByUserId = @ReviewedBy,
+                         ReviewedAtUtc = SYSUTCDATETIME()
+                   WHERE ReportId = @ReportId AND Status = @Pending;",
+                connection);
+            command.Parameters.AddWithValue("@NewStatus", newStatus);
+            command.Parameters.AddWithValue("@ReviewedBy", reviewedByUserId);
+            command.Parameters.AddWithValue("@ReportId", reportId);
+            command.Parameters.AddWithValue("@Pending", FieldCorrectionReportStatus.Pending);
+
+            var affected = await command.ExecuteNonQueryAsync(cancellationToken);
+            return affected == 1;
+        }
+
+        private static FieldCorrectionReportSummary MapReport(SqlDataReader reader) => new(
+            reader.GetGuid(reader.GetOrdinal("ReportId")),
+            reader.GetString(reader.GetOrdinal("DocumentId")),
+            reader.GetString(reader.GetOrdinal("CandidateId")),
+            reader.GetString(reader.GetOrdinal("FieldPath")),
+            reader.IsDBNull(reader.GetOrdinal("ObservedValue")) ? null : reader.GetString(reader.GetOrdinal("ObservedValue")),
+            reader.IsDBNull(reader.GetOrdinal("ExpectedValue")) ? null : reader.GetString(reader.GetOrdinal("ExpectedValue")),
+            reader.IsDBNull(reader.GetOrdinal("Justification")) ? null : reader.GetString(reader.GetOrdinal("Justification")),
+            reader.GetGuid(reader.GetOrdinal("ReportedByUserId")),
+            reader.GetString(reader.GetOrdinal("Status")),
+            new DateTimeOffset(reader.GetDateTime(reader.GetOrdinal("CreatedAtUtc")), TimeSpan.Zero),
+            reader.IsDBNull(reader.GetOrdinal("ReviewedByUserId")) ? null : reader.GetGuid(reader.GetOrdinal("ReviewedByUserId")),
+            reader.IsDBNull(reader.GetOrdinal("ReviewedAtUtc")) ? null : new DateTimeOffset(reader.GetDateTime(reader.GetOrdinal("ReviewedAtUtc")), TimeSpan.Zero));
+
         // ✅ Sem FK entre tbFieldCorrectionReport.DocumentId e tbFieldCorrectionContext.DocumentId
         // (deliberado): o ADR já prevê um cron futuro de retenção/TTL sobre o contexto (§4, "fora de
         // escopo deste ADR") — uma FK travaria essa limpeza. O controller já garante a existência do

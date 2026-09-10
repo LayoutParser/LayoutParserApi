@@ -10,6 +10,7 @@ using LayoutParserApi.Services.Transformation.Ai;
 using LayoutParserApi.Services.Transformation.LowCode;
 
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -36,16 +37,19 @@ namespace LayoutParserApi.Tests.Controllers
             public Guid? UserId { get; set; } = Guid.NewGuid();
         }
 
-        /// <summary>Fake em memória — nunca toca em SQL real, cobre os 3 métodos de <see cref="IFieldCorrectionStore"/>.</summary>
+        /// <summary>Fake em memória — nunca toca em SQL real, cobre os 6 métodos de <see cref="IFieldCorrectionStore"/>.</summary>
         private sealed class FakeFieldCorrectionStore : IFieldCorrectionStore
         {
             public FieldCorrectionContext? SavedContext { get; private set; }
+            public int SaveContextCallCount { get; private set; }
             public bool ThrowOnGetContext { get; set; }
             public List<(FieldCorrectionReportInput Input, Guid ReportedByUserId)> CreatedReports { get; } = new();
+            public List<FieldCorrectionReportSummary> Reports { get; } = new();
 
             public Task SaveContextAsync(FieldCorrectionContext context, CancellationToken cancellationToken)
             {
                 SavedContext = context;
+                SaveContextCallCount++;
                 return Task.CompletedTask;
             }
 
@@ -59,15 +63,55 @@ namespace LayoutParserApi.Tests.Controllers
 
             public Task<Guid> CreateReportAsync(FieldCorrectionReportInput input, Guid reportedByUserId, CancellationToken cancellationToken)
             {
+                var id = Guid.NewGuid();
                 CreatedReports.Add((input, reportedByUserId));
-                return Task.FromResult(Guid.NewGuid());
+                Reports.Add(new FieldCorrectionReportSummary(
+                    id, input.DocumentId, input.CandidateId, input.FieldPath,
+                    input.ObservedValue, input.ExpectedValue, input.Justification,
+                    reportedByUserId, FieldCorrectionReportStatus.Pending, DateTimeOffset.UtcNow, null, null));
+                return Task.FromResult(id);
+            }
+
+            public Task<IReadOnlyList<FieldCorrectionReportSummary>> ListPendingReportsAsync(int limit, CancellationToken cancellationToken)
+            {
+                IReadOnlyList<FieldCorrectionReportSummary> pending = Reports
+                    .Where(r => r.Status == FieldCorrectionReportStatus.Pending)
+                    .OrderBy(r => r.CreatedAtUtc)
+                    .Take(limit)
+                    .ToList();
+                return Task.FromResult(pending);
+            }
+
+            public Task<FieldCorrectionReportSummary?> GetReportAsync(Guid reportId, CancellationToken cancellationToken)
+                => Task.FromResult(Reports.FirstOrDefault(r => r.ReportId == reportId));
+
+            public Task<bool> TransitionStatusAsync(Guid reportId, string newStatus, Guid reviewedByUserId, CancellationToken cancellationToken)
+            {
+                var idx = Reports.FindIndex(r => r.ReportId == reportId);
+                if (idx < 0 || Reports[idx].Status != FieldCorrectionReportStatus.Pending)
+                    return Task.FromResult(false);
+
+                Reports[idx] = Reports[idx] with
+                {
+                    Status = newStatus,
+                    ReviewedByUserId = reviewedByUserId,
+                    ReviewedAtUtc = DateTimeOffset.UtcNow
+                };
+                return Task.FromResult(true);
             }
         }
 
-        private static (TransformationExecutionController Controller, FakeFieldCorrectionStore Store, FakeCurrentUser User) BuildController()
+        private static (TransformationExecutionController Controller, FakeFieldCorrectionStore Store, FakeCurrentUser User, string TrainingDataPath) BuildController()
         {
             var store = new FakeFieldCorrectionStore();
             var user = new FakeCurrentUser();
+
+            var trainingDataPath = Path.Combine(Path.GetTempPath(), "lp-tests-training-" + Guid.NewGuid().ToString("N"));
+            var config = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?> { ["XslSynth:TrainingDataPath"] = trainingDataPath })
+                .Build();
+            var trainingCapture = new TrainingDataCaptureService(
+                NullLogger<TrainingDataCaptureService>.Instance, config);
 
             // scopeFactory real (necessário: TryPersistFieldCorrectionContext abre um IServiceScope
             // próprio dentro do Task.Run, mesmo padrão de TryEnqueueAiCandidate) resolvendo o MESMO
@@ -97,9 +141,10 @@ namespace LayoutParserApi.Tests.Controllers
                 scopeFactory: scopeFactory,
                 canaryAlert: new LayoutParserApi.Services.Security.CanaryAlertService(
                     NullLogger<LayoutParserApi.Services.Security.CanaryAlertService>.Instance),
-                fieldCorrectionStore: store);
+                fieldCorrectionStore: store,
+                trainingDataCapture: trainingCapture);
 
-            return (controller, store, user);
+            return (controller, store, user, trainingDataPath);
         }
 
         private sealed class NoopAiCandidateService : IAiTransformationCandidateService
@@ -130,7 +175,7 @@ namespace LayoutParserApi.Tests.Controllers
         [Fact]
         public async Task TryPersistFieldCorrectionContext_grava_gabarito_sysmiddle_quando_existe()
         {
-            var (controller, store, _) = BuildController();
+            var (controller, store, _, _) = BuildController();
 
             var request = new TransformationRequest { InputContent = "linha-txt", LayoutName = "LAYOUT_X" };
             var layoutGuid = Guid.NewGuid();
@@ -168,7 +213,7 @@ namespace LayoutParserApi.Tests.Controllers
         [Fact]
         public async Task TryPersistFieldCorrectionContext_sem_candidato_sysmiddle_grava_sem_gabarito()
         {
-            var (controller, store, _) = BuildController();
+            var (controller, store, _, _) = BuildController();
 
             var request = new TransformationRequest { InputContent = "<xml/>", LayoutName = "LAYOUT_Y" };
             var layoutGuid = Guid.NewGuid();
@@ -194,7 +239,7 @@ namespace LayoutParserApi.Tests.Controllers
         [Fact]
         public async Task ReportFieldCorrection_documento_valido_retorna_202_e_grava_pending()
         {
-            var (controller, store, user) = BuildController();
+            var (controller, store, user, _) = BuildController();
             var context = new FieldCorrectionContext(
                 "doc_abc123", "mapper-1", "MeuMapper", "layout-guid-1", "LAYOUT_X",
                 "<xml>entrada</xml>", "<xml>gabarito</xml>", DateTimeOffset.UtcNow);
@@ -224,7 +269,7 @@ namespace LayoutParserApi.Tests.Controllers
         [Fact]
         public async Task ReportFieldCorrection_documentId_sem_contexto_retorna_404()
         {
-            var (controller, _, _) = BuildController();
+            var (controller, _, _, _) = BuildController();
             var request = new FieldCorrectionRequest
             {
                 DocumentId = "doc_inexistente",
@@ -242,7 +287,7 @@ namespace LayoutParserApi.Tests.Controllers
         [Fact]
         public async Task ReportFieldCorrection_sem_identidade_resolvida_retorna_404_failclosed()
         {
-            var (controller, _, user) = BuildController();
+            var (controller, _, user, _) = BuildController();
             user.UserId = null; // identidade não resolvida (TrustedIdentityMiddleware não confiou na origem)
 
             var request = new FieldCorrectionRequest
@@ -268,7 +313,7 @@ namespace LayoutParserApi.Tests.Controllers
         public async Task ReportFieldCorrection_campo_obrigatorio_ausente_retorna_400(
             string documentId, string candidateId, string fieldPath, string observedValue, string expectedValue)
         {
-            var (controller, _, _) = BuildController();
+            var (controller, _, _, _) = BuildController();
             var request = new FieldCorrectionRequest
             {
                 DocumentId = documentId,
@@ -286,7 +331,7 @@ namespace LayoutParserApi.Tests.Controllers
         [Fact]
         public async Task ReportFieldCorrection_IdentityDatabase_indisponivel_degrada_para_404_sem_lancar()
         {
-            var (controller, store, _) = BuildController();
+            var (controller, store, _, _) = BuildController();
             store.ThrowOnGetContext = true;
 
             var request = new FieldCorrectionRequest
@@ -303,6 +348,160 @@ namespace LayoutParserApi.Tests.Controllers
             var result = await controller.ReportFieldCorrection(request, CancellationToken.None);
 
             Assert.IsType<NotFoundObjectResult>(result);
+        }
+
+        // --- Curadoria: GET field-correction/pending + POST field-correction/{id}/review (issue #346) ---
+
+        /// <summary>Cria um contexto + um reporte pending e devolve (store, reportId).</summary>
+        private static async Task<(FakeFieldCorrectionStore Store, Guid ReportId)> SeedPendingReportAsync(
+            TransformationExecutionController controller, FakeFieldCorrectionStore store,
+            string observed = "001", string expected = "1", string groundTruth = "<xml>gabarito</xml>")
+        {
+            var context = new FieldCorrectionContext(
+                "doc_cur", "mapper-1", "MeuMapper", "layout-guid-1", "LAYOUT_X",
+                "<xml>entrada</xml>", groundTruth, DateTimeOffset.UtcNow);
+            await store.SaveContextAsync(context, CancellationToken.None);
+
+            var report = new FieldCorrectionRequest
+            {
+                DocumentId = "doc_cur",
+                CandidateId = "tclxsl-1",
+                FieldPath = "/nfeProc/NFe/infNFe/ide/nNF",
+                ObservedValue = observed,
+                ExpectedValue = expected,
+                Justification = "zero à esquerda"
+            };
+            var created = await controller.ReportFieldCorrection(report, CancellationToken.None);
+            var accepted = Assert.IsType<AcceptedResult>(created);
+            var reportId = (Guid)accepted.Value!.GetType().GetProperty("reportId")!.GetValue(accepted.Value)!;
+            return (store, reportId);
+        }
+
+        private static string? ReadCapturedJsonl(string trainingDataPath)
+        {
+            if (!Directory.Exists(trainingDataPath)) return null;
+            var files = Directory.GetFiles(trainingDataPath, "runtime-capture-*.jsonl");
+            return files.Length == 0 ? null : string.Concat(files.Select(File.ReadAllText));
+        }
+
+        [Fact]
+        public async Task ListPendingFieldCorrections_retorna_somente_pendentes()
+        {
+            var (controller, store, _, _) = BuildController();
+            var (_, reportId) = await SeedPendingReportAsync(controller, store);
+
+            var pendingBefore = Assert.IsType<OkObjectResult>(await controller.ListPendingFieldCorrections(100, CancellationToken.None));
+            Assert.Equal(1, (int)pendingBefore.Value!.GetType().GetProperty("count")!.GetValue(pendingBefore.Value)!);
+
+            await controller.ReviewFieldCorrection(reportId, new FieldCorrectionReviewRequest { Decision = "rejected" }, CancellationToken.None);
+
+            var pendingAfter = Assert.IsType<OkObjectResult>(await controller.ListPendingFieldCorrections(100, CancellationToken.None));
+            Assert.Equal(0, (int)pendingAfter.Value!.GetType().GetProperty("count")!.GetValue(pendingAfter.Value)!);
+        }
+
+        [Fact]
+        public async Task ReviewFieldCorrection_accepted_transiciona_e_gera_jsonl_com_source_correto()
+        {
+            var (controller, store, user, trainingPath) = BuildController();
+            var (_, reportId) = await SeedPendingReportAsync(controller, store, observed: "001", expected: "1");
+
+            var result = await controller.ReviewFieldCorrection(reportId, new FieldCorrectionReviewRequest { Decision = "Accepted" }, CancellationToken.None);
+
+            Assert.IsType<OkObjectResult>(result);
+            var report = await store.GetReportAsync(reportId, CancellationToken.None);
+            Assert.Equal(FieldCorrectionReportStatus.ReviewedAccepted, report!.Status);
+            Assert.Equal(user.UserId, report.ReviewedByUserId);
+            Assert.NotNull(report.ReviewedAtUtc);
+
+            var jsonl = ReadCapturedJsonl(trainingPath);
+            Assert.NotNull(jsonl);
+            Assert.Contains("\"source\":\"human-correction-reviewed\"", jsonl);
+            Assert.Contains("\"output\":\"1\"", jsonl);
+
+            if (Directory.Exists(trainingPath)) Directory.Delete(trainingPath, true);
+        }
+
+        [Fact]
+        public async Task ReviewFieldCorrection_rejected_transiciona_e_NAO_gera_jsonl()
+        {
+            var (controller, store, _, trainingPath) = BuildController();
+            var (_, reportId) = await SeedPendingReportAsync(controller, store);
+
+            var result = await controller.ReviewFieldCorrection(reportId, new FieldCorrectionReviewRequest { Decision = "rejected" }, CancellationToken.None);
+
+            Assert.IsType<OkObjectResult>(result);
+            var report = await store.GetReportAsync(reportId, CancellationToken.None);
+            Assert.Equal(FieldCorrectionReportStatus.ReviewedRejected, report!.Status);
+            Assert.Null(ReadCapturedJsonl(trainingPath));
+        }
+
+        [Fact]
+        public async Task ReviewFieldCorrection_segunda_chamada_retorna_409_idempotente()
+        {
+            var (controller, store, _, trainingPath) = BuildController();
+            var (_, reportId) = await SeedPendingReportAsync(controller, store);
+
+            var first = await controller.ReviewFieldCorrection(reportId, new FieldCorrectionReviewRequest { Decision = "accepted" }, CancellationToken.None);
+            Assert.IsType<OkObjectResult>(first);
+
+            var second = await controller.ReviewFieldCorrection(reportId, new FieldCorrectionReviewRequest { Decision = "rejected" }, CancellationToken.None);
+            Assert.IsType<ConflictObjectResult>(second);
+
+            var report = await store.GetReportAsync(reportId, CancellationToken.None);
+            Assert.Equal(FieldCorrectionReportStatus.ReviewedAccepted, report!.Status);
+
+            if (Directory.Exists(trainingPath)) Directory.Delete(trainingPath, true);
+        }
+
+        [Theory]
+        [InlineData(null)]
+        [InlineData("")]
+        [InlineData("maybe")]
+        public async Task ReviewFieldCorrection_decision_invalida_retorna_400(string? decision)
+        {
+            var (controller, store, _, _) = BuildController();
+            var (_, reportId) = await SeedPendingReportAsync(controller, store);
+
+            var result = await controller.ReviewFieldCorrection(reportId, new FieldCorrectionReviewRequest { Decision = decision }, CancellationToken.None);
+
+            Assert.IsType<BadRequestObjectResult>(result);
+        }
+
+        [Fact]
+        public async Task ReviewFieldCorrection_sem_identidade_resolvida_retorna_404_failclosed()
+        {
+            var (controller, store, user, _) = BuildController();
+            var (_, reportId) = await SeedPendingReportAsync(controller, store);
+            user.UserId = null;
+
+            var result = await controller.ReviewFieldCorrection(reportId, new FieldCorrectionReviewRequest { Decision = "accepted" }, CancellationToken.None);
+
+            Assert.IsType<NotFoundResult>(result);
+        }
+
+        [Fact]
+        public async Task ReviewFieldCorrection_reportId_inexistente_retorna_409()
+        {
+            var (controller, _, _, _) = BuildController();
+
+            var result = await controller.ReviewFieldCorrection(Guid.NewGuid(), new FieldCorrectionReviewRequest { Decision = "accepted" }, CancellationToken.None);
+
+            Assert.IsType<ConflictObjectResult>(result);
+        }
+
+        [Fact]
+        public async Task ReviewFieldCorrection_accepted_nao_sobrescreve_groundTruth_do_contexto()
+        {
+            var (controller, store, _, trainingPath) = BuildController();
+            var (_, reportId) = await SeedPendingReportAsync(controller, store, groundTruth: "<xml>GABARITO-ORIGINAL</xml>");
+            var saveCallsBefore = store.SaveContextCallCount;
+
+            await controller.ReviewFieldCorrection(reportId, new FieldCorrectionReviewRequest { Decision = "accepted" }, CancellationToken.None);
+
+            Assert.Equal("<xml>GABARITO-ORIGINAL</xml>", store.SavedContext!.GroundTruthXml);
+            Assert.Equal(saveCallsBefore, store.SaveContextCallCount);
+
+            if (Directory.Exists(trainingPath)) Directory.Delete(trainingPath, true);
         }
     }
 }
