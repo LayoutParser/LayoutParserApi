@@ -102,5 +102,24 @@ namespace LayoutParserApi.Services.Interfaces
         /// no-op — devolve o estado atual sem gravar nova transição.
         /// </summary>
         Task<MappingReleaseDetail> RollbackAsync(Guid releaseId, Guid actorUserId, CancellationToken cancellationToken);
+
+        /// <summary>
+        /// <c>published → deprecated</c> (arquivamento/deprecação manual — issue #378, cross-check #198.1).
+        /// Espelha <see cref="ApproveAsync"/>/<see cref="PublishAsync"/>: valida o estado de origem,
+        /// faz o <c>UPDATE</c> de status e grava a transição em <c>MappingTransition</c> na mesma operação.
+        /// Idempotente (mesmo padrão do <see cref="RollbackAsync"/>): se a release já está
+        /// <c>deprecated</c>, é no-op — devolve o estado atual sem gravar nova transição. Qualquer
+        /// outro status de origem (não <c>published</c>) lança <see cref="InvalidOperationException"/>.
+        /// </summary>
+        Task<MappingReleaseDetail> DeprecateAsync(Guid releaseId, Guid actorUserId, string? justification, CancellationToken cancellationToken);
+
+        /// <summary>
+        /// <c>deprecated → archived</c> (também aceita <c>test_failed</c> e <c>in_review</c> abandonados
+        /// como origem — issue #378). Congela a release em estado terminal. Grava a transição em
+        /// <c>MappingTransition</c>. Idempotente: se já está <c>archived</c>, é no-op. Origem fora de
+        /// <c>{deprecated, test_failed, in_review}</c> lança <see cref="InvalidOperationException"/>
+        /// (uma release <c>published</c> precisa ser deprecada antes de arquivada).
+        /// </summary>
+        Task<MappingReleaseDetail> ArchiveAsync(Guid releaseId, Guid actorUserId, string? justification, CancellationToken cancellationToken);
     }
 }

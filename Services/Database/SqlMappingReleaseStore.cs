@@ -516,6 +516,103 @@ CREATE INDEX IX_tbMappingTransition_ReleaseId ON dbo.tbMappingTransition(Release
                 ?? throw new InvalidOperationException("Falha ao reler a release após rollback.");
         }
 
+        public async Task<MappingReleaseDetail> DeprecateAsync(Guid releaseId, Guid actorUserId, string? justification, CancellationToken cancellationToken)
+        {
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await EnsureSchemaAsync(connection, cancellationToken);
+
+            using var tx = connection.BeginTransaction();
+            try
+            {
+                var current = await GetReleaseForUpdateAsync(connection, tx, releaseId, cancellationToken)
+                    ?? throw new InvalidOperationException($"Release {releaseId} não encontrada.");
+
+                // Idempotente (mesmo padrão do rollback): já deprecada — no-op, sem transição nova.
+                if (current.Status == MappingReleaseStatus.Deprecated)
+                {
+                    await tx.CommitAsync(cancellationToken);
+                    return await GetReleaseAsync(connection, releaseId, cancellationToken)
+                        ?? throw new InvalidOperationException("Falha ao reler a release na deprecação idempotente.");
+                }
+
+                if (current.Status != MappingReleaseStatus.Published)
+                    throw new InvalidOperationException($"Release {releaseId} está em \"{current.Status}\"; deprecação manual exige \"{MappingReleaseStatus.Published}\".");
+
+                await InsertTransitionAsync(connection, tx, releaseId, MappingReleaseStatus.Published, MappingReleaseStatus.Deprecated, actorUserId, justification ?? "Deprecação manual.", null, cancellationToken);
+                using (var update = new SqlCommand(
+                    "UPDATE dbo.tbMappingRelease SET Status = @Status WHERE ReleaseId = @ReleaseId;", connection, tx))
+                {
+                    update.Parameters.AddWithValue("@Status", MappingReleaseStatus.Deprecated);
+                    update.Parameters.AddWithValue("@ReleaseId", releaseId);
+                    await update.ExecuteNonQueryAsync(cancellationToken);
+                }
+
+                await tx.CommitAsync(cancellationToken);
+            }
+            catch
+            {
+                await tx.RollbackAsync(cancellationToken);
+                throw;
+            }
+
+            return await GetReleaseAsync(connection, releaseId, cancellationToken)
+                ?? throw new InvalidOperationException("Falha ao reler a release após deprecação.");
+        }
+
+        // Origens válidas para arquivamento manual (issue #378): deprecated é o caminho normal;
+        // test_failed/in_review cobrem releases abandonadas que nunca chegaram a publicar.
+        private static readonly string[] ArchivableFromStatuses =
+        {
+            MappingReleaseStatus.Deprecated,
+            MappingReleaseStatus.TestFailed,
+            MappingReleaseStatus.InReview,
+        };
+
+        public async Task<MappingReleaseDetail> ArchiveAsync(Guid releaseId, Guid actorUserId, string? justification, CancellationToken cancellationToken)
+        {
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await EnsureSchemaAsync(connection, cancellationToken);
+
+            using var tx = connection.BeginTransaction();
+            try
+            {
+                var current = await GetReleaseForUpdateAsync(connection, tx, releaseId, cancellationToken)
+                    ?? throw new InvalidOperationException($"Release {releaseId} não encontrada.");
+
+                // Idempotente: já arquivada — no-op, sem transição nova.
+                if (current.Status == MappingReleaseStatus.Archived)
+                {
+                    await tx.CommitAsync(cancellationToken);
+                    return await GetReleaseAsync(connection, releaseId, cancellationToken)
+                        ?? throw new InvalidOperationException("Falha ao reler a release no arquivamento idempotente.");
+                }
+
+                if (Array.IndexOf(ArchivableFromStatuses, current.Status) < 0)
+                    throw new InvalidOperationException($"Release {releaseId} está em \"{current.Status}\"; arquivamento manual exige um destes: {string.Join(", ", ArchivableFromStatuses)}.");
+
+                await InsertTransitionAsync(connection, tx, releaseId, current.Status, MappingReleaseStatus.Archived, actorUserId, justification ?? "Arquivamento manual.", null, cancellationToken);
+                using (var update = new SqlCommand(
+                    "UPDATE dbo.tbMappingRelease SET Status = @Status WHERE ReleaseId = @ReleaseId;", connection, tx))
+                {
+                    update.Parameters.AddWithValue("@Status", MappingReleaseStatus.Archived);
+                    update.Parameters.AddWithValue("@ReleaseId", releaseId);
+                    await update.ExecuteNonQueryAsync(cancellationToken);
+                }
+
+                await tx.CommitAsync(cancellationToken);
+            }
+            catch
+            {
+                await tx.RollbackAsync(cancellationToken);
+                throw;
+            }
+
+            return await GetReleaseAsync(connection, releaseId, cancellationToken)
+                ?? throw new InvalidOperationException("Falha ao reler a release após arquivamento.");
+        }
+
         private static async Task InsertTransitionAsync(
             SqlConnection connection, SqlTransaction tx, Guid releaseId, string fromStatus, string toStatus,
             Guid actorUserId, string? justification, string? checksSnapshot, CancellationToken cancellationToken)

@@ -262,6 +262,10 @@ namespace LayoutParserApi.Tests.Integration
 
             public Task<MappingReleaseDetail> RollbackAsync(Guid releaseId, Guid actorUserId, CancellationToken cancellationToken)
                 => throw new NotSupportedException("Não exercitado neste gate — coberto em MappingGovernanceControllerTests.");
+            public Task<MappingReleaseDetail> DeprecateAsync(Guid releaseId, Guid actorUserId, string? justification, CancellationToken cancellationToken)
+                => throw new NotSupportedException("Não exercitado neste gate — coberto em MappingGovernanceControllerTests.");
+            public Task<MappingReleaseDetail> ArchiveAsync(Guid releaseId, Guid actorUserId, string? justification, CancellationToken cancellationToken)
+                => throw new NotSupportedException("Não exercitado neste gate — coberto em MappingGovernanceControllerTests.");
         }
 
         private static IServiceScopeFactory BuildScopeFactory(FakeDraftStore draftStore, FakeReleaseStore releaseStore)

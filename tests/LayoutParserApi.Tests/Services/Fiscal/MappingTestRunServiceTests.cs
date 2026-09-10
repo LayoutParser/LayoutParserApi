@@ -53,6 +53,10 @@ namespace LayoutParserApi.Tests.Services.Fiscal
                 => throw new NotSupportedException();
             public Task<MappingReleaseDetail> RollbackAsync(Guid releaseId, Guid actorUserId, CancellationToken cancellationToken)
                 => throw new NotSupportedException();
+            public Task<MappingReleaseDetail> DeprecateAsync(Guid releaseId, Guid actorUserId, string? justification, CancellationToken cancellationToken)
+                => throw new NotSupportedException();
+            public Task<MappingReleaseDetail> ArchiveAsync(Guid releaseId, Guid actorUserId, string? justification, CancellationToken cancellationToken)
+                => throw new NotSupportedException();
         }
 
         private sealed class FakeDraftStore : IMappingDraftStore

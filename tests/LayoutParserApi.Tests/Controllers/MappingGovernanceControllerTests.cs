@@ -156,6 +156,43 @@ namespace LayoutParserApi.Tests.Controllers
 
                 return Task.FromResult(ById[releaseId]);
             }
+
+            private static readonly string[] ArchivableFrom =
+            {
+                MappingReleaseStatus.Deprecated, MappingReleaseStatus.TestFailed, MappingReleaseStatus.InReview,
+            };
+
+            public Task<MappingReleaseDetail> DeprecateAsync(Guid releaseId, Guid actorUserId, string? justification, CancellationToken cancellationToken)
+            {
+                var current = ById[releaseId];
+                // Idempotente: já deprecada — no-op.
+                if (current.Status == MappingReleaseStatus.Deprecated)
+                    return Task.FromResult(current);
+
+                if (current.Status != MappingReleaseStatus.Published)
+                    throw new InvalidOperationException($"Release {releaseId} está em \"{current.Status}\"; deprecação manual exige \"{MappingReleaseStatus.Published}\".");
+
+                Transitions.Add((releaseId, MappingReleaseStatus.Published, MappingReleaseStatus.Deprecated, actorUserId, justification ?? "Deprecação manual."));
+                var updated = current with { Status = MappingReleaseStatus.Deprecated };
+                ById[releaseId] = updated;
+                return Task.FromResult(updated);
+            }
+
+            public Task<MappingReleaseDetail> ArchiveAsync(Guid releaseId, Guid actorUserId, string? justification, CancellationToken cancellationToken)
+            {
+                var current = ById[releaseId];
+                // Idempotente: já arquivada — no-op.
+                if (current.Status == MappingReleaseStatus.Archived)
+                    return Task.FromResult(current);
+
+                if (Array.IndexOf(ArchivableFrom, current.Status) < 0)
+                    throw new InvalidOperationException($"Release {releaseId} está em \"{current.Status}\"; arquivamento manual exige um destes: {string.Join(", ", ArchivableFrom)}.");
+
+                Transitions.Add((releaseId, current.Status, MappingReleaseStatus.Archived, actorUserId, justification ?? "Arquivamento manual."));
+                var updated = current with { Status = MappingReleaseStatus.Archived };
+                ById[releaseId] = updated;
+                return Task.FromResult(updated);
+            }
         }
 
         private static MappingReleaseDetail NewRelease(Guid workspaceId, Guid draftId, string status) => new(
@@ -283,6 +320,131 @@ namespace LayoutParserApi.Tests.Controllers
             Assert.Equal(MappingReleaseStatus.Deprecated, store.ById[releaseB.ReleaseId].Status);
             Assert.Equal(MappingReleaseStatus.Published, store.ById[releaseA.ReleaseId].Status);
             Assert.Equal(transitionCountAposPrimeiro, store.Transitions.Count); // no-op: nenhuma transição nova gravada.
+        }
+
+        // --- Deprecação/arquivamento manual (issue #378) ---
+
+        [Fact]
+        public async Task Deprecate_release_published_promove_para_deprecated()
+        {
+            var store = new FakeReleaseStore();
+            var workspaceId = Guid.NewGuid();
+            var actor = Guid.NewGuid();
+            var release = NewRelease(workspaceId, Guid.NewGuid(), MappingReleaseStatus.Published);
+            store.ById[release.ReleaseId] = release;
+
+            var result = await controllerFor(store, actor).Deprecate(workspaceId, release.ReleaseId, new LifecycleTransitionRequest { Justification = "fim de vida" }, CancellationToken.None);
+
+            Assert.IsType<OkObjectResult>(result);
+            Assert.Equal(MappingReleaseStatus.Deprecated, store.ById[release.ReleaseId].Status);
+            Assert.Contains(store.Transitions, t => t.ReleaseId == release.ReleaseId && t.From == MappingReleaseStatus.Published && t.To == MappingReleaseStatus.Deprecated && t.Actor == actor && t.Justification == "fim de vida");
+        }
+
+        [Fact]
+        public async Task Deprecate_release_nao_published_retorna_422()
+        {
+            var store = new FakeReleaseStore();
+            var workspaceId = Guid.NewGuid();
+            var release = NewRelease(workspaceId, Guid.NewGuid(), MappingReleaseStatus.TestPassed);
+            store.ById[release.ReleaseId] = release;
+
+            var result = await controllerFor(store, Guid.NewGuid()).Deprecate(workspaceId, release.ReleaseId, null, CancellationToken.None);
+
+            Assert.IsType<UnprocessableEntityObjectResult>(result);
+            Assert.Equal(MappingReleaseStatus.TestPassed, store.ById[release.ReleaseId].Status);
+        }
+
+        [Fact]
+        public async Task Deprecate_duas_vezes_e_idempotente_no_op()
+        {
+            var store = new FakeReleaseStore();
+            var workspaceId = Guid.NewGuid();
+            var actor = Guid.NewGuid();
+            var release = NewRelease(workspaceId, Guid.NewGuid(), MappingReleaseStatus.Published);
+            store.ById[release.ReleaseId] = release;
+
+            await controllerFor(store, actor).Deprecate(workspaceId, release.ReleaseId, null, CancellationToken.None);
+            var transitionsApos1 = store.Transitions.Count;
+            var segundo = await controllerFor(store, actor).Deprecate(workspaceId, release.ReleaseId, null, CancellationToken.None);
+
+            Assert.IsType<OkObjectResult>(segundo);
+            Assert.Equal(MappingReleaseStatus.Deprecated, store.ById[release.ReleaseId].Status);
+            Assert.Equal(transitionsApos1, store.Transitions.Count);
+        }
+
+        [Fact]
+        public async Task Archive_release_deprecated_promove_para_archived()
+        {
+            var store = new FakeReleaseStore();
+            var workspaceId = Guid.NewGuid();
+            var actor = Guid.NewGuid();
+            var release = NewRelease(workspaceId, Guid.NewGuid(), MappingReleaseStatus.Deprecated);
+            store.ById[release.ReleaseId] = release;
+
+            var result = await controllerFor(store, actor).Archive(workspaceId, release.ReleaseId, new LifecycleTransitionRequest { Justification = "encerrada" }, CancellationToken.None);
+
+            Assert.IsType<OkObjectResult>(result);
+            Assert.Equal(MappingReleaseStatus.Archived, store.ById[release.ReleaseId].Status);
+            Assert.Contains(store.Transitions, t => t.ReleaseId == release.ReleaseId && t.From == MappingReleaseStatus.Deprecated && t.To == MappingReleaseStatus.Archived && t.Actor == actor);
+        }
+
+        [Fact]
+        public async Task Archive_release_test_failed_abandonada_promove_para_archived()
+        {
+            var store = new FakeReleaseStore();
+            var workspaceId = Guid.NewGuid();
+            var release = NewRelease(workspaceId, Guid.NewGuid(), MappingReleaseStatus.TestFailed);
+            store.ById[release.ReleaseId] = release;
+
+            var result = await controllerFor(store, Guid.NewGuid()).Archive(workspaceId, release.ReleaseId, null, CancellationToken.None);
+
+            Assert.IsType<OkObjectResult>(result);
+            Assert.Equal(MappingReleaseStatus.Archived, store.ById[release.ReleaseId].Status);
+        }
+
+        [Fact]
+        public async Task Archive_release_published_retorna_422()
+        {
+            var store = new FakeReleaseStore();
+            var workspaceId = Guid.NewGuid();
+            var release = NewRelease(workspaceId, Guid.NewGuid(), MappingReleaseStatus.Published);
+            store.ById[release.ReleaseId] = release;
+
+            var result = await controllerFor(store, Guid.NewGuid()).Archive(workspaceId, release.ReleaseId, null, CancellationToken.None);
+
+            Assert.IsType<UnprocessableEntityObjectResult>(result);
+            Assert.Equal(MappingReleaseStatus.Published, store.ById[release.ReleaseId].Status);
+        }
+
+        [Fact]
+        public async Task Archive_duas_vezes_e_idempotente_no_op()
+        {
+            var store = new FakeReleaseStore();
+            var workspaceId = Guid.NewGuid();
+            var actor = Guid.NewGuid();
+            var release = NewRelease(workspaceId, Guid.NewGuid(), MappingReleaseStatus.Deprecated);
+            store.ById[release.ReleaseId] = release;
+
+            await controllerFor(store, actor).Archive(workspaceId, release.ReleaseId, null, CancellationToken.None);
+            var transitionsApos1 = store.Transitions.Count;
+            var segundo = await controllerFor(store, actor).Archive(workspaceId, release.ReleaseId, null, CancellationToken.None);
+
+            Assert.IsType<OkObjectResult>(segundo);
+            Assert.Equal(MappingReleaseStatus.Archived, store.ById[release.ReleaseId].Status);
+            Assert.Equal(transitionsApos1, store.Transitions.Count);
+        }
+
+        [Fact]
+        public async Task Deprecate_release_de_outro_workspace_retorna_404()
+        {
+            var store = new FakeReleaseStore();
+            var workspaceDoAtacante = Guid.NewGuid();
+            var release = NewRelease(Guid.NewGuid(), Guid.NewGuid(), MappingReleaseStatus.Published);
+            store.ById[release.ReleaseId] = release;
+
+            var result = await controllerFor(store, Guid.NewGuid()).Deprecate(workspaceDoAtacante, release.ReleaseId, null, CancellationToken.None);
+
+            Assert.IsType<NotFoundResult>(result);
         }
 
         // --- Isolamento cross-workspace (mesmo padrão dos slices anteriores) ---

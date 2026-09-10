@@ -85,6 +85,10 @@ namespace LayoutParserApi.Tests.Services.Fiscal
                 => throw new NotSupportedException();
             public Task<MappingReleaseDetail> RollbackAsync(Guid releaseId, Guid actorUserId, CancellationToken cancellationToken)
                 => throw new NotSupportedException();
+            public Task<MappingReleaseDetail> DeprecateAsync(Guid releaseId, Guid actorUserId, string? justification, CancellationToken cancellationToken)
+                => throw new NotSupportedException();
+            public Task<MappingReleaseDetail> ArchiveAsync(Guid releaseId, Guid actorUserId, string? justification, CancellationToken cancellationToken)
+                => throw new NotSupportedException();
         }
 
         private static MappingDraftRuleDetail AcceptedCopyRule(string source, string target) => new(
