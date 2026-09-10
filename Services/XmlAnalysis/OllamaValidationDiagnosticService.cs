@@ -1,6 +1,7 @@
-using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+
+using LayoutParserApi.Services.Llm;
 
 using Microsoft.Extensions.Options;
 
@@ -11,19 +12,24 @@ namespace LayoutParserApi.Services.XmlAnalysis
     /// arquitetura: Gemini/OpenAI foram decomissionados (ver [[gemini-openai-decommission-decision]]
     /// na memória do @lp-architect), Ollama assume 100% do papel de LLM neste projeto. Mantém dado
     /// fiscal potencialmente sensível (XML transformado, mensagens de erro) no servidor.
+    /// ✅ Issue #340 (F1): consome <see cref="ILlmProvider"/> via <see cref="LlmProviderResolver"/>
+    /// em vez de <see cref="HttpClient"/>/<see cref="OllamaOptions"/> diretos — mesma chamada
+    /// HTTP por trás, agora atrás da abstração plugável (ver ADR
+    /// docs/architecture/adr-llm-provider-plugavel-2026-09-08.md). Dado aqui é sempre
+    /// <see cref="DataSensitivity.RealFiscalDocument"/>, hardcoded (não configurável via appsettings).
     /// </summary>
     public class OllamaValidationDiagnosticService
     {
-        private readonly HttpClient _httpClient;
+        private readonly LlmProviderResolver _providerResolver;
         private readonly ILogger<OllamaValidationDiagnosticService> _logger;
         private readonly OllamaOptions _options;
 
         public OllamaValidationDiagnosticService(
-            HttpClient httpClient,
+            LlmProviderResolver providerResolver,
             IOptions<OllamaOptions> options,
             ILogger<OllamaValidationDiagnosticService> logger)
         {
-            _httpClient = httpClient;
+            _providerResolver = providerResolver;
             _logger = logger;
             _options = options.Value;
         }
@@ -38,82 +44,60 @@ namespace LayoutParserApi.Services.XmlAnalysis
             using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
 
-            var payload = new
+            // ✅ Saída estruturada nativa do Ollama (suportado a partir da v0.5, confirmado em
+            // uso nesta instância v0.31.2 via teste manual): força o modelo a devolver
+            // {summary, suggestedFix, confidence} como JSON válido em vez de depender de
+            // parsing de texto livre por regex/heurística. Fallback de parsing de texto livre
+            // ainda existe abaixo (ParseModelResponse) para o caso de o modelo não respeitar
+            // o schema (acontece ocasionalmente com modelos menores sob temperature > 0).
+            // Nota: usamos apenas "string"/"number" simples (sem union type) no schema — o
+            // suporte de tipo nullable ("string"|"null") do JSON Schema completo não foi
+            // validado contra esta versão do Ollama; pedimos "" via prompt quando não houver
+            // sugestão e tratamos string vazia como null no parse (ParseModelResponse).
+            var jsonSchema = JsonSerializer.Serialize(new
             {
-                model = _options.Model,
-                prompt,
-                stream = false,
-                // ✅ Saída estruturada nativa do Ollama (suportado a partir da v0.5, confirmado em
-                // uso nesta instância v0.31.2 via teste manual): força o modelo a devolver
-                // {summary, suggestedFix, confidence} como JSON válido em vez de depender de
-                // parsing de texto livre por regex/heurística. Fallback de parsing de texto livre
-                // ainda existe abaixo (ParseModelResponse) para o caso de o modelo não respeitar
-                // o schema (acontece ocasionalmente com modelos menores sob temperature > 0).
-                // Nota: usamos apenas "string"/"number" simples (sem union type) no schema — o
-                // suporte de tipo nullable ("string"|"null") do JSON Schema completo não foi
-                // validado contra esta versão do Ollama; pedimos "" via prompt quando não houver
-                // sugestão e tratamos string vazia como null no parse (ParseModelResponse).
-                format = new
+                type = "object",
+                properties = new
                 {
-                    type = "object",
-                    properties = new
-                    {
-                        summary = new { type = "string" },
-                        suggestedFix = new { type = "string" },
-                        confidence = new { type = "number" }
-                    },
-                    required = new[] { "summary", "confidence" }
+                    summary = new { type = "string" },
+                    suggestedFix = new { type = "string" },
+                    confidence = new { type = "number" }
                 },
-                options = new { temperature = 0.0 }
-            };
+                required = new[] { "summary", "confidence" }
+            });
 
-            HttpResponseMessage response;
+            var llmRequest = new LlmRequest(prompt, DataSensitivity.RealFiscalDocument, jsonSchema, Temperature: 0.0);
+            var provider = _providerResolver.Resolve(DataSensitivity.RealFiscalDocument);
+
+            LlmResponse response;
             try
             {
-                using var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
-                response = await _httpClient.PostAsync($"{_options.Url.TrimEnd('/')}/api/generate", content, linkedCts.Token);
+                response = await provider.GenerateAsync(llmRequest, linkedCts.Token);
             }
             catch (OperationCanceledException)
             {
                 // Cobre tanto o nosso timeoutCts quanto qualquer outro cancelamento da chamada
                 // (ex.: cliente HTTP desconectou, cancellationToken do próprio request ASP.NET).
-                // Tratar como Timeout é o fallback mais seguro aqui — nenhum dos dois casos é
-                // "resposta obtida com sucesso", e nenhum é a mesma coisa que "Ollama indisponível"
-                // (que exige HttpRequestException por connection refused).
                 _logger.LogWarning("Diagnóstico via Ollama cancelado/excedeu o timeout de {Timeout}s (modelo {Model})", timeoutSeconds, _options.Model);
                 return ValidationDiagnosticResult.Fail(DiagnosticFailureKind.Timeout, "Diagnóstico excedeu o tempo limite");
             }
-            catch (HttpRequestException ex)
+
+            if (response.TimedOut)
             {
-                // Connection refused / DNS / socket — Ollama fora do ar ou inacessível.
-                _logger.LogWarning(ex, "Ollama indisponível em {Url}", _options.Url);
-                return ValidationDiagnosticResult.Fail(DiagnosticFailureKind.Unavailable, "Provedor de IA indisponível no momento");
+                _logger.LogWarning("Diagnóstico via Ollama cancelado/excedeu o timeout de {Timeout}s (modelo {Model})", timeoutSeconds, _options.Model);
+                return ValidationDiagnosticResult.Fail(DiagnosticFailureKind.Timeout, "Diagnóstico excedeu o tempo limite");
             }
 
-            if (!response.IsSuccessStatusCode)
+            if (!response.Success)
             {
-                var body = await SafeReadBodyAsync(response);
-                _logger.LogWarning("Ollama respondeu {StatusCode} ao diagnosticar erro: {Body}", response.StatusCode, body);
-
-                // Se o próprio Ollama devolveu erro de conexão indireto (ex.: 502 de um proxy na frente
-                // dele), tratamos como indisponibilidade; qualquer outro código HTTP inesperado do
-                // servidor Ollama em si é infraestrutura genérica.
+                _logger.LogWarning("Falha ao diagnosticar erro via {Provider}: {Error}", provider.Name, response.ErrorMessage);
                 return ValidationDiagnosticResult.Fail(DiagnosticFailureKind.Infrastructure, "Erro de infraestrutura ao chamar o provedor de IA");
             }
 
             try
             {
-                var raw = await response.Content.ReadAsStringAsync(linkedCts.Token);
-                using var doc = JsonDocument.Parse(raw);
-                var modelResponseText = doc.RootElement.TryGetProperty("response", out var r) ? r.GetString() ?? "" : "";
-
-                var diagnostic = ParseModelResponse(modelResponseText);
+                var diagnostic = ParseModelResponse(response.Text);
                 return ValidationDiagnosticResult.Ok(diagnostic);
-            }
-            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
-            {
-                _logger.LogWarning("Timeout ao ler resposta do Ollama (modelo {Model})", _options.Model);
-                return ValidationDiagnosticResult.Fail(DiagnosticFailureKind.Timeout, "Diagnóstico excedeu o tempo limite");
             }
             catch (Exception ex)
             {
@@ -244,16 +228,5 @@ namespace LayoutParserApi.Services.XmlAnalysis
             return sb.ToString();
         }
 
-        private static async Task<string> SafeReadBodyAsync(HttpResponseMessage response)
-        {
-            try
-            {
-                return await response.Content.ReadAsStringAsync();
-            }
-            catch
-            {
-                return "";
-            }
-        }
     }
 }
