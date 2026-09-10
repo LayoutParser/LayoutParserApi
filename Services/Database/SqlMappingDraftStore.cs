@@ -59,7 +59,7 @@ namespace LayoutParserApi.Services.Database
 
             var result = new List<ArtifactFileRef>();
             using var command = new SqlCommand(
-                "SELECT ArtifactId, Kind, StoragePath, OriginalFileName FROM dbo.tbPackageArtifact WHERE RevisionId = @RevisionId;",
+                "SELECT ArtifactId, Kind, StoragePath, OriginalFileName, Provenance FROM dbo.tbPackageArtifact WHERE RevisionId = @RevisionId;",
                 connection);
             command.Parameters.AddWithValue("@RevisionId", revisionId);
             using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -69,7 +69,11 @@ namespace LayoutParserApi.Services.Database
                     reader.GetGuid(reader.GetOrdinal("ArtifactId")),
                     reader.GetString(reader.GetOrdinal("Kind")),
                     reader.GetString(reader.GetOrdinal("StoragePath")),
-                    reader.GetString(reader.GetOrdinal("OriginalFileName"))));
+                    reader.GetString(reader.GetOrdinal("OriginalFileName")),
+                    // ✅ issue #341: coluna pode não existir ainda se o schema de tbPackageArtifact
+                    // (dono: SqlFiscalPackageStore) não rodou o ALTER — trata ausência da coluna em si
+                    // como erro real (propaga), só o VALOR NULL da linha é tratado como ausência de proveniência.
+                    reader.IsDBNull(reader.GetOrdinal("Provenance")) ? null : reader.GetString(reader.GetOrdinal("Provenance"))));
             }
             return result;
         }

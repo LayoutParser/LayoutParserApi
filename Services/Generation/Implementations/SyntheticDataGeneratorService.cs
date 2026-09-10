@@ -39,6 +39,17 @@ namespace LayoutParserApi.Services.Generation.Implementations
                 // o campo quebraria o payload de quem já chama o endpoint, e responder 400 a um
                 // request que antes funcionava seria pior que atendê-lo por regras. Quando a
                 // geração semântica voltar sobre Ollama local, é este flag que a religa.
+                //
+                // ✅ issue #341 (F2 — ponto de religamento preparado, NÃO ativado aqui): quando esse
+                // caminho voltar a chamar um ILlmProvider, se o prompt embutir uma amostra/planilha
+                // REAL do analista como referência de formato (ex.: um artefato anexado ao draft com
+                // ArtifactProvenance ausente/RealCustomerSample), a chamada deve declarar
+                // DataSensitivity.RealFiscalDocument e usar LlmProviderResolver — que recusa em
+                // runtime qualquer provider ProviderLocality.Cloud para essa sensibilidade (ver
+                // LlmProviderResolver.Resolve). Isso vale MESMO que a SAÍDA final seja sintética: é o
+                // conteúdo do PROMPT que importa, não o do resultado. Nunca decida a sensibilidade
+                // aqui a partir de "a saída é sintética" — resolva a partir da proveniência real de
+                // cada artefato usado como referência (ArtifactProvenance.ResolveSensitivity).
                 if (request.UseAI)
                     _logger.LogInformation("UseAI ignorado: geração por IA em nuvem foi decomissionada; usando regras.");
 
