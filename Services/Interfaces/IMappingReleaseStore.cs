@@ -64,9 +64,17 @@ namespace LayoutParserApi.Services.Interfaces
         /// primeiro). Isolamento por <paramref name="workspaceId"/> feito na query SQL — nunca filtra
         /// em memória (RBAC de acesso ao workspace já é responsabilidade de
         /// <c>RequireWorkspaceRoleAttribute</c> no controller).
+        /// <para>
+        /// Filtros opcionais (issue #377): <paramref name="status"/> (um valor de
+        /// <see cref="MappingReleaseStatus"/>), <paramref name="draftId"/> e <paramref name="environment"/>.
+        /// Quando <c>null</c>/vazio, o filtro não entra na cláusula <c>WHERE</c> — sem filtro o
+        /// comportamento é idêntico ao anterior. Validação de valor é responsabilidade do controller.
+        /// </para>
         /// </summary>
         Task<(IReadOnlyList<MappingReleaseDetail> Items, int TotalCount)> ListByWorkspaceAsync(
-            Guid workspaceId, int page, int pageSize, CancellationToken cancellationToken);
+            Guid workspaceId, int page, int pageSize,
+            string? status, Guid? draftId, string? environment,
+            CancellationToken cancellationToken);
 
         /// <summary>Atualiza o resultado do Fiscal Test Lab — <c>test_passed</c>/<c>test_failed</c> conforme <see cref="MappingTestRunSummary.RequiredGatesPassed"/>.</summary>
         Task<MappingReleaseDetail?> ApplyTestRunResultAsync(Guid releaseId, MappingTestRunSummary summary, CancellationToken cancellationToken);
