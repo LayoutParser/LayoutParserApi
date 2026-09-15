@@ -1453,7 +1453,7 @@ jobs:
       continue-on-error: true
       # Pinado por SHA (tag mutavel proibida p/ Action de terceiro nao-imutavel - CodeQL
       # actions/unpinned-tag). SHA corresponde a tag v3.
-      uses: dawidd6/action-send-mail@94de994a9f6fffee200243214e17002e2920bb59
+      uses: dawidd6/action-send-mail@03a02a49409134de07636216fb379a026c52991e
       with:
         # Secrets ainda NAO preenchidos pelo dono (provedor SMTP em aberto). Enquanto
         # secrets.SMTP_SERVER estiver vazio, a Action falha rapido - por isso o step inteiro
@@ -1654,7 +1654,7 @@ jobs:
       continue-on-error: true
       # Pinado por SHA (tag mutavel proibida p/ Action de terceiro nao-imutavel - CodeQL
       # actions/unpinned-tag). SHA corresponde a tag v3.
-      uses: dawidd6/action-send-mail@94de994a9f6fffee200243214e17002e2920bb59
+      uses: dawidd6/action-send-mail@03a02a49409134de07636216fb379a026c52991e
       with:
         server_address: ${{ secrets.SMTP_SERVER }}
         server_port: ${{ secrets.SMTP_PORT }}
