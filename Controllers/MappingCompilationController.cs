@@ -3,8 +3,11 @@ using LayoutParserApi.Models.Entities.Identity;
 using LayoutParserApi.Services.Fiscal;
 using LayoutParserApi.Services.Filters;
 using LayoutParserApi.Services.Interfaces;
+using LayoutParserApi.Services.XmlAnalysis;
 
 using Microsoft.AspNetCore.Mvc;
+
+using XslSynth.Core;
 
 namespace LayoutParserApi.Controllers
 {
@@ -39,6 +42,8 @@ namespace LayoutParserApi.Controllers
         private readonly IMappingCompileService _compileService;
         private readonly IMappingTestRunService _testRunService;
         private readonly IFiscalProfileResolver _fiscalProfileResolver;
+        private readonly XsdValidationService _xsdValidationService;
+        private readonly IRequiredCoverageCalculator _requiredCoverageCalculator;
         private readonly ICurrentUser _currentUser;
         private readonly ILogger<MappingCompilationController> _logger;
 
@@ -48,6 +53,8 @@ namespace LayoutParserApi.Controllers
             IMappingCompileService compileService,
             IMappingTestRunService testRunService,
             IFiscalProfileResolver fiscalProfileResolver,
+            XsdValidationService xsdValidationService,
+            IRequiredCoverageCalculator requiredCoverageCalculator,
             ICurrentUser currentUser,
             ILogger<MappingCompilationController> logger)
         {
@@ -56,6 +63,8 @@ namespace LayoutParserApi.Controllers
             _compileService = compileService;
             _testRunService = testRunService;
             _fiscalProfileResolver = fiscalProfileResolver;
+            _xsdValidationService = xsdValidationService;
+            _requiredCoverageCalculator = requiredCoverageCalculator;
             _currentUser = currentUser;
             _logger = logger;
         }
@@ -120,7 +129,86 @@ namespace LayoutParserApi.Controllers
             if (release == null || release.WorkspaceId != workspaceId || release.DraftId != draftId)
                 return NotFound();
 
-            return Ok(ToReleaseResponse(release, _fiscalProfileResolver));
+            return Ok(await ToReleaseResponseAsync(release, userId, cancellationToken));
+        }
+
+        /// <summary>
+        /// Diff canônico entre os XMLs REAIS produzidos por duas releases do MESMO draft (issue #380,
+        /// cross-check #198.2b) — reusa <see cref="CanonicalDiffer"/> sobre o <c>ActualXml</c>
+        /// persistido no test-run de cada release (comparação release×release, não contra o
+        /// gabarito). Agregado por elemento do schema alvo, espelhando o padrão de
+        /// <see cref="MappingTestRunSummaryExtensions.GroupDivergencesByRule"/> (issue #367), mas
+        /// agrupando por nome de elemento em vez de por regra.
+        /// </summary>
+        [HttpGet("mapping-drafts/{draftId:guid}/releases/diff")]
+        public async Task<IActionResult> DiffReleases(
+            Guid workspaceId, Guid draftId, [FromQuery] Guid fromReleaseId, [FromQuery] Guid toReleaseId, CancellationToken cancellationToken)
+        {
+            if (_currentUser.UserId is not Guid userId)
+                return NotFound();
+
+            if (fromReleaseId == Guid.Empty || toReleaseId == Guid.Empty)
+                return UnprocessableEntity(new { error = "Parâmetros \"fromReleaseId\" e \"toReleaseId\" são obrigatórios." });
+
+            var draft = await _draftStore.GetDraftIfMemberAsync(draftId, userId, cancellationToken);
+            if (draft == null || draft.WorkspaceId != workspaceId)
+                return NotFound();
+
+            var fromRelease = await _releaseStore.GetReleaseIfMemberAsync(fromReleaseId, userId, cancellationToken);
+            if (fromRelease == null || fromRelease.WorkspaceId != workspaceId || fromRelease.DraftId != draftId)
+                return NotFound();
+
+            var toRelease = await _releaseStore.GetReleaseIfMemberAsync(toReleaseId, userId, cancellationToken);
+            if (toRelease == null || toRelease.WorkspaceId != workspaceId || toRelease.DraftId != draftId)
+                return NotFound();
+
+            // ActualXml só existe quando o test-run rodou até aplicar o XSLT com sucesso (issue #380
+            // — ver comentário em MappingTestRunSummary). Sem ele, não há o que comparar entre as
+            // duas releases — 422 com orientação explícita, nunca adivinha.
+            var fromActualXml = fromRelease.TestRunSummary?.ActualXml;
+            var toActualXml = toRelease.TestRunSummary?.ActualXml;
+            if (string.IsNullOrEmpty(fromActualXml) || string.IsNullOrEmpty(toActualXml))
+            {
+                return UnprocessableEntity(new
+                {
+                    error = "As duas releases precisam ter um test-run executado (com XSLT aplicado com sucesso) antes de comparar — rode POST .../test-runs para a(s) release(s) faltante(s).",
+                });
+            }
+
+            IReadOnlyList<NodeDiff> diffs;
+            try
+            {
+                diffs = new CanonicalDiffer().Diff(fromActualXml, toActualXml);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Falha ao calcular diff release×release ({FromReleaseId} × {ToReleaseId}).", fromReleaseId, toReleaseId);
+                return UnprocessableEntity(new { error = "Não foi possível comparar o XML das duas releases — verifique se o test-run de ambas produziu XML válido." });
+            }
+
+            var diffsByElement = diffs
+                .GroupBy(ExtractSchemaElement)
+                .OrderBy(g => g.Key, StringComparer.Ordinal)
+                .Select(g => new { element = g.Key, diffs = g.ToList() })
+                .ToList();
+
+            return Ok(new
+            {
+                fromReleaseId,
+                toReleaseId,
+                diffs,
+                diffsByElement,
+            });
+        }
+
+        /// <summary>Elemento do schema a que um <see cref="NodeDiff.XPath"/> se refere — último segmento antes de "@"/índice posicional.</summary>
+        private static string ExtractSchemaElement(NodeDiff diff)
+        {
+            var withoutAttr = diff.XPath.Split('@')[0].TrimEnd('/');
+            var segments = withoutAttr.Split('/');
+            var last = segments.LastOrDefault(s => !string.IsNullOrEmpty(s)) ?? withoutAttr;
+            var bracketIndex = last.IndexOf('[');
+            return bracketIndex >= 0 ? last[..bracketIndex] : last;
         }
 
         // engine="sysmiddle" nunca é aceito aqui: MappingEngineGuardFilter só enxerga query/body, não
@@ -200,24 +288,22 @@ namespace LayoutParserApi.Controllers
                 return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "Não foi possível salvar a edição do artefato no momento." });
             }
 
-            return outcome.Result switch
-            {
-                CreateManualEditResult.NoBaseRelease => UnprocessableEntity(new
-                {
-                    error = "Não há release compilada para este draft/engine — compile o draft antes de editar o artefato manualmente.",
-                }),
-                CreateManualEditResult.Conflict => StatusCode(StatusCodes.Status412PreconditionFailed, new
+            if (outcome.Result == CreateManualEditResult.NoBaseRelease)
+                return UnprocessableEntity(new { error = "Não há release compilada para este draft/engine — compile o draft antes de editar o artefato manualmente." });
+
+            if (outcome.Result == CreateManualEditResult.Conflict)
+                return StatusCode(StatusCodes.Status412PreconditionFailed, new
                 {
                     error = "O artefato foi alterado por outra operação — recarregue e tente novamente.",
                     current = outcome.CurrentArtifact,
-                }),
-                // ADR §4: aqui "eTag" é o hash do artefato NOVO (não o RowVersion genérico da release,
-                // que é o que ToReleaseResponse usa por padrão) — é contra ele que o próximo PATCH deste
-                // engine casa o If-Match, não contra o RowVersion.
-                _ => Ok(ToReleaseResponse(outcome.Release!, _fiscalProfileResolver,
-                    eTagOverride: Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(
-                        outcome.Release!.Artifacts.First(a => a.Kind == normalizedEngine).Hash)))),
-            };
+                });
+
+            // ADR §4: aqui "eTag" é o hash do artefato NOVO (não o RowVersion genérico da release,
+            // que é o que ToReleaseResponseAsync usa por padrão) — é contra ele que o próximo PATCH
+            // deste engine casa o If-Match, não contra o RowVersion.
+            return Ok(await ToReleaseResponseAsync(outcome.Release!, userId, cancellationToken,
+                eTagOverride: Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(
+                    outcome.Release!.Artifacts.First(a => a.Kind == normalizedEngine).Hash))));
         }
 
         /// <summary>
@@ -293,39 +379,86 @@ namespace LayoutParserApi.Controllers
             });
         }
 
-        private static object ToReleaseResponse(MappingReleaseDetail release, IFiscalProfileResolver fiscalProfileResolver, string? eTagOverride = null) => new
+        private async Task<object> ToReleaseResponseAsync(MappingReleaseDetail release, Guid userId, CancellationToken cancellationToken, string? eTagOverride = null)
         {
-            releaseId = release.ReleaseId,
-            workspaceId = release.WorkspaceId,
-            draftId = release.DraftId,
-            engine = release.Engine,
-            artifacts = release.Artifacts,
-            sourceRuleIds = release.SourceRuleIds,
-            compileDiagnostics = release.CompileDiagnostics,
-            rulesSnapshotHash = release.RulesSnapshotHash,
-            testRunSummary = release.TestRunSummary,
-            // Diff granular por regra (issue #367 / LayoutParserReact #228): mesma divergência de
-            // testRunSummary.divergences, agrupada por ruleId — evita o front ter que fazer
-            // divergences.filter(d => d.ruleId === x) no cliente. Não quebra o agregado existente.
-            divergencesByRuleId = release.TestRunSummary == null
-                ? null
-                : MappingTestRunSummaryExtensions.GroupDivergencesByRule(release.TestRunSummary),
-            status = release.Status,
-            // Issue #381 (ADR §2.2/§4): "compiled" (default) ou "manual_edit". rulesDesynced é
-            // derivado (não persistido) — o front desabilita o diff-por-regra e mostra o selo
-            // "editado manualmente" quando true.
-            artifactSource = release.ArtifactSource,
-            derivedFromReleaseId = release.DerivedFromReleaseId,
-            manualEditReason = release.ManualEditReason,
-            manuallyEditedArtifactKinds = release.ManuallyEditedArtifactKinds,
-            rulesDesynced = release.RulesDesynced,
-            correlationId = release.CorrelationId,
-            createdAt = release.CreatedAt,
-            eTag = eTagOverride ?? release.ETag,
-            // Issue #379 (ADR §2.6): snapshot congelado do perfil fiscal da release + resolvedXsd
-            // recalculado a partir do snapshot (estável — documentType+schemaVersion congelados).
-            fiscalProfile = release.FiscalProfile == null ? null : ToFiscalProfileResponse(release.FiscalProfile, fiscalProfileResolver),
-        };
+            var requiredCoverage = await ComputeRequiredCoverageAsync(release, userId, cancellationToken);
+            return new
+            {
+                releaseId = release.ReleaseId,
+                workspaceId = release.WorkspaceId,
+                draftId = release.DraftId,
+                engine = release.Engine,
+                artifacts = release.Artifacts,
+                sourceRuleIds = release.SourceRuleIds,
+                compileDiagnostics = release.CompileDiagnostics,
+                rulesSnapshotHash = release.RulesSnapshotHash,
+                testRunSummary = release.TestRunSummary,
+                // Diff granular por regra (issue #367 / LayoutParserReact #228): mesma divergência de
+                // testRunSummary.divergences, agrupada por ruleId — evita o front ter que fazer
+                // divergences.filter(d => d.ruleId === x) no cliente. Não quebra o agregado existente.
+                divergencesByRuleId = release.TestRunSummary == null
+                    ? null
+                    : MappingTestRunSummaryExtensions.GroupDivergencesByRule(release.TestRunSummary),
+                status = release.Status,
+                // Issue #381 (ADR §2.2/§4): "compiled" (default) ou "manual_edit". rulesDesynced é
+                // derivado (não persistido) — o front desabilita o diff-por-regra e mostra o selo
+                // "editado manualmente" quando true.
+                artifactSource = release.ArtifactSource,
+                derivedFromReleaseId = release.DerivedFromReleaseId,
+                manualEditReason = release.ManualEditReason,
+                manuallyEditedArtifactKinds = release.ManuallyEditedArtifactKinds,
+                rulesDesynced = release.RulesDesynced,
+                correlationId = release.CorrelationId,
+                createdAt = release.CreatedAt,
+                eTag = eTagOverride ?? release.ETag,
+                // Issue #379 (ADR §2.6): snapshot congelado do perfil fiscal da release + resolvedXsd
+                // recalculado a partir do snapshot (estável — documentType+schemaVersion congelados).
+                fiscalProfile = release.FiscalProfile == null ? null : ToFiscalProfileResponse(release.FiscalProfile, _fiscalProfileResolver),
+                // Issue #380 (#198.5): cobertura estática de destinos obrigatórios do XSD alvo — null
+                // quando a release não tem FiscalProfile (sem XSD resolvido), mesma semântica de
+                // "perfil ausente" do #379.
+                requiredCoverage,
+            };
+        }
+
+        /// <summary>
+        /// Cobertura ESTÁTICA de destinos obrigatórios (issue #380, #198.5) — cruza os elementos/
+        /// atributos <c>minOccurs&gt;=1</c>/<c>use=required</c> do XSD alvo (resolvido via
+        /// <see cref="IFiscalProfileResolver"/>, mesmo <c>resolvedXsd</c> do #379) com os
+        /// <c>TargetRefs</c> das regras accepted/edited que compuseram a release
+        /// (<see cref="MappingRelease.SourceRuleIds"/>). Degrada para <c>null</c> — nunca lança —
+        /// quando falta perfil fiscal, XSD não resolve, schema não carrega do disco, ou o elemento
+        /// raiz não bate com o XSD configurado.
+        /// </summary>
+        private async Task<object?> ComputeRequiredCoverageAsync(MappingReleaseDetail release, Guid userId, CancellationToken cancellationToken)
+        {
+            if (release.FiscalProfile == null)
+                return null;
+
+            var resolvedXsd = _fiscalProfileResolver.Resolve(release.FiscalProfile.DocumentType, release.FiscalProfile.SchemaVersion);
+            if (resolvedXsd == null)
+                return null;
+
+            var schemaSet = _xsdValidationService.TryLoadSchemaSet(resolvedXsd.XsdVersion);
+            if (schemaSet == null)
+                return null;
+
+            var draft = await _draftStore.GetDraftIfMemberAsync(release.DraftId, userId, cancellationToken);
+            if (draft == null)
+                return null;
+
+            var acceptedRuleIds = new HashSet<Guid>(release.SourceRuleIds);
+            var targetRefs = draft.Rules
+                .Where(r => acceptedRuleIds.Contains(r.RuleId))
+                .SelectMany(r => r.TargetRefs)
+                .ToList();
+
+            var result = _requiredCoverageCalculator.Calculate(schemaSet, resolvedXsd.RootElement, resolvedXsd.Namespace, targetRefs);
+            if (result == null)
+                return null;
+
+            return new { percent = result.Percent, uncovered = result.Uncovered };
+        }
 
         private static object ToFiscalProfileResponse(FiscalProfile profile, IFiscalProfileResolver fiscalProfileResolver) => new
         {

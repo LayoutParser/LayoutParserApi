@@ -1,18 +1,22 @@
 using System.Security.Cryptography;
 using System.Text;
 
+using System.Xml.Schema;
+
 using LayoutParserApi.Controllers;
 using LayoutParserApi.Models.Entities.Fiscal;
 using LayoutParserApi.Models.Entities.Identity;
 using LayoutParserApi.Services.Fiscal;
 using LayoutParserApi.Services.Filters;
 using LayoutParserApi.Services.Interfaces;
+using LayoutParserApi.Services.XmlAnalysis;
 
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Abstractions;
 using Microsoft.AspNetCore.Mvc.Filters;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 
 using Xunit;
@@ -65,6 +69,18 @@ namespace LayoutParserApi.Tests.Controllers
             public FiscalProfileValidationResult Validate(FiscalProfile profile) => new(true, null, null);
             public FiscalResolvedXsd? Resolve(string documentType, string schemaVersion) => null;
         }
+
+        /// <summary>Issue #380: nunca exercitado por estes testes (releases sem FiscalProfile) — devolve sempre null, igual ao contrato de degradação real.</summary>
+        private sealed class FakeRequiredCoverageCalculator : IRequiredCoverageCalculator
+        {
+            public RequiredCoverageResult? Calculate(XmlSchemaSet schemaSet, string rootElementName, string targetNamespace, IReadOnlyCollection<string> targetRefs) => null;
+        }
+
+        /// <summary>Config vazia: <c>TryLoadSchemaSet</c> degrada para null (BasePath default não existe no ambiente de teste) — suficiente para estes testes, que não exercitam FiscalProfile.</summary>
+        private static XsdValidationService BuildXsdValidationService()
+            => new(NullLogger<XsdValidationService>.Instance, new ConfigurationBuilder().Build(),
+                new XmlDocumentTypeDetector(NullLogger<XmlDocumentTypeDetector>.Instance),
+                new PdfOrientationReader(NullLogger<PdfOrientationReader>.Instance));
 
         /// <summary>Reproduz a lógica de <c>SqlMappingReleaseStore</c>: base = release mais recente do (DraftId, Engine); identidade nova por (DraftId, RulesSnapshotHash, ArtifactContentHash); compilação filtra ArtifactSource='compiled'.</summary>
         private sealed class FakeReleaseStore : IMappingReleaseStore
@@ -153,6 +169,7 @@ namespace LayoutParserApi.Tests.Controllers
 
         private static MappingCompilationController BuildController(FakeDraftStore draftStore, FakeReleaseStore releaseStore, Guid userId)
             => new(draftStore, releaseStore, compileService: null!, testRunService: null!, new FakeFiscalProfileResolver(),
+                BuildXsdValidationService(), new FakeRequiredCoverageCalculator(),
                 new FakeCurrentUser { UserId = userId }, NullLogger<MappingCompilationController>.Instance);
 
         private static (Guid WorkspaceId, Guid DraftId, MappingReleaseDetail BaseRelease) SeedXsltDraftWithCompiledRelease(FakeDraftStore draftStore, FakeReleaseStore releaseStore, string xsltContent = "<xsl:stylesheet xmlns:xsl=\"http://www.w3.org/1999/XSL/Transform\" version=\"1.0\"><xsl:template match=\"/\"/></xsl:stylesheet>")
