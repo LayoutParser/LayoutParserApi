@@ -507,6 +507,10 @@ try
     // Lab. Mesmo banco/padrão ADO.NET; compile/test-run reaproveitam CanonicalDiffer/XsdValidationService
     // (já registrados/disponíveis via DI) sem I/O externo/Ollama.
     builder.Services.AddScoped<IMappingReleaseStore, SqlMappingReleaseStore>();
+    // ✅ Issue #379 (ADR docs/architecture/adr-perfil-fiscal-draft-release-2026-09-10.md): cruza
+    // FiscalProfile com XsdValidation:DocumentTypes (config em memória, sem I/O de banco) — Scoped
+    // por consistência com o grupo, sem estado por-requisição real.
+    builder.Services.AddScoped<LayoutParserApi.Services.Fiscal.IFiscalProfileResolver, LayoutParserApi.Services.Fiscal.FiscalProfileResolver>();
     // ✅ Issue #345 (ADR docs/architecture/adr-contrato-correcao-guiada-humano-2026-09-08.md):
     // contexto de documento + reporte de correção humana — mesmo banco/padrão ADO.NET.
     builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.IFieldCorrectionStore, LayoutParserApi.Services.Database.SqlFieldCorrectionStore>();

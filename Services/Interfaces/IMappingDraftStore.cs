@@ -27,7 +27,9 @@ namespace LayoutParserApi.Services.Interfaces
         Guid RevisionId,
         string Engine,
         DateTimeOffset CreatedAt,
-        IReadOnlyList<MappingDraftRuleDetail> Rules);
+        IReadOnlyList<MappingDraftRuleDetail> Rules,
+        // Issue #379 (ADR perfil fiscal): trailing com default — não quebra call sites existentes.
+        FiscalProfile? FiscalProfile = null);
 
     /// <summary>Resultado de um PATCH de regra — distingue NotFound (404) de Conflict (412 — ETag divergente).</summary>
     public enum UpdateRuleResult
@@ -103,5 +105,13 @@ namespace LayoutParserApi.Services.Interfaces
             IReadOnlyList<string>? editedTargetRefs,
             string? editedOperation,
             CancellationToken cancellationToken);
+
+        /// <summary>
+        /// Grava/substitui o <see cref="MappingDraft.FiscalProfile"/> — idempotente (issue #379, ADR
+        /// §2.2/§2.6): editar depois de já existir release derivada é permitido e NÃO retroage às
+        /// releases já compiladas (elas guardam o snapshot delas). <c>null</c> se o draft não existe ou
+        /// não pertence a um workspace do qual <paramref name="userId"/> é membro (404 fail-closed).
+        /// </summary>
+        Task<MappingDraftDetail?> SetFiscalProfileAsync(Guid draftId, Guid userId, FiscalProfile profile, CancellationToken cancellationToken);
     }
 }

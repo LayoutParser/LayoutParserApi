@@ -1,5 +1,6 @@
 using LayoutParserApi.Controllers;
 using LayoutParserApi.Models.Entities.Fiscal;
+using LayoutParserApi.Services.Fiscal;
 using LayoutParserApi.Services.Interfaces;
 
 using Microsoft.AspNetCore.Mvc;
@@ -145,6 +146,19 @@ namespace LayoutParserApi.Tests.Controllers
                 IReadOnlyList<string>? editedSourceRefs, IReadOnlyList<string>? editedTargetRefs, string? editedOperation,
                 CancellationToken cancellationToken)
                 => throw new NotSupportedException("Não exercitado por estes testes — a checagem de workspace acontece antes deste ponto.");
+
+            public Task<MappingDraftDetail?> SetFiscalProfileAsync(Guid draftId, Guid userId, FiscalProfile profile, CancellationToken cancellationToken)
+                => throw new NotSupportedException("Não exercitado por estes testes — a checagem de workspace acontece antes deste ponto.");
+        }
+
+        /// <summary>Stub sempre-válido — a cascata de validação do §2.4 é coberta em testes dedicados do resolver.</summary>
+        private sealed class FakeFiscalProfileResolver : IFiscalProfileResolver
+        {
+            public FiscalProfileValidationResult Validate(FiscalProfile profile)
+                => new(true, null, new FiscalResolvedXsd(profile.SchemaVersion, "urn:test", "Root"));
+
+            public FiscalResolvedXsd? Resolve(string documentType, string schemaVersion)
+                => new(schemaVersion, "urn:test", "Root");
         }
 
         private sealed class NoopMappingSuggestionService : IMappingSuggestionService
@@ -184,6 +198,7 @@ namespace LayoutParserApi.Tests.Controllers
                 store,
                 suggestions,
                 identity,
+                new FakeFiscalProfileResolver(),
                 user,
                 NullLogger<MappingDraftsController>.Instance);
 

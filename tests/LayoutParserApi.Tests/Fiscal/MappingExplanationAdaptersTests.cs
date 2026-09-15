@@ -44,6 +44,8 @@ namespace LayoutParserApi.Tests.Fiscal
                 => throw new NotSupportedException();
             public Task<UpdateRuleOutcome> UpdateRuleStatusAsync(Guid draftId, Guid ruleId, Guid userId, byte[] expectedRowVersion, string newStatus, string? justification, IReadOnlyList<string>? editedSourceRefs, IReadOnlyList<string>? editedTargetRefs, string? editedOperation, CancellationToken cancellationToken)
                 => throw new NotSupportedException();
+            public Task<MappingDraftDetail?> SetFiscalProfileAsync(Guid draftId, Guid userId, FiscalProfile profile, CancellationToken cancellationToken)
+                => throw new NotSupportedException();
         }
 
         private static Mapper BuildSysmiddleMapper(string mapperGuid, string ruleContentValue) => new()
