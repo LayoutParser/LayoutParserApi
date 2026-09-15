@@ -1,5 +1,6 @@
 using LayoutParserApi.Controllers;
 using LayoutParserApi.Models.Entities.Fiscal;
+using LayoutParserApi.Services.Fiscal;
 using LayoutParserApi.Services.Interfaces;
 
 using Microsoft.AspNetCore.Http;
@@ -87,6 +88,16 @@ namespace LayoutParserApi.Tests.Controllers
                 Rules[(draftId, ruleId)] = updated;
                 return Task.FromResult(new UpdateRuleOutcome(UpdateRuleResult.Success, updated));
             }
+
+            public Task<MappingDraftDetail?> SetFiscalProfileAsync(Guid draftId, Guid userId, FiscalProfile profile, CancellationToken cancellationToken)
+            {
+                if (!Drafts.TryGetValue(draftId, out var draft))
+                    return Task.FromResult<MappingDraftDetail?>(null);
+
+                var updated = draft with { FiscalProfile = profile };
+                Drafts[draftId] = updated;
+                return Task.FromResult<MappingDraftDetail?>(updated);
+            }
         }
 
         private sealed class FakeSuggestionService : IMappingSuggestionService
@@ -118,12 +129,106 @@ namespace LayoutParserApi.Tests.Controllers
                 => Task.FromResult(true);
         }
 
+        /// <summary>Stub sempre-válido — a cascata de validação do §2.4 é coberta em testes dedicados do resolver, não aqui.</summary>
+        private sealed class FakeFiscalProfileResolver : IFiscalProfileResolver
+        {
+            public FiscalProfileValidationResult Validate(FiscalProfile profile)
+                => new(true, null, new FiscalResolvedXsd(profile.SchemaVersion, "urn:test", "Root"));
+
+            public FiscalResolvedXsd? Resolve(string documentType, string schemaVersion)
+                => new(schemaVersion, "urn:test", "Root");
+        }
+
         private static MappingDraftsController BuildController(
             FakeDraftStore store, FakeSuggestionService suggestionService, FakeIdentityWorkspaceService identityService, FakeCurrentUser user)
         {
-            var controller = new MappingDraftsController(store, suggestionService, identityService, user, NullLogger<MappingDraftsController>.Instance);
+            var controller = new MappingDraftsController(store, suggestionService, identityService, new FakeFiscalProfileResolver(), user, NullLogger<MappingDraftsController>.Instance);
             controller.ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() };
             return controller;
+        }
+
+        // --- Issue #379 (ADR perfil fiscal): PUT .../fiscal-profile ---
+
+        [Fact]
+        public async Task SetFiscalProfile_PerfilValido_GravaEDevolveNoDraftResponse()
+        {
+            var store = new FakeDraftStore();
+            var user = Guid.NewGuid();
+            var workspaceId = Guid.NewGuid();
+            var identityService = new FakeIdentityWorkspaceService();
+            identityService.Memberships.Add((workspaceId, user));
+            var draft = new MappingDraftDetail(Guid.NewGuid(), workspaceId, Guid.NewGuid(), Guid.NewGuid(), "xslt", DateTimeOffset.UtcNow, Array.Empty<MappingDraftRuleDetail>());
+            store.Drafts[draft.DraftId] = draft;
+
+            var controller = BuildController(store, new FakeSuggestionService(), identityService, new FakeCurrentUser { UserId = user });
+            var request = new SetFiscalProfileRequest { DocumentType = "NFe", SchemaVersion = "v1", Operation = "outbound", Jurisdiction = "SP" };
+
+            var result = await controller.SetFiscalProfile(workspaceId, draft.DraftId, request, CancellationToken.None);
+
+            var okResult = Assert.IsType<OkObjectResult>(result);
+            Assert.Equal(request.DocumentType, store.Drafts[draft.DraftId].FiscalProfile?.DocumentType);
+            Assert.NotNull(okResult.Value);
+        }
+
+        [Fact]
+        public async Task SetFiscalProfile_ChamadoDuasVezes_EhIdempotente()
+        {
+            var store = new FakeDraftStore();
+            var user = Guid.NewGuid();
+            var workspaceId = Guid.NewGuid();
+            var identityService = new FakeIdentityWorkspaceService();
+            identityService.Memberships.Add((workspaceId, user));
+            var draft = new MappingDraftDetail(Guid.NewGuid(), workspaceId, Guid.NewGuid(), Guid.NewGuid(), "xslt", DateTimeOffset.UtcNow, Array.Empty<MappingDraftRuleDetail>());
+            store.Drafts[draft.DraftId] = draft;
+
+            var controller = BuildController(store, new FakeSuggestionService(), identityService, new FakeCurrentUser { UserId = user });
+            var request = new SetFiscalProfileRequest { DocumentType = "NFe", SchemaVersion = "v1", Operation = "outbound", Jurisdiction = "SP" };
+
+            var result1 = await controller.SetFiscalProfile(workspaceId, draft.DraftId, request, CancellationToken.None);
+            var result2 = await controller.SetFiscalProfile(workspaceId, draft.DraftId, request, CancellationToken.None);
+
+            Assert.IsType<OkObjectResult>(result1);
+            Assert.IsType<OkObjectResult>(result2);
+            Assert.Equal(request.DocumentType, store.Drafts[draft.DraftId].FiscalProfile?.DocumentType);
+        }
+
+        [Fact]
+        public async Task SetFiscalProfile_CamposObrigatoriosAusentes_Retorna422()
+        {
+            var store = new FakeDraftStore();
+            var user = Guid.NewGuid();
+            var workspaceId = Guid.NewGuid();
+            var identityService = new FakeIdentityWorkspaceService();
+            identityService.Memberships.Add((workspaceId, user));
+            var draft = new MappingDraftDetail(Guid.NewGuid(), workspaceId, Guid.NewGuid(), Guid.NewGuid(), "xslt", DateTimeOffset.UtcNow, Array.Empty<MappingDraftRuleDetail>());
+            store.Drafts[draft.DraftId] = draft;
+
+            var controller = BuildController(store, new FakeSuggestionService(), identityService, new FakeCurrentUser { UserId = user });
+            var request = new SetFiscalProfileRequest { DocumentType = "NFe" }; // faltam os demais campos.
+
+            var result = await controller.SetFiscalProfile(workspaceId, draft.DraftId, request, CancellationToken.None);
+
+            Assert.IsType<UnprocessableEntityObjectResult>(result);
+        }
+
+        [Fact]
+        public async Task SetFiscalProfile_DraftDeOutroWorkspace_Retorna404()
+        {
+            var store = new FakeDraftStore();
+            var user = Guid.NewGuid();
+            var workspaceId = Guid.NewGuid();
+            var outroWorkspaceId = Guid.NewGuid();
+            var identityService = new FakeIdentityWorkspaceService();
+            identityService.Memberships.Add((workspaceId, user));
+            var draft = new MappingDraftDetail(Guid.NewGuid(), outroWorkspaceId, Guid.NewGuid(), Guid.NewGuid(), "xslt", DateTimeOffset.UtcNow, Array.Empty<MappingDraftRuleDetail>());
+            store.Drafts[draft.DraftId] = draft;
+
+            var controller = BuildController(store, new FakeSuggestionService(), identityService, new FakeCurrentUser { UserId = user });
+            var request = new SetFiscalProfileRequest { DocumentType = "NFe", SchemaVersion = "v1", Operation = "outbound", Jurisdiction = "SP" };
+
+            var result = await controller.SetFiscalProfile(workspaceId, draft.DraftId, request, CancellationToken.None);
+
+            Assert.IsType<NotFoundResult>(result);
         }
 
         private static MappingDraftRuleDetail NewRule(Guid draftId, string status = MappingDraftRuleStatus.Proposed) => new(

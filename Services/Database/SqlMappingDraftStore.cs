@@ -100,7 +100,7 @@ namespace LayoutParserApi.Services.Database
             command.Parameters.AddWithValue("@CreatedByUserId", createdByUserId);
             await command.ExecuteNonQueryAsync(cancellationToken);
 
-            return new MappingDraftDetail(draftId, workspaceId, packageId, revisionId, engine, createdAt, Array.Empty<MappingDraftRuleDetail>());
+            return new MappingDraftDetail(draftId, workspaceId, packageId, revisionId, engine, createdAt, Array.Empty<MappingDraftRuleDetail>(), FiscalProfile: null);
         }
 
         public async Task<MappingDraftDetail?> GetDraftIfMemberAsync(Guid draftId, Guid userId, CancellationToken cancellationToken)
@@ -112,9 +112,10 @@ namespace LayoutParserApi.Services.Database
             Guid workspaceId, packageId, revisionId;
             string engine;
             DateTimeOffset createdAt;
+            FiscalProfile? fiscalProfile;
 
             using (var selectDraft = new SqlCommand(
-                @"SELECT d.WorkspaceId, d.PackageId, d.RevisionId, d.Engine, d.CreatedAt
+                @"SELECT d.WorkspaceId, d.PackageId, d.RevisionId, d.Engine, d.CreatedAt, d.FiscalProfileJson
                   FROM dbo.tbMappingDraft d
                   JOIN dbo.tbLpWorkspaceMembership m ON m.WorkspaceId = d.WorkspaceId AND m.UserId = @UserId
                   WHERE d.DraftId = @DraftId;",
@@ -131,10 +132,43 @@ namespace LayoutParserApi.Services.Database
                 revisionId = reader.GetGuid(reader.GetOrdinal("RevisionId"));
                 engine = reader.GetString(reader.GetOrdinal("Engine"));
                 createdAt = new DateTimeOffset(reader.GetDateTime(reader.GetOrdinal("CreatedAt")), TimeSpan.Zero);
+                fiscalProfile = ReadFiscalProfile(reader, "FiscalProfileJson");
             }
 
             var rules = await LoadRulesAsync(connection, draftId, cancellationToken);
-            return new MappingDraftDetail(draftId, workspaceId, packageId, revisionId, engine, createdAt, rules);
+            return new MappingDraftDetail(draftId, workspaceId, packageId, revisionId, engine, createdAt, rules, fiscalProfile);
+        }
+
+        /// <summary>Idempotente (issue #379, ADR §2.2/§2.6): grava/substitui, não retroage releases já compiladas.</summary>
+        public async Task<MappingDraftDetail?> SetFiscalProfileAsync(Guid draftId, Guid userId, FiscalProfile profile, CancellationToken cancellationToken)
+        {
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await EnsureSchemaAsync(connection, cancellationToken);
+
+            using (var update = new SqlCommand(
+                @"UPDATE d
+                  SET d.FiscalProfileJson = @FiscalProfileJson
+                  FROM dbo.tbMappingDraft d
+                  JOIN dbo.tbLpWorkspaceMembership m ON m.WorkspaceId = d.WorkspaceId AND m.UserId = @UserId
+                  WHERE d.DraftId = @DraftId;",
+                connection))
+            {
+                update.Parameters.AddWithValue("@FiscalProfileJson", JsonSerializer.Serialize(profile, JsonOptions));
+                update.Parameters.AddWithValue("@UserId", userId);
+                update.Parameters.AddWithValue("@DraftId", draftId);
+                var rows = await update.ExecuteNonQueryAsync(cancellationToken);
+                if (rows == 0)
+                    return null; // Não existe OU não é seu — mesmo padrão fail-closed dos demais métodos.
+            }
+
+            return await GetDraftIfMemberAsync(draftId, userId, cancellationToken);
+        }
+
+        private static FiscalProfile? ReadFiscalProfile(SqlDataReader reader, string columnName)
+        {
+            var ordinal = reader.GetOrdinal(columnName);
+            return reader.IsDBNull(ordinal) ? null : JsonSerializer.Deserialize<FiscalProfile>(reader.GetString(ordinal), JsonOptions);
         }
 
         public async Task<MappingDraftRuleDetail?> GetRuleIfMemberAsync(Guid draftId, Guid ruleId, Guid userId, CancellationToken cancellationToken)
@@ -403,6 +437,11 @@ CREATE TABLE dbo.tbMappingDraftRule (
 
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_tbMappingDraftRule_DraftId' AND object_id = OBJECT_ID('dbo.tbMappingDraftRule'))
 CREATE INDEX IX_tbMappingDraftRule_DraftId ON dbo.tbMappingDraftRule(DraftId);
+
+-- Issue #379 (ADR perfil fiscal §2.5): coluna adicionada idempotentemente — bases criadas antes
+-- deste slice já têm dbo.tbMappingDraft sem FiscalProfileJson.
+IF COL_LENGTH('dbo.tbMappingDraft', 'FiscalProfileJson') IS NULL
+ALTER TABLE dbo.tbMappingDraft ADD FiscalProfileJson NVARCHAR(MAX) NULL;
 
 IF OBJECT_ID('dbo.tbMappingDraftRuleDecision', 'U') IS NULL
 CREATE TABLE dbo.tbMappingDraftRuleDecision (

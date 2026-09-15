@@ -33,6 +33,8 @@ namespace LayoutParserApi.Tests.Services.Fiscal
                 => Task.CompletedTask;
             public Task<UpdateRuleOutcome> UpdateRuleStatusAsync(Guid draftId, Guid ruleId, Guid userId, byte[] expectedRowVersion, string newStatus, string? justification, IReadOnlyList<string>? editedSourceRefs, IReadOnlyList<string>? editedTargetRefs, string? editedOperation, CancellationToken cancellationToken)
                 => throw new NotSupportedException();
+            public Task<MappingDraftDetail?> SetFiscalProfileAsync(Guid draftId, Guid userId, FiscalProfile profile, CancellationToken cancellationToken)
+                => throw new NotSupportedException();
         }
 
         private sealed class FakeReleaseStore : IMappingReleaseStore
@@ -40,12 +42,15 @@ namespace LayoutParserApi.Tests.Services.Fiscal
             public Dictionary<(Guid DraftId, string Hash), MappingReleaseDetail> ByHash { get; } = new();
             public Dictionary<Guid, MappingReleaseDetail> ById { get; } = new();
             public int CreateCalls { get; private set; }
+            public FiscalProfile? LastFiscalProfile { get; private set; }
 
             public Task<MappingReleaseDetail> CreateOrGetCompiledReleaseAsync(
                 Guid workspaceId, Guid draftId, string engine, string rulesSnapshotHash, IReadOnlyList<Guid> sourceRuleIds,
                 IReadOnlyList<MappingReleaseArtifact> artifacts, IReadOnlyList<MappingReleaseCompileDiagnostic> compileDiagnostics,
-                string correlationId, Guid jobId, CancellationToken cancellationToken)
+                string correlationId, Guid jobId, CancellationToken cancellationToken, FiscalProfile? fiscalProfile = null)
             {
+                LastFiscalProfile = fiscalProfile;
+
                 if (ByHash.TryGetValue((draftId, rulesSnapshotHash), out var existing))
                     return Task.FromResult(existing);
 
@@ -53,7 +58,7 @@ namespace LayoutParserApi.Tests.Services.Fiscal
                 var detail = new MappingReleaseDetail(
                     Guid.NewGuid(), workspaceId, draftId, engine, artifacts, sourceRuleIds, compileDiagnostics,
                     rulesSnapshotHash, null, MappingReleaseStatus.DraftCompiled, correlationId, DateTimeOffset.UtcNow, "AAAA",
-                    "development", null, null, null, null, null, null);
+                    "development", null, null, null, null, null, null, fiscalProfile);
                 ByHash[(draftId, rulesSnapshotHash)] = detail;
                 ById[detail.ReleaseId] = detail;
                 return Task.FromResult(detail);
@@ -63,6 +68,9 @@ namespace LayoutParserApi.Tests.Services.Fiscal
                 => Task.FromResult(ById.TryGetValue(releaseId, out var r) ? r : null);
 
             public Task<(IReadOnlyList<MappingReleaseDetail> Items, int TotalCount)> ListByWorkspaceAsync(Guid workspaceId, int page, int pageSize, string? status, Guid? draftId, string? environment, CancellationToken cancellationToken)
+                => throw new NotSupportedException();
+
+            public Task<CreateManualEditOutcome> CreateManualEditArtifactReleaseAsync(Guid workspaceId, Guid draftId, string engine, string content, string manualEditReason, string expectedArtifactHash, Guid actorUserId, string correlationId, CancellationToken cancellationToken)
                 => throw new NotSupportedException();
 
             public Task<MappingReleaseDetail?> ApplyTestRunResultAsync(Guid releaseId, MappingTestRunSummary summary, CancellationToken cancellationToken)
@@ -183,6 +191,53 @@ namespace LayoutParserApi.Tests.Services.Fiscal
             // Workspace diferente do dono real do draft — isolamento cross-workspace.
             await Assert.ThrowsAsync<InvalidOperationException>(
                 () => service.EnqueueAsync(Guid.NewGuid(), draftId, userId, "corr-1", CancellationToken.None));
+        }
+
+        // --- Issue #379 (ADR perfil fiscal): snapshot do FiscalProfile na compilação ---
+
+        [Fact]
+        public async Task Enqueue_DraftComPerfilFiscal_CopiaSnapshotParaRelease()
+        {
+            var (scopeFactory, draftStore, releaseStore) = BuildScopeFactory();
+            var workspaceId = Guid.NewGuid();
+            var draftId = Guid.NewGuid();
+            var userId = Guid.NewGuid();
+            var profile = new FiscalProfile(FiscalDocumentType.Nfe, "PL_010b_NT2025_002_v1.30", FiscalOperation.Outbound, "SP");
+
+            draftStore.Draft = (new MappingDraftDetail(draftId, workspaceId, Guid.NewGuid(), Guid.NewGuid(), "xslt", DateTimeOffset.UtcNow,
+                new[] { AcceptedCopyRule("/nfe/emit/CNPJ", "/dest/cnpj") })) with { FiscalProfile = profile };
+
+            var service = new MappingCompileService(NullLogger<MappingCompileService>.Instance, scopeFactory);
+            var jobId = await service.EnqueueAsync(workspaceId, draftId, userId, "corr-1", CancellationToken.None);
+            var state = await WaitForCompletionAsync(service, jobId);
+
+            Assert.Equal(CompileJobStatus.Completed, state.Status);
+            var release = releaseStore.ById[state.ReleaseId!.Value];
+            Assert.Equal(profile, release.FiscalProfile);
+            Assert.Equal(profile, releaseStore.LastFiscalProfile);
+            Assert.DoesNotContain(release.CompileDiagnostics, d => d.Message.Contains("perfil fiscal", StringComparison.OrdinalIgnoreCase));
+        }
+
+        [Fact]
+        public async Task Enqueue_DraftSemPerfilFiscal_CompilaComWarningENaoComErro()
+        {
+            var (scopeFactory, draftStore, releaseStore) = BuildScopeFactory();
+            var workspaceId = Guid.NewGuid();
+            var draftId = Guid.NewGuid();
+            var userId = Guid.NewGuid();
+
+            // FiscalProfile ausente (default null) — não pode bloquear a compilação (ADR §2.6).
+            draftStore.Draft = new MappingDraftDetail(draftId, workspaceId, Guid.NewGuid(), Guid.NewGuid(), "xslt", DateTimeOffset.UtcNow,
+                new[] { AcceptedCopyRule("/nfe/emit/CNPJ", "/dest/cnpj") });
+
+            var service = new MappingCompileService(NullLogger<MappingCompileService>.Instance, scopeFactory);
+            var jobId = await service.EnqueueAsync(workspaceId, draftId, userId, "corr-1", CancellationToken.None);
+            var state = await WaitForCompletionAsync(service, jobId);
+
+            Assert.Equal(CompileJobStatus.Completed, state.Status);
+            var release = releaseStore.ById[state.ReleaseId!.Value];
+            Assert.Null(release.FiscalProfile);
+            Assert.Contains(release.CompileDiagnostics, d => d.Severity == "warning" && d.Message.Contains("perfil fiscal", StringComparison.OrdinalIgnoreCase));
         }
     }
 }
