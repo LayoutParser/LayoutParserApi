@@ -1204,6 +1204,89 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
+        /// Issue #322: define/atualiza as 3 preferências de usuário além do prompt customizado
+        /// (idioma de exibição, nível de detalhe da explicação de mapeamento, engine padrão quando o
+        /// sistema precisa escolher entre TCL/XSLT sem sinal explícito no request). Rota dedicada,
+        /// paralela a <c>ai-prompt-adicional</c> (issue #98) em vez de consolidada nela — granularidade
+        /// mantida porque as duas evoluem em ritmos diferentes (o prompt já está em produção e não deve
+        /// ganhar um contrato novo por acidente de "juntar tudo"; preferências estruturadas têm
+        /// validação própria, `422` por valor inválido, que um campo de texto livre não tem).
+        /// Persistido em <c>tbLpAiUserSession</c> (<see cref="Services.Database.SqlAiUserSessionStore"/>,
+        /// schema da issue #102) — diferente do <see cref="AiUserInstructionStore"/> usado pelo
+        /// <c>ai-prompt-adicional</c> atual, que é só em memória (não sobrevive a restart). Campos
+        /// omitidos/nulos no corpo preservam o valor já salvo (upsert parcial); envie o valor atual de
+        /// volta para não alterá-lo.
+        /// </summary>
+        /// <param name="request">Qualquer campo pode vir nulo (preserva o valor já salvo).</param>
+        /// <response code="200"><c>{ saved: true }</c>.</response>
+        /// <response code="404">Sem identidade resolvida (fail-closed, mesmo padrão de <see cref="ReportFieldCorrection"/>).</response>
+        /// <response code="422"><c>preferredExplanationDetailLevel</c> ou <c>defaultTransformationEngine</c> fora dos valores aceitos.</response>
+        [Authorize]
+        [HttpPut("ai-preferences")]
+        public async Task<IActionResult> SetAiPreferences([FromBody] SetAiPreferencesRequest request, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(CurrentUserId))
+                return NotFound(); // fail-closed, mesmo padrão de ReportFieldCorrection.
+
+            if (!string.IsNullOrWhiteSpace(request?.PreferredExplanationDetailLevel)
+                && !Services.Database.AiUserPreferenceDefaults.ValidExplanationDetailLevels.Contains(request.PreferredExplanationDetailLevel))
+            {
+                return UnprocessableEntity(new
+                {
+                    success = false,
+                    error = $"preferredExplanationDetailLevel deve ser um de: {string.Join(", ", Services.Database.AiUserPreferenceDefaults.ValidExplanationDetailLevels)}"
+                });
+            }
+
+            if (!string.IsNullOrWhiteSpace(request?.DefaultTransformationEngine)
+                && !Services.Database.AiUserPreferenceDefaults.ValidTransformationEngines.Contains(request.DefaultTransformationEngine))
+            {
+                return UnprocessableEntity(new
+                {
+                    success = false,
+                    error = $"defaultTransformationEngine deve ser um de: {string.Join(", ", Services.Database.AiUserPreferenceDefaults.ValidTransformationEngines)}"
+                });
+            }
+
+            await _aiUserSessionStore.SetPreferencesAsync(
+                CurrentUserId,
+                request?.PreferredLanguage,
+                request?.PreferredExplanationDetailLevel,
+                request?.DefaultTransformationEngine,
+                cancellationToken);
+
+            return Ok(new { saved = true });
+        }
+
+        /// <summary>
+        /// Issue #322: consulta as 4 preferências do usuário atual (prompt customizado + idioma/nível
+        /// de detalhe/engine padrão), com defaults aplicados quando a preferência nunca foi setada (ver
+        /// <see cref="Services.Database.AiUserPreferenceDefaults"/>). <c>customPromptInstruction</c>
+        /// continua vindo do <see cref="AiUserInstructionStore"/> em memória (fonte de verdade atual do
+        /// <c>ai-prompt-adicional</c>, issue #98) — não migrado para o SQL nesta issue.
+        /// </summary>
+        /// <response code="200">Preferências com defaults já aplicados.</response>
+        /// <response code="404">Sem identidade resolvida (fail-closed).</response>
+        [Authorize]
+        [HttpGet("ai-preferences")]
+        public async Task<IActionResult> GetAiPreferences(CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(CurrentUserId))
+                return NotFound(); // fail-closed, mesmo padrão de ReportFieldCorrection.
+
+            var saved = await _aiUserSessionStore.GetPreferencesAsync(CurrentUserId, cancellationToken);
+            var customPromptInstruction = _aiUserInstructionStore.Get(CurrentUserId);
+
+            return Ok(new
+            {
+                customPromptInstruction,
+                preferredLanguage = saved?.PreferredLanguage ?? Services.Database.AiUserPreferenceDefaults.DefaultLanguage,
+                preferredExplanationDetailLevel = saved?.PreferredExplanationDetailLevel ?? Services.Database.AiUserPreferenceDefaults.DefaultExplanationDetailLevel,
+                defaultTransformationEngine = saved?.DefaultTransformationEngine ?? Services.Database.AiUserPreferenceDefaults.DefaultTransformationEngine
+            });
+        }
+
+        /// <summary>
         /// Issue #97 (fase 2, Passo 3): histórico persistente do usuário atual — <c>Ticket</c>/
         /// <c>Status</c>/<c>CreatedAt</c> gravados por <see cref="Services.Database.SqlAiUserSessionStore"/>
         /// (schema já criado pela issue #102) toda vez que um job do pathway IA chega a um status
@@ -1712,6 +1795,14 @@ namespace LayoutParserApi.Controllers
     public class SetAiPromptAdicionalRequest
     {
         public string? Instruction { get; set; }
+    }
+
+    /// <summary>Requisição de <c>PUT ai-preferences</c> (issue #322). Campos nulos preservam o valor já salvo.</summary>
+    public class SetAiPreferencesRequest
+    {
+        public string? PreferredLanguage { get; set; }
+        public string? PreferredExplanationDetailLevel { get; set; }
+        public string? DefaultTransformationEngine { get; set; }
     }
 
     /// <summary>Request do endpoint /field-mappings (issue #140). Mesma convenção de LayoutGuid
