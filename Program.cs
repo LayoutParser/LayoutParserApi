@@ -511,6 +511,9 @@ try
     // FiscalProfile com XsdValidation:DocumentTypes (config em memória, sem I/O de banco) — Scoped
     // por consistência com o grupo, sem estado por-requisição real.
     builder.Services.AddScoped<LayoutParserApi.Services.Fiscal.IFiscalProfileResolver, LayoutParserApi.Services.Fiscal.FiscalProfileResolver>();
+    // ✅ Issue #380 (#198.5): cobertura estática de destinos obrigatórios do XSD alvo — sem
+    // estado por-requisição, Scoped por consistência com o grupo Fiscal.
+    builder.Services.AddScoped<LayoutParserApi.Services.Fiscal.IRequiredCoverageCalculator, LayoutParserApi.Services.Fiscal.RequiredCoverageCalculator>();
     // ✅ Issue #345 (ADR docs/architecture/adr-contrato-correcao-guiada-humano-2026-09-08.md):
     // contexto de documento + reporte de correção humana — mesmo banco/padrão ADO.NET.
     builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.IFieldCorrectionStore, LayoutParserApi.Services.Database.SqlFieldCorrectionStore>();

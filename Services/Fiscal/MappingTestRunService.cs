@@ -206,7 +206,11 @@ namespace LayoutParserApi.Services.Fiscal
                 RequiredGatesPassed: passed,
                 XsdValid: xsdValid,
                 XsdErrors: xsdErrors,
-                Divergences: divergences);
+                Divergences: divergences,
+                // Issue #380: guarda o XML real produzido e o gabarito sanitizado — combustível do
+                // diff release×release (CanonicalDiffer reaplicado entre releases, não só contra o gabarito).
+                ActualXml: actualXml,
+                ExpectedXml: safeExpectedXml);
         }
 
         /// <summary>

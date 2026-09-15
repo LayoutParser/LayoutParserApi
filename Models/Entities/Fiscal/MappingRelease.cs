@@ -78,7 +78,14 @@ namespace LayoutParserApi.Models.Entities.Fiscal
         bool RequiredGatesPassed,
         bool XsdValid,
         IReadOnlyList<string> XsdErrors,
-        IReadOnlyList<MappingTestRunDivergence> Divergences);
+        IReadOnlyList<MappingTestRunDivergence> Divergences,
+        // Issue #380 (#198.2b): XML real produzido pelo XSLT e o gabarito sanitizado usados no
+        // diff canônico deste test-run — persistidos para permitir diff release×release
+        // (GET .../releases/diff) via CanonicalDiffer sem precisar reexecutar o XSLT. Trailing
+        // com default — não quebra call sites existentes. null quando o test-run não chegou a
+        // produzir XML (falha antes/durante a aplicação do XSLT, ou engine=tcl sem runner).
+        string? ActualXml = null,
+        string? ExpectedXml = null);
 
     /// <summary>
     /// Diff granular por regra (issue #367 / LayoutParserReact #228): agrupa as divergências de
