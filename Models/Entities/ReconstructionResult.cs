@@ -23,6 +23,54 @@ namespace LayoutParserApi.Models.Entities
         /// <summary>Total de campos do layout considerados na tentativa — denominador da taxa de
         /// sucesso (<c>FieldsReconstructed / FieldsAttempted</c>).</summary>
         public int FieldsAttempted { get; set; }
+
+        /// <summary>
+        /// Um item por campo efetivamente escrito no TXT reconstruído (issue #151, item 3 do
+        /// critério de aceite) — granularidade que <see cref="ReconstructedText"/> sozinho não
+        /// expõe. É o que permite validar campo a campo contra o TXT original quando disponível
+        /// (ver <see cref="Services.XmlAnalysis.ReverseReconstructionValidator"/>), sem reparsear o
+        /// texto reconstruído.
+        /// </summary>
+        public List<ReconstructedFieldEntry> ReconstructedFields { get; set; } = new();
+    }
+
+    /// <summary>Um campo que a reconstrução reversa conseguiu escrever (valor achado no XML,
+    /// já truncado se necessário — mesmo valor gravado no buffer da linha).</summary>
+    public class ReconstructedFieldEntry
+    {
+        public string LineName { get; set; } = string.Empty;
+        public string FieldName { get; set; } = string.Empty;
+        public int Occurrence { get; set; }
+        public int StartPosition { get; set; }
+        public int Length { get; set; }
+        public string Value { get; set; } = string.Empty;
+    }
+
+    /// <summary>
+    /// Item 3 do critério de aceite da issue #151 (Fase 4): resultado da comparação campo a campo
+    /// entre a reconstrução best-effort e o TXT original real (quando disponível na sessão) — ver
+    /// <see cref="Services.XmlAnalysis.ReverseReconstructionValidator"/>.
+    /// </summary>
+    public class ReconstructionValidationResult
+    {
+        public List<ReconstructionFieldValidation> Fields { get; set; } = new();
+        public int MatchedFields { get; set; }
+        public int MismatchedFields { get; set; }
+        public double PercentMatch { get; set; }
+    }
+
+    /// <summary>Resultado da comparação de UM campo reconstruído contra o valor real parseado do
+    /// TXT original.</summary>
+    public class ReconstructionFieldValidation
+    {
+        public string LineName { get; set; } = string.Empty;
+        public string FieldName { get; set; } = string.Empty;
+        public int Occurrence { get; set; }
+        public bool Matched { get; set; }
+        /// <summary>Valor real do TXT original para este campo — <c>null</c> quando o campo não foi
+        /// encontrado no parse do TXT original (não confundir com "bateu"/"divergiu" — é um terceiro
+        /// caso, "sem gabarito para comparar").</summary>
+        public string? OriginalValue { get; set; }
     }
 
     /// <summary>Um alerta específico de um campo/linha que não pôde ser reconstruído com confiança

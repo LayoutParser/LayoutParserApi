@@ -193,6 +193,17 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 buffer[source.StartPosition + i] = padded[i];
 
             result.FieldsReconstructed++;
+            // Issue #151, item 3: guarda o valor por campo (mesmo já truncado) para permitir
+            // validação campo a campo contra o TXT original sem reparsear ReconstructedText.
+            result.ReconstructedFields.Add(new ReconstructedFieldEntry
+            {
+                LineName = source.LineName,
+                FieldName = source.FieldName,
+                Occurrence = source.LineOccurrence,
+                StartPosition = source.StartPosition,
+                Length = source.Length,
+                Value = value
+            });
 
             if (truncated)
             {
