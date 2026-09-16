@@ -49,7 +49,8 @@ namespace LayoutParserApi.Tests.Controllers
                 "MAP_1",
                 new LayoutTreeSide("LAY_SOURCE", "text", Array.Empty<LayoutTreeNodeDto>()),
                 new LayoutTreeSide("LAY_TARGET", "xml", Array.Empty<LayoutTreeNodeDto>()),
-                Array.Empty<LayoutTreeRule>());
+                Array.Empty<LayoutTreeRule>(),
+                Array.Empty<string>());
             var service = new FakeLayoutTreeService { Response = expected };
             var controller = BuildController(service);
 

@@ -646,6 +646,86 @@ Detalhe completo, contratos JSON e ponteiros de arquivo/linha:
 Análise de delta que originou este fechamento:
 [`docs/architecture/cross-check-gate-200-368-2026-09-15.md`](docs/architecture/cross-check-gate-200-368-2026-09-15.md).
 
+### 8.3 `GET .../mappings/{mappingId}/layout-tree` — árvore dupla origem/destino / dual source/target layout tree
+
+**🇧🇷** Issue #425 (endpoint) + #430 (correção de identidade de nó). Devolve, para um `mappingId`
+Sysmiddle já conhecido, a árvore completa dos layouts de **origem** e **destino** (hierarquia,
+atributos, cardinalidade) mais os vínculos diretos campo→campo entre as duas árvores — pensado
+para o [LayoutParserReact](#2-ecossistema-de-projetos--project-ecosystem) replicar a UI de
+dupla-árvore do Connect Us. Rota de leitura: `[ApiController]`
+[`Controllers/LayoutTreeController.cs`](Controllers/LayoutTreeController.cs), DTOs em
+[`Models/Dtos/Fiscal/LayoutTree.cs`](Models/Dtos/Fiscal/LayoutTree.cs).
+
+```
+GET /api/workspaces/{workspaceId}/mappings/{mappingId}/layout-tree
+```
+
+- **RBAC:** qualquer papel de membro do workspace (`Owner`, `FiscalAdmin`, `Mapper`, `Reviewer`,
+  `Operator`, `Viewer`). Sem identidade ou não-membro → `404` (fail-closed, mesmo padrão do
+  restante da API — **não existe `401`** aqui). `mappingId` não resolvido no catálogo `tbMapper`
+  → `404` também, indistinguível do caso de RBAC.
+- **Não** passa por `MappingEngineGuardFilter` (Slice 6) — ler/explicar a árvore de um mapper
+  Sysmiddle é sempre permitido, só escrita é bloqueada.
+
+**Resposta (resumida):**
+
+```json
+{
+  "mapperGuid": "GRT_0001",
+  "source": {
+    "layoutGuid": "LAY_ORIGEM",
+    "kind": "text",
+    "roots": [
+      { "elementGuid": "GRT_0010", "name": "Cabecalho", "kind": "group",
+        "cardinality": { "min": 1, "max": 1 },
+        "children": [
+          { "elementGuid": "FLD_0011", "name": "cnpjEmitente", "kind": "element",
+            "cardinality": null, "children": [] }
+        ] }
+    ]
+  },
+  "target": { "layoutGuid": "LAY_DESTINO", "kind": "xml", "roots": [ "..." ] },
+  "rules": [
+    { "ruleId": "RULE_0001", "sourceElementGuid": "FLD_0011", "targetElementGuid": "ATT_0022" }
+  ],
+  "limitations": [
+    "Este mapper tem regras condicionais (DSL) que não aparecem em rules[] — consulte GET .../explanation."
+  ]
+}
+```
+
+- `source`/`target`: `kind` é `"text"` ou `"xml"`, cada nó de `roots[]`/`children[]` tem
+  `kind` `"group"` (tem filhos), `"element"` (folha) ou `"attribute"`. `elementGuid` é o GUID
+  estável do catálogo (`TAG_`/`GRT_`/`ATT_`/`FLD_`/`LIN_…`), `null` quando o nó não tem GUID no
+  XML de layout.
+- `rules[]`: cobre **só vínculo direto campo→campo** (`LinkMappingItemVO` real do Sysmiddle),
+  casando `sourceElementGuid`/`targetElementGuid` com os `elementGuid` das árvores acima.
+- **`limitations[]` (novo na issue #430):** ⚠️ **divergência de cobertura importante para o
+  consumidor.** `rules[]` aqui **não inclui** regras condicionais/DSL (`MapperRule`/branches) —
+  essas só aparecem em `GET .../mappings/{mappingId}/explanation` (Slice 4,
+  [§8](#8-fundação-da-plataforma-fiscal--fiscal-platform-foundation)), com `sourceRefs`/`targetRefs`
+  prefixados `I.`/`T.`. A origem dessas regras é texto da DSL (ex. `I.xMun`), não um GUID de nó do
+  catálogo — o catálogo GUID→XPath (`GuidXPathCatalog`) resolve por GUID, não por nome de campo,
+  então reconstruir esse vínculo aqui exigiria "inventar" um GUID sem garantia de unicidade
+  (decisão deliberada de escopo, não pendência). Quando o mapper tem regras DSL, `limitations[]`
+  sinaliza isso em texto explicativo; o front **deve tratar essas regras como "sem linha desenhável
+  no layout-tree, só lista"** e completá-las consultando `explanation.rules` separadamente — não
+  assumir que `layout-tree.rules[]` é a lista completa de vínculos do mapper.
+
+**🇺🇸** Issue #425 (endpoint) + #430 (node identity fix). Returns the full **source** and
+**destination** layout trees (hierarchy, attributes, cardinality) plus direct field-to-field links
+between them, for a known `mappingId` — built for the React front-end's dual-tree UI (Connect Us
+parity). Same RBAC as above (any member role, fail-closed `404`, no `401`).
+
+⚠️ **Important consumer note on `limitations[]`:** `rules[]` in this endpoint covers **only**
+direct field-to-field links (`LinkMappingItemVO`) — conditional/DSL rules (`MapperRule`/branches)
+never appear here, only in `GET .../explanation` (`sourceRefs`/`targetRefs` prefixed `I.`/`T.`).
+That's a deliberate scope decision (the DSL rule origin is text, not a catalog GUID — synthesizing
+one would risk fabricating a non-unique identifier), not a bug to be fixed later. When present,
+`limitations[]` names this gap explicitly; the front-end should treat those DSL rules as
+"listable but not drawable" on the layout-tree and merge them in from `explanation.rules`
+separately — `layout-tree.rules[]` alone is not the complete link list for a mapper.
+
 ---
 
 ## 9. Configuração / Configuration

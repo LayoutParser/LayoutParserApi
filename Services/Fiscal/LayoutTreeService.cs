@@ -61,9 +61,9 @@ namespace LayoutParserApi.Services.Fiscal
 
             var source = await ResolveSideAsync(inputLayoutGuid, cancellationToken);
             var target = await ResolveSideAsync(targetLayoutGuid, cancellationToken);
-            var rules = ResolveRules(mapper);
+            var (rules, limitations) = ResolveRules(mapper);
 
-            return new LayoutTreeResponse(mapper.MapperGuid, source, target, rules);
+            return new LayoutTreeResponse(mapper.MapperGuid, source, target, rules, limitations);
         }
 
         /// <summary>
@@ -137,10 +137,14 @@ namespace LayoutParserApi.Services.Fiscal
         /// <summary>
         /// Regras = <c>LinkMappingItemVO</c> reais (mapeamento direto campo→campo) — o único ponto
         /// do MapperVO onde origem E destino são GUIDs de nó (ADR §"Contrato de resposta proposto").
-        /// Regras DSL (<c>MapperRule</c>) não entram: <c>TargetElementGuid</c> existe, mas a origem é
-        /// texto da DSL (<c>I.campo</c>), não um GUID de nó — inventar um aqui violaria "nunca inventa".
+        ///
+        /// <para><b>Issue #430:</b> Regras DSL (<c>MapperRule</c>/branches condicionais) não entram na
+        /// lista — <c>TargetGuid</c> existe no <c>MapperRule</c>, mas a origem é texto da DSL
+        /// (ex. <c>I.xMun</c>), não um GUID de nó do catálogo, e inventar um aqui violaria "nunca
+        /// inventa" (mesma regra que rege <see cref="SysmiddleExplanationAdapter"/>). Quando o mapper
+        /// tem regras DSL, sinaliza via <c>Limitations</c> — ver <see cref="LayoutTreeResponse"/>.</para>
         /// </summary>
-        private IReadOnlyList<LayoutTreeRule> ResolveRules(Mapper mapper)
+        private (IReadOnlyList<LayoutTreeRule> Rules, IReadOnlyList<string> Limitations) ResolveRules(Mapper mapper)
         {
             MapperVo mapperVo;
             try
@@ -150,15 +154,26 @@ namespace LayoutParserApi.Services.Fiscal
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Árvore de layout: MapperVO {MapperGuid} não pôde ser parseado — regras degradam para lista vazia.", mapper.MapperGuid);
-                return Array.Empty<LayoutTreeRule>();
+                return (Array.Empty<LayoutTreeRule>(), Array.Empty<string>());
             }
 
-            return mapperVo.LinkMappings
+            var rules = mapperVo.LinkMappings
                 .Select(link => new LayoutTreeRule(
                     link.ElementGuid ?? $"link:{link.Name}",
                     link.InputGuid,
                     link.TargetGuid))
                 .ToList();
+
+            var limitations = mapperVo.Rules.Count > 0
+                ? new[]
+                {
+                    $"Mapper tem {mapperVo.Rules.Count} regra(s) condicional(is)/DSL que NÃO aparecem em Rules[] — " +
+                    "origem/destino dessas regras não são GUIDs de nó resolvíveis (ver GET .../explanation " +
+                    "para a lista completa, incluindo as DSL, com sourceRefs/targetRefs prefixados I./T.)."
+                }
+                : Array.Empty<string>();
+
+            return (rules, limitations);
         }
     }
 }

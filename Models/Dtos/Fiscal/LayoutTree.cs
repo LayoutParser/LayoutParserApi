@@ -26,10 +26,24 @@ namespace LayoutParserApi.Models.Dtos.Fiscal
     /// </summary>
     public sealed record LayoutTreeRule(string RuleId, string? SourceElementGuid, string? TargetElementGuid);
 
-    /// <summary>Contrato de <c>GET .../mappings/{mappingId}/layout-tree</c> (issue #425, ADR de 2026-09-16).</summary>
+    /// <summary>
+    /// Contrato de <c>GET .../mappings/{mappingId}/layout-tree</c> (issue #425, ADR de 2026-09-16).
+    ///
+    /// <para><b>Limitations (issue #430):</b> <c>Rules</c> cobre só vínculo direto campo→campo
+    /// (<c>LinkMappingItemVO</c>) — regras condicionais/DSL (<c>MapperRule</c>/branches, que aparecem
+    /// em <c>GET .../explanation</c> com <c>sourceRefs</c>/<c>targetRefs</c> prefixados <c>I.</c>/<c>T.</c>)
+    /// NÃO entram aqui. A origem dessas regras é texto da DSL (ex. <c>I.xMun</c>), não um GUID de nó do
+    /// catálogo — resolver isso exigiria reconstruir o contexto de nomes do parser DSL por fora do
+    /// catálogo GUID→XPath existente (<c>GuidXPathCatalog</c> resolve por GUID, não por nome de campo),
+    /// o que é desproporcional ao escopo desta issue e arriscaria "inventar" um GUID sem garantia de
+    /// unicidade. Quando o mapper tem regras DSL, <c>Limitations</c> sinaliza isso explicitamente —
+    /// o front deve tratar essas regras (presentes em <c>explanation.rules</c>) como "sem linha
+    /// desenhável no layout-tree, só lista".</para>
+    /// </summary>
     public sealed record LayoutTreeResponse(
         string MapperGuid,
         LayoutTreeSide Source,
         LayoutTreeSide Target,
-        IReadOnlyList<LayoutTreeRule> Rules);
+        IReadOnlyList<LayoutTreeRule> Rules,
+        IReadOnlyList<string> Limitations);
 }
