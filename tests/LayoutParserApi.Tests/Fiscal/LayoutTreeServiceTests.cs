@@ -158,6 +158,60 @@ namespace LayoutParserApi.Tests.Fiscal
             Assert.Equal("LNK_1", rule.RuleId);
             Assert.Equal("FLD_ChaveAcesso", rule.SourceElementGuid);
             Assert.Equal("ATT_Id", rule.TargetElementGuid);
+            Assert.Empty(result.Limitations); // sem regra DSL no mapper, sem limitação a sinalizar
+        }
+
+        // Mesmo mapper do teste principal, mas com uma <Rule> (DSL) além do LinkMapping.
+        private static string BuildMapperXmlComRegraDsl(string mapperGuid) => $"""
+            <MapperVO>
+                <MapperGuid>{mapperGuid}</MapperGuid>
+                <Name>Mapper de teste</Name>
+                <InputLayoutGuid>LAY_SOURCE</InputLayoutGuid>
+                <TargetLayoutGuid>LAY_TARGET</TargetLayoutGuid>
+                <LinkMappings>
+                    <LinkMappingItem>
+                        <Name>Id</Name>
+                        <Sequence>1</Sequence>
+                        <ElementGuid>LNK_1</ElementGuid>
+                        <InputLayoutGuid>FLD_ChaveAcesso</InputLayoutGuid>
+                        <TargetLayoutGuid>ATT_Id</TargetLayoutGuid>
+                    </LinkMappingItem>
+                </LinkMappings>
+                <Rule>
+                    <Name>RegraCondicional</Name>
+                    <Sequence>2</Sequence>
+                    <ElementGuid>ATT_Cond</ElementGuid>
+                    <TargetElementGuid>ATT_Cond</TargetElementGuid>
+                    <ContentValue>%beginRuleContent;T.xCond=I.LINHA1/Campo;%endRuleContent;</ContentValue>
+                </Rule>
+            </MapperVO>
+            """;
+
+        [Fact]
+        public async Task Mapper_com_regra_DSL_nao_entra_em_Rules_mas_sinaliza_em_Limitations()
+        {
+            var (service, mappers, layouts) = BuildService();
+            mappers.Mappers.Add(new Mapper
+            {
+                MapperGuid = "MAP_DSL",
+                InputLayoutGuid = "LAY_SOURCE",
+                TargetLayoutGuid = "LAY_TARGET",
+                DecryptedContent = BuildMapperXmlComRegraDsl("MAP_DSL"),
+            });
+            layouts.LayoutsByGuid["LAY_SOURCE"] = new LayoutRecord { LayoutGuid = Guid.Empty, Name = "Origem", DecryptedContent = SourceLayoutXml };
+            layouts.LayoutsByGuid["LAY_TARGET"] = new LayoutRecord { LayoutGuid = Guid.Empty, Name = "Destino", DecryptedContent = TargetLayoutXml };
+
+            var result = await service.GetLayoutTreeAsync("MAP_DSL", CancellationToken.None);
+
+            Assert.NotNull(result);
+
+            // Só o LinkMapping direto entra em Rules — a regra DSL (ATT_Cond) não aparece.
+            var rule = Assert.Single(result!.Rules);
+            Assert.Equal("LNK_1", rule.RuleId);
+            Assert.DoesNotContain(result.Rules, r => r.RuleId.Contains("ATT_Cond"));
+
+            // A ausência é sinalizada, não silenciosa.
+            Assert.NotEmpty(result.Limitations);
         }
 
         [Fact]
