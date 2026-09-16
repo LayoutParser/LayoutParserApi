@@ -696,7 +696,12 @@ namespace LayoutParserApi.Controllers
                         {
                             "xml" => "xml",
                             "idoc" => "txt",
-                            "mqseries" => "txt",
+                            // ✅ fix/mqseries-line-detection-601: MQSeries é stream contínuo de
+                            // largura fixa (sem \n/\r entre "linhas" lógicas) — precisa de split
+                            // fixo (ver LayoutLearningService.LearnTextPositionalStructureAsync).
+                            // Antes caía em "txt" e o split por quebra de linha via o arquivo
+                            // inteiro como 1 única "linha" (TotalFields=0).
+                            "mqseries" => "mqseries",
                             _ => "txt"
                         };
 
