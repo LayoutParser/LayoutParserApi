@@ -624,6 +624,28 @@ consumir sem esperar backend novo (issue #376, derivada do cross-check #226/#198
 waiting on new backend work (issue #376). Full detail, JSON examples and file/line pointers:
 [`docs/architecture/contrato-rbac-erro-diff-mapping-fiscal-2026-09-10.md`](docs/architecture/contrato-rbac-erro-diff-mapping-fiscal-2026-09-10.md).
 
+### 8.2 Gate React#200 / epic #368 — 6 itens já fecham só documentando / Gate React#200 / epic #368 — 6 items close by documenting only
+
+**🇧🇷** A tabela original do gate #200 (aberta em agosto contra a epic #368) listava 8 itens.
+Um cross-check de 2026-09-15 (issue #413) confirmou que **6 já estão implementados**:
+`GET /api/workspaces/me`, pacote fiscal versionado, `MappingDraft` (com `FiscalProfile`/editor
+manual/filtros/arquivamento), contrato de saída TCL/XSL/XSLT (hash, status, imutabilidade
+pós-`publish`), `MappingExplanation` (era "não existe" em agosto, hoje completo) e o Test Lab
+(diff por regra, diff release×release, cobertura de obrigatórios). Só **1 gap pequeno** ficou
+confirmado: capability Sysmiddle read-only tem enforcement (`MappingEngineGuardFilter`, issue
+#232) mas **não** tem payload consultável tipo `GET .../capabilities` — rastreado na issue #415,
+não tratar como resolvido.
+
+**🇺🇸** The original gate #200 table listed 8 items. A 2026-09-15 cross-check confirmed **6 are
+already implemented** — see detail below. Only **1 small gap** remains: Sysmiddle read-only
+capability has server-side enforcement but no queryable capability payload (tracked as issue
+#415).
+
+Detalhe completo, contratos JSON e ponteiros de arquivo/linha:
+[`docs/architecture/contratos-gate-200-368-2026-09-15.md`](docs/architecture/contratos-gate-200-368-2026-09-15.md).
+Análise de delta que originou este fechamento:
+[`docs/architecture/cross-check-gate-200-368-2026-09-15.md`](docs/architecture/cross-check-gate-200-368-2026-09-15.md).
+
 ---
 
 ## 9. Configuração / Configuration
