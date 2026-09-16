@@ -503,6 +503,10 @@ try
     builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.IMappingExplanationAdapter, LayoutParserApi.Services.Fiscal.SysmiddleExplanationAdapter>();
     builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.IMappingExplanationAdapter, LayoutParserApi.Services.Fiscal.TclExplanationAdapter>();
     builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.IMappingExplanationAdapter, LayoutParserApi.Services.Fiscal.XsltExplanationAdapter>();
+    // ✅ Issue #425 (ADR "adr-layout-tree-endpoint-425"): árvore dupla origem/destino + regras de um
+    // mapper Sysmiddle real — generaliza GuidXPathCatalog (ai/XslSynth.Contracts), reaproveita
+    // ICachedMapperService/ICachedLayoutService já registrados acima.
+    builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.ILayoutTreeService, LayoutParserApi.Services.Fiscal.LayoutTreeService>();
     // ✅ Slice 5 (issue #231): compilação determinística MappingDraftRule[] → XSLT/TCL + Fiscal Test
     // Lab. Mesmo banco/padrão ADO.NET; compile/test-run reaproveitam CanonicalDiffer/XsdValidationService
     // (já registrados/disponíveis via DI) sem I/O externo/Ollama.
