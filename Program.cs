@@ -518,6 +518,10 @@ try
     // ✅ Issue #380 (#198.5): cobertura estática de destinos obrigatórios do XSD alvo — sem
     // estado por-requisição, Scoped por consistência com o grupo Fiscal.
     builder.Services.AddScoped<LayoutParserApi.Services.Fiscal.IRequiredCoverageCalculator, LayoutParserApi.Services.Fiscal.RequiredCoverageCalculator>();
+    // Catálogo de exemplos reais de transformação TCL/XSL da Neogrid (corpus de referência/oráculo,
+    // não releases compilados pelo pipeline) — leitura de disco via ReferenceExamples:BasePath
+    // (opcional; ausente => catálogo vazio, degrada gracioso). Sem estado por-requisição.
+    builder.Services.AddScoped<LayoutParserApi.Services.Fiscal.IReferenceExampleCatalogService, LayoutParserApi.Services.Fiscal.ReferenceExampleCatalogService>();
     // ✅ Issue #345 (ADR docs/architecture/adr-contrato-correcao-guiada-humano-2026-09-08.md):
     // contexto de documento + reporte de correção humana — mesmo banco/padrão ADO.NET.
     builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.IFieldCorrectionStore, LayoutParserApi.Services.Database.SqlFieldCorrectionStore>();
