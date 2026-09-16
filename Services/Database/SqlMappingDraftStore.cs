@@ -51,6 +51,57 @@ namespace LayoutParserApi.Services.Database
             return await command.ExecuteScalarAsync(cancellationToken) != null;
         }
 
+        /// <summary>Issue #416: paginado, isolado por WorkspaceId no WHERE. Sem regras (COUNT via subquery correlacionada).</summary>
+        public async Task<(IReadOnlyList<MappingDraftSummary> Items, int TotalCount)> ListByWorkspaceAsync(
+            Guid workspaceId, int page, int pageSize, string? engine, CancellationToken cancellationToken)
+        {
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await EnsureSchemaAsync(connection, cancellationToken);
+
+            var items = new List<MappingDraftSummary>();
+            var totalCount = 0;
+
+            // Mesmo padrão do SqlMappingReleaseStore.ListByWorkspaceAsync (issue #377): WHERE montado
+            // só a partir de fragmentos constantes — valor do cliente entra exclusivamente via SqlParameter.
+            var conditions = new List<string> { "d.WorkspaceId = @WorkspaceId" };
+            if (!string.IsNullOrWhiteSpace(engine))
+                conditions.Add("d.Engine = @Engine");
+            var whereClause = string.Join(" AND ", conditions);
+
+            using var command = new SqlCommand(
+                $@"SELECT d.DraftId, d.WorkspaceId, d.PackageId, d.RevisionId, d.Engine, d.CreatedAt, d.FiscalProfileJson,
+                         (SELECT COUNT(*) FROM dbo.tbMappingDraftRule r WHERE r.DraftId = d.DraftId) AS RulesCount,
+                         COUNT(*) OVER() AS TotalCount
+                  FROM dbo.tbMappingDraft d
+                  WHERE {whereClause}
+                  ORDER BY d.CreatedAt DESC
+                  OFFSET @Offset ROWS FETCH NEXT @PageSize ROWS ONLY;",
+                connection);
+            command.Parameters.AddWithValue("@WorkspaceId", workspaceId);
+            command.Parameters.AddWithValue("@Offset", (page - 1) * pageSize);
+            command.Parameters.AddWithValue("@PageSize", pageSize);
+            if (!string.IsNullOrWhiteSpace(engine))
+                command.Parameters.AddWithValue("@Engine", engine);
+
+            using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                items.Add(new MappingDraftSummary(
+                    reader.GetGuid(reader.GetOrdinal("DraftId")),
+                    reader.GetGuid(reader.GetOrdinal("WorkspaceId")),
+                    reader.GetGuid(reader.GetOrdinal("PackageId")),
+                    reader.GetGuid(reader.GetOrdinal("RevisionId")),
+                    reader.GetString(reader.GetOrdinal("Engine")),
+                    new DateTimeOffset(reader.GetDateTime(reader.GetOrdinal("CreatedAt")), TimeSpan.Zero),
+                    reader.GetInt32(reader.GetOrdinal("RulesCount")),
+                    ReadFiscalProfile(reader, "FiscalProfileJson")));
+                totalCount = reader.GetInt32(reader.GetOrdinal("TotalCount"));
+            }
+
+            return (items, totalCount);
+        }
+
         public async Task<IReadOnlyList<ArtifactFileRef>> GetArtifactFilesForRevisionAsync(Guid revisionId, CancellationToken cancellationToken)
         {
             using var connection = new SqlConnection(_connectionString);

@@ -84,6 +84,10 @@ namespace LayoutParserApi.Tests.Controllers
             public Task<IReadOnlyList<ArtifactFileRef>> GetArtifactFilesForRevisionAsync(Guid revisionId, CancellationToken cancellationToken)
                 => Task.FromResult<IReadOnlyList<ArtifactFileRef>>(Array.Empty<ArtifactFileRef>());
 
+            public Task<(IReadOnlyList<MappingDraftSummary> Items, int TotalCount)> ListByWorkspaceAsync(
+                Guid workspaceId, int page, int pageSize, string? engine, CancellationToken cancellationToken)
+                => throw new NotSupportedException("Não exercitado por estes testes — cobertos em MappingDraftsControllerListTests.");
+
             public Task<MappingDraftDetail> CreateDraftAsync(Guid workspaceId, Guid packageId, Guid revisionId, Guid createdByUserId, string engine, CancellationToken cancellationToken)
             {
                 var draft = new MappingDraftDetail(

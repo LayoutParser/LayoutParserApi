@@ -19,6 +19,22 @@ namespace LayoutParserApi.Services.Interfaces
         DateTimeOffset CreatedAt,
         string ETag);
 
+    /// <summary>
+    /// Item de listagem de <see cref="MappingDraft"/> (issue #416) — sem as regras (evita N+1/payload
+    /// pesado numa lista paginada; para o detalhe completo, o cliente segue com
+    /// <c>GET .../mapping-drafts/{draftId}</c>). <c>RulesCount</c> dá um sinal de progresso sem
+    /// precisar carregar cada regra.
+    /// </summary>
+    public sealed record MappingDraftSummary(
+        Guid DraftId,
+        Guid WorkspaceId,
+        Guid PackageId,
+        Guid RevisionId,
+        string Engine,
+        DateTimeOffset CreatedAt,
+        int RulesCount,
+        FiscalProfile? FiscalProfile);
+
     /// <summary>Draft com todas as regras atuais (não-superseded incluídas — o cliente decide o que exibir).</summary>
     public sealed record MappingDraftDetail(
         Guid DraftId,
@@ -71,6 +87,15 @@ namespace LayoutParserApi.Services.Interfaces
     {
         /// <summary>Confirma que a revisão pertence ao pacote informado (o Draft referencia uma revisão EXATA, nunca implícita).</summary>
         Task<bool> RevisionBelongsToPackageAsync(Guid packageId, Guid revisionId, CancellationToken cancellationToken);
+
+        /// <summary>
+        /// Lista drafts do workspace, paginado (issue #416 — não havia forma de descobrir drafts sem
+        /// já conhecer o GUID). Isolamento por workspace direto no WHERE. Filtro opcional
+        /// <paramref name="engine"/> ("tcl"/"xslt") — draft não tem "status" próprio (só as regras
+        /// têm, via <see cref="MappingDraftRuleStatus"/>), então não há filtro de status aqui.
+        /// </summary>
+        Task<(IReadOnlyList<MappingDraftSummary> Items, int TotalCount)> ListByWorkspaceAsync(
+            Guid workspaceId, int page, int pageSize, string? engine, CancellationToken cancellationToken);
 
         /// <summary>Lista os artefatos (com caminho de storage) da revisão — usado pelo job de sugestão para ler o conteúdo-fonte.</summary>
         Task<IReadOnlyList<ArtifactFileRef>> GetArtifactFilesForRevisionAsync(Guid revisionId, CancellationToken cancellationToken);
