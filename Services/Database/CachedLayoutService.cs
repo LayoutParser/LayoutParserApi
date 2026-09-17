@@ -126,11 +126,15 @@ namespace LayoutParserApi.Services.Database
                 }
 
                 // Se não encontrou no cache, buscar no banco usando SearchLayoutsAsync
+                // Issue #433: busca por GUID específico precisa achar QUALQUER tipo de layout
+                // (ex.: XmlLayoutVO de destino) — o filtro TextPositional-only é só para o
+                // warmup do cache Redis (ver LayoutSearchRequest.IncludeAllLayoutTypes).
                 _logger.LogInformation("Layout não encontrado no cache, buscando no banco por GUID: {Guid}", layoutGuid);
                 var request = new LayoutSearchRequest
                 {
                     SearchTerm = layoutGuid,
-                    MaxResults = 100
+                    MaxResults = 100,
+                    IncludeAllLayoutTypes = true
                 };
 
                 var response = await _layoutDatabaseService.SearchLayoutsAsync(request);
