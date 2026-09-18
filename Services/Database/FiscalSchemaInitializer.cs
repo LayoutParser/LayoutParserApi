@@ -78,6 +78,9 @@ namespace LayoutParserApi.Services.Database
                 // ✅ Issue #345: tbFieldCorrectionContext/tbFieldCorrectionReport — autossuficientes
                 // (sem FK para as tabelas acima, ver comentário em SqlFieldCorrectionStore.SchemaDdl).
                 await SqlFieldCorrectionStore.EnsureSchemaAsync(connection, cancellationToken);
+                // ✅ Issue #438: tbGeneratedMapperArtifact — também autossuficiente (sem FK para
+                // tbMapper, que vive no banco compartilhado somente-leitura).
+                await SqlGeneratedMapperArtifactStore.EnsureSchemaAsync(connection, cancellationToken);
 
                 _logger.LogInformation("Schema fiscal e de identidade (IdentityDatabase:*) inicializado com sucesso no startup, em ordem de dependência de FK.");
             }

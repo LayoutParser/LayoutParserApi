@@ -525,6 +525,11 @@ try
     // ✅ Issue #345 (ADR docs/architecture/adr-contrato-correcao-guiada-humano-2026-09-08.md):
     // contexto de documento + reporte de correção humana — mesmo banco/padrão ADO.NET.
     builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.IFieldCorrectionStore, LayoutParserApi.Services.Database.SqlFieldCorrectionStore>();
+    // ✅ Issue #438 (ADR docs/architecture/adr-geracao-automatica-gabarito-sysmiddle.md §5): geração
+    // automática lazy de TCL/XSL/XSLT para um mapper Sysmiddle — mesmo banco/padrão ADO.NET, tabela
+    // autossuficiente (sem FK). Reaproveita o loop determinístico de ai/XslSynth.Core in-process.
+    builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.IGeneratedMapperArtifactStore, LayoutParserApi.Services.Database.SqlGeneratedMapperArtifactStore>();
+    builder.Services.AddScoped<LayoutParserApi.Services.Transformation.Ai.IGeneratedMapperArtifactService, LayoutParserApi.Services.Transformation.Ai.GeneratedMapperArtifactService>();
     // ✅ Investigação PR #310 (2026-09-05): schema fiscal criado em ordem de dependência de FK no
     // startup, em vez de depender de qual store acima uma requisição real exercita primeiro. Ver
     // <see cref="LayoutParserApi.Services.Database.FiscalSchemaInitializer"/> para o grafo completo.
