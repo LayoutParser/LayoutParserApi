@@ -489,7 +489,7 @@ namespace LayoutParserApi.Tests.Integration
             releaseStore.ById[release.ReleaseId] = releaseAposTestRunOk;
 
             // ---- 11) Regressão antecede publicação (Slice 7) — bloqueio explícito de test_failed ----
-            var governanceController = new MappingGovernanceController(releaseStore, new FakeCurrentUser { UserId = userReviewer }, NullLogger<MappingGovernanceController>.Instance);
+            var governanceController = new MappingGovernanceController(releaseStore, new LayoutParserApi.Tests.Controllers.EmptyGeneratedMapperListService(), new FakeCurrentUser { UserId = userReviewer }, NullLogger<MappingGovernanceController>.Instance);
 
             releaseStore.ById[release.ReleaseId] = releaseAposTestRunDivergente; // simula tentar publicar um release que falhou
             var publishSemAprovarComFalha = await governanceController.Publish(workspaceId, release.ReleaseId, null, CancellationToken.None);

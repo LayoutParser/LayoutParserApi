@@ -47,6 +47,18 @@ namespace LayoutParserApi.Services.Interfaces
         Task<GeneratedMapperArtifactRecord?> GetAsync(string mapperGuid, CancellationToken cancellationToken);
 
         /// <summary>
+        /// Listagem paginada por offset (unificação com <c>mapping-releases</c>, issue #438, ADR
+        /// <c>adr-unificacao-generated-artifact-mapping-release.md</c> opção b). As linhas voltam SEM
+        /// <see cref="GeneratedMapperArtifactRecord.Content"/> (<c>null</c>) — o conteúdo é pesado e a
+        /// listagem só o expõe via link de detalhe. Ordem estável: mais recente primeiro
+        /// (<c>GeneratedAtUtc</c>, senão <c>UpdatedAtUtc</c>), desempate por <c>MapperGuid</c>.
+        /// <paramref name="status"/> filtra pelo status PERSISTIDO (<c>ready</c>/<c>generating</c>);
+        /// <c>stale</c> é calculado só em leitura de detalhe, logo nunca casa aqui.
+        /// </summary>
+        Task<(IReadOnlyList<GeneratedMapperArtifactRecord> Items, int TotalCount)> ListAsync(
+            string? status, int skip, int take, CancellationToken cancellationToken);
+
+        /// <summary>
         /// Tenta assumir a geração deste mapper de forma atômica (issue #438, item 5 — "concorrência
         /// baixa"): se não existir linha, insere já como <see cref="GeneratedMapperArtifactStatus.Generating"/>;
         /// se existir e o status atual permitir regeração (<c>none</c> nunca fica persistido, então na

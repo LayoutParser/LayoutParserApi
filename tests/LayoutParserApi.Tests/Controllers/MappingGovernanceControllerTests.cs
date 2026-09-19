@@ -3,6 +3,7 @@ using LayoutParserApi.Models.Entities.Fiscal;
 using LayoutParserApi.Models.Entities.Identity;
 using LayoutParserApi.Services.Filters;
 using LayoutParserApi.Services.Interfaces;
+using LayoutParserApi.Services.Transformation.Ai;
 
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -203,8 +204,8 @@ namespace LayoutParserApi.Tests.Controllers
             Array.Empty<MappingReleaseCompileDiagnostic>(), "hash", null, status, "corr-0", DateTimeOffset.UtcNow, "AAAA",
             "development", null, null, null, null, null, null);
 
-        private static MappingGovernanceController BuildController(FakeReleaseStore store, FakeCurrentUser user)
-            => new(store, user, NullLogger<MappingGovernanceController>.Instance);
+        private static MappingGovernanceController BuildController(FakeReleaseStore store, FakeCurrentUser user, IGeneratedMapperListService? generated = null)
+            => new(store, generated ?? new EmptyGeneratedMapperListService(), user, NullLogger<MappingGovernanceController>.Instance);
 
         // --- Transição bloqueada: test_failed não pode ir pra in_review/approved ---
 
