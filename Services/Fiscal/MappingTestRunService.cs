@@ -64,8 +64,6 @@ namespace LayoutParserApi.Services.Fiscal
             var state = new TestRunJobState { JobId = jobId, Status = TestRunJobStatus.Queued, ReleaseId = releaseId };
             Jobs[jobId] = state;
 
-            var rulesById = draft.Rules.ToDictionary(r => r.RuleId);
-
             // ✅ Fire-and-forget real (dotnet-standards.md §Background work): nunca propaga exceção
             // para o chamador do POST .../test-runs, que já retornou 202 antes deste ponto.
             _ = Task.Run(async () =>
@@ -74,9 +72,7 @@ namespace LayoutParserApi.Services.Fiscal
                 var stopwatch = Stopwatch.StartNew();
                 try
                 {
-                    var summary = release.Engine.Equals("tcl", StringComparison.OrdinalIgnoreCase)
-                        ? await RunTclTestAsync(release, draft, inputXml, expectedXml, xsdVersion, rulesById, cancellationToken)
-                        : await RunXsltTestAsync(release, inputXml, expectedXml, xsdVersion, rulesById, cancellationToken);
+                    var summary = await EvaluateFixtureAsync(release, draft, inputXml, expectedXml, xsdVersion, cancellationToken);
 
                     using var scope = _scopeFactory.CreateScope();
                     var releaseStore = scope.ServiceProvider.GetRequiredService<IMappingReleaseStore>();
@@ -109,6 +105,26 @@ namespace LayoutParserApi.Services.Fiscal
 
         public Task<TestRunJobState?> GetStatusAsync(Guid jobId, CancellationToken cancellationToken)
             => Task.FromResult(Jobs.TryGetValue(jobId, out var state) ? state : null);
+
+        /// <summary>
+        /// Issue #423: núcleo síncrono de um único test-run, extraído do corpo do job de
+        /// <see cref="EnqueueAsync"/> — mesma seleção xslt/tcl e o mesmo <see cref="EvaluateAsync"/>
+        /// compartilhado (diff canônico + XSD + provenance). Reaproveitado fixture-a-fixture por
+        /// <c>TestSuiteRunService</c> ao rodar uma suíte inteira contra uma release.
+        /// </summary>
+        public Task<MappingTestRunSummary> EvaluateFixtureAsync(
+            MappingReleaseDetail release,
+            MappingDraftDetail draft,
+            string inputXml,
+            string expectedXml,
+            string? xsdVersion,
+            CancellationToken cancellationToken)
+        {
+            var rulesById = draft.Rules.ToDictionary(r => r.RuleId);
+            return release.Engine.Equals("tcl", StringComparison.OrdinalIgnoreCase)
+                ? RunTclTestAsync(release, draft, inputXml, expectedXml, xsdVersion, rulesById, cancellationToken)
+                : RunXsltTestAsync(release, inputXml, expectedXml, xsdVersion, rulesById, cancellationToken);
+        }
 
         private async Task<MappingTestRunSummary> RunXsltTestAsync(
             MappingReleaseDetail release,
