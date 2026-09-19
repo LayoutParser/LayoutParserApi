@@ -538,6 +538,11 @@ try
     builder.Services.AddHostedService<LayoutParserApi.Services.Database.FiscalSchemaInitializerBackgroundService>();
     builder.Services.AddScoped<IMappingCompileService, LayoutParserApi.Services.Fiscal.MappingCompileService>();
     builder.Services.AddScoped<IMappingTestRunService, LayoutParserApi.Services.Fiscal.MappingTestRunService>();
+    // ✅ Issue #423: suíte de teste versionada do Fiscal Test Lab (múltiplas fixtures agrupadas +
+    // histórico de execução) — mesmo banco/padrão ADO.NET, reaproveita IMappingTestRunService.
+    // EvaluateFixtureAsync fixture-a-fixture (sem duplicar diff/XSD).
+    builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.ITestSuiteStore, LayoutParserApi.Services.Database.SqlTestSuiteStore>();
+    builder.Services.AddScoped<LayoutParserApi.Services.Fiscal.ITestSuiteRunService, LayoutParserApi.Services.Fiscal.TestSuiteRunService>();
     // ✅ Issue #103 Passo 1: extração determinística (sem LLM) de tabelas de decisão fiscal a
     // partir de Excel real do dono. Sem estado por-requisição, poderia ser Singleton — Scoped
     // por consistência com o resto do grupo Fiscal.
