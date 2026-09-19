@@ -47,6 +47,64 @@ namespace LayoutParserApi.Services.Database
             return await reader.ReadAsync(cancellationToken) ? Map(reader) : null;
         }
 
+        public async Task<(IReadOnlyList<GeneratedMapperArtifactRecord> Items, int TotalCount)> ListAsync(
+            string? status, int skip, int take, CancellationToken cancellationToken)
+        {
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await EnsureSchemaAsync(connection, cancellationToken);
+
+            // WHERE só com fragmento CONSTANTE; o valor do filtro entra por SqlParameter (mesmo
+            // padrão do SqlMappingReleaseStore.ListByWorkspaceAsync). Content NÃO é selecionado.
+            var whereClause = string.IsNullOrWhiteSpace(status) ? "" : "WHERE Status = @Status";
+
+            using var command = new SqlCommand(
+                $@"SELECT MapperGuid, Status, CoverageJson, ValidationBasis, MapperVoHash,
+                          CorrelationId, GeneratedAtUtc, UpdatedAtUtc,
+                          COUNT(*) OVER() AS TotalCount
+                   FROM dbo.tbGeneratedMapperArtifact
+                   {whereClause}
+                   ORDER BY COALESCE(GeneratedAtUtc, UpdatedAtUtc) DESC, MapperGuid
+                   OFFSET @Skip ROWS FETCH NEXT @Take ROWS ONLY;",
+                connection);
+            command.Parameters.AddWithValue("@Skip", skip);
+            command.Parameters.AddWithValue("@Take", take);
+            if (!string.IsNullOrWhiteSpace(status))
+                command.Parameters.AddWithValue("@Status", status);
+
+            var items = new List<GeneratedMapperArtifactRecord>();
+            var totalCount = 0;
+            using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                items.Add(new GeneratedMapperArtifactRecord(
+                    reader.GetString(reader.GetOrdinal("MapperGuid")),
+                    reader.GetString(reader.GetOrdinal("Status")),
+                    null,
+                    reader.IsDBNull(reader.GetOrdinal("CoverageJson")) ? null : reader.GetString(reader.GetOrdinal("CoverageJson")),
+                    reader.IsDBNull(reader.GetOrdinal("ValidationBasis")) ? null : reader.GetString(reader.GetOrdinal("ValidationBasis")),
+                    reader.IsDBNull(reader.GetOrdinal("MapperVoHash")) ? null : reader.GetString(reader.GetOrdinal("MapperVoHash")),
+                    reader.IsDBNull(reader.GetOrdinal("CorrelationId")) ? null : reader.GetString(reader.GetOrdinal("CorrelationId")),
+                    reader.IsDBNull(reader.GetOrdinal("GeneratedAtUtc")) ? null : new DateTimeOffset(reader.GetDateTime(reader.GetOrdinal("GeneratedAtUtc")), TimeSpan.Zero),
+                    new DateTimeOffset(reader.GetDateTime(reader.GetOrdinal("UpdatedAtUtc")), TimeSpan.Zero)));
+                totalCount = reader.GetInt32(reader.GetOrdinal("TotalCount"));
+            }
+
+            // Página além do fim devolve 0 linhas (COUNT(*) OVER() some junto) — sem o total real a
+            // paginação combinada com as releases ficaria errada; conta à parte nesse caso raro.
+            if (items.Count == 0 && skip > 0)
+            {
+                await reader.CloseAsync();
+                using var count = new SqlCommand(
+                    $"SELECT COUNT(*) FROM dbo.tbGeneratedMapperArtifact {whereClause};", connection);
+                if (!string.IsNullOrWhiteSpace(status))
+                    count.Parameters.AddWithValue("@Status", status);
+                totalCount = Convert.ToInt32(await count.ExecuteScalarAsync(cancellationToken));
+            }
+
+            return (items, totalCount);
+        }
+
         public async Task<bool> TryBeginGeneratingAsync(string mapperGuid, string correlationId, CancellationToken cancellationToken)
         {
             using var connection = new SqlConnection(_connectionString);

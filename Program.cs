@@ -530,6 +530,7 @@ try
     // autossuficiente (sem FK). Reaproveita o loop determinístico de ai/XslSynth.Core in-process.
     builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.IGeneratedMapperArtifactStore, LayoutParserApi.Services.Database.SqlGeneratedMapperArtifactStore>();
     builder.Services.AddScoped<LayoutParserApi.Services.Transformation.Ai.IGeneratedMapperArtifactService, LayoutParserApi.Services.Transformation.Ai.GeneratedMapperArtifactService>();
+    builder.Services.AddScoped<LayoutParserApi.Services.Transformation.Ai.IGeneratedMapperListService, LayoutParserApi.Services.Transformation.Ai.GeneratedMapperListService>();
     // ✅ Investigação PR #310 (2026-09-05): schema fiscal criado em ordem de dependência de FK no
     // startup, em vez de depender de qual store acima uma requisição real exercita primeiro. Ver
     // <see cref="LayoutParserApi.Services.Database.FiscalSchemaInitializer"/> para o grafo completo.
