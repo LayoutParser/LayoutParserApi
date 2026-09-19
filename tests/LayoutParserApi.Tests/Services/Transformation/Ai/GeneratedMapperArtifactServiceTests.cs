@@ -68,6 +68,9 @@ namespace LayoutParserApi.Tests.Services.Transformation.Ai
             public Task<GeneratedMapperArtifactRecord?> GetAsync(string mapperGuid, CancellationToken ct)
                 => Task.FromResult(_records.TryGetValue(mapperGuid, out var r) ? r : null);
 
+            public Task<(IReadOnlyList<GeneratedMapperArtifactRecord> Items, int TotalCount)> ListAsync(string? status, int skip, int take, CancellationToken ct)
+                => throw new NotSupportedException();
+
             public Task<bool> TryBeginGeneratingAsync(string mapperGuid, string correlationId, CancellationToken ct)
             {
                 BeginCalls++;
