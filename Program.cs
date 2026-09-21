@@ -492,6 +492,14 @@ try
     builder.Services.AddScoped<IFiscalPackageStore, SqlFiscalPackageStore>();
     builder.Services.AddScoped<IAntivirusScanner, LayoutParserApi.Services.Fiscal.WindowsDefenderAntivirusScanner>();
     builder.Services.AddScoped<IFiscalPackageService, LayoutParserApi.Services.Fiscal.FiscalPackageService>();
+    // ✅ Issue #366 (ADR adr-historico-analises-fiscais-366): histórico de análises fiscais com
+    // AnalysisId durável — metadado no IdentityDatabase, arquivos em disco (ML:FiscalAnalysesPath),
+    // TTL 90 dias com purga em background. Registrado dentro de /parse/upload e /parse/auto.
+    builder.Services.AddScoped<IFiscalAnalysisStore, SqlFiscalAnalysisStore>();
+    builder.Services.Configure<LayoutParserApi.Services.Fiscal.FiscalAnalysisHistoryOptions>(
+        builder.Configuration.GetSection("FiscalAnalysisHistory"));
+    builder.Services.AddScoped<IFiscalAnalysisService, LayoutParserApi.Services.Fiscal.FiscalAnalysisService>();
+    builder.Services.AddHostedService<LayoutParserApi.Services.Fiscal.FiscalAnalysisPurgeBackgroundService>();
     // ✅ Slice 3 (issue #230): MappingDraft human-in-the-loop — mesmo banco/padrão ADO.NET.
     // MappingSuggestionService consome ILlmProvider (issue #340/F1) — sem HttpClient direto aqui;
     // o pooling de conexão HTTP fica encapsulado dentro do registro do OllamaLlmProvider (grupo Llm, abaixo).
