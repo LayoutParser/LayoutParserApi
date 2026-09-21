@@ -535,6 +535,56 @@ namespace LayoutParserApi.Tests.Controllers
             Assert.IsType<NotFoundResult>(result);
         }
 
+        // ✅ LayoutParserReact#196 — isolamento cross-workspace no filtro: "Usuário A não acessa
+        // workspace B alterando a URL". Membership em OUTRO workspace não dá acesso a este (404
+        // uniforme, indistinguível de "não existe"), mesmo com o papel mais alto lá.
+        [Fact]
+        public async Task RequireWorkspaceRole_membership_de_outro_workspace_retorna_404_mesmo_sendo_owner_la()
+        {
+            var workspaceDoUsuario = Guid.NewGuid();
+            var workspaceAlheio = Guid.NewGuid();
+            var userId = Guid.NewGuid();
+            var workspaceStore = new FakeIdentityWorkspaceStore();
+            workspaceStore.Memberships[(workspaceDoUsuario, userId)] = WorkspaceRole.Owner;
+            var currentUser = new FakeCurrentUser { UserId = userId };
+            var filter = new RequireWorkspaceRoleFilter(new[] { WorkspaceRole.FiscalAdmin, WorkspaceRole.Owner }, currentUser, workspaceStore, NullLogger<RequireWorkspaceRoleFilter>.Instance);
+
+            // Usuário troca o workspaceId na URL para o de outra pessoa.
+            var result = await RunFilterAsync(filter, workspaceAlheio, userId, currentUser);
+
+            Assert.IsType<NotFoundResult>(result);
+        }
+
+        [Fact]
+        public async Task RequireWorkspaceRole_membership_de_outro_usuario_no_mesmo_workspace_retorna_404()
+        {
+            var workspaceId = Guid.NewGuid();
+            var donoDoWorkspace = Guid.NewGuid();
+            var intruso = Guid.NewGuid();
+            var workspaceStore = new FakeIdentityWorkspaceStore();
+            workspaceStore.Memberships[(workspaceId, donoDoWorkspace)] = WorkspaceRole.Owner;
+            var currentUser = new FakeCurrentUser { UserId = intruso };
+            var filter = new RequireWorkspaceRoleFilter(new[] { WorkspaceRole.Owner }, currentUser, workspaceStore, NullLogger<RequireWorkspaceRoleFilter>.Instance);
+
+            var result = await RunFilterAsync(filter, workspaceId, intruso, currentUser);
+
+            Assert.IsType<NotFoundResult>(result);
+        }
+
+        [Fact]
+        public async Task RequireWorkspaceRole_sem_identidade_resolvida_retorna_404_e_nao_consulta_o_store()
+        {
+            var workspaceId = Guid.NewGuid();
+            var workspaceStore = new FakeIdentityWorkspaceStore();
+            workspaceStore.Memberships[(workspaceId, Guid.NewGuid())] = WorkspaceRole.Owner;
+            var currentUser = new FakeCurrentUser { UserId = null }; // fail-closed do incidente #408
+            var filter = new RequireWorkspaceRoleFilter(new[] { WorkspaceRole.Owner }, currentUser, workspaceStore, NullLogger<RequireWorkspaceRoleFilter>.Instance);
+
+            var result = await RunFilterAsync(filter, workspaceId, Guid.Empty, currentUser);
+
+            Assert.IsType<NotFoundResult>(result);
+        }
+
         // --- Listagem (issue #198 do front) ---
 
         [Fact]
