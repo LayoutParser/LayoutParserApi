@@ -24,7 +24,7 @@ using XslSynth.Synthesis;
 //                              → S2 (smoke): viabilidade de extração/segmentação do PDF (B5 P-2)
 //   dotnet run -- --mode=metrics-batch [--dataset <jsonl>] [--model <nome>] [--fewshot-k <n>] [--limit <n>]
 //                                      [--run-dir <dir>] [--run-id <id>] [--instances <dir>]
-//                                      [--nfe-xsd <xsd>] [--dry-run]
+//                                      [--nfe-xsd <xsd>] [--dry-run] [--no-refine]
 //                              → job de métricas de IA em lote (item 1 do plano de produção):
 //                                RAG (TF-IDF) → Ollama → validação estrutural → Serilog Source=AiMetrics
 //                                + publica o RUN DIR do Job 2 (manifest.json + candidates/*.xml)
@@ -806,6 +806,9 @@ async Task<int> RunMetricsBatchAsync()
     var nfeXsd = FindArgAfter("--nfe-xsd") ?? Path.Combine(claudeTmp, "servidor", "layoutparser",
         "xsd", "PL_010b_NT2025_002_v1.30", "nfe_v4.00.xsd");
     var dryRun = args.Contains("--dry-run");
+    // #438: por padrão a saída do LLM passa pelo refino determinístico por exemplos (casca + regra
+    // demonstrada). --no-refine reproduz a medição "antes" (saída crua do modelo).
+    var refine = !args.Contains("--no-refine");
 
     // Log compartilhado com a API quando o repo é encontrado (mesmo arquivo que o
     // UnifiedLogReaderService já lê) — senão degrada para uma pasta Logs local ao lado do exe.
@@ -825,7 +828,7 @@ async Task<int> RunMetricsBatchAsync()
 
     var opts = new MetricsBatchOptions(datasetPath, model, fewShotK, limit, logDir, "layoutparserapi.log",
         RunDirectory: runDir, RunId: runId, InstancesDirectory: instancesDir,
-        NfeXsdPath: File.Exists(nfeXsd) ? nfeXsd : null, DryRun: dryRun);
+        NfeXsdPath: File.Exists(nfeXsd) ? nfeXsd : null, DryRun: dryRun, RefineWithExamples: refine);
     return await MetricsBatchRunner.RunAsync(opts, Log);
 }
 

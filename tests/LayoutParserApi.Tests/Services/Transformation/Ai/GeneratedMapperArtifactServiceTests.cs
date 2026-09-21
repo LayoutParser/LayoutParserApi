@@ -98,24 +98,33 @@ namespace LayoutParserApi.Tests.Services.Transformation.Ai
             }
         }
 
-        private static (GeneratedMapperArtifactService Service, FakeStore Store, FakeCachedMapperService Mappers, ServiceProvider Provider) Build()
+        private static (GeneratedMapperArtifactService Service, FakeStore Store, FakeCachedMapperService Mappers, ServiceProvider Provider) Build(
+            string? mapperXml = null, string? mapperGuid = null, ICachedLayoutService? layoutService = null)
         {
             var mapperService = new FakeCachedMapperService
             {
-                Mappers = { new Mapper { MapperGuid = MapperGuid, Name = "MapTeste438", DecryptedContent = MapperVoXml } }
+                Mappers =
+                {
+                    new Mapper
+                    {
+                        MapperGuid = mapperGuid ?? MapperGuid, Name = "MapTeste438",
+                        DecryptedContent = mapperXml ?? MapperVoXml, TargetLayoutGuid = "LAY_OUT",
+                    }
+                }
             };
             var store = new FakeStore();
 
             var services = new ServiceCollection();
             services.AddSingleton<ICachedMapperService>(mapperService);
             services.AddSingleton<IGeneratedMapperArtifactStore>(store);
+            if (layoutService is not null) services.AddSingleton(layoutService);
             services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));
             var provider = services.BuildServiceProvider();
 
             var ollamaOptions = Options.Create(new OllamaOptions { Url = "http://127.0.0.1:1", Model = "n/a" });
             var service = new GeneratedMapperArtifactService(
                 mapperService, store, provider.GetRequiredService<IServiceScopeFactory>(),
-                NullLogger<GeneratedMapperArtifactService>.Instance, ollamaOptions);
+                NullLogger<GeneratedMapperArtifactService>.Instance, ollamaOptions, layoutService);
 
             return (service, store, mapperService, provider);
         }
@@ -230,6 +239,164 @@ namespace LayoutParserApi.Tests.Services.Transformation.Ai
             {
                 var result = await service.GetOrTriggerAsync("MAP_NAO_EXISTE", "corr-5", CancellationToken.None);
                 Assert.Null(result);
+            }
+            finally
+            {
+                await provider.DisposeAsync();
+            }
+        }
+
+        // ── Casca do documento (issue #438) ─────────────────────────────────────────────
+
+        private const string ShellMapperGuid = "MAP_TESTE_CASCA_438";
+
+        // Formato REAL (RealMapperParser). `versao` vem como TAG_: só o LayoutVO de destino diz que é atributo.
+        private const string ShellMapperXml = """
+            <MapperVO>
+              <MapperGuid>MAP_TESTE_CASCA_438</MapperGuid>
+              <Name>Inutilizacao</Name>
+              <InputLayoutGuid>LAY_IN</InputLayoutGuid>
+              <TargetLayoutGuid>LAY_OUT</TargetLayoutGuid>
+              <Rules>
+                <Rule><Name>Rule_xmlns</Name><Sequence>1</Sequence><TargetElementGuid>ATT_1</TargetElementGuid>
+                  <ContentValue>%beginRuleContent;
+            T.inutNFe/xmlns = 'http://www.portalfiscal.inf.br/nfe';
+            %endRuleContent;</ContentValue></Rule>
+                <Rule><Name>Rule_versao</Name><Sequence>2</Sequence><TargetElementGuid>TAG_2</TargetElementGuid>
+                  <ContentValue>%beginRuleContent;
+            T.inutNFe/versao = '4.00';
+            %endRuleContent;</ContentValue></Rule>
+                <Rule><Name>Rule_xJust</Name><Sequence>3</Sequence><TargetElementGuid>TAG_3</TargetElementGuid>
+                  <ContentValue>%beginRuleContent;
+            T.inutNFe/infInut/xJust = Concat('Justificativa Inutilizacao:', Substring(I.ROOT/Header/xJust, 0, 227));
+            %endRuleContent;</ContentValue></Rule>
+              </Rules>
+            </MapperVO>
+            """;
+
+        private const string ShellTargetLayoutXml = """
+            <LayoutVO xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="XmlLayoutVO">
+              <LayoutGuid>LAY_OUT</LayoutGuid>
+              <Elements>
+                <Element xsi:type="GroupTagElementVO">
+                  <ElementGuid>GRT_1</ElementGuid><Name>inutNFe</Name>
+                  <Elements>
+                    <Element xsi:type="AttributeElementVO"><ElementGuid>ATT_1</ElementGuid><Name>xmlns</Name></Element>
+                    <Element xsi:type="AttributeElementVO"><ElementGuid>TAG_2</ElementGuid><Name>versao</Name></Element>
+                    <Element xsi:type="GroupTagElementVO"><ElementGuid>GRT_9</ElementGuid><Name>infInut</Name>
+                      <Elements><Element xsi:type="TagElementVO"><ElementGuid>TAG_3</ElementGuid><Name>xJust</Name><Elements/></Element></Elements>
+                    </Element>
+                  </Elements>
+                </Element>
+              </Elements>
+            </LayoutVO>
+            """;
+
+        private sealed class FakeLayoutService : ICachedLayoutService
+        {
+            public string? Xml { get; init; }
+            public bool Throw { get; init; }
+            public Task<LayoutParserApi.Models.Database.LayoutRecord?> GetLayoutByGuidAsync(string layoutGuid)
+            {
+                if (Throw) throw new InvalidOperationException("catalogo de layouts fora do ar");
+                return Task.FromResult<LayoutParserApi.Models.Database.LayoutRecord?>(
+                    Xml is null ? null : new LayoutParserApi.Models.Database.LayoutRecord { Name = "Destino", DecryptedContent = Xml });
+            }
+            public Task<LayoutParserApi.Models.Database.LayoutSearchResponse> SearchLayoutsAsync(LayoutParserApi.Models.Database.LayoutSearchRequest request) => throw new NotSupportedException();
+            public Task<LayoutParserApi.Models.Database.LayoutRecord?> GetLayoutByIdAsync(int id) => throw new NotSupportedException();
+            public Task RefreshCacheFromDatabaseAsync() => Task.CompletedTask;
+            public Task ClearCacheAsync() => Task.CompletedTask;
+            public ILayoutDatabaseService GetLayoutDatabaseService() => throw new NotSupportedException();
+        }
+
+        private static async Task<GeneratedMapperArtifactRecord> GenerateAsync(ICachedLayoutService? layout)
+        {
+            var (service, store, _, provider) = Build(ShellMapperXml, ShellMapperGuid, layout);
+            try
+            {
+                await service.GetOrTriggerAsync(ShellMapperGuid, "corr-shell", CancellationToken.None);
+                Assert.True(await store.Completed.Task.WaitAsync(TimeSpan.FromSeconds(60)), "geração em background deveria concluir");
+                var record = await store.GetAsync(ShellMapperGuid, CancellationToken.None);
+                Assert.NotNull(record);
+                return record!;
+            }
+            finally
+            {
+                await provider.DisposeAsync();
+            }
+        }
+
+        [Fact]
+        public async Task Geracao_ComLayoutDeDestino_EmiteNamespaceEAtributo_NaoElementos()
+        {
+            var record = await GenerateAsync(new FakeLayoutService { Xml = ShellTargetLayoutXml });
+
+            var xslt = System.Xml.Linq.XDocument.Parse(record.Content!);
+            System.Xml.Linq.XNamespace nfe = "http://www.portalfiscal.inf.br/nfe";
+            var root = xslt.Descendants(nfe + "inutNFe").Single();
+            Assert.Empty(xslt.Descendants().Where(e => e.Name.LocalName is "xmlns" or "versao"));
+            Assert.Single(root.Elements(System.Xml.Linq.XNamespace.Get("http://www.w3.org/1999/XSL/Transform") + "attribute"),
+                a => (string?)a.Attribute("name") == "versao");
+            Assert.Contains("concat('Justificativa Inutilizacao:',substring(ROOT/Header/xJust,1,227))", record.Content);
+
+            var coverage = System.Text.Json.JsonDocument.Parse(record.CoverageJson!).RootElement;
+            Assert.True(coverage.GetProperty("compiles").GetBoolean());
+            Assert.Equal(GeneratedMapperArtifactService.GeneratorVersion, coverage.GetProperty("generatorVersion").GetString());
+            Assert.Equal("inutNFe", coverage.GetProperty("shell").GetProperty("rootElement").GetString());
+            Assert.Equal("http://www.portalfiscal.inf.br/nfe", coverage.GetProperty("shell").GetProperty("namespace").GetString());
+            Assert.Equal(0, coverage.GetProperty("limitations").GetArrayLength());
+        }
+
+        [Fact]
+        public async Task Geracao_SemServicoDeLayout_Degrada_VersaoFicaElementoENamespaceSai()
+        {
+            // Sem o LayoutVO nada distingue `versao` (TAG_) de elemento: limite honesto, não inventa.
+            var record = await GenerateAsync(layout: null);
+
+            var xslt = System.Xml.Linq.XDocument.Parse(record.Content!);
+            System.Xml.Linq.XNamespace nfe = "http://www.portalfiscal.inf.br/nfe";
+            Assert.Single(xslt.Descendants(nfe + "inutNFe"));
+            Assert.Empty(xslt.Descendants().Where(e => e.Name.LocalName == "xmlns"));
+            Assert.Single(xslt.Descendants().Where(e => e.Name.LocalName == "versao"));
+            Assert.True(System.Text.Json.JsonDocument.Parse(record.CoverageJson!).RootElement.GetProperty("compiles").GetBoolean());
+        }
+
+        [Fact]
+        public async Task Geracao_LayoutIndisponivelOuComFalha_NaoDerrubaAGeracao()
+        {
+            var comFalha = await GenerateAsync(new FakeLayoutService { Throw = true });
+            var ausente = await GenerateAsync(new FakeLayoutService { Xml = null });
+
+            Assert.Equal(GeneratedMapperArtifactStatus.Ready, comFalha.Status);
+            Assert.Equal(GeneratedMapperArtifactStatus.Ready, ausente.Status);
+        }
+
+        [Fact]
+        public async Task Hash_IncluiVersaoDoGerador_ArtefatoLegadoViraStale()
+        {
+            var (service, store, _, provider) = Build(ShellMapperXml, ShellMapperGuid);
+            try
+            {
+                var mapperVo = new XslSynth.Core.RealMapperParser().Parse(System.Xml.Linq.XDocument.Parse(ShellMapperXml));
+
+                // Hash como o gerador ANTERIOR (sem versão) calculava — é o que os artefatos persistidos têm.
+                var legacy = new System.Text.StringBuilder();
+                foreach (var rule in mapperVo.Rules.OrderBy(r => r.Sequence).ThenBy(r => r.Name, StringComparer.Ordinal))
+                    legacy.Append("R|").Append(rule.Name).Append('|').Append(rule.TargetPath).Append('|').Append(rule.ContentValue).Append('\n');
+                var legacyHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(legacy.ToString())));
+
+                Assert.NotEqual(legacyHash, GeneratedMapperArtifactService.ComputeMapperVoHash(mapperVo));
+
+                store.Seed(new GeneratedMapperArtifactRecord(
+                    ShellMapperGuid, GeneratedMapperArtifactStatus.Ready, "<xsl:stylesheet/>", "{}",
+                    GeneratedMapperArtifactService.ValidationBasisDeclaredDsl, legacyHash, "corr-0",
+                    DateTimeOffset.UtcNow, DateTimeOffset.UtcNow));
+
+                var result = await service.GetOrTriggerAsync(ShellMapperGuid, "corr-legado", CancellationToken.None);
+
+                Assert.Equal(GeneratedMapperArtifactStatus.Generating, result!.Status);
+                Assert.Equal(1, store.BeginCalls);
+                Assert.True(await store.Completed.Task.WaitAsync(TimeSpan.FromSeconds(60)));
             }
             finally
             {
