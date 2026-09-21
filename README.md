@@ -740,7 +740,7 @@ endpoint is live on the server: check the latest deploy first. This README recor
 
 ### 8.5 `GET .../mappings/{mapperGuid}/generated-transformation` — candidato TCL/XSLT gerado automaticamente / auto-generated TCL/XSLT candidate
 
-**🇧🇷** Issue #438 (o código cita o ADR `adr-geracao-automatica-gabarito-sysmiddle.md`, que **não está** em `docs/architecture/` neste momento).
+**🇧🇷** Issue #438. Decisão de arquitetura: [`docs/architecture/adr-geracao-automatica-gabarito-sysmiddle.md`](docs/architecture/adr-geracao-automatica-gabarito-sysmiddle.md) (geração automática e gabarito = o DSL declarado do Sysmiddle; a seção "Estado da implementação" do ADR lista os desvios da implementação).
 Devolve o candidato TCL/XSL/XSLT sintetizado a partir do mapeador Sysmiddle, para que operações vejam o
 gerado sem rodar o CLI `ai/XslSynth` à mão. Rota de **leitura**: [`Controllers/GeneratedMapperArtifactController.cs`](Controllers/GeneratedMapperArtifactController.cs)
 (o segmento de rota se chama `{mappingId}` no código; é o GUID do mapeador em `tbMapper`).
@@ -781,7 +781,9 @@ destino tem `xmlns` e nenhuma regra constante o define, entra uma linha em `limi
 da DSL, `Concat`, `Substring` (base 0 → `substring` base 1) e `GetLength` viram XPath; **`Trim`, `Replace` e
 demais funções não são traduzidas** (a regra fica de fora, sem aproximação).
 
-**🇺🇸** Issue #438. Returns the TCL/XSL/XSLT candidate synthesized from a Sysmiddle mapper. Read-only
+**🇺🇸** Issue #438. Architecture decision: [`docs/architecture/adr-geracao-automatica-gabarito-sysmiddle.md`](docs/architecture/adr-geracao-automatica-gabarito-sysmiddle.md)
+(automatic generation; the reference oracle is Sysmiddle's *declared* DSL; the ADR's "Estado da implementação" section lists the implementation deviations).
+Returns the TCL/XSL/XSLT candidate synthesized from a Sysmiddle mapper. Read-only
 route, any member role, fail-closed `404`. The **GET itself triggers lazy background generation** when
 the candidate is missing or stale and answers `generating`; poll until `ready`. `stale` is computed at
 read time only (mapper DSL hash or `generatorVersion` changed) and is never returned as a final value.
