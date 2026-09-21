@@ -86,6 +86,8 @@ namespace LayoutParserApi.Services.Database
                 await SqlTestSuiteStore.EnsureSchemaAsync(connection, cancellationToken);
                 // ✅ Issue #422: tbMappingRuleAnswer — autossuficiente (sem FK; vínculo validado no controller).
                 await SqlMappingRuleAnswerStore.EnsureSchemaAsync(connection, cancellationToken);
+                // ✅ Issue #366: tbLpFiscalAnalysis/tbLpFiscalAnalysisFile — FK só entre si (cascade).
+                await SqlFiscalAnalysisStore.EnsureSchemaAsync(connection, cancellationToken);
 
                 _logger.LogInformation("Schema fiscal e de identidade (IdentityDatabase:*) inicializado com sucesso no startup, em ordem de dependência de FK.");
             }
