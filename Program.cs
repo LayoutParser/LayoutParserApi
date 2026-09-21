@@ -525,6 +525,8 @@ try
     // ✅ Issue #345 (ADR docs/architecture/adr-contrato-correcao-guiada-humano-2026-09-08.md):
     // contexto de documento + reporte de correção humana — mesmo banco/padrão ADO.NET.
     builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.IFieldCorrectionStore, LayoutParserApi.Services.Database.SqlFieldCorrectionStore>();
+    // ✅ Issue #422: resposta livre do revisor às perguntas em aberto da IA — mesmo banco/padrão ADO.NET.
+    builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.IMappingRuleAnswerStore, LayoutParserApi.Services.Database.SqlMappingRuleAnswerStore>();
     // ✅ Issue #438 (ADR docs/architecture/adr-geracao-automatica-gabarito-sysmiddle.md §5): geração
     // automática lazy de TCL/XSL/XSLT para um mapper Sysmiddle — mesmo banco/padrão ADO.NET, tabela
     // autossuficiente (sem FK). Reaproveita o loop determinístico de ai/XslSynth.Core in-process.
