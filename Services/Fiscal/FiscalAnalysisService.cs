@@ -24,12 +24,22 @@ namespace LayoutParserApi.Services.Fiscal
     /// </remarks>
     public sealed class FiscalAnalysisService : IFiscalAnalysisService
     {
+        // Limites das colunas de tbLpFiscalAnalysis/tbLpFiscalAnalysisFile (ver DDL em SqlFiscalAnalysisStore):
+        // valor maior estoura SqlException 2628 e a análise ficaria sem histórico.
+        private const int MaxLayoutGuidLength = 64;
+        private const int MaxLayoutNameLength = 256;
+        private const int MaxDetectedTypeLength = 32;
+        private const int MaxOriginalFileNameLength = 260;
+        private const int MaxStoragePathLength = 512;
+
         private const int PurgeBatchSize = 100;
         private const int MaxPurgeBatchesPerCycle = 50;
 
         // Diretório recém-criado pode pertencer a um registro em andamento (disco grava antes do SQL):
         // a varredura de órfãos só toca diretórios mais velhos que isto.
         private static readonly TimeSpan OrphanGracePeriod = TimeSpan.FromHours(1);
+
+        private static readonly Regex ValidLayoutGuid = new(@"^[A-Za-z0-9_{}.-]+$", RegexOptions.Compiled);
 
         private static readonly Regex InvalidFileNameChars = new(@"[^a-zA-Z0-9._-]", RegexOptions.Compiled);
 
@@ -113,6 +123,11 @@ namespace LayoutParserApi.Services.Fiscal
                 var fileId = Guid.NewGuid();
                 var safeName = SanitizeFileName(file.OriginalFileName);
                 var relativePath = Path.Combine(registration.WorkspaceId.ToString(), analysisId.ToString(), $"{fileId}_{safeName}");
+                // Falha cedo (antes de gravar disco) em vez de estourar no SQL: o caminho relativo é
+                // guid/guid/guid_nome (~230 chars) e o nome já é sanitizado, então isto é só uma guarda.
+                if (relativePath.Length > MaxStoragePathLength || safeName.Length > MaxOriginalFileNameLength)
+                    throw new InvalidOperationException(
+                        $"Caminho/nome do arquivo do histórico excede o limite da coluna ({relativePath.Length}/{MaxStoragePathLength}).");
                 var absolutePath = Path.Combine(_rootPath, relativePath);
 
                 if (!SafePathResolver.IsInsideBase(_rootPath, absolutePath))
@@ -126,11 +141,12 @@ namespace LayoutParserApi.Services.Fiscal
                     ComputeSha256(file.Content), null, relativePath));
             }
 
+            var layoutGuid = NormalizeLayoutGuid(registration.LayoutGuid);
             var analysis = new FiscalAnalysisRecord(
                 analysisId, registration.WorkspaceId, registration.OwnerUserId, now,
                 now.AddDays(_options.EffectiveRetentionDays),
                 registration.Source, registration.LayoutMode,
-                Truncate(registration.LayoutGuid, 64), Truncate(registration.LayoutName, 256), Truncate(registration.DetectedType, 32));
+                layoutGuid, Truncate(registration.LayoutName, MaxLayoutNameLength), Truncate(registration.DetectedType, MaxDetectedTypeLength));
 
             await _store.CreateAsync(analysis, records, cancellationToken);
 
@@ -282,8 +298,30 @@ namespace LayoutParserApi.Services.Fiscal
 
         private static string ComputeSha256(byte[] content) => Convert.ToHexString(SHA256.HashData(content)).ToLowerInvariant();
 
+        /// <summary>Trunca no limite da coluna sem partir um par substituto UTF-16 ao meio.</summary>
         private static string? Truncate(string? value, int max)
-            => value is { Length: > 0 } && value.Length > max ? value[..max] : value;
+        {
+            if (value is not { Length: > 0 } || value.Length <= max)
+                return value;
+            var cut = char.IsHighSurrogate(value[max - 1]) ? max - 1 : max;
+            return value[..cut];
+        }
+
+        /// <summary>
+        /// LayoutGuid fora do padrão (vazio, caracteres estranhos ou acima do limite) não trunca —
+        /// truncar geraria identificador falso. Vira null e o histórico segue com o LayoutName.
+        /// </summary>
+        private string? NormalizeLayoutGuid(string? layoutGuid)
+        {
+            if (string.IsNullOrWhiteSpace(layoutGuid))
+                return null;
+            var trimmed = layoutGuid.Trim();
+            if (trimmed.Length <= MaxLayoutGuidLength && ValidLayoutGuid.IsMatch(trimmed))
+                return trimmed;
+            _logger.LogWarning(
+                "LayoutGuid inválido ignorado no histórico de análise (tamanho={Length}, máx {Max}).", trimmed.Length, MaxLayoutGuidLength);
+            return null;
+        }
 
         private static string SanitizeFileName(string originalFileName)
         {

@@ -62,6 +62,53 @@ namespace LayoutParserApi.Tests.Fiscal
         // ───────────────────────────── registro ─────────────────────────────
 
         [Fact]
+        public async Task Registro_com_valores_normais_nao_altera_nada()
+        {
+            var svc = CriarServico();
+            var id = await svc.RegisterAsync(Registro(_workspace, _userA, (FiscalAnalysisFileRole.Document, "doc.txt", "x")) with
+            { LayoutGuid = "0b1c2d3e-0000-4000-8000-123456789abc" }, TimeSpan.FromSeconds(5));
+            Assert.NotNull(id);
+            Assert.Equal("0b1c2d3e-0000-4000-8000-123456789abc", _store.Analyses.Single().LayoutGuid);
+            Assert.Equal("Layout X", _store.Analyses.Single().LayoutName);
+            Assert.Equal("doc.txt", _store.Files.Single().OriginalFileName);
+        }
+
+        [Fact]
+        public async Task Nome_de_arquivo_de_300_chars_e_truncado_preservando_extensao()
+        {
+            var svc = CriarServico();
+            var id = await svc.RegisterAsync(Registro(_workspace, _userA,
+                (FiscalAnalysisFileRole.Document, new string('a', 300) + ".txt", "x")), TimeSpan.FromSeconds(5));
+            Assert.NotNull(id);
+            var nome = _store.Files.Single().OriginalFileName;
+            Assert.True(nome.Length <= 260);
+            Assert.EndsWith(".txt", nome);
+        }
+
+        [Fact]
+        public async Task LayoutName_de_300_chars_e_truncado_em_256()
+        {
+            var svc = CriarServico();
+            var id = await svc.RegisterAsync(Registro(_workspace, _userA, (FiscalAnalysisFileRole.Document, "d.txt", "x")) with
+            { LayoutName = new string('L', 300) }, TimeSpan.FromSeconds(5));
+            Assert.NotNull(id);
+            Assert.Equal(256, _store.Analyses.Single().LayoutName!.Length);
+        }
+
+        [Theory]
+        [InlineData("<script>alert(1)</script>")]
+        [InlineData("guid com espaco")]
+        [InlineData("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")]
+        public async Task LayoutGuid_fora_do_padrao_vira_null_e_analise_registra(string guid)
+        {
+            var svc = CriarServico();
+            var id = await svc.RegisterAsync(Registro(_workspace, _userA, (FiscalAnalysisFileRole.Document, "d.txt", "x")) with
+            { LayoutGuid = guid }, TimeSpan.FromSeconds(5));
+            Assert.NotNull(id);
+            Assert.Null(_store.Analyses.Single().LayoutGuid);
+        }
+
+        [Fact]
         public async Task Registro_com_N_arquivos_grava_disco_e_sql_com_hash()
         {
             var svc = CriarServico();
@@ -359,6 +406,10 @@ namespace LayoutParserApi.Tests.Fiscal
             {
                 if (BlockOnCreate) await Task.Delay(Timeout.Infinite, ct);
                 if (ThrowOnCreate) throw new InvalidOperationException("SQL fora do ar");
+                // Espelha os limites das colunas do DDL real: sem a validação no serviço, o teste falha.
+                if ((analysis.LayoutGuid?.Length ?? 0) > 64 || (analysis.LayoutName?.Length ?? 0) > 256 || (analysis.DetectedType?.Length ?? 0) > 32
+                    || files.Any(f => f.OriginalFileName.Length > 260 || f.StoragePath.Length > 512))
+                    throw new InvalidOperationException("Truncamento de coluna (SqlException 2628)");
                 Analyses.Add(analysis);
                 Files.AddRange(files);
             }
