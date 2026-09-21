@@ -56,7 +56,18 @@ namespace LayoutParserApi.Controllers
         /// <remarks>
         /// RBAC: owner/fiscal_admin/mapper/reviewer. <c>400</c> texto vazio ou &gt; 4000 caracteres;
         /// <c>404</c> sem identidade, não-membro, draft de outro workspace, regra ou pergunta inexistente.
+        /// Corpo: <c>{ "answer": "texto" }</c> (aparado com Trim antes de comparar/gravar).
         /// </remarks>
+        /// <param name="workspaceId">Workspace da rota (membership conferida pelo filtro de RBAC).</param>
+        /// <param name="draftId">Draft dono da regra.</param>
+        /// <param name="ruleId">Regra que contém a pergunta.</param>
+        /// <param name="questionIndex">Índice 0-based da pergunta na lista <c>OpenQuestions</c> da regra.</param>
+        /// <param name="request">Corpo com o campo <c>answer</c>.</param>
+        /// <param name="cancellationToken">Token de cancelamento.</param>
+        /// <response code="200">Resposta vigente: <c>answerId</c>, <c>draftId</c>, <c>ruleId</c>, <c>questionIndex</c>, <c>question</c> (snapshot do texto da pergunta), <c>answer</c>, <c>answeredByUserId</c>, <c>answeredByName</c>, <c>answeredAt</c>, <c>version</c>. Reenvio idêntico devolve a versão existente; texto diferente cria a versão N+1.</response>
+        /// <response code="400">Texto vazio ou acima de 4000 caracteres.</response>
+        /// <response code="404">Sem identidade, não-membro, draft de outro workspace, regra ou <c>questionIndex</c> inexistente.</response>
+        /// <response code="503">Falha ao gravar (detalhe só no log).</response>
         [HttpPut("mapping-drafts/{draftId:guid}/rules/{ruleId:guid}/questions/{questionIndex:int}/answer")]
         [RequireWorkspaceRole(WorkspaceRole.Owner, WorkspaceRole.FiscalAdmin, WorkspaceRole.Mapper, WorkspaceRole.Reviewer)]
         public async Task<IActionResult> SaveAnswer(
@@ -103,12 +114,27 @@ namespace LayoutParserApi.Controllers
         /// Lê as respostas de um draft (todas as regras). Só a versão mais recente por pergunta, salvo
         /// <c>includeHistory=true</c>. Qualquer papel de membro.
         /// </summary>
+        /// <param name="workspaceId">Workspace da rota (membership conferida pelo filtro de RBAC).</param>
+        /// <param name="draftId">Draft cujas respostas serão listadas.</param>
+        /// <param name="includeHistory">Se <c>true</c>, devolve todas as versões (append-only) de cada pergunta, não só a mais recente.</param>
+        /// <param name="cancellationToken">Token de cancelamento.</param>
+        /// <response code="200"><c>{ draftId, ruleId, includeHistory, items[] }</c> (<c>ruleId</c> nulo neste endpoint; itens no formato do <c>PUT</c>).</response>
+        /// <response code="404">Sem identidade, não-membro ou draft de outro workspace.</response>
+        /// <response code="503">Falha ao consultar (detalhe só no log).</response>
         [HttpGet("mapping-drafts/{draftId:guid}/question-answers")]
         [RequireWorkspaceRole(WorkspaceRole.Owner, WorkspaceRole.FiscalAdmin, WorkspaceRole.Mapper, WorkspaceRole.Reviewer, WorkspaceRole.Operator, WorkspaceRole.Viewer)]
         public Task<IActionResult> ListByDraft(Guid workspaceId, Guid draftId, [FromQuery] bool includeHistory = false, CancellationToken cancellationToken = default)
             => ListAsync(workspaceId, draftId, null, includeHistory, cancellationToken);
 
         /// <summary>Lê as respostas de uma regra específica. Mesmo contrato de <see cref="ListByDraft"/>.</summary>
+        /// <param name="workspaceId">Workspace da rota (membership conferida pelo filtro de RBAC).</param>
+        /// <param name="draftId">Draft dono da regra.</param>
+        /// <param name="ruleId">Regra cujas respostas serão listadas.</param>
+        /// <param name="includeHistory">Se <c>true</c>, devolve todas as versões de cada pergunta.</param>
+        /// <param name="cancellationToken">Token de cancelamento.</param>
+        /// <response code="200"><c>{ draftId, ruleId, includeHistory, items[] }</c>.</response>
+        /// <response code="404">Sem identidade, não-membro, draft de outro workspace ou regra inexistente no draft.</response>
+        /// <response code="503">Falha ao consultar (detalhe só no log).</response>
         [HttpGet("mapping-drafts/{draftId:guid}/rules/{ruleId:guid}/question-answers")]
         [RequireWorkspaceRole(WorkspaceRole.Owner, WorkspaceRole.FiscalAdmin, WorkspaceRole.Mapper, WorkspaceRole.Reviewer, WorkspaceRole.Operator, WorkspaceRole.Viewer)]
         public Task<IActionResult> ListByRule(Guid workspaceId, Guid draftId, Guid ruleId, [FromQuery] bool includeHistory = false, CancellationToken cancellationToken = default)
