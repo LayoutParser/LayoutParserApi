@@ -37,17 +37,24 @@ namespace LayoutParserApi.Services.Database
             _connectionString = $"Server={server};Database={database};User Id={userId};Password={password};TrustServerCertificate=True;";
         }
 
-        public async Task<bool> RevisionBelongsToPackageAsync(Guid packageId, Guid revisionId, CancellationToken cancellationToken)
+        public async Task<bool> RevisionBelongsToWorkspacePackageAsync(Guid workspaceId, Guid packageId, Guid revisionId, CancellationToken cancellationToken)
         {
             using var connection = new SqlConnection(_connectionString);
             await connection.OpenAsync(cancellationToken);
             await EnsureSchemaAsync(connection, cancellationToken);
 
+            // ✅ Isolamento por workspace (LayoutParserReact#196): a revisão precisa ser do pacote E o
+            // pacote precisa ser do workspace da rota — o JOIN com tbFiscalMappingPackage compara o
+            // WorkspaceId do pacote, nunca confiando só nos GUIDs enviados pelo cliente.
             using var command = new SqlCommand(
-                "SELECT 1 FROM dbo.tbFiscalMappingPackageRevision WHERE RevisionId = @RevisionId AND PackageId = @PackageId;",
+                @"SELECT 1
+                  FROM dbo.tbFiscalMappingPackageRevision r
+                  JOIN dbo.tbFiscalMappingPackage p ON p.PackageId = r.PackageId
+                  WHERE r.RevisionId = @RevisionId AND r.PackageId = @PackageId AND p.WorkspaceId = @WorkspaceId;",
                 connection);
             command.Parameters.AddWithValue("@RevisionId", revisionId);
             command.Parameters.AddWithValue("@PackageId", packageId);
+            command.Parameters.AddWithValue("@WorkspaceId", workspaceId);
             return await command.ExecuteScalarAsync(cancellationToken) != null;
         }
 

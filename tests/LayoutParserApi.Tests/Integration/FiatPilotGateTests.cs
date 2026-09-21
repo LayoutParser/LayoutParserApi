@@ -129,7 +129,7 @@ namespace LayoutParserApi.Tests.Integration
             public Dictionary<Guid, MappingDraftDetail> Drafts { get; } = new();
             public Dictionary<(Guid DraftId, Guid RuleId), MappingDraftRuleDetail> Rules { get; } = new();
 
-            public Task<bool> RevisionBelongsToPackageAsync(Guid packageId, Guid revisionId, CancellationToken cancellationToken) => Task.FromResult(true);
+            public Task<bool> RevisionBelongsToWorkspacePackageAsync(Guid workspaceId, Guid packageId, Guid revisionId, CancellationToken cancellationToken) => Task.FromResult(true);
             public Task<(IReadOnlyList<MappingDraftSummary> Items, int TotalCount)> ListByWorkspaceAsync(
                 Guid workspaceId, int page, int pageSize, string? engine, CancellationToken cancellationToken)
                 => throw new NotSupportedException("Não exercitado por este fake — cobertos em MappingDraftsControllerListTests.");
