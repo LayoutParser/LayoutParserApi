@@ -2,7 +2,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
 {
     /// <summary>
     /// Resposta do <c>GET .../generated-transformation</c> (issue #438). <see cref="ValidationBasis"/>
-    /// é <c>"declared_dsl"</c> quando <see cref="Status"/> é <c>ready</c>/<c>stale</c> — NUNCA
+    /// é <c>"declared_dsl"</c> quando <see cref="Status"/> é <c>ready</c> (<c>stale</c> nunca é devolvido: vira <c>generating</c> com regeneração disparada) — NUNCA
     /// <c>"live_execution"</c> (o runner Sysmiddle in-process trava na licença do host FiatMQ, ver
     /// ADR §2): a cobertura reportada é contra a regra DECLARADA no mapeador (<c>MapperVo</c>/DSL
     /// decifrado via <see cref="XslSynth.Contracts.Core.RealMapperParser"/>), não contra execução

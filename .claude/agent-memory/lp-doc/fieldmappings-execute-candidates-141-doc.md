@@ -36,7 +36,13 @@ Nova subseção `fieldMappings` em `execute-candidates`, bilíngue, com:
 seção própria no README** — só é citado de passagem no campo `segmentMappings` da tabela de
 `pathwayDiagnostics`/diagnóstico. Ver [[sectionmappings-readme-doc-issue138]] para retomar.
 
-## Swagger — XML docs não chegam ao schema
+## Swagger — XML docs não chegam ao schema (OBSOLETO desde 2026-09-21)
+
+**Atualização:** em `develop` (2026-09-21) já existe `GenerateDocumentationFile` no `.csproj` e
+`IncludeXmlComments` em `Program.cs`, então XML docs dos controllers **aparecem** no Swagger. Ao
+documentar, cuidado com CS1573: se usar `<param>` em um método, documente TODOS os parâmetros.
+O ADR `adr-geracao-automatica-gabarito-sysmiddle.md` citado no código de #438 não existe em
+`docs/architecture/`. Texto histórico abaixo:
 
 Projeto **não tem `GenerateDocumentationFile`/`IncludeXmlComments` configurado** (nem no
 `.csproj` nem em `Program.cs`, só `AddSwaggerGen()` puro). Os XML docs cuidadosamente escritos em
