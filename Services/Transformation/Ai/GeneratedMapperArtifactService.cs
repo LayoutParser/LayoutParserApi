@@ -53,6 +53,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
         private readonly OllamaOptions _ollamaOptions;
         private readonly RealMapperParser _realParser = new();
         private readonly MapperExtractor _sampleExtractor = new();
+        private readonly GeneratedMapperGenerationLimiter _limiter;
 
         private static readonly JsonSerializerOptions JsonOpts = new()
         {
@@ -66,6 +67,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
             IServiceScopeFactory scopeFactory,
             ILogger<GeneratedMapperArtifactService> logger,
             IOptions<XmlAnalysis.OllamaOptions> ollamaOptions,
+            GeneratedMapperGenerationLimiter limiter,
             ICachedLayoutService? layoutService = null)
         {
             _layoutService = layoutService;
@@ -74,6 +76,7 @@ namespace LayoutParserApi.Services.Transformation.Ai
             _scopeFactory = scopeFactory;
             _logger = logger;
             _ollamaOptions = new OllamaOptions(ollamaOptions.Value.Url, ollamaOptions.Value.Model);
+            _limiter = limiter;
         }
 
         public async Task<GeneratedMapperArtifactResponse?> GetOrTriggerAsync(
@@ -171,7 +174,20 @@ namespace LayoutParserApi.Services.Transformation.Ai
 
                     var targetLayoutGuid = mapper.TargetLayoutGuidFromXml ?? mapper.TargetLayoutGuid ?? mapperVo.TargetLayoutGuid;
                     var layoutService = scope.ServiceProvider.GetService<ICachedLayoutService>() ?? _layoutService;
-                    var (content, coverageJson) = await SynthesizeAsync(mapperVo, scopedLogger, safeMapperGuid, layoutService, targetLayoutGuid);
+
+                    // Concorrência ÚNICA compartilhada com o job periódico (issue #473, ADR §3/§6):
+                    // só o trabalho pesado (Ollama/CPU) fica atrás do semáforo — resolução/parse já
+                    // aconteceram acima, fora dele.
+                    string content, coverageJson;
+                    await _limiter.WaitAsync(CancellationToken.None);
+                    try
+                    {
+                        (content, coverageJson) = await SynthesizeAsync(mapperVo, scopedLogger, safeMapperGuid, layoutService, targetLayoutGuid);
+                    }
+                    finally
+                    {
+                        _limiter.Release();
+                    }
                     var mapperVoHash = ComputeMapperVoHash(mapperVo);
 
                     await scopedStore.CompleteAsync(
