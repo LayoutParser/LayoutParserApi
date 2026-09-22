@@ -36,7 +36,7 @@ namespace LayoutParserApi.Tests.Controllers
             public Task<MappingDraftDetail?> GetDraftIfMemberAsync(Guid draftId, Guid userId, CancellationToken cancellationToken)
                 => Task.FromResult(Draft != null && Draft.DraftId == draftId && MemberUserId == userId ? Draft : null);
 
-            public Task<bool> RevisionBelongsToPackageAsync(Guid packageId, Guid revisionId, CancellationToken cancellationToken) => throw new NotSupportedException();
+            public Task<bool> RevisionBelongsToWorkspacePackageAsync(Guid workspaceId, Guid packageId, Guid revisionId, CancellationToken cancellationToken) => throw new NotSupportedException();
             public Task<(IReadOnlyList<MappingDraftSummary> Items, int TotalCount)> ListByWorkspaceAsync(Guid workspaceId, int page, int pageSize, string? engine, CancellationToken cancellationToken) => throw new NotSupportedException();
             public Task<IReadOnlyList<ArtifactFileRef>> GetArtifactFilesForRevisionAsync(Guid revisionId, CancellationToken cancellationToken) => throw new NotSupportedException();
             public Task<MappingDraftDetail> CreateDraftAsync(Guid workspaceId, Guid packageId, Guid revisionId, Guid createdByUserId, string engine, CancellationToken cancellationToken) => throw new NotSupportedException();

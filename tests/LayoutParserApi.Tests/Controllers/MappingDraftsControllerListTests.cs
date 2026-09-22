@@ -44,7 +44,7 @@ namespace LayoutParserApi.Tests.Controllers
         {
             public List<MappingDraftSummary> All { get; } = new();
 
-            public Task<bool> RevisionBelongsToPackageAsync(Guid packageId, Guid revisionId, CancellationToken cancellationToken)
+            public Task<bool> RevisionBelongsToWorkspacePackageAsync(Guid workspaceId, Guid packageId, Guid revisionId, CancellationToken cancellationToken)
                 => throw new NotSupportedException();
 
             public Task<IReadOnlyList<ArtifactFileRef>> GetArtifactFilesForRevisionAsync(Guid revisionId, CancellationToken cancellationToken)

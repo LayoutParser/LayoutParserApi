@@ -145,10 +145,12 @@ namespace LayoutParserApi.Controllers
             if (membership == null)
                 return NotFound();
 
+            // Pacote/revisão de OUTRO workspace recebem a mesma resposta (404) de "revisão não pertence
+            // ao pacote" — não revela a existência do pacote fora do workspace da rota (#196).
             bool revisionBelongs;
             try
             {
-                revisionBelongs = await _store.RevisionBelongsToPackageAsync(packageId, request.RevisionId, cancellationToken);
+                revisionBelongs = await _store.RevisionBelongsToWorkspacePackageAsync(workspaceId, packageId, request.RevisionId, cancellationToken);
             }
             catch (Exception ex)
             {
