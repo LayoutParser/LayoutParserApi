@@ -97,6 +97,25 @@ namespace LayoutParserApi.Tests.Integration
                 => Task.FromResult<ArtifactSummary?>(null);
 
             public Task UpdateInspectionStatusAsync(Guid artifactId, string inspectionStatus, CancellationToken cancellationToken) => Task.CompletedTask;
+
+            public Task<IReadOnlyList<ProjectSummary>> ListProjectsForMemberAsync(Guid workspaceId, Guid userId, CancellationToken cancellationToken)
+                => Task.FromResult<IReadOnlyList<ProjectSummary>>(Array.Empty<ProjectSummary>());
+
+            public Task<PackageDetail> CreateRevisionAsync(Guid packageId, Guid createdByUserId, IReadOnlyList<PackageArtifact> artifacts, CancellationToken cancellationToken)
+                => throw new NotSupportedException("Não exercitado neste conjunto de testes.");
+
+            public Task<string?> GetArtifactStoragePathAsync(Guid artifactId, CancellationToken cancellationToken)
+                => Task.FromResult<string?>(null);
+        }
+
+        /// <summary>Stub sempre-válido — a cascata de validação do §2.4 é coberta em testes dedicados do resolver.</summary>
+        private sealed class FakeFiscalProfileResolver : IFiscalProfileResolver
+        {
+            public FiscalProfileValidationResult Validate(FiscalProfile profile)
+                => new(true, null, new FiscalResolvedXsd(profile.SchemaVersion, "urn:test", "Root"));
+
+            public FiscalResolvedXsd? Resolve(string documentType, string schemaVersion)
+                => new(schemaVersion, "urn:test", "Root");
         }
 
         private sealed class NoOpAntivirusScanner : IAntivirusScanner
@@ -110,7 +129,11 @@ namespace LayoutParserApi.Tests.Integration
             public Dictionary<Guid, MappingDraftDetail> Drafts { get; } = new();
             public Dictionary<(Guid DraftId, Guid RuleId), MappingDraftRuleDetail> Rules { get; } = new();
 
-            public Task<bool> RevisionBelongsToPackageAsync(Guid packageId, Guid revisionId, CancellationToken cancellationToken) => Task.FromResult(true);
+            public Task<bool> RevisionBelongsToWorkspacePackageAsync(Guid workspaceId, Guid packageId, Guid revisionId, CancellationToken cancellationToken) => Task.FromResult(true);
+            public Task<(IReadOnlyList<MappingDraftSummary> Items, int TotalCount)> ListByWorkspaceAsync(
+                Guid workspaceId, int page, int pageSize, string? engine, CancellationToken cancellationToken)
+                => throw new NotSupportedException("Não exercitado por este fake — cobertos em MappingDraftsControllerListTests.");
+
             public Task<IReadOnlyList<ArtifactFileRef>> GetArtifactFilesForRevisionAsync(Guid revisionId, CancellationToken cancellationToken)
                 => Task.FromResult<IReadOnlyList<ArtifactFileRef>>(Array.Empty<ArtifactFileRef>());
 
@@ -169,6 +192,9 @@ namespace LayoutParserApi.Tests.Integration
                 var currentRules = Rules.Where(kv => kv.Key.DraftId == draftId).Select(kv => kv.Value).ToList();
                 return draft with { Rules = currentRules };
             }
+
+            public Task<MappingDraftDetail?> SetFiscalProfileAsync(Guid draftId, Guid userId, FiscalProfile profile, CancellationToken cancellationToken)
+                => throw new NotSupportedException();
         }
 
         /// <summary>Reproduz a MESMA regra de negócio do <c>SqlMappingReleaseStore</c> — igual ao dublê de <c>MappingGovernanceControllerTests</c>.</summary>
@@ -178,7 +204,7 @@ namespace LayoutParserApi.Tests.Integration
             public Dictionary<(Guid DraftId, string Hash), MappingReleaseDetail> ByHash { get; } = new();
             public List<(Guid ReleaseId, string From, string To, Guid Actor, string? Justification)> Transitions { get; } = new();
 
-            public Task<MappingReleaseDetail> CreateOrGetCompiledReleaseAsync(Guid workspaceId, Guid draftId, string engine, string rulesSnapshotHash, IReadOnlyList<Guid> sourceRuleIds, IReadOnlyList<MappingReleaseArtifact> artifacts, IReadOnlyList<MappingReleaseCompileDiagnostic> compileDiagnostics, string correlationId, Guid jobId, CancellationToken cancellationToken)
+            public Task<MappingReleaseDetail> CreateOrGetCompiledReleaseAsync(Guid workspaceId, Guid draftId, string engine, string rulesSnapshotHash, IReadOnlyList<Guid> sourceRuleIds, IReadOnlyList<MappingReleaseArtifact> artifacts, IReadOnlyList<MappingReleaseCompileDiagnostic> compileDiagnostics, string correlationId, Guid jobId, CancellationToken cancellationToken, FiscalProfile? fiscalProfile = null)
             {
                 if (ByHash.TryGetValue((draftId, rulesSnapshotHash), out var existing))
                     return Task.FromResult(existing);
@@ -192,8 +218,14 @@ namespace LayoutParserApi.Tests.Integration
                 return Task.FromResult(detail);
             }
 
+            public Task<CreateManualEditOutcome> CreateManualEditArtifactReleaseAsync(Guid workspaceId, Guid draftId, string engine, string content, string manualEditReason, string expectedArtifactHash, Guid actorUserId, string correlationId, CancellationToken cancellationToken)
+                => throw new NotSupportedException();
+
             public Task<MappingReleaseDetail?> GetReleaseIfMemberAsync(Guid releaseId, Guid userId, CancellationToken cancellationToken)
                 => Task.FromResult(ById.TryGetValue(releaseId, out var r) ? r : null);
+
+            public Task<(IReadOnlyList<MappingReleaseDetail> Items, int TotalCount)> ListByWorkspaceAsync(Guid workspaceId, int page, int pageSize, string? status, Guid? draftId, string? environment, CancellationToken cancellationToken)
+                => throw new NotSupportedException();
 
             public Task<MappingReleaseDetail?> ApplyTestRunResultAsync(Guid releaseId, MappingTestRunSummary summary, CancellationToken cancellationToken)
             {
@@ -249,6 +281,10 @@ namespace LayoutParserApi.Tests.Integration
             }
 
             public Task<MappingReleaseDetail> RollbackAsync(Guid releaseId, Guid actorUserId, CancellationToken cancellationToken)
+                => throw new NotSupportedException("Não exercitado neste gate — coberto em MappingGovernanceControllerTests.");
+            public Task<MappingReleaseDetail> DeprecateAsync(Guid releaseId, Guid actorUserId, string? justification, CancellationToken cancellationToken)
+                => throw new NotSupportedException("Não exercitado neste gate — coberto em MappingGovernanceControllerTests.");
+            public Task<MappingReleaseDetail> ArchiveAsync(Guid releaseId, Guid actorUserId, string? justification, CancellationToken cancellationToken)
                 => throw new NotSupportedException("Não exercitado neste gate — coberto em MappingGovernanceControllerTests.");
         }
 
@@ -327,7 +363,7 @@ namespace LayoutParserApi.Tests.Integration
             var configuration = new ConfigurationBuilder()
                 .AddInMemoryCollection(new Dictionary<string, string?> { ["ML:FiscalMappingPackagesPath"] = tempStorePath })
                 .Build();
-            var packageService = new FiscalPackageService(packageStore, new NoOpAntivirusScanner(), NullLogger<FiscalPackageService>.Instance, configuration);
+            var packageService = new FiscalPackageService(packageStore, new NoOpAntivirusScanner(), new FiscalMappingRuleExtractor(NullLogger<FiscalMappingRuleExtractor>.Instance), NullLogger<FiscalPackageService>.Instance, configuration);
 
             var artifacts = new List<UploadedArtifactInput>
             {
@@ -378,7 +414,7 @@ namespace LayoutParserApi.Tests.Integration
             var identityWorkspaceService = new FakeIdentityWorkspaceService();
             identityWorkspaceService.Memberships.Add((workspaceId, userReviewer));
             var suggestionServiceStub = new StubSuggestionService();
-            var draftsController = new MappingDraftsController(draftStore, suggestionServiceStub, identityWorkspaceService, new FakeCurrentUser { UserId = userReviewer }, NullLogger<MappingDraftsController>.Instance);
+            var draftsController = new MappingDraftsController(draftStore, suggestionServiceStub, identityWorkspaceService, new FakeFiscalProfileResolver(), new FakeCurrentUser { UserId = userReviewer }, NullLogger<MappingDraftsController>.Instance);
             draftsController.ControllerContext = new ControllerContext { HttpContext = new Microsoft.AspNetCore.Http.DefaultHttpContext() };
             draftsController.Request.Headers["If-Match"] = clearRule.ETag;
 
@@ -453,7 +489,7 @@ namespace LayoutParserApi.Tests.Integration
             releaseStore.ById[release.ReleaseId] = releaseAposTestRunOk;
 
             // ---- 11) Regressão antecede publicação (Slice 7) — bloqueio explícito de test_failed ----
-            var governanceController = new MappingGovernanceController(releaseStore, new FakeCurrentUser { UserId = userReviewer }, NullLogger<MappingGovernanceController>.Instance);
+            var governanceController = new MappingGovernanceController(releaseStore, new LayoutParserApi.Tests.Controllers.EmptyGeneratedMapperListService(), new FakeCurrentUser { UserId = userReviewer }, NullLogger<MappingGovernanceController>.Instance);
 
             releaseStore.ById[release.ReleaseId] = releaseAposTestRunDivergente; // simula tentar publicar um release que falhou
             var publishSemAprovarComFalha = await governanceController.Publish(workspaceId, release.ReleaseId, null, CancellationToken.None);
