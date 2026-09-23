@@ -19,7 +19,7 @@ namespace XslSynth.Metrics;
 public sealed record MetricsBatchOptions(
     string DatasetPath, string Model, int FewShotK, int? Limit, string LogDirectory, string LogFileName,
     string? RunDirectory = null, string? RunId = null, string? InstancesDirectory = null,
-    string? NfeXsdPath = null, bool DryRun = false);
+    string? NfeXsdPath = null, bool DryRun = false, bool RefineWithExamples = true);
 
 /// <summary>Um resultado individual do lote (para o resumo agregado ao final).</summary>
 /// <param name="Candidato">XSLT gerado neste caso (null quando não houve saída utilizável) —
@@ -159,7 +159,7 @@ public static class MetricsBatchRunner
                 {
                     resultado = opts.DryRun
                         ? new CaseResult(caso.Id, true, 0, 0, 0, 1, 1, null, caso.OutputXslt)
-                        : await RunCaseAsync(caso, index, client, modelo, opts.FewShotK, log, ct);
+                        : await RunCaseAsync(caso, index, client, modelo, opts.FewShotK, log, ct, opts.RefineWithExamples);
                     resultados.Add(resultado);
                 }
                 catch (Exception ex)
@@ -238,7 +238,8 @@ public static class MetricsBatchRunner
     }
 
     private static async Task<CaseResult> RunCaseAsync(DatasetPair caso, DatasetFewShotIndex index,
-        OllamaClient client, string modelo, int fewShotK, Action<string> log, CancellationToken ct)
+        OllamaClient client, string modelo, int fewShotK, Action<string> log, CancellationToken ct,
+        bool refineWithExamples = true)
     {
         var recuperados = index.Retrieve(caso, fewShotK);
         var similaridadeMedia = recuperados.Count > 0 ? recuperados.Average(m => m.Similarity) : 0.0;
@@ -271,7 +272,29 @@ public static class MetricsBatchRunner
 
         log($"   gerado em {metrics.DurationSeconds:F1}s ({metrics.TokensPerSecond:F2} tok/s) · "
             + $"bem-formado={(validacao.WellFormedXml ? "sim" : "não")} · "
-            + $"tagOverlap={validacao.TagOverlapRatio:F3} · textSim={validacao.TextSimilarityRatio:F3}");
+            + $"tagOverlap={validacao.TagOverlapRatio:F3} · textSim={validacao.TextSimilarityRatio:F3}"
+            + $" · campos idênticos={validacao.FieldsIdenticalLoose}/{validacao.FieldsTotal}"
+            + $" (caminho completo={validacao.FieldsIdenticalStrict}/{validacao.FieldsTotal}) [SAÍDA CRUA]");
+
+        // ── #438: refino determinístico por exemplos (casca do documento + regra demonstrada) ──
+        // A saída crua é medida ANTES (linha acima) para a comparação antes/depois ser honesta.
+        if (refineWithExamples)
+        {
+            var exemplos = recuperados.Select(m => new XslSynth.Core.RefinerExample(
+                m.Pair.Id, m.Pair.Version, m.Similarity, m.Pair.OutputXslt)).ToList();
+            var refino = XslSynth.Core.ExampleCandidateRefiner.Refine(candidato, caso.Version, exemplos);
+            foreach (var a in refino.Actions) log($"   [refino] {a}");
+            foreach (var l in refino.Limitations) log($"   [refino][limitação] {l}");
+            if (refino.Changed)
+            {
+                candidato = refino.Xslt;
+                validacao = OutputValidator.Validate(candidato, caso.OutputXslt);
+                log($"   após refino · bem-formado={(validacao.WellFormedXml ? "sim" : "não")} · "
+                    + $"tagOverlap={validacao.TagOverlapRatio:F3} · textSim={validacao.TextSimilarityRatio:F3}"
+                    + $" · campos idênticos={validacao.FieldsIdenticalLoose}/{validacao.FieldsTotal}"
+                    + $" (caminho completo={validacao.FieldsIdenticalStrict}/{validacao.FieldsTotal})");
+            }
+        }
 
         LogCaso(caso.Id, modelo, sucesso: true, tokensPorSegundo: metrics.TokensPerSecond,
             promptChars: metrics.PromptChars, duracaoSegundos: metrics.DurationSeconds,
@@ -348,7 +371,10 @@ public static class MetricsBatchRunner
         }
     }
 
-    private static string BuildPrompt(DatasetPair caso, IReadOnlyList<DatasetFewShotMatch> recuperados)
+    /// <summary>Interno (não privado) — reaproveitado por <see cref="RepairBatchRunner"/> para
+    /// montar o prompt inicial do modo <c>--mode=repair-batch</c> (mesmo prompt few-shot,
+    /// candidato de partida do loop de reparo completo).</summary>
+    internal static string BuildPrompt(DatasetPair caso, IReadOnlyList<DatasetFewShotMatch> recuperados)
     {
         var sb = new System.Text.StringBuilder();
         sb.AppendLine("Você é um especialista em XSLT 1.0 e nos leiautes fiscais brasileiros (NFe/CTe/MDFe).");
@@ -372,7 +398,8 @@ public static class MetricsBatchRunner
         return sb.ToString();
     }
 
-    private static string ExtractXml(string raw)
+    /// <summary>Interno (não privado) — reaproveitado por <see cref="RepairBatchRunner"/>.</summary>
+    internal static string ExtractXml(string raw)
     {
         var fenced = System.Text.RegularExpressions.Regex.Match(raw, "```(?:xml|xslt)?\\s*(.*?)```",
             System.Text.RegularExpressions.RegexOptions.Singleline);

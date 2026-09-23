@@ -113,6 +113,7 @@ namespace LayoutParserApi.Tests.Filters
             public IReadOnlyList<string> Roles { get; }
             public bool IsAuthenticated => !string.IsNullOrEmpty(Name);
             public bool IsInRole(string role) => Roles.Contains(role);
+            public Guid? UserId => null;
         }
     }
 }

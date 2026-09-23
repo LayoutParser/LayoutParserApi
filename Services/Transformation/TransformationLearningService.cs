@@ -1,5 +1,7 @@
 using System.Xml.Linq;
 
+using LayoutParserApi.Services.Logging;
+using LayoutParserApi.Services.Security;
 using LayoutParserApi.Services.Transformation.Models;
 
 namespace LayoutParserApi.Services.Transformation
@@ -776,12 +778,27 @@ namespace LayoutParserApi.Services.Transformation
         {
             try
             {
-                var modelPath = Path.Combine(_learningModelsPath, $"tcl_{layoutName}.json");
+                // ✅ SCS0018 (issue #88, achado real): layoutName chega cru de
+                // MetricsController.GetLearningMetrics ([HttpGet("learning/{layoutName}")], sem
+                // validação nenhuma antes deste método) e de ImprovedTclGeneratorService. Diferente
+                // do que o baseline documentava para SaveLearnedModelAsync (modelName supostamente
+                // só interno), aqui o nome do arquivo é montado diretamente com o parâmetro de rota —
+                // "..\..\..\Windows\win.ini" (prefixado por "tcl_/") chegava direto ao
+                // File.ReadAllTextAsync. Fechado com SafePathResolver, mesmo padrão do projeto.
+                var modelPath = SafePathResolver.Resolve(_learningModelsPath, $"tcl_{layoutName}.json");
+                if (modelPath == null)
+                {
+                    _logger.LogWarning("Layout rejeitado para leitura de modelo TCL aprendido: {LayoutName}", LogMessageSanitizer.Sanitize(layoutName));
+                    return null;
+                }
+
+#pragma warning disable SCS0018
                 if (File.Exists(modelPath))
                 {
                     var json = await File.ReadAllTextAsync(modelPath);
                     return System.Text.Json.JsonSerializer.Deserialize<LearnedTclModel>(json);
                 }
+#pragma warning restore SCS0018
             }
             catch (Exception ex)
             {
@@ -798,12 +815,21 @@ namespace LayoutParserApi.Services.Transformation
         {
             try
             {
-                var modelPath = Path.Combine(_learningModelsPath, $"xsl_{layoutName}.json");
+                // ✅ SCS0018 (issue #88, achado real) — mesma justificativa de LoadTclModelAsync acima.
+                var modelPath = SafePathResolver.Resolve(_learningModelsPath, $"xsl_{layoutName}.json");
+                if (modelPath == null)
+                {
+                    _logger.LogWarning("Layout rejeitado para leitura de modelo XSL aprendido: {LayoutName}", LogMessageSanitizer.Sanitize(layoutName));
+                    return null;
+                }
+
+#pragma warning disable SCS0018
                 if (File.Exists(modelPath))
                 {
                     var json = await File.ReadAllTextAsync(modelPath);
                     return System.Text.Json.JsonSerializer.Deserialize<LearnedXslModel>(json);
                 }
+#pragma warning restore SCS0018
             }
             catch (Exception ex)
             {
@@ -811,6 +837,76 @@ namespace LayoutParserApi.Services.Transformation
             }
 
             return null;
+        }
+
+        /// <summary>
+        /// Agrega, entre TODOS os layouts já treinados, os modelos TCL/XSL persistidos em
+        /// <see cref="_learningModelsPath"/> — usado pelo dashboard de métricas (issue #174).
+        /// Falha de leitura de um arquivo individual não derruba o agregado (loga e pula).
+        /// </summary>
+        public async Task<LearningSummary> GetLearningSummaryAsync()
+        {
+            var summary = new LearningSummary();
+            var confidences = new List<double>();
+
+            try
+            {
+                if (!Directory.Exists(_learningModelsPath))
+                {
+                    _logger.LogWarning("Diretório de modelos de aprendizado não encontrado: {Path}", _learningModelsPath);
+                    return summary;
+                }
+
+                var tclFiles = Directory.GetFiles(_learningModelsPath, "tcl_*.json", SearchOption.TopDirectoryOnly);
+                var xslFiles = Directory.GetFiles(_learningModelsPath, "xsl_*.json", SearchOption.TopDirectoryOnly);
+
+                foreach (var file in tclFiles)
+                {
+                    try
+                    {
+                        var json = await File.ReadAllTextAsync(file);
+                        var model = System.Text.Json.JsonSerializer.Deserialize<LearnedTclModel>(json);
+                        if (model == null) continue;
+
+                        summary.TotalModels++;
+                        summary.TotalPatterns += model.Patterns.Count;
+                        summary.TotalExamples += model.ExamplesCount;
+                        confidences.AddRange(model.Patterns.Select(p => p.Confidence));
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Erro ao carregar modelo TCL para o resumo agregado: {File}", file);
+                    }
+                }
+
+                foreach (var file in xslFiles)
+                {
+                    try
+                    {
+                        var json = await File.ReadAllTextAsync(file);
+                        var model = System.Text.Json.JsonSerializer.Deserialize<LearnedXslModel>(json);
+                        if (model == null) continue;
+
+                        summary.TotalModels++;
+                        summary.TotalPatterns += model.Patterns.Count;
+                        summary.TotalExamples += model.ExamplesCount;
+                        confidences.AddRange(model.Patterns.Select(p => p.Confidence));
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Erro ao carregar modelo XSL para o resumo agregado: {File}", file);
+                    }
+                }
+
+                summary.AverageConfidence = confidences.Count > 0 ? confidences.Average() : 0.0;
+            }
+            catch (Exception ex)
+            {
+                // Degrade gracioso: resumo zerado em vez de derrubar o endpoint.
+                _logger.LogError(ex, "Erro ao agregar resumo de métricas de aprendizado");
+            }
+
+            return summary;
         }
 
         /// <summary>
@@ -1166,12 +1262,26 @@ namespace LayoutParserApi.Services.Transformation
         {
             try
             {
-                var modelPath = Path.Combine(_learningModelsPath, $"{modelName}.json");
+                // ✅ SCS0018 (issue #88, achado real): apesar do baseline anterior descrever
+                // modelName como "definido internamente", os dois chamadores reais (LearnTclPatternsAsync/
+                // LearnXslPatternsAsync) montam modelName como $"tcl_{layoutName}"/$"xsl_{layoutName}",
+                // e layoutName chega cru da requisição (TransformationExecutionController). Path traversal
+                // aqui seria pior que leitura — é File.WriteAllTextAsync (escrita arbitrária). Fechado
+                // com SafePathResolver, mesmo padrão do projeto.
+                var modelPath = SafePathResolver.Resolve(_learningModelsPath, $"{modelName}.json");
+                if (modelPath == null)
+                {
+                    _logger.LogWarning("Nome de modelo rejeitado para gravação: {ModelName}", LogMessageSanitizer.Sanitize(modelName));
+                    return;
+                }
+
                 var json = System.Text.Json.JsonSerializer.Serialize(model, new System.Text.Json.JsonSerializerOptions
                 {
                     WriteIndented = true
                 });
+#pragma warning disable SCS0018
                 await File.WriteAllTextAsync(modelPath, json);
+#pragma warning restore SCS0018
             }
             catch (Exception ex)
             {
