@@ -24,8 +24,11 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
-        /// Busca layouts no banco de dados
+        /// Busca layouts no catálogo (cache Redis com fallback ao SQL) por termo livre.
         /// </summary>
+        /// <response code="200">Lista de layouts encontrados (pode ser vazia).</response>
+        /// <response code="400">Falha ao buscar (ver <c>error</c>).</response>
+        /// <response code="500">Falha não catalogada.</response>
         [HttpPost("search")]
         public async Task<IActionResult> SearchLayouts([FromBody] LayoutSearchRequest request)
         {
@@ -52,8 +55,12 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
-        /// Busca layout específico por ID
+        /// Busca um layout específico pelo ID interno do catálogo.
         /// </summary>
+        /// <param name="id">ID numérico do layout (não confundir com <c>LayoutGuid</c>).</param>
+        /// <response code="200">Layout encontrado.</response>
+        /// <response code="404">Nenhum layout com este ID.</response>
+        /// <response code="500">Falha não catalogada.</response>
         [HttpGet("{id}")]
         public async Task<IActionResult> GetLayoutById(int id)
         {
@@ -80,8 +87,12 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
-        /// Busca todos os layouts (endpoint simplificado)
+        /// Lista até 300 layouts sem filtro — atalho para "todos os layouts do catálogo"
+        /// (nome do endpoint é histórico; não filtra por MQSeries/NFe apesar do nome).
         /// </summary>
+        /// <response code="200">Lista de layouts (até 300).</response>
+        /// <response code="400">Falha ao buscar.</response>
+        /// <response code="500">Falha não catalogada.</response>
         [HttpGet("mqseries-nfe")]
         public async Task<IActionResult> GetAllLayouts()
         {
@@ -114,8 +125,10 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
-        /// Atualiza o cache com dados do banco
+        /// Força a releitura do SQL Server e repovoa o cache Redis de layouts (invalida o cache atual).
         /// </summary>
+        /// <response code="200">Cache atualizado.</response>
+        /// <response code="500">Falha ao acessar SQL/Redis.</response>
         [HttpPost("refresh-cache")]
         public async Task<IActionResult> RefreshCache()
         {
@@ -142,8 +155,10 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
-        /// Limpa o cache Redis
+        /// Limpa o cache Redis de layouts (sem repopular — próxima leitura cai para o SQL).
         /// </summary>
+        /// <response code="200">Cache limpo.</response>
+        /// <response code="500">Falha ao acessar Redis.</response>
         [HttpPost("clear-cache")]
         public async Task<IActionResult> ClearCache()
         {
@@ -170,8 +185,12 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
-        /// Testa a descriptografia de conteúdo
+        /// Diagnóstico: descriptografa um conteúdo Sysmiddle (Base64 em JSON) via <c>LayoutParserDecrypt.exe</c>, sem persistir nada.
         /// </summary>
+        /// <response code="200">Descriptografado com sucesso.</response>
+        /// <response code="400"><c>EncryptedContent</c> ausente.</response>
+        /// <response code="500">Falha não catalogada.</response>
+        /// <response code="503">O <c>.exe</c> de descriptografia está indisponível/falhou/deu timeout — nunca retorna a cifra como se fosse texto claro.</response>
         [HttpPost("test-decryption")]
         public async Task<IActionResult> TestDecryption([FromBody] TestDecryptionRequest request)
         {
@@ -217,8 +236,13 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
-        /// Testa a descriptografia recebendo o Base64 como texto puro (text/plain)
+        /// Mesmo diagnóstico de <see cref="TestDecryption"/>, mas recebendo o Base64 puro no corpo
+        /// (<c>text/plain</c>/<c>application/octet-stream</c>) em vez de envelope JSON.
         /// </summary>
+        /// <response code="200">Descriptografado com sucesso.</response>
+        /// <response code="400">Corpo vazio.</response>
+        /// <response code="500">Falha não catalogada.</response>
+        /// <response code="503">Descriptografia indisponível — mesmo motivo de <see cref="TestDecryption"/>.</response>
         [HttpPost("test-decryption-raw")]
         [Consumes("text/plain", "application/octet-stream")]
         public async Task<IActionResult> TestDecryptionRaw([FromBody] string encryptedContent)
@@ -265,8 +289,10 @@ namespace LayoutParserApi.Controllers
         }
     }
 
+    /// <summary>Requisição de diagnóstico de descriptografia.</summary>
     public class TestDecryptionRequest
     {
+        /// <summary>Conteúdo cifrado Sysmiddle, em Base64.</summary>
         public string EncryptedContent { get; set; } = "";
     }
 }

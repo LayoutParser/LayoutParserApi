@@ -48,6 +48,8 @@ namespace LayoutParserApi.Controllers
         /// </summary>
         /// <param name="filter">Filtros de página/tamanho, layout, modelo, sucesso e período (de/ate).</param>
         /// <returns>Página de gerações (<see cref="PagedAiMetricsGenerationsResult"/>).</returns>
+        /// <response code="200">Página de gerações.</response>
+        /// <response code="500">Falha ao ler/parsear o log.</response>
         [HttpGet("generations")]
         public async Task<IActionResult> GetGenerations([FromQuery] AiMetricsGenerationFilter filter)
         {
@@ -71,6 +73,8 @@ namespace LayoutParserApi.Controllers
         /// <param name="de">Início do período (opcional, inclusivo).</param>
         /// <param name="ate">Fim do período (opcional, inclusivo).</param>
         /// <returns>Resumo agregado (<see cref="AiMetricsSummary"/>).</returns>
+        /// <response code="200">Resumo agregado.</response>
+        /// <response code="500">Falha ao ler/parsear o log.</response>
         [HttpGet("summary")]
         public async Task<IActionResult> GetSummary([FromQuery] DateTime? de, [FromQuery] DateTime? ate)
         {
@@ -100,6 +104,10 @@ namespace LayoutParserApi.Controllers
         /// Exige o header <c>X-AiMetrics-Key</c> (ver <see cref="AiMetricsIngestKeyFilter"/>): é
         /// escrita que vira número no painel da diretoria, e a app não tem pipeline de autenticação.
         /// </remarks>
+        /// <response code="200">Resultado gravado (merge acontece na leitura, não aqui).</response>
+        /// <response code="400"><c>layout</c> ausente.</response>
+        /// <response code="403"><c>X-AiMetrics-Key</c> ausente/incorreto (<see cref="AiMetricsIngestKeyFilter"/>, fail-closed).</response>
+        /// <response code="500">Falha ao gravar no log.</response>
         [HttpPost("cypress-result")]
         [ServiceFilter(typeof(AiMetricsIngestKeyFilter))]
         public IActionResult PostCypressResult([FromBody] AiMetricsCypressResultRequest? request)
@@ -161,6 +169,10 @@ namespace LayoutParserApi.Controllers
         /// Exige o header <c>X-AiMetrics-Key</c> (ver <see cref="AiMetricsIngestKeyFilter"/>): é
         /// escrita que vira número no painel da diretoria, e a app não tem pipeline de autenticação.
         /// </remarks>
+        /// <response code="200">Lote processado (ver contagem <c>Ingeridos</c>/<c>Ignorados</c> — item inválido não derruba o lote).</response>
+        /// <response code="400">Corpo vazio, lote acima do máximo permitido, ou item sem <c>Timestamp</c> (contrato do lote inteiro).</response>
+        /// <response code="403"><c>X-AiMetrics-Key</c> ausente/incorreto.</response>
+        /// <response code="500">Falha ao gravar o lote.</response>
         [HttpPost("generations/ingest")]
         [ServiceFilter(typeof(AiMetricsIngestKeyFilter))]
         public IActionResult PostGenerationsIngest([FromBody] List<AiMetricsGenerationIngestRequest>? request)

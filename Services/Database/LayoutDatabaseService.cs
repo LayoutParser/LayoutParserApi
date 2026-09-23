@@ -154,8 +154,11 @@ namespace LayoutParserApi.Services.Database
                         ExtractLayoutGuidFromDecryptedContent(layout);
 
                         // Verificar se o layout é do tipo TextPositional
-                        // Apenas layouts TextPositional devem ser incluídos no Redis
-                        if (!IsTextPositionalLayout(layout))
+                        // Apenas layouts TextPositional devem ser incluídos no Redis — MAS issue
+                        // #433: buscas por GUID específico (request.IncludeAllLayoutTypes) precisam
+                        // de QUALQUER tipo (ex.: XmlLayoutVO do lado destino de um mapper), então
+                        // esse filtro só se aplica ao warmup/listagem geral.
+                        if (!request.IncludeAllLayoutTypes && !IsTextPositionalLayout(layout))
                         {
                             skippedCount++;
                             _logger.LogDebug("Layout {Id} ({Name}) ignorado - nao e TextPositional", layout.Id, layout.Name);
