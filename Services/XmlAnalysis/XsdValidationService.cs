@@ -1,4 +1,6 @@
 using LayoutParserApi.Models.XmlAnalysis;
+using LayoutParserApi.Services.Logging;
+using LayoutParserApi.Services.Security;
 using LayoutParserApi.Services.XmlAnalysis.Models;
 
 using System.Xml;
@@ -17,12 +19,18 @@ namespace LayoutParserApi.Services.XmlAnalysis
         private readonly string _pdfBasePath;
         private readonly XmlDocumentTypeDetector _documentTypeDetector;
         private readonly IConfiguration _configuration;
+        private readonly PdfOrientationReader _pdfOrientationReader;
 
-        public XsdValidationService(ILogger<XsdValidationService> logger,IConfiguration configuration,XmlDocumentTypeDetector documentTypeDetector)
+        public XsdValidationService(
+            ILogger<XsdValidationService> logger,
+            IConfiguration configuration,
+            XmlDocumentTypeDetector documentTypeDetector,
+            PdfOrientationReader pdfOrientationReader)
         {
             _logger = logger;
             _configuration = configuration;
             _documentTypeDetector = documentTypeDetector;
+            _pdfOrientationReader = pdfOrientationReader;
             _xsdBasePath = configuration["XsdValidation:BasePath"] ?? @"C:\inetpub\wwwroot\layoutparser\xsd";
             _pdfBasePath = configuration["XsdValidation:PdfBasePath"] ?? @"C:\inetpub\wwwroot\layoutparser\pdf";
         }
@@ -218,6 +226,10 @@ namespace LayoutParserApi.Services.XmlAnalysis
                     };
                 }
 
+                // ✅ SCS0018 (issue #88, achado real corrigido): xsdPath vem de FindXsdFile(finalXsdVersion),
+                // que agora resolve a versão com SafePathResolver.Resolve (mesmo padrão do projeto) antes
+                // de qualquer Directory.GetFiles — o SCS não reconhece o resolver como sanitizador.
+#pragma warning disable SCS0018
                 using (var reader = XmlReader.Create(xsdPath))
                 {
                     var schema = XmlSchema.Read(reader, (sender, e) =>
@@ -238,6 +250,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
                         }
                     }
                 }
+#pragma warning restore SCS0018
 
                 schemas.Compile();
 
@@ -324,11 +337,68 @@ namespace LayoutParserApi.Services.XmlAnalysis
         }
 
         /// <summary>
+        /// Carrega o <see cref="XmlSchemaSet"/> compilado para uma versão de XSD (issue #380,
+        /// #198.5 — cobertura de destinos obrigatórios). Reaproveita a mesma resolução de arquivo
+        /// (<see cref="FindXsdFile"/>) usada em <see cref="ValidateXmlAgainstXsdAsync"/> — não
+        /// reinventa o parser de XSD. Degrada gracioso (dotnet-standards.md §Resiliência): arquivo
+        /// ausente/schema inválido devolve <c>null</c> (logado), nunca lança para o chamador.
+        /// </summary>
+        public XmlSchemaSet? TryLoadSchemaSet(string xsdVersion)
+        {
+            try
+            {
+                var xsdPath = FindXsdFile(xsdVersion);
+                if (string.IsNullOrEmpty(xsdPath) || !File.Exists(xsdPath))
+                {
+                    _logger.LogWarning("Arquivo XSD não encontrado para cálculo de cobertura obrigatória: {XsdVersion}", xsdVersion);
+                    return null;
+                }
+
+                var schemas = new XmlSchemaSet();
+                schemas.ValidationEventHandler += (sender, e) =>
+                    _logger.LogWarning("Aviso ao carregar schema XSD (cobertura obrigatória): {Message}", e.Message);
+
+                // ✅ SCS0018: xsdPath vem de FindXsdFile, já confinado a _xsdBasePath via SafePathResolver.
+#pragma warning disable SCS0018
+                using var reader = XmlReader.Create(xsdPath);
+                var schema = XmlSchema.Read(reader, (sender, e) =>
+                    _logger.LogError("Erro ao ler schema XSD (cobertura obrigatória): {Message}", e.Message));
+#pragma warning restore SCS0018
+
+                if (schema == null)
+                    return null;
+
+                schemas.Add(schema);
+                schemas.Compile();
+                return schemas;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Falha ao carregar XSD para cálculo de cobertura obrigatória (versão {XsdVersion}).", xsdVersion);
+                return null;
+            }
+        }
+
+        /// <summary>
         /// Encontra arquivo XSD na pasta especificada
         /// </summary>
         private string FindXsdFile(string version)
         {
-            var versionPath = Path.Combine(_xsdBasePath, version);
+            // ✅ SCS0018 (issue #88, achado real — não era só drift de linha): "version" chega
+            // sem validação a partir de ValidateXmlAgainstXsdAsync(xsdVersion), que por sua vez é
+            // ["FromBody"] cru em XmlAnalysisController.ValidateXsd (request.XsdVersion) e
+            // MappingTestRunService. Diferente de GetOrientationsAsync (já usa SafePathResolver
+            // desde a PR #278/issue #172), este caminho nunca ganhou o mesmo tratamento — um
+            // xsdVersion como "..\..\..\Windows\win.ini" (ou qualquer pasta fora de _xsdBasePath)
+            // chegava direto ao Path.Combine/Directory.GetFiles. Fechado com o mesmo
+            // SafePathResolver.Resolve já usado em GetOrientationsAsync/DocumentController/
+            // MetricsController/ParseController.
+            var versionPath = SafePathResolver.Resolve(_xsdBasePath, version);
+            if (versionPath == null)
+            {
+                _logger.LogWarning("Versão de XSD rejeitada para leitura de schema: {XsdVersion}", LogMessageSanitizer.Sanitize(version));
+                return null;
+            }
 
             if (!Directory.Exists(versionPath))
             {
@@ -337,7 +407,11 @@ namespace LayoutParserApi.Services.XmlAnalysis
             }
 
             // Procurar arquivo .xsd (pode ter vários)
+            // ✅ SCS0018 (issue #88, achado real corrigido): versionPath já é o retorno do
+            // SafePathResolver.Resolve acima — confinado a _xsdBasePath.
+#pragma warning disable SCS0018
             var xsdFiles = Directory.GetFiles(versionPath, "*.xsd", SearchOption.AllDirectories);
+#pragma warning restore SCS0018
 
             // Priorizar arquivo principal (geralmente o maior ou com nome específico)
             var mainXsd = xsdFiles
@@ -366,7 +440,16 @@ namespace LayoutParserApi.Services.XmlAnalysis
 
             try
             {
-                var pdfPath = Path.Combine(_pdfBasePath, xsdVersion);
+                // xsdVersion vem de parâmetro de request (controller) — nunca combine direto num
+                // Path.Combine sem validar. SafePathResolver barra "..", separador de caminho e
+                // qualquer resultado que escape de _pdfBasePath (path traversal, CodeQL cs/path-injection).
+                var pdfPath = SafePathResolver.Resolve(_pdfBasePath, xsdVersion);
+                if (pdfPath == null)
+                {
+                    _logger.LogWarning("Versão de XSD rejeitada para leitura de orientações PDF: {XsdVersion}", LogMessageSanitizer.Sanitize(xsdVersion));
+                    result.Orientations.Add("Pasta de orientações PDF não encontrada.");
+                    return result;
+                }
 
                 if (!Directory.Exists(pdfPath))
                 {
@@ -375,13 +458,37 @@ namespace LayoutParserApi.Services.XmlAnalysis
                     return result;
                 }
 
-                // Por enquanto, retornar mensagem genérica
-                // TODO: Implementar leitura de PDF (usar biblioteca como PdfSharp ou iTextSharp)
-                result.Orientations.Add("Para corrigir os erros de validação XSD:");
-                result.Orientations.Add("1. Verifique se todos os campos obrigatórios estão preenchidos");
-                result.Orientations.Add("2. Confirme que os valores estão nos formatos corretos (CNPJ, CPF, datas, etc.)");
-                result.Orientations.Add("3. Valide que os códigos de produto, CFOP e outras referências estão corretos");
-                result.Orientations.Add("4. Consulte a documentação oficial da SEFAZ para a versão " + xsdVersion);
+                // Leitura real do conteúdo do(s) PDF(s) (issue #172) — a mensagem genérica abaixo
+                // é o fallback de degradação, não mais o comportamento único.
+                PdfOrientationReadResult? leitura = null;
+                try
+                {
+                    leitura = _pdfOrientationReader.ReadOrientations(pdfPath, errorCodes);
+                }
+                catch (Exception ex)
+                {
+                    // Degrade gracioso: falha na leitura do PDF (biblioteca indisponível, PDF
+                    // protegido/corrompido) não pode quebrar a resposta de validação — cai no
+                    // fallback genérico abaixo, igual ao comportamento anterior a esta issue.
+                    _logger.LogWarning(ex, "Falha ao ler conteúdo dos PDFs de orientação em {Path}", pdfPath);
+                }
+
+                if (leitura is { Success: true, Trechos.Count: > 0 })
+                {
+                    result.Orientations.Add($"Orientações extraídas da documentação oficial (versão {xsdVersion}):");
+                    foreach (var trecho in leitura.Trechos)
+                        result.Orientations.Add($"[{trecho.Arquivo}] {trecho.Texto}");
+                }
+                else
+                {
+                    // Fallback genérico — mesmo texto de antes da issue #172, preservado para não
+                    // quebrar quem já depende dessas mensagens quando não há PDF/trecho aplicável.
+                    result.Orientations.Add("Para corrigir os erros de validação XSD:");
+                    result.Orientations.Add("1. Verifique se todos os campos obrigatórios estão preenchidos");
+                    result.Orientations.Add("2. Confirme que os valores estão nos formatos corretos (CNPJ, CPF, datas, etc.)");
+                    result.Orientations.Add("3. Valide que os códigos de produto, CFOP e outras referências estão corretos");
+                    result.Orientations.Add("4. Consulte a documentação oficial da SEFAZ para a versão " + xsdVersion);
+                }
 
                 if (errorCodes != null && errorCodes.Any())
                     result.Orientations.Add($"Erros específicos detectados: {string.Join(", ", errorCodes)}");
