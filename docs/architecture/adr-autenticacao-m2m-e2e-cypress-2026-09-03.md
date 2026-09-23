@@ -2,10 +2,23 @@
 
 > `@lp-architect` (Aria), 2026-09-03. Cobre a Frente A da issue #221 (epic) e a issue #218 (gate).
 > Decisão de arquitetura — **não implementada aqui**. Execução: `@lp-backend-dev`.
+>
+> **Revisão 2026-09-03 (mesmo dia):** decisão trocada de Opção B → **Opção A**, a pedido explícito
+> do dono. Ver seção "Revisão da decisão" abaixo. Seções originais preservadas (raciocínio da
+> Opção B continua válido como registro — só o veredito final mudou).
+>
+> **Adendo 2026-09-03 (mesmo dia, `@lp-devops`/Gage):** investigação da topologia do runner do
+> Cypress, pendência deixada em aberto na seção "Rede: 127.0.0.1 vs. client credentials". Ver
+> "Adendo — topologia real do runner Cypress" ao final do documento. Resumo: **não há hoje um
+> runner de CI para esta suíte** — ela só foi executada manualmente, do próprio workstation de
+> desenvolvimento. O caminho 1 (co-localização) é viável se a futura automação usar o runner
+> self-hosted `dev-local` já existente (mesma máquina do serviço de dev da API), mas isso ainda
+> não está configurado nem decidido.
 
 ## Status
 
-Proposto. Aguarda confirmação do dono antes de `@lp-backend-dev` implementar.
+**Aceito — Opção A (client credentials via Entra).** Aguarda `@lp-backend-dev` implementar,
+mediante aprovação final do dono no plano de implementação revisado.
 
 ## Contexto
 
@@ -64,7 +77,7 @@ com seu próprio segredo e seu próprio raio de confiança, nunca ativo em produ
 
 ## Opções avaliadas
 
-### Opção A — OAuth2 Client Credentials Grant via Entra ID
+### Opção A — OAuth2 Client Credentials Grant via Entra ID *(ESCOLHIDA — ver Revisão)*
 
 Registrar um App Registration "de serviço" no mesmo tenant Entra que o BFF já usa para OIDC.
 O Cypress obtém um token via `client_id`/`client_secret` (grant `client_credentials`, sem
@@ -84,13 +97,15 @@ tenant Entra, populando `HttpContext.User` com uma claim de "app" (não de usuá
 **Contras:**
 - Adiciona uma segunda stack de autenticação inteira (pacote NuGet novo, configuração de
   authority/audience, cache de JWKS) para resolver um problema hoje limitado a 1 endpoint gated.
-  Custo de implementação e manutenção desproporcional ao problema atual.
+  Custo de implementação e manutenção desproporcional ao problema **atual** (mas ver Revisão —
+  o problema deixou de ser só o atual).
 - **Reabre a pergunta de rede que o `rollout-p2-autenticacao.md` já resolveu na direção
   oposta**: a API está a caminho de escutar só em `127.0.0.1` (BFF co-hospedado). Um JWT Bearer
   que precisa ser alcançável pelo runner do Cypress (seja ele CI ou uma workstation) exige que a
   API **aceite conexão de fora do loopback** — ou seja, ou o Cypress passa a rodar co-hospedado
   também (não é o caso hoje, roda do WSL/CI), ou a trava de rede planejada ganha uma exceção
   específica para o IP do runner, que é mais superfície para manter do que o problema original.
+  **Tratamento detalhado na seção "Rede: 127.0.0.1 vs client credentials" abaixo.**
 - Gestão de segredo (`client_secret`) do App Registration em CI é outro segredo rotacionável a
   cuidar — mesma classe de trabalho que o projeto já está tentando reduzir (ver
   `.claude/rules/security.md`, pendência de segredos).
@@ -99,7 +114,7 @@ tenant Entra, populando `HttpContext.User` com uma claim de "app" (não de usuá
   novo pode exigir aprovação de time de identidade/AD fora do controle deste projeto, com prazo
   não previsível.
 
-### Opção B — Identidade de serviço sintética, aceita só fora de produção (RECOMENDADA)
+### Opção B — Identidade de serviço sintética, aceita só fora de produção *(descartada — ver Revisão)*
 
 Um mecanismo **novo e paralelo** ao `TrustedIdentityMiddleware`, que nunca reaproveita a guarda
 de loopback nem os headers `x-iis-*`. Um middleware dedicado
@@ -111,7 +126,7 @@ ex.: `cypress-e2e`) — e, se baterem contra um segredo configurado
 (`svc-cypress-e2e`), role dedicada (`servico-e2e`) — **não** `admin`, **não** reaproveita papéis
 humanos.
 
-**A trava que impede isso de virar o próximo `ApiKeyGateFilter` (chave global fail-open):**
+**A trava que impediria isso de virar o próximo `ApiKeyGateFilter` (chave global fail-open):**
 
 1. **Guarda de ambiente, não só de config.** O middleware recusa mesmo com segredo configurado
    e correto se `IWebHostEnvironment.IsProduction() == true` — checagem **hard-coded no código**,
@@ -149,66 +164,420 @@ humanos.
   consumidor é só a suíte E2E interna, não uma integração de terceiro.
 - Se amanhã o Cypress precisar rodar contra produção (não é o caso hoje — os gates rodam contra
   dev), este mecanismo **não serve** por desenho (é isso que a trava de ambiente garante) — nesse
-  cenário, migrar para a Opção A vira necessário, não opcional.
+  cenário, migrar para a Opção A vira necessário, não opcional. **Este cenário se confirmou —
+  ver Revisão abaixo.**
 
-## Recomendação
+## Revisão da decisão (2026-09-03) — por que a Opção A agora
 
-**Opção B agora.** Resolve o bloqueio real e único confirmado (`execute-lowcode`), sem reabrir a
-pergunta de rede que `rollout-p2-autenticacao.md` já está fechando na direção oposta (API rumo a
-`127.0.0.1`), sem depender de aprovação externa de time de identidade/AD, e sem adicionar uma
-segunda stack de autenticação para 1 endpoint.
+O dono pediu explicitamente a opção mais completa: client credentials real via Entra, porque
+"o Cypress uma hora vai precisar fazer os testes end-to-end direto na API" — ou seja, o
+cenário de gatilho que a recomendação original (Opção B) já havia identificado como sua própria
+condição de expiração ("se o Cypress precisar rodar contra staging/produção real... migrar para
+a Opção A") deixou de ser hipotético e virou direção declarada do produto.
 
-**Opção A fica registrada como estado-alvo condicional**, não descartada: se o escopo mudar para
-"Cypress precisa rodar contra staging/produção real" ou "múltiplas integrações M2M externas
-precisam de identidade revogável e auditável no Entra", a Opção B não escala — nesse momento,
-reabrir este ADR e migrar. Não implementar a Opção A preventivamente agora.
+**O que muda no cálculo, ponto a ponto:**
 
-## Plano de implementação (para `@lp-backend-dev`)
+- O contra original de A ("overkill de escopo para 1 endpoint hoje") deixa de ser o critério
+  certo — a pergunta não é mais "o que resolve `execute-lowcode` com menos código", é "o que não
+  precisa ser redesenhado quando o Cypress crescer para bater na API de verdade, continuamente,
+  possivelmente contra mais de um ambiente". A Opção B resolve o problema de hoje e cria dívida
+  técnica garantida (a própria ADR original já previa a migração como certeza, não risco).
+- O contra "não é identidade real/auditável" da Opção B se torna mais grave à medida que o
+  Cypress passa a ser tráfego recorrente e não um gate pontual: sem identidade real no Entra,
+  não há como distinguir "execução legítima do pipeline de CI" de "alguém reproduzindo o
+  segredo do `X-Service-Credential` fora do CI" a não ser por convenção de nome de usuário — o
+  App Registration do Entra dá revogação e trilha de auditoria organizacional de verdade.
+- Implementar B agora e migrar para A depois (como o ADR original recomendava) significa pagar
+  o custo de implementação **duas vezes** — o pedido do dono é para pagar uma vez só, já na
+  opção que não precisa ser jogada fora.
 
-1. **Options class** `ServiceCredentialOptions` (`Services/Security/`), seção
-   `Security:ServiceCredential` — campos `HeaderName` (default `X-Service-Credential`),
-   `ServiceNameHeader` (default `X-Service-Name`), `Secret` (vazio por default, nunca no
-   `appsettings.json` versionado — só `user-secrets`/env var `Security__ServiceCredential__Secret`).
-2. **Middleware** `ServiceCredentialAuthenticationMiddleware`, registrado em `Program.cs`
-   **depois** de `app.UseMiddleware<TrustedIdentityMiddleware>()` e **antes** de
-   `app.UseAuthentication()`:
-   - Se `env.IsProduction()` → `return await _next(context)` sem checar nada (guarda hard-coded).
-   - Se `HttpContext.User` já autenticado (veio do BFF) → não sobrescreve, segue.
-   - Senão, compara o header `Secret` via comparação de tempo constante
-     (`CryptographicOperations.FixedTimeEquals`, não `==`) contra o valor configurado; se vazio
-     no config, middleware é sempre no-op (evita "secret vazio bate com header vazio").
-   - Se bater, popula `HttpContext.User` com `ClaimTypes.Name = "svc-" + serviceName`,
-     `ClaimTypes.Role = "servico-e2e"`, `authenticationType: "ServiceCredential"` — mesmo padrão
-     de `ConstruirPrincipal` do `TrustedIdentityMiddleware`, sem duplicar lógica (extrair helper
-     compartilhado se fizer sentido).
-   - Nunca lança exceção — mesmo princípio de resiliência do resto do projeto
-     (`.claude/rules/dotnet-standards.md` §Resiliência): erro de config aqui degrada para
-     anônimo, não derruba a app.
-3. **Sem novo `AuthenticationScheme`.** `TrustedHeaderAuthenticationHandler` já só lê
-   `HttpContext.User` — reaproveitar, não duplicar.
-4. **Auditoria:** confirmar que `execute-lowcode` (e qualquer endpoint `[Authorize]` que o
-   Cypress precise chamar) tem `[ServiceFilter(typeof(AuditActionFilter))]` — se não tiver, é o
-   mesmo gap já registrado em `rollout-p2-autenticacao.md` (auditoria desigual entre
-   controllers). Não bloqueia este ADR, mas registrar achado se for encontrado.
-5. **CI/Cypress (fora deste repo, para `@lp-devops`/dono do `LayoutParserCypress` coordenarem):**
-   - Gerar um segredo forte, guardar como `Security__ServiceCredential__Secret` no
-     `Environment` do serviço de **dev** (nunca produção) e como secret do GitHub Actions
-     (`E2E_SERVICE_CREDENTIAL` ou nome equivalente) no repo `LayoutParserCypress`.
-   - Cypress passa a mandar `X-Service-Credential: <segredo>` + `X-Service-Name: cypress-e2e` em
-     todo `cy.request()` que hoje toma 401.
-6. **Teste automatizado** (mesmo estilo do teste de mutação da guarda de loopback já existente):
-   confirmar que, com `ASPNETCORE_ENVIRONMENT=Production`, o header correto **não** autentica —
-   este é o teste que protege a garantia central deste ADR.
+**O que NÃO muda:** o raciocínio de rede (loopback vs. `127.0.0.1`) continua sendo o contra mais
+sério de A e precisa de resposta honesta antes da implementação — tratado na seção dedicada
+abaixo, não descartado.
+
+## Mecanismo detalhado — Opção A (client credentials via Entra)
+
+### Onde o `client_id`/`client_secret` ficam armazenados
+
+Nunca em `appsettings.json` versionado — mesmo padrão já estabelecido para outros segredos do
+projeto (`.claude/rules/security.md`, `docs/architecture/runbook-hardening-senha-sql-em-repouso.md`):
+
+| Ambiente | Onde vive o segredo (lado Cypress/CI, quem *envia* o client_secret) |
+|---|---|
+| Dev local (dev rodando Cypress na workstation) | `dotnet user-secrets`? **Não** — o segredo aqui não é da API, é do **consumidor** (Cypress). Fica em `.env.local`/variável de ambiente do shell do Cypress, fora do repo `LayoutParserCypress`, no `.gitignore` local. |
+| CI (GitHub Actions do `LayoutParserCypress`) | Secret do GitHub Actions (`CYPRESS_E2E_CLIENT_SECRET` ou equivalente) — nunca em log, nunca em `VITE_*`/bundle. |
+
+Do lado da **API**, não há `client_secret` para armazenar — a API só **valida** tokens (verifica
+assinatura contra o JWKS público do tenant Entra, confere `issuer`/`audience`). O único dado de
+configuração novo na API é público por natureza (não é segredo):
+
+```
+Authentication:ServiceClient:Authority = https://login.microsoftonline.com/<tenant-id>/v2.0
+Authentication:ServiceClient:Audience  = api://layoutparser-api   (ou o Application ID URI do App Registration da API)
+```
+
+Esses dois valores **podem** ir no `appsettings.json` (não são segredo — são metadados públicos
+de configuração OIDC, o mesmo raciocínio que já vale para `Security:TrustedUserHeader`). O
+`client_secret` do App Registration "de serviço" (o que o Cypress usa para logar) nunca passa
+pela API — é trocado por um token diretamente com o Entra, do lado do Cypress.
+
+### Como o middleware valida o token — novo scheme, não extensão do `TrustedIdentityMiddleware`
+
+**Decisão: novo `AuthenticationScheme` paralelo (JWT Bearer), não extensão do
+`TrustedIdentityMiddleware` existente.** Justificativa:
+
+- `TrustedIdentityMiddleware` resolve um problema estruturalmente diferente: ele **confia** em
+  headers **porque a rede garante a origem** (loopback = "só pode ser o BFF"). Um Bearer token
+  JWT prova identidade **por criptografia** (assinatura verificável), independente de rede. São
+  dois modelos de confiança diferentes — misturá-los no mesmo middleware acopla "quem confio
+  porque a rede garante" com "quem confio porque a matemática garante", o que dificulta raciocinar
+  sobre cada um isoladamente (e viola o princípio de que `TrustedIdentityMiddleware` deve
+  permanecer simples o bastante pra auditar de cabeça).
+- ASP.NET Core já suporta múltiplos `AuthenticationScheme`s nativamente (`AddAuthentication()`
+  aceita registrar N schemes; `[Authorize]` sem `AuthenticationSchemes=` aceita qualquer scheme
+  que autentique com sucesso). Não é gambiarra — é o padrão da própria plataforma para "múltiplas
+  formas de provar quem você é".
+- Registro: `builder.Services.AddAuthentication().AddJwtBearer("ServiceClient", options => {...})`
+  como scheme adicional, ao lado do `TrustedHeaderAuthenticationHandler` já existente. O
+  `[Authorize]` em `execute-lowcode` (e futuros endpoints) continua sem `AuthenticationSchemes=`
+  explícito — aceita qualquer um dos dois schemes que autenticar.
+- Populam a mesma claim de role (`ClaimTypes.Role`) que o resto do pipeline de autorização já
+  entende — o token do Entra carrega uma **App Role** (ver abaixo) mapeada para o mesmo formato
+  de role que `[Authorize(Roles = "...")]` já espera, para não duplicar lógica de autorização.
+
+### Escopo/role mínimo — nunca admin
+
+O App Registration "de serviço" ganha **uma única App Role** no Entra, ex. `Service.E2E`, exposta
+como *application permission* (não *delegated* — não há usuário logado). O token emitido carrega
+essa role na claim `roles`. Mapeamento no lado da API: `Service.E2E` → mesma role interna
+`servico-e2e` que a Opção B já havia desenhado (reaproveitando o nome/escopo, só trocando o
+mecanismo de prova de identidade). Igual à trava já prevista em B: qualquer endpoint que exija
+`[Authorize(Roles = "admin")]` **não** aceita esse token — ampliar o escopo exige decisão nova
+registrada, não herança automática.
+
+### Rede: 127.0.0.1 vs. client credentials — avaliação honesta
+
+Este é o trade-off que a Opção A original apontava como o contra mais sério, e continua sendo.
+Três caminhos possíveis, em ordem de preferência:
+
+1. **Preferido — túnel/proxy do CI para o loopback, sem abrir a rede da API.** Se o runner do
+   Cypress em CI puder ser **co-localizado** com a API (mesma máquina/mesmo runner self-hosted
+   que já hospeda o BFF, ou um túnel SSH/named pipe do job de CI para `127.0.0.1:5100` do host),
+   a API continua escutando só em loopback — a trava de rede do `rollout-p2-autenticacao.md`
+   **não precisa reabrir**. Isso é viável hoje se o runner de CI do `LayoutParserCypress` rodar
+   na mesma máquina de dev (`BRNDDAPPBLD01`/workstation) onde a API já roda como serviço — a
+   confirmar com `@lp-devops` se o runner atual do Cypress é local ou hospedado (GitHub-hosted
+   runner genérico não teria acesso de rede a `127.0.0.1` da máquina de dev).
+2. **Aceitável, com custo declarado — exceção pontual na trava de rede para o IP do runner.**
+   Se o runner do Cypress não puder ser co-localizado (ex.: roda em runner GitHub-hosted, ou
+   precisa testar contra staging real de fora), a API precisa aceitar conexões de um IP/rede
+   específico do runner, além de `127.0.0.1`. Isso **é** uma reabertura parcial da superfície de
+   rede — mas com uma diferença fundamental do estado anterior (headers confiáveis de qualquer
+   origem): aqui a autenticação não depende mais da origem de rede ser confiável, e sim da posse
+   do token JWT assinado. Abrir a porta para o IP do runner deixa de ser "confio em quem vier
+   desse IP" (o problema que a guarda de loopback resolve) e passa a ser só alcançabilidade de
+   rede — a autenticação real acontece depois, no JWT Bearer. Ainda assim, mais IP alcançável é
+   mais superfície de ataque de rede (DDoS, port scan, exploits não relacionados a auth) —
+   custo real, não zero.
+3. **Descartado — abrir a API para `0.0.0.0` sem restrição.** Não necessário em nenhum cenário
+   realista do Cypress; não deve ser considerado.
+
+**Conclusão sobre rede:** o client credentials flow **não exige tecnicamente** abrir a rede além
+de loopback **se** o runner puder ser co-localizado (caminho 1) — mas se não puder, o caminho 2
+é um trade-off real que este ADR não pode fingir que não existe. Recomendação: `@lp-devops`
+confirma a topologia do runner do Cypress **antes** da implementação; se for co-localizado,
+implementar client credentials sem tocar na trava de rede; se não for, decidir explicitamente
+(com o dono) se abrir a exceção de IP vale o ganho de identidade real — essa é uma decisão de
+risco, não só de arquitetura, e deve ser registrada como adendo a este ADR quando resolvida.
+
+## Recomendação (revisada)
+
+**Opção A — client credentials via Entra.** Decisão do dono, fundamentada em direção de produto
+declarada (Cypress vai bater na API real, de forma recorrente, não como exceção pontual). A
+Opção B fica descartada como implementação — não como raciocínio: o desenho de role mínima,
+trava de ambiente e nunca-no-browser da Opção B é reaproveitado dentro da Opção A (mesmo nome de
+role `servico-e2e`/`Service.E2E`, mesmo princípio de nunca herdar `admin`).
+
+## Honeypots / Canary Tokens — camada de detecção complementar
+
+Pedido explícito do dono, como camada extra de segurança **complementar** aos controles de auth
+reais acima — **isto é detecção, não prevenção.** Um honeypot nunca impede um ataque; ele existe
+para que, se um controle de auth real falhar ou for contornado, exista um sinal de alarme barato
+e de alta confiança (baixíssimo falso-positivo, porque nenhum tráfego legítimo deveria jamais
+tocar nele).
+
+### Desenho: 2 mecanismos-isca, independentes entre si
+
+**1. Endpoint-isca (`honeypot route`).**
+
+Uma rota que aparenta ser sensível/privilegiada mas não executa nenhuma lógica real — só
+detecta e alarma. Candidatos de nome (escolher o que soa mais "convidativo" para alguém
+enumerando rotas): `POST /api/admin/execute-raw`, `GET /api/internal/debug-config`, ou
+`POST /api/TransformationExecution/execute-legacy` (imitando um endpoint "antigo" plausível
+dado o padrão de nomenclatura já existente no controller real). Recomendo o último — encaixa no
+padrão real de nomes do projeto, o que aumenta a chance de um atacante que já enumerou
+`execute-lowcode`/`execute-candidates` achar plausível que `execute-legacy` também é real.
+
+Comportamento do endpoint:
+- Aceita **qualquer** request (sem exigir auth real — é isso que faz dele atrativo/plausível para
+  quem está sondando).
+- Não faz nada com o payload (não parseia, não persiste, não repassa a nenhum serviço real —
+  risco zero de virar vetor de fato).
+- Responde algo plausível (ex.: `202 Accepted` ou um JSON de erro genérico) para não denunciar
+  que é uma armadilha via comportamento diferente do resto da API.
+- **Todo** hit — sucesso ou não — dispara o alarme (ver mecanismo de alerta abaixo). Não há
+  "uso legítimo" possível por definição: nenhum código do próprio sistema (React, MCP, Cypress
+  real) jamais deveria chamar essa rota.
+
+**2. Credencial-isca (`canary credential`).**
+
+Um valor de `X-Service-Credential`/client_secret "aposentado" — gerado, documentado como válido
+em algum artefato que um atacante plausivelmente encontraria (ex.: um `appsettings.json.example`
+antigo, um commit histórico já limpo mas que pode ter sido clonado antes da limpeza, ou um
+arquivo de config de ambiente de teste descontinuado) — mas que a API **continua reconhecendo**
+apenas para fins de detecção, nunca para autorizar nada real.
+
+Mecanismo: se a Opção A (client credentials Entra) for a única via de auth M2M viva, a credencial
+canary não pode ser um App Registration real no Entra (isso daria acesso de verdade). Em vez
+disso, é um valor de **API key legada, fixa, nunca rotacionada**, reconhecida por um middleware
+dedicado (`CanaryCredentialDetectionMiddleware`) que:
+- Compara o header/token recebido contra a lista de valores canary conhecidos (comparação de
+  tempo constante, mesmo cuidado do `FixedTimeEquals` já usado em outros middlewares do projeto).
+- Se bater, **nunca** autentica o request (`HttpContext.User` continua anônimo/rejeitado) — só
+  dispara o alarme e retorna o mesmo 401 que qualquer credencial inválida receberia (não
+  denuncia que foi detectado como canary, para não ensinar o atacante a evitar esse valor
+  especificamente).
+- Roda **antes** de qualquer middleware de auth real, para garantir que o alarme dispara mesmo
+  que o valor canary por acaso colida com alguma validação futura.
+
+### Mecanismo de alerta — nunca silencioso
+
+Qualquer hit no endpoint-isca ou na credencial-isca gera:
+
+1. **Log estruturado, nível `Critical` (acima de `Error`)**, com marcador distinto e
+   correlacionável — ex. `_logger.LogCritical("CANARY_TRIGGERED {CanaryType} {SourceIp}
+   {CorrelationId} {Payload}", ...)`. Nível `Critical` porque nenhum log operacional legítimo do
+   projeto deveria usar esse nível hoje — torna o grep/alerta trivial de distinguir de ruído
+   normal, e já é maior que qualquer coisa que o Serilog sink atual trata como "esperado".
+2. **Correlação:** reaproveita o `CorrelationId` já injetado no `LogContext` (mesmo padrão do
+   resto do projeto) para permitir cruzar com outros logs da mesma origem/IP se o atacante tentar
+   mais de uma coisa na mesma sessão.
+3. **Disparo automático — reaproveitar o step de e-mail já existente em `deploy.yml`.** O
+   projeto já tem o padrão de e-mail via `dawidd6/action-send-mail@v3`, mas esse mecanismo hoje
+   só dispara **dentro de um workflow de CI** (no contexto de um deploy) — não serve diretamente
+   para um evento em runtime da API rodando em produção/dev. Duas opções, recomendo a primeira:
+   - **(Recomendada) Sink dedicado no Serilog para nível `Critical` com gatilho de e-mail.**
+     Serilog já suporta múltiplos sinks; adicionar um sink condicional (`MinimumLevel.Override`
+     restrito a `Critical`, ou um `Serilog.Sinks.Email` — pacote gratuito, mesma filosofia de
+     "sem infra nova" já usada no projeto) que dispara e-mail **só** quando um log `Critical`
+     acontece. Reaproveita os mesmos secrets SMTP já documentados em `.claude/rules/security.md`
+     (`SMTP_SERVER`/`SMTP_PORT`/`SMTP_USERNAME`/`SMTP_PASSWORD`/`ALERT_EMAIL_TO`) — mesma
+     dependência de o dono escolher o provedor SMTP, hoje ainda pendente. Enquanto o provedor
+     não for escolhido, o log `Critical` ainda existe (silencioso só no e-mail, não no log) —
+     ainda é uma melhoria sobre "sem alarme nenhum".
+   - **(Alternativa, mais trabalho) Webhook simples** de um serviço de log/monitoramento externo
+     gratuito (ex. um endpoint HTTP que o middleware chama de forma fire-and-forget, nunca
+     bloqueando o request) — mais superfície nova a manter, só vale se o dono já tiver um
+     destino de webhook em mente (Discord/Telegram bot, por exemplo, ambos gratuitos). Não
+     recomendo abrir essa frente sem um destino concreto já decidido.
+4. **Nunca falha silenciosamente.** Igual ao resto do projeto (`.claude/rules/dotnet-standards.md`
+   §Resiliência) — se o sink de e-mail falhar (SMTP fora do ar), o log `Critical` continua
+   gravado localmente; a falha do alerta não pode mascarar a detecção.
+
+### Limite explícito — detecção, não prevenção
+
+Este mecanismo **não substitui** nenhum controle de auth real (Opção A, `TrustedIdentityMiddleware`,
+`[Authorize]`). Ele não impede um ataque bem-sucedido, não reduz a superfície de rede, não
+protege segredos reais. O único papel dele é: se algo/alguém que não deveria estar testando a
+API acabar testando (enumeração de rotas, replay de segredo antigo vazado no histórico do git —
+ver `.claude/rules/security.md`, pendência de limpeza de histórico), há uma chance real de
+detectar isso antes/durante, em vez de só depois de um incidente confirmado por outros meios.
+
+## Plano de implementação (revisado, para `@lp-backend-dev`)
+
+### Parte 1 — Client credentials via Entra (Opção A)
+
+1. **Pré-requisito de coordenação externa (não é `@lp-backend-dev`):** criar/confirmar 2 App
+   Registrations no tenant Entra da NDD — (a) o App Registration "de serviço" que o Cypress usa
+   para logar (`client_id`/`client_secret`, grant `client_credentials`); (b) confirmar que a API
+   já tem (ou criar) seu próprio App Registration como *resource*/*audience*, com uma App Role
+   `Service.E2E` exposta como *application permission*, concedida ao App Registration (a). Esta
+   etapa depende de aprovação/execução do time de identidade/AD — sinalizar prazo não previsível
+   ao dono antes de comprometer uma data de entrega.
+2. **Confirmar topologia do runner do Cypress com `@lp-devops`** antes de tocar em rede — ver
+   seção "Rede: 127.0.0.1 vs. client credentials" acima. Decisão de abrir ou não exceção de IP é
+   do dono, registrar como adendo a este ADR quando resolvida. **Investigação inicial concluída
+   em 2026-09-03 — ver "Adendo — topologia real do runner Cypress" ao final: não há hoje CI
+   configurado para esta suíte; decisão formal ainda pendente do dono.**
+3. **Pacote NuGet:** `Microsoft.Identity.Web` (ou `Microsoft.AspNetCore.Authentication.JwtBearer`
+   puro, mais leve — avaliar qual encaixa melhor sem trazer dependências além do necessário para
+   um App-only flow).
+4. **Config nova em `appsettings.json`** (pública, não segredo):
+   `Authentication:ServiceClient:Authority`, `Authentication:ServiceClient:Audience`.
+5. **Registro em `Program.cs`:** `AddAuthentication().AddJwtBearer("ServiceClient", options => {
+   options.Authority = ...; options.Audience = ...; })`, registrado como scheme adicional, sem
+   remover o `TrustedHeaderAuthenticationHandler` existente. Mapear a claim `roles` do token
+   (`Service.E2E`) para `ClaimTypes.Role = "servico-e2e"` via `options.TokenValidationParameters`
+   ou um `OnTokenValidated` event — mesmo formato de role que o resto do pipeline já entende.
+6. **Sem mudança nos `[Authorize]` existentes** — continuam sem `AuthenticationSchemes=`
+   explícito, aceitando qualquer scheme que autentique com sucesso (headers do BFF **ou** Bearer
+   Entra).
+7. **CI/Cypress (fora deste repo, para `@lp-devops`/dono do `LayoutParserCypress`
+   coordenarem):** Cypress obtém o token via `client_credentials` grant (chamada direta ao
+   endpoint de token do Entra, antes de cada suíte ou com cache de token até expirar) e manda
+   `Authorization: Bearer <token>` em todo `cy.request()` que hoje toma 401. `client_secret` fica
+   como secret do GitHub Actions do repo `LayoutParserCypress`, nunca versionado.
+8. **Teste automatizado:** confirmar que um token com role diferente de `Service.E2E` (ou sem
+   role nenhuma) **não** autoriza `execute-lowcode` — equivalente ao teste de mutação da guarda
+   de loopback já existente, adaptado para o novo scheme.
+
+### Parte 2 — Honeypot/Canary
+
+9. **Endpoint-isca:** novo controller/action mínimo (ex. `POST
+   /api/TransformationExecution/execute-legacy`), sem `[Authorize]`, sem lógica real — só loga
+   `Critical` e responde. Confirmar que não colide com nenhuma rota real existente.
+10. **Credencial-isca:** gerar 1+ valores de API key "aposentada" plausíveis, documentar em local
+    que um histórico de git limpo/exemplo de config antigo tornaria descobrível (coordenar com
+    `@lp-devops` o que já está exposto no histórico pré-limpeza, para reaproveitar como isca real
+    em vez de inventar uma nova). Middleware `CanaryCredentialDetectionMiddleware`, registrado
+    bem no início do pipeline, antes de qualquer auth real.
+11. **Log `Critical` estruturado** com marcador `CANARY_TRIGGERED`, `CorrelationId`, IP de
+    origem, payload (truncado, nunca logar segredos de terceiros que porventura venham no
+    payload).
+12. **Sink de e-mail condicional a `Critical`** no Serilog — mesma dependência de secrets SMTP já
+    pendente (`.claude/rules/security.md`); registrar como reaproveitamento explícito, não
+    duplicar configuração.
+13. **Teste automatizado:** confirmar que um hit no endpoint-isca ou na credencial-isca gera
+    exatamente 1 log `Critical` com o marcador esperado, e que a resposta HTTP não denuncia a
+    detecção (mesmo código/formato de um erro comum).
 
 ## Riscos e mitigação
 
 | Risco | Mitigação |
 |---|---|
-| Segredo do Cypress vaza (log, commit acidental, CI mal configurado) | Trava de ambiente torna o vazamento inofensivo em produção; em dev, o dano é limitado a um role `servico-e2e` de baixo privilégio, não `admin`. Rotação simples (é só um secret de CI, sem consumidor externo à NDD). |
-| Alguém reintroduz a checagem de ambiente como config em vez de hard-code, e um deploy de produção herda `ASPNETCORE_ENVIRONMENT` errado | Mesma classe de risco que já existe hoje para `TrustIdentityFromLoopbackOnly` — mitigar com o teste do item 6 do plano, que já teria pego essa classe de regressão antes do merge. |
-| Escopo cresce informalmente ("já que temos o mecanismo, usa pra mais coisa") e o role `servico-e2e` vira um `admin` disfarçado ao longo do tempo | Este ADR fixa que qualquer ampliação de papel exige decisão nova registrada, não só um PR de código — sinalizar explicitamente se `@lp-backend-dev` receber esse pedido futuramente. |
-| Confundir esta credencial com o `ApiKeyGateFilter` removido e reintroduzir o padrão antigo (global, fail-open, exposto ao browser) | Diferenças documentadas explicitamente na seção da Opção B — nunca no bundle do front, sempre role mínimo, sempre travado por ambiente. |
-| Opção B não escalar se o escopo do Cypress mudar (rodar contra prod/staging real) | Documentado como limite conhecido — não é surpresa futura, é a condição de gatilho para reabrir este ADR e migrar para a Opção A. |
+| App Registration novo no Entra não é aprovado a tempo pelo time de identidade/AD | Escalar prazo ao dono cedo; não é um risco que `@lp-backend-dev` resolve sozinho — é dependência externa explícita desde o passo 1 do plano. |
+| Exceção de rede para o IP do runner do Cypress aumenta superfície de ataque | Decisão explícita do dono após `@lp-devops` confirmar topologia (seção de rede); preferir túnel/co-localização sempre que viável. |
+| `client_secret` do Cypress vaza (log, commit acidental, CI mal configurado) | Revogável no Entra sem tocar em código da API (diferencial sobre a Opção B); mesma disciplina de nunca versionar já aplicada a outros segredos do projeto. |
+| Escopo da App Role `Service.E2E` cresce informalmente e vira um `admin` disfarçado | Mesma trava de princípio já registrada para a Opção B: qualquer ampliação de papel exige decisão nova registrada, não só um PR de código. |
+| Endpoint-isca ou credencial-isca são descobertos e "aprendidos" por um atacante sofisticado que evita chamá-los | Aceito como limite conhecido de qualquer honeypot — valor está em pegar tentativas automatizadas/não sofisticadas (scanners, replay de segredo vazado), não um atacante direcionado que já conhece o mecanismo. Não é motivo para não implementar. |
+| Sink de e-mail do canary depende do mesmo provedor SMTP ainda não escolhido pelo dono | Log `Critical` local continua funcionando mesmo sem e-mail configurado — degrada, não falha silenciosamente. |
+| Confundir a credencial-isca com um mecanismo de auth real e alguém tentar "consertá-la" para funcionar de verdade | Documentar explicitamente no código (comentário PT-BR) que a credencial-isca **nunca** deve autenticar nada — é o oposto do propósito. |
+
+## Nota sobre #219 — frente separada, não depende deste ADR
+
+`generate-for-layout` não tem `[Authorize]` hoje; o erro reportado
+(`"Tipo de layout não suportado: 2"`, HTTP 200 com `success:false`) é de validação de
+`layoutType` do layout FIAT (`LAY_TXT_MQSERIES_ENVNFE_4.00_NFe`), não de autenticação. Nenhuma
+parte do mecanismo M2M desta ADR afeta essa investigação — ela segue com `@lp-parser-llm`
+(domínio de geração TCL/XSL), como a própria epic #221 já havia separado corretamente em
+"Frente B". Confirmar via código/cadastro se `layoutType=2` deveria ser suportado pelo endpoint
+(lacuna real) ou se é o cadastro do layout que está errado no banco.
+
+---
+
+## Adendo — topologia real do runner Cypress (2026-09-03, `@lp-devops`/Gage)
+
+Investigação da pendência aberta na seção "Rede: 127.0.0.1 vs. client credentials" (item 2 do
+plano de implementação). Baseada em leitura de código/config/memória deste repo — **sem acesso
+ao repositório `LayoutParserCypress`**, que é onde o runner de fato vive. Fatos primeiro,
+depois o veredito.
+
+### O que este repositório permite confirmar
+
+1. **Não existe CI configurado para a suíte E2E Cypress hoje.** `LayoutParserCypress` (repo
+   dedicado, criado em 2026-07-28 — ver
+   `.claude/agent-memory/lp-devops/layoutparser-cypress-bootstrap.md`) **não tem remoto/GitHub
+   nem workflow do GitHub Actions** — só existe como clone local
+   (`C:\Users\elson.lopes\source\repos\LayoutParserCypress`). Não há, portanto, um "runner do
+   Cypress" em execução automatizada para confirmar — a pergunta do ADR ("onde o runner roda")
+   pressupõe uma automação que ainda não foi criada.
+
+2. **A suíte relevante para #218/#221 (`nfe-emissao-normal.cy.js`, a que bate em
+   `execute`/`execute-lowcode`/`generate-for-layout`) só foi executada manualmente, do próprio
+   workstation de desenvolvimento**, com a API rodando via `dotnet run` local na porta 5000 (ver
+   `.claude/agent-memory/lp-qa/cypress-alpha-emissao-normal-spec.md`, sessão de 2026-07-29). Não
+   há evidência de execução contra a instância de dev implantada (`dev-local`, porta 5100) nem
+   contra produção.
+
+3. **Existe uma suíte Cypress diferente, já com topologia real definida — mas não é a mesma
+   suíte, nem o mesmo problema de rede.** O "Job 2" (`ia-candidates-batch.cy.js`, ver
+   `docs/architecture/runbook-vm-cypress-provisionamento.md` e
+   `docs/architecture/handoff-3-job2-pipeline-cypress-pollux.md`) roda via `cron` numa VM Ubuntu
+   dedicada (IP mutável por DHCP, era `172.25.32.31`, depois `172.25.32.3` — confirmar o atual
+   antes de qualquer decisão). Essa suíte:
+   - Não chama os endpoints `[Authorize]`-gated deste ADR — consome o resultado já persistido
+     pelo Job 1 e valida contra o e-forms/Pollux (oráculo SEFAZ-fake), não a API LayoutParser
+     diretamente para gerar a transformação.
+   - Está **estruturalmente isolada da rede de produção**: `handoff-3-job2-pipeline-cypress-pollux.md`
+     documenta que a rede entre essa VM e o servidor de produção (`172.25.32.42`) está quebrada
+     (bridge Hyper-V preso em IP link-local, achado de 2026-07-31, não resolvido por SSH) — a VM
+     **não pode** hoje ser o caminho de co-localização, mesmo se fosse a suíte certa.
+   - Não deve ser confundida com a suíte de `execute-lowcode` ao decidir a topologia — são dois
+     runners candidatos diferentes, com dois problemas de rede diferentes.
+
+4. **Existe, sim, um runner self-hosted de GitHub Actions já em produção neste repositório**
+   (`LayoutParserApi`), rodando na **mesma máquina onde a API de dev é implantada**: o CI de dev
+   (`ci-dev.yml`) usa o label `dev-local`, cuja máquina é `NDD-NOT-10910`
+   (`.claude/agent-memory/lp-devops/runner-isolation-rollout.md`) — e é essa mesma máquina que
+   recebe o deploy da API de dev como serviço Windows nativo, escutando em
+   `http://localhost:5100` (bind padrão de loopback, `API_URL_DEV` não setado — confirmado em
+   `.github/workflows/ci-dev.yml:355-357`). Ou seja: **já existe hoje, neste ecossistema, um
+   runner de CI co-localizado com uma instância da API** — só não é (ainda) o runner que executa
+   Cypress, porque Cypress não tem CI nenhum configurado.
+
+### O que não dá para confirmar a partir deste repositório
+
+- Se/quando `LayoutParserCypress` ganhar CI, qual runner será usado — self-hosted (`dev-local`
+  ou um novo) ou GitHub-hosted. Essa é uma decisão de config do futuro workflow, não um fato já
+  registrado em nenhum lugar acessível daqui.
+- Se o plano é reaproveitar o runner `dev-local` (mesma máquina do serviço de dev da API) para
+  também rodar Cypress, ou provisionar um runner novo.
+- O detalhe de "WSL" citado no corpo original deste ADR (`http://172.19.176.1:5100` "visto do
+  WSL") não tem origem rastreável neste repo — não há evidência de que a suíte relevante
+  (`nfe-emissao-normal.cy.js`) tenha rodado de dentro do WSL contra a porta 5100; a única
+  execução documentada (QA, 2026-07-29) foi Windows nativo contra `dotnet run` na porta 5000.
+  Tratar a menção a WSL/5100 no ADR original como **hipótese ilustrativa do arquiteto**, não como
+  fato verificado — se for esse o plano real, precisa ser confirmado/registrado à parte.
+
+### Veredito
+
+**Não há hoje uma "topologia real do runner Cypress" para confirmar, porque não há runner —
+a suíte roda manualmente.** Isso não é uma resposta evasiva: é o estado real do projeto, e muda
+a pergunta de "onde o runner está" para "onde o runner **vai** estar quando a automação for
+criada".
+
+Dentro do que é decidível hoje:
+
+- **Caminho 1 (co-localização) é tecnicamente viável e é a rota de menor esforço**, porque a
+  infraestrutura de runner self-hosted `dev-local` já existe, já roda na mesma máquina do
+  serviço de dev da API, e já é usada por este mesmo repositório (`ci-dev.yml`). Se o workflow de
+  CI que vier a ser criado em `LayoutParserCypress` for configurado para usar esse mesmo runner
+  (ou um runner novo posto na mesma máquina), o Cypress passa a rodar como processo nativo
+  Windows na mesma máquina do serviço `LayoutParserApi` de dev — atingindo `http://127.0.0.1:5100`
+  como loopback real, sem precisar de exceção de rede nem de WSL/NAT no meio. Isso é uma
+  possibilidade concreta, não uma confirmação de que é o que vai acontecer.
+- **Caminho 2 (exceção de IP) só entraria em jogo se o dono decidir usar um runner GitHub-hosted
+  (genérico, fora da rede da NDD) para o CI do `LayoutParserCypress`** — cenário possível, mas
+  não indicado por nenhuma evidência coletada nesta investigação; seria uma escolha nova, não uma
+  restrição já existente.
+- **A VM do Job 2 (172.25.32.3x) não é candidata a runner para esta suíte** — é uma máquina
+  diferente, com rede já comprovadamente quebrada para o servidor de produção, dedicada a um
+  problema diferente (validação de candidatos IA vs. Pollux, não auth M2M da API).
+
+### Pergunta que precisa ser respondida numa sessão do `LayoutParserCypress` (ou pelo dono, diretamente)
+
+> Quando o CI do `LayoutParserCypress` for criado: (a) vai usar um runner self-hosted na mesma
+> rede/máquina da API de dev (`dev-local`/`NDD-NOT-10910`, ou equivalente), ou um runner
+> GitHub-hosted genérico? (b) A suíte `nfe-emissao-normal.cy.js` (a que depende do mecanismo M2M
+> deste ADR) vai rodar contra a instância de dev implantada (porta 5100) ou contra uma API local
+> ad hoc (`dotnet run`, como foi testado manualmente)?
+
+A resposta a essas duas perguntas decide entre o Caminho 1 e o Caminho 2 sem ambiguidade. Até lá,
+a recomendação operacional é: **implementar a Parte 1 do plano (client credentials via Entra) sem
+tocar na trava de rede `127.0.0.1`** — a Opção A não depende de abrir rede para funcionar em si
+(a validação do JWT independe de onde a chamada se origina); a decisão de rede só se torna
+obrigatória no momento em que um runner real e não-co-localizado precisar alcançar a API, o que
+ainda não existe.
 
 ## Nota sobre #219 — frente separada, não depende deste ADR
 
