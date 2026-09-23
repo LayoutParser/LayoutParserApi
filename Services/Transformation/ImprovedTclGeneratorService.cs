@@ -360,48 +360,12 @@ namespace LayoutParserApi.Services.Transformation
         }
 
         /// <summary>
-        /// Valida estrutura do TCL
+        /// Valida estrutura do TCL — delega para <see cref="TclStructureValidator"/> (issue #173),
+        /// compartilhado com <c>TransformationValidatorService</c> para não duplicar a checagem de
+        /// MAP/LINE/FIELD em dois lugares.
         /// </summary>
-        private async Task<TransformationCheckResult> ValidateTclStructureAsync(string tclContent)
-        {
-            var result = new TransformationCheckResult { Success = true, Errors = new List<string>() };
-
-            try
-            {
-                var doc = XDocument.Parse(tclContent);
-                var mapElement = doc.Descendants("MAP").FirstOrDefault();
-                
-                if (mapElement == null)
-                {
-                    result.Success = false;
-                    result.Errors.Add("Elemento MAP não encontrado");
-                    return result;
-                }
-
-                var lines = mapElement.Elements("LINE").ToList();
-                if (!lines.Any())
-                {
-                    result.Success = false;
-                    result.Errors.Add("Nenhuma linha encontrada no TCL");
-                    return result;
-                }
-
-                // Validar que cada linha tem campos
-                foreach (var line in lines)
-                {
-                    var fields = line.Elements("FIELD").ToList();
-                    if (!fields.Any())
-                        result.Errors.Add($"Linha '{line.Attribute("name")?.Value}' não tem campos");
-                }
-            }
-            catch (Exception ex)
-            {
-                result.Success = false;
-                result.Errors.Add($"Erro ao validar TCL: {ex.Message}");
-            }
-
-            return result;
-        }
+        private Task<TransformationCheckResult> ValidateTclStructureAsync(string tclContent)
+            => Task.FromResult(TclStructureValidator.Validate(tclContent));
 
         /// <summary>
         /// Parseia o comprimento de um atributo length (pode ser "60" ou "15,2,0" para decimais)
