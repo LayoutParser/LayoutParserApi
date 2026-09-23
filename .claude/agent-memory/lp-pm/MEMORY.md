@@ -11,3 +11,6 @@
 - [Board-sync 2026-08-18](project_board-sync-2026-08-18.md) — 7 issues fechadas com evidência (#122,#33,#111,#113,#92,#93,#51); `Closes #N` na PR não garante fechamento automático, conferir sempre.
 - [Contrato linha vazia/progresso/degradação 2026-08-27](project_contrato-linha-vazia-progresso-degradacao-2026-08-27.md) — issues #194-#197; InformacoesParaEDI já resolvido em PR #191, não virou issue nova.
 - [Board-sync 2026-08-28](project_board-sync-2026-08-28.md) — 5 issues fechadas (#140,#138,#139,#141,#86); closing keyword nunca atravessa repositório, PR cross-repo exige fechamento manual sempre.
+- [LLM provider plugável 2026-09-08](project_llm-provider-plugavel-2026-09-08.md) — #340 (F1 ILlmProvider) e #341 (F2 gap proveniência); F3/F4 aguardam dono escolher provedor.
+- [Correção humana de campo 2026-09-08](project_correcao-humana-campo-2026-09-08.md) — #345 (endpoint+DocumentId, urgente pro React#234) e #346 (curadoria, depende de #345).
+- [Retraining automatizado F4 2026-09-08](project_retraining-automatizado-f4-2026-09-08.md) — #351 (F4.1-F4.3 faseado), continuação de #151; backfill em lote deliberadamente não formalizado.
