@@ -9,11 +9,14 @@ namespace LayoutParserApi.Services.Generation.Implementations
     public class SyntheticDataGeneratorService : ISyntheticDataGeneratorService
     {
         private readonly ILogger<SyntheticDataGeneratorService> _logger;
-        private readonly Random _random = new();
+        private readonly ITypedValueGenerator _valueGenerator;
 
-        public SyntheticDataGeneratorService(ILogger<SyntheticDataGeneratorService> logger)
+        public SyntheticDataGeneratorService(
+            ILogger<SyntheticDataGeneratorService> logger,
+            ITypedValueGenerator valueGenerator)
         {
             _logger = logger;
+            _valueGenerator = valueGenerator;
         }
 
         public async Task<GeneratedDataResult> GenerateSyntheticDataAsync(SyntheticDataRequest request)
@@ -39,6 +42,17 @@ namespace LayoutParserApi.Services.Generation.Implementations
                 // o campo quebraria o payload de quem já chama o endpoint, e responder 400 a um
                 // request que antes funcionava seria pior que atendê-lo por regras. Quando a
                 // geração semântica voltar sobre Ollama local, é este flag que a religa.
+                //
+                // ✅ issue #341 (F2 — ponto de religamento preparado, NÃO ativado aqui): quando esse
+                // caminho voltar a chamar um ILlmProvider, se o prompt embutir uma amostra/planilha
+                // REAL do analista como referência de formato (ex.: um artefato anexado ao draft com
+                // ArtifactProvenance ausente/RealCustomerSample), a chamada deve declarar
+                // DataSensitivity.RealFiscalDocument e usar LlmProviderResolver — que recusa em
+                // runtime qualquer provider ProviderLocality.Cloud para essa sensibilidade (ver
+                // LlmProviderResolver.Resolve). Isso vale MESMO que a SAÍDA final seja sintética: é o
+                // conteúdo do PROMPT que importa, não o do resultado. Nunca decida a sensibilidade
+                // aqui a partir de "a saída é sintética" — resolva a partir da proveniência real de
+                // cada artefato usado como referência (ArtifactProvenance.ResolveSensitivity).
                 if (request.UseAI)
                     _logger.LogInformation("UseAI ignorado: geração por IA em nuvem foi decomissionada; usando regras.");
 
@@ -64,30 +78,11 @@ namespace LayoutParserApi.Services.Generation.Implementations
         {
             try
             {
-                var fieldType = InferFieldType(field, dataType);
-
-                switch (fieldType)
-                {
-                    case "cnpj":
-                        return GenerateCnpj();
-                    case "cpf":
-                        return GenerateCpf();
-                    case "date":
-                        return GenerateDate();
-                    case "datetime":
-                        return GenerateDateTime();
-                    case "decimal":
-                        return GenerateDecimal(field.LengthField);
-                    case "integer":
-                        return GenerateInteger(field.LengthField);
-                    case "email":
-                        return GenerateEmail();
-                    case "phone":
-                        return GeneratePhone();
-                    case "text":
-                    default:
-                        return GenerateText(field.LengthField, context, excelContext);
-                }
+                // ✅ Geração de valor por tipo agora vive no componente compartilhado
+                // ITypedValueGenerator (issue #356) — consumido também pelo caminho Xml,
+                // sem duplicar CPF/CNPJ/data/decimal.
+                var fieldType = _valueGenerator.InferType(field.Name, dataType);
+                return _valueGenerator.Generate(fieldType, field.LengthField, context);
             }
             catch (Exception ex)
             {
@@ -114,7 +109,7 @@ namespace LayoutParserApi.Services.Generation.Implementations
             var requirements = new Dictionary<string, object>
             {
                 ["fieldName"] = field.Name,
-                ["fieldType"] = InferFieldType(field),
+                ["fieldType"] = _valueGenerator.InferType(field.Name),
                 ["length"] = field.LengthField,
                 ["isSequential"] = field.IsSequential,
                 ["isRequired"] = field.IsRequired,
@@ -232,91 +227,6 @@ namespace LayoutParserApi.Services.Generation.Implementations
             // Implementar lógica para extrair valores de exemplo do Excel
             // baseado no mapeamento de campos
             return new List<string>();
-        }
-
-        private string InferFieldType(FieldElement field, string dataType = null)
-        {
-            if (!string.IsNullOrEmpty(dataType))
-                return dataType.ToLower();
-
-            var name = field.Name.ToLower();
-
-            if (name.Contains("cnpj")) return "cnpj";
-            if (name.Contains("cpf")) return "cpf";
-            if (name.Contains("data") || name.Contains("date")) return "date";
-            if (name.Contains("hora") || name.Contains("time")) return "datetime";
-            if (name.Contains("valor") || name.Contains("preco") || name.Contains("amount")) return "decimal";
-            if (name.Contains("quantidade") || name.Contains("qtd")) return "integer";
-            if (name.Contains("email")) return "email";
-            if (name.Contains("telefone") || name.Contains("phone")) return "phone";
-
-            return "text";
-        }
-
-        private string GenerateCnpj()
-        {
-            // Gerar CNPJ válido sinteticamente
-            var cnpj = _random.Next(10000000, 99999999).ToString() + "0001" + _random.Next(10, 99).ToString();
-            return cnpj.PadLeft(14, '0');
-        }
-
-        private string GenerateCpf()
-        {
-            // Gerar CPF válido sinteticamente
-            var cpf = _random.Next(100000000, 999999999).ToString() + _random.Next(10, 99).ToString();
-            return cpf.PadLeft(11, '0');
-        }
-
-        private string GenerateDate()
-        {
-            var startDate = DateTime.Now.AddYears(-5);
-            var endDate = DateTime.Now;
-            var randomDate = startDate.AddDays(_random.Next(0, (int)(endDate - startDate).TotalDays));
-            return randomDate.ToString("yyyyMMdd");
-        }
-
-        private string GenerateDateTime()
-        {
-            var startDate = DateTime.Now.AddYears(-1);
-            var endDate = DateTime.Now;
-            var randomDate = startDate.AddDays(_random.Next(0, (int)(endDate - startDate).TotalDays));
-            return randomDate.ToString("yyyy-MM-ddTHH:mm:ss");
-        }
-
-        private string GenerateDecimal(int length)
-        {
-            var value = (decimal)_random.NextDouble() * 10000;
-            var formatted = value.ToString("F2").Replace(".", "").Replace(",", "");
-            return formatted.PadLeft(length, '0');
-        }
-
-        private string GenerateInteger(int length)
-        {
-            var value = _random.Next(1, 999999);
-            return value.ToString().PadLeft(length, '0');
-        }
-
-        private string GenerateEmail()
-        {
-            var domains = new[] { "gmail.com", "hotmail.com", "outlook.com", "empresa.com.br" };
-            var names = new[] { "joao", "maria", "pedro", "ana", "carlos", "lucia" };
-            var domain = domains[_random.Next(domains.Length)];
-            var name = names[_random.Next(names.Length)];
-            return $"{name}{_random.Next(100, 999)}@{domain}";
-        }
-
-        private string GeneratePhone()
-        {
-            var ddd = _random.Next(11, 99);
-            var number = _random.Next(10000000, 99999999);
-            return $"{ddd}{number}";
-        }
-
-        private string GenerateText(int length, string context, ExcelDataContext excelContext)
-        {
-            var words = new[] { "exemplo", "teste", "dados", "sinteticos", "gerado", "automaticamente" };
-            var word = words[_random.Next(words.Length)];
-            return word.PadRight(length, ' ');
         }
 
     }
