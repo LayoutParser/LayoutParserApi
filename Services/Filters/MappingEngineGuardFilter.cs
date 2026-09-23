@@ -27,12 +27,12 @@ namespace LayoutParserApi.Services.Filters
 
         public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
         {
-            var (queryEngine, bodyEngine) = await ResolveEnginesAsync(context);
+            var (queryEngine, bodyEngineBlocked) = await ResolveEnginesAsync(context);
 
             // "sysmiddle" explícito em QUALQUER um dos dois (query ou body) é recusado — não é
             // "query tem prioridade sobre body", é "se aparecer em qualquer lugar plausível, bloqueia".
             // Isso evita bypass via engine=xslt na query + {"engine":"sysmiddle"} no body.
-            if (IsSysmiddle(queryEngine) || IsSysmiddle(bodyEngine))
+            if (IsSysmiddle(queryEngine) || bodyEngineBlocked)
             {
                 context.Result = new UnprocessableEntityObjectResult(new
                 {
@@ -45,10 +45,45 @@ namespace LayoutParserApi.Services.Filters
         }
 
         private static bool IsSysmiddle(string? engine) =>
-            !string.IsNullOrWhiteSpace(engine) && string.Equals(engine, SysmiddleEngine, StringComparison.OrdinalIgnoreCase);
+            !string.IsNullOrWhiteSpace(engine) && string.Equals(engine.Trim(), SysmiddleEngine, StringComparison.OrdinalIgnoreCase);
 
-        /// <summary>Lê <c>engine</c> tanto da query string quanto do body (bufferizado sem consumir o stream original, quando JSON) — os dois são checados, não só o primeiro encontrado.</summary>
-        private static async Task<(string? queryEngine, string? bodyEngine)> ResolveEnginesAsync(ActionExecutingContext context)
+        /// <summary>
+        /// Avalia o <c>JsonElement</c> de <c>engine</c> no body considerando os formatos plausíveis:
+        /// string simples (<c>"sysmiddle"</c>), array de strings (qualquer elemento batendo recusa) —
+        /// e, por padrão fail-closed, qualquer outro tipo (objeto, número, bool etc.) que não seja
+        /// reconhecido como string/array é tratado como recusa. "Não reconhecer o formato" não pode
+        /// significar "aceitar por omissão" — o objetivo do filtro é bloquear, não validar sintaxe.
+        /// </summary>
+        private static bool IsEngineBlocked(JsonElement engineProp)
+        {
+            switch (engineProp.ValueKind)
+            {
+                case JsonValueKind.String:
+                    return IsSysmiddle(engineProp.GetString());
+
+                case JsonValueKind.Array:
+                    foreach (var item in engineProp.EnumerateArray())
+                    {
+                        if (item.ValueKind == JsonValueKind.String && IsSysmiddle(item.GetString()))
+                            return true;
+                    }
+                    return false;
+
+                // Fail-closed: objeto, número, bool, null etc. não são um formato reconhecido de
+                // "engine" — recusa em vez de deixar passar implicitamente.
+                default:
+                    return true;
+            }
+        }
+
+        /// <summary>
+        /// Lê <c>engine</c> tanto da query string (sempre string simples) quanto do body (bufferizado
+        /// sem consumir o stream original, quando JSON) — os dois são checados, não só o primeiro
+        /// encontrado. O body pode trazer <c>engine</c> como string, array (ex.: <c>["xslt","sysmiddle"]</c>)
+        /// ou outro tipo — a avaliação de bloqueio do body já sai pronta (<see cref="IsEngineBlocked"/>),
+        /// porque só ali dá pra tratar array/objeto sem perder a informação de shape.
+        /// </summary>
+        private static async Task<(string? queryEngine, bool bodyEngineBlocked)> ResolveEnginesAsync(ActionExecutingContext context)
         {
             var httpContext = context.HttpContext;
 
@@ -58,20 +93,19 @@ namespace LayoutParserApi.Services.Filters
 
             var request = httpContext.Request;
             if (!request.HasJsonContentType() || request.ContentLength is null or 0)
-                return (queryEngine, null);
+                return (queryEngine, false);
 
             request.EnableBuffering();
             request.Body.Position = 0;
 
-            string? bodyEngine = null;
+            bool bodyEngineBlocked = false;
             try
             {
                 using var doc = await JsonDocument.ParseAsync(request.Body, cancellationToken: httpContext.RequestAborted);
                 if (doc.RootElement.ValueKind == JsonValueKind.Object &&
-                    doc.RootElement.TryGetProperty("engine", out var engineProp) &&
-                    engineProp.ValueKind == JsonValueKind.String)
+                    doc.RootElement.TryGetProperty("engine", out var engineProp))
                 {
-                    bodyEngine = engineProp.GetString();
+                    bodyEngineBlocked = IsEngineBlocked(engineProp);
                 }
             }
             catch (JsonException)
@@ -84,7 +118,7 @@ namespace LayoutParserApi.Services.Filters
                 request.Body.Position = 0;
             }
 
-            return (queryEngine, bodyEngine);
+            return (queryEngine, bodyEngineBlocked);
         }
     }
 }
