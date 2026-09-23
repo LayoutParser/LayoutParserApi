@@ -120,8 +120,12 @@ namespace LayoutParserApi.Controllers
         /// </summary>
         /// <param name="id">ID interno (não confundir com <c>mapperGuid</c>).</param>
         /// <response code="200">Mapeador completo.</response>
+        /// <response code="403">Usuário sem o papel "operador" (issue #95).</response>
         /// <response code="404">ID inexistente.</response>
         /// <response code="500">Falha não catalogada.</response>
+        // Issue #95: devolve o XML Sysmiddle descriptografado por completo — mesmo padrão de
+        // role gate do RefreshCache (issue #32), papel "operador".
+        [Authorize(Roles = "operador")]
         [HttpGet("export/{id}")]
         public async Task<IActionResult> ExportMapper(int id)
         {

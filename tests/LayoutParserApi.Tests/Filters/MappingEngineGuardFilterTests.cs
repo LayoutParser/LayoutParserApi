@@ -1,3 +1,4 @@
+using LayoutParserApi.Controllers;
 using LayoutParserApi.Services.Filters;
 
 using Microsoft.AspNetCore.Http;
@@ -103,6 +104,83 @@ namespace LayoutParserApi.Tests.Filters
             Assert.False(nextChamado);
             var result = Assert.IsType<UnprocessableEntityObjectResult>(context.Result);
             Assert.Equal(422, result.StatusCode);
+        }
+
+        [Fact]
+        public async Task Engine_como_array_contendo_sysmiddle_e_recusado()
+        {
+            // Slice 6 (issue #232) — o filtro original só checava "engine" como string simples;
+            // {"engine":["sysmiddle"]} passava despercebido. Cobre também o caso de array misto.
+            var filtro = new MappingEngineGuardFilter();
+            var context = CriarExecutingContext(
+                query: new Dictionary<string, StringValues>(),
+                bodyJson: "{\"engine\":[\"xslt\",\"sysmiddle\"]}");
+            var nextChamado = false;
+
+            await filtro.OnActionExecutionAsync(context, () =>
+            {
+                nextChamado = true;
+                return Task.FromResult(CriarExecutedContext());
+            });
+
+            Assert.False(nextChamado);
+            var result = Assert.IsType<UnprocessableEntityObjectResult>(context.Result);
+            Assert.Equal(422, result.StatusCode);
+        }
+
+        [Fact]
+        public async Task Engine_como_array_sem_sysmiddle_deixa_passar()
+        {
+            var filtro = new MappingEngineGuardFilter();
+            var context = CriarExecutingContext(
+                query: new Dictionary<string, StringValues>(),
+                bodyJson: "{\"engine\":[\"xslt\",\"tcl\"]}");
+            var nextChamado = false;
+
+            await filtro.OnActionExecutionAsync(context, () =>
+            {
+                nextChamado = true;
+                return Task.FromResult(CriarExecutedContext());
+            });
+
+            Assert.True(nextChamado);
+            Assert.Null(context.Result);
+        }
+
+        [Fact]
+        public async Task Engine_como_objeto_JSON_e_recusado_fail_closed()
+        {
+            // Tipo inesperado (objeto, número, bool...) não é um formato reconhecido de "engine" —
+            // não reconhecer não pode significar "aceitar por omissão".
+            var filtro = new MappingEngineGuardFilter();
+            var context = CriarExecutingContext(
+                query: new Dictionary<string, StringValues>(),
+                bodyJson: "{\"engine\":{\"name\":\"xslt\"}}");
+            var nextChamado = false;
+
+            await filtro.OnActionExecutionAsync(context, () =>
+            {
+                nextChamado = true;
+                return Task.FromResult(CriarExecutedContext());
+            });
+
+            Assert.False(nextChamado);
+            var result = Assert.IsType<UnprocessableEntityObjectResult>(context.Result);
+            Assert.Equal(422, result.StatusCode);
+        }
+
+        [Fact]
+        public void MappingCompilationController_aplica_o_filtro_no_nivel_da_classe()
+        {
+            // Slice 6 (issue #232) — o design não confirmava se compile/test-runs (Slice 5) estava
+            // sob o gate. Confere aqui, via reflection, que o atributo está no controller inteiro
+            // (mesmo padrão do MappingDraftsController), não em cada action isoladamente.
+            var atributo = typeof(MappingCompilationController)
+                .GetCustomAttributes(typeof(ServiceFilterAttribute), inherit: false)
+                .Cast<ServiceFilterAttribute>()
+                .SingleOrDefault(a => a.ServiceType == typeof(MappingEngineGuardFilter));
+
+            Assert.NotNull(atributo);
         }
 
         // --- helpers ---

@@ -220,3 +220,51 @@ o novo método.
 `ToXslt_Concat_SeparadorComApostrofoGeraXPathSintaticamenteValido`, cobrindo o caso real (razão
 social com apóstrofo). Suíte completa: 506 casos (`LayoutParserApi.Tests`) + 59 (`XslSynth.Core.Tests`)
 verdes, sem regressão.
+
+## Fix — hardening XXE em `MappingTestRunService` (2026-08-31, achado do `@lp-qa`)
+
+`inputXml`/`expectedXml` chegam direto do corpo HTTP (fixture ad-hoc do Test Lab, não confiável) e
+eram parseados com `XDocument.Parse` puro em `RunXsltTestAsync`/`StripProvenanceAttributes` —
+inconsistente com o padrão já usado no resto do projeto (`XsdValidationService`,
+`TransformationPipelineService`, `MultipartUploadValidator` do Slice 2), que sempre endurece XML de
+entrada do usuário contra XXE mesmo com os defaults já relativamente seguros do .NET moderno.
+
+**Fix:** novo `MappingTestRunService.ParseXmlSafe(string)` — mesmo padrão do
+`MultipartUploadValidator.ValidateXmlIsXxeSafe` (`XmlReaderSettings` com `XmlResolver = null`,
+`DtdProcessing = Prohibit`, `MaxCharactersFromEntities = 1024`). Aplicado nos dois pontos de entrada
+externos: `inputXml` (antes de `XsltApplier.Apply`) e `expectedXml` (sanitizado/reserializado antes
+de `CanonicalDiffer.Diff`, que é biblioteca compartilhada — `ai/XslSynth.Core` — sem hardening
+próprio e usada também fora do contexto HTTP; o hardening fica na fronteira deste serviço, não na
+lib). `xsltArtifact.Content` **não** foi tocado — é gerado internamente pelo transpilador
+determinístico (Slice 5) e armazenado pela própria API, não input de usuário.
+
+Payload rejeitado degrada graciosamente (padrão já existente no `catch` de `RunXsltTestAsync`):
+vira `MappingTestRunSummary` com `RequiredGatesPassed=false` e mensagem de erro, nunca propaga
+exceção nem processa a entidade externa. Teste novo (`MappingTestRunServiceTests`,
+`TestRun_PayloadXxeNoFixtureHttp_RejeitadoSemProcessarEntidadeExterna`, 2 casos via `[Theory]`:
+ataque em `inputXml` e em `expectedXml`) confirma rejeição com DOCTYPE apontando pra
+`file:///C:/Windows/win.ini`. `dotnet build` (0 erros) e `dotnet test` (506 casos, +2 desta suíte)
+verdes.
+
+## Correção do filtro — 2026-09-01 (Slice 6, issue #232)
+
+`MappingEngineGuardFilter` só reconhecia `engine` como string simples — `{"engine":["sysmiddle"]}`
+(ou qualquer array com `sysmiddle` no meio) passava despercebido, porque `ResolveEnginesAsync`
+checava `engineProp.ValueKind == JsonValueKind.String` e ignorava silenciosamente qualquer outro
+`ValueKind`.
+
+**Fix:** `ResolveEnginesAsync` agora delega a avaliação do corpo pra `IsEngineBlocked(JsonElement)`,
+que trata três casos: string simples (comportamento antigo, preservado); array (qualquer elemento
+string batendo `sysmiddle` recusa — cobre `["xslt","sysmiddle"]`); e, por padrão fail-closed,
+qualquer outro `ValueKind` (objeto, número, bool, null) é tratado como recusa — não reconhecer o
+formato não deveria significar "aceitar por omissão".
+
+**Cobertura no Slice 5 confirmada:** `MappingCompilationController` (endpoints `compile`/
+`test-runs`) já tinha `[ServiceFilter(typeof(MappingEngineGuardFilter))]` no nível da classe desde
+a implementação original do Slice 5 — o design anterior não tinha esse ponto confirmado
+explicitamente, mas o código já estava correto. Adicionado teste de reflection
+(`MappingCompilationController_aplica_o_filtro_no_nivel_da_classe`) pra travar isso.
+
+Testes novos em `MappingEngineGuardFilterTests`: array com `sysmiddle` no meio → recusado; array
+sem `sysmiddle` → passa; objeto JSON em `engine` → recusado (fail-closed). `dotnet build` (0 erros)
+e `dotnet test` (522 casos, todos verdes, sem regressão).
