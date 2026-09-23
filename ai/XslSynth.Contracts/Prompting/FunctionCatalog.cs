@@ -19,7 +19,19 @@ public sealed record FunctionCatalogEntry(
     /// <summary>Se o nome exibido é o nome REAL usado na DSL (<c>F.Nome</c>) ou só um palpite
     /// derivado do nome da classe (<c>ConcatFunction</c> → "Concat"). Nunca confie cegamente.</summary>
     bool NameIsReliable,
-    string? ObfuscationNote);
+    string? ObfuscationNote,
+    /// <summary>
+    /// Fase A da issue #151 (design §4.1): se a função é bijetora — dado o resultado, dá pra
+    /// recuperar exatamente a(s) entrada(s) original(is) sem informação adicional. NÃO é inferido
+    /// por reflection (a ofuscação documentada acima impede confiar em análise automática do corpo);
+    /// vem de curadoria manual em <see cref="FunctionReversibilityCatalog"/>, chaveada pelo mesmo
+    /// nome-palpite de <see cref="Name"/>. Default conservador quando não curada: <c>false</c>
+    /// (mesmo espírito de "sinalize incerteza, não finja certeza" de <see cref="NameIsReliable"/>).
+    /// </summary>
+    bool Reversible = false,
+    /// <summary>Motivo textual quando <see cref="Reversible"/> é <c>false</c> — nunca null nesse
+    /// caso (mesmo padrão de <c>FieldToXmlMapping.Limitations</c>).</summary>
+    string? IrreversibilityReason = "Função sem curadoria manual de reversibilidade (Fase A da issue #151).");
 
 /// <summary>
 /// Camada 2 do desenho de contexto/prompt: catálogo indexável (nome→assinatura) das funções
@@ -77,8 +89,17 @@ public sealed class FunctionCatalog
 
         try
         {
+            // Fase A da issue #151 (spike 2026-09-07): a DLL de funções depende de
+            // SysMiddle.Base.dll (onde mora FunctionMember, base checada em InheritsFrom) e de
+            // outras DLLs Sysmiddle vizinhas — sem elas no resolver, GetTypes() falha para TODOS
+            // os tipos (ReflectionTypeLoadException com Types só null) e o catálogo sai vazio
+            // silenciosamente. Inclui as DLLs do mesmo diretório do alvo (mesmo pacote vendorizado)
+            // além do runtime — ainda reflection-only, não executa nenhum código.
             var runtimeAssemblies = Directory.GetFiles(RuntimeEnvironment.GetRuntimeDirectory(), "*.dll");
-            var resolver = new PathAssemblyResolver(runtimeAssemblies.Append(dllPath));
+            var siblingAssemblies = Directory.Exists(Path.GetDirectoryName(dllPath))
+                ? Directory.GetFiles(Path.GetDirectoryName(dllPath)!, "*.dll")
+                : Array.Empty<string>();
+            var resolver = new PathAssemblyResolver(runtimeAssemblies.Concat(siblingAssemblies).Append(dllPath).Distinct());
             using var mlc = new MetadataLoadContext(resolver);
 
             var asm = mlc.LoadFromAssemblyPath(dllPath);
@@ -99,6 +120,8 @@ public sealed class FunctionCatalog
                     ? $"{execute.ReturnType.Name} Execute(object[] pars)"
                     : "object Execute(object[] pars)"; // herdado, não redeclarado neste type
 
+                var (reversible, irreversibilityReason) = FunctionReversibilityCatalog.Lookup(className);
+
                 var entry = new FunctionCatalogEntry(
                     Name: guessedName,
                     FullTypeName: type.FullName ?? className,
@@ -107,7 +130,9 @@ public sealed class FunctionCatalog
                     Signature: signature,
                     NameIsReliable: false, // ver nota de ofuscação na doc da classe
                     ObfuscationNote: "Name/OwnerName reais só existem em runtime (cctor ofuscado); " +
-                                      "nome aqui é PALPITE a partir do nome da classe.");
+                                      "nome aqui é PALPITE a partir do nome da classe.",
+                    Reversible: reversible,
+                    IrreversibilityReason: irreversibilityReason);
 
                 byGuessedName[guessedName] = entry;
             }

@@ -27,5 +27,15 @@ namespace LayoutParserApi.Services.Interfaces
 
         /// <summary>Confere (case-insensitive) se o usuário possui o papel informado.</summary>
         bool IsInRole(string role);
+
+        /// <summary>
+        /// Identidade imutável interna (Slice 1 — issue #225), resolvida pelo
+        /// <c>IIdentityWorkspaceService</c> a partir dos headers <c>x-layoutparser-identity-*</c>.
+        /// <c>null</c> quando os headers novos estão ausentes ou a resolução falhou (fail-closed:
+        /// endpoints que exigem workspace negam acesso em vez de degradar). Independente de
+        /// <see cref="Name"/>/<see cref="Roles"/> (legados, <c>x-iis-*</c>) — os dois convivem durante
+        /// a transição.
+        /// </summary>
+        Guid? UserId { get; }
     }
 }

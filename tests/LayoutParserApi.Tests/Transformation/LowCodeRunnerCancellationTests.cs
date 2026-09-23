@@ -118,9 +118,17 @@ namespace LayoutParserApi.Tests.Transformation
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => tarefa);
         }
 
+        /// <summary>
+        /// Teto de 10s (mesmo valor usado pelo <c>PollUntilAsync</c> de
+        /// <c>AiTransformationCandidateServiceTests</c>) — 5s era curto demais para CI sob carga:
+        /// a asserção depende só de agendamento de continuação (semáforo + <c>Task.Run</c> da
+        /// entrada no runner), não de nenhum I/O real, mas em runner de CI compartilhado o
+        /// thread pool pode demorar a atender sob concorrência de toda a suíte (482 testes),
+        /// gerando falso negativo sem que o comportamento real (liberação do slot) esteja quebrado.
+        /// </summary>
         private static async Task EsperarAsync(Func<bool> condicao, string mensagemDeFalha)
         {
-            var limite = DateTime.UtcNow.AddSeconds(5);
+            var limite = DateTime.UtcNow.AddSeconds(10);
             while (DateTime.UtcNow < limite)
             {
                 if (condicao())
