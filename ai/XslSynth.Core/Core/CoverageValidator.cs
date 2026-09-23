@@ -64,8 +64,19 @@ public sealed class CoverageValidator
     {
         var names = new HashSet<string>(StringComparer.Ordinal);
         foreach (var el in candidate.Descendants())
+        {
             if (el.Name.Namespace != Xslt.Ns)
+            {
                 names.Add(el.Name.LocalName);
+                // Casca (issue #438): o namespace do documento é declarado no literal, não vira elemento "xmlns".
+                if (el.Name.Namespace != XNamespace.None) names.Add("xmlns");
+            }
+            else if (el.Name.LocalName == "attribute" && (string?)el.Attribute("name") is { } attrName)
+            {
+                // Atributo emitido via xsl:attribute cobre a regra/link cujo destino é esse atributo.
+                names.Add(attrName);
+            }
+        }
         return names;
     }
 

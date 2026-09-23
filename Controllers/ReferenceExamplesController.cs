@@ -28,7 +28,9 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>Lista os exemplos disponíveis no corpus, opcionalmente filtrados por tipo de documento (ex.: <c>NFe</c>). Retorna lista vazia (nunca erro) se o corpus não estiver configurado/disponível.</summary>
-        /// <response code="200">Lista de exemplos (metadados, sem conteúdo).</response>
+        /// <param name="docType">Opcional. Tipo de documento (pasta de 1º nível do corpus; comparação sem diferenciar maiúsculas).</param>
+        /// <param name="cancellationToken">Token de cancelamento.</param>
+        /// <response code="200">Lista de exemplos (metadados, sem conteúdo): <c>id</c>, <c>docType</c>, <c>version</c>, <c>scenario</c>, <c>direction</c>, <c>tclFileName</c>, <c>xslFileName</c>. Vazia quando <c>ReferenceExamples:BasePath</c> não está configurado, a pasta não existe ou ocorre erro de leitura.</response>
         [HttpGet]
         public async Task<IActionResult> List([FromQuery] string? docType, CancellationToken cancellationToken)
         {
@@ -45,8 +47,10 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>Retorna o conteúdo (TCL e/ou XSL) de um exemplo específico do catálogo.</summary>
-        /// <response code="200">Conteúdo do exemplo.</response>
-        /// <response code="404">Id não encontrado no corpus.</response>
+        /// <param name="id">Identificador devolvido pela listagem (hash estável do caminho relativo).</param>
+        /// <param name="cancellationToken">Token de cancelamento.</param>
+        /// <response code="200"><c>{ id, tclContent?, xslContent? }</c> — cada conteúdo é omitido quando o exemplo não tem o arquivo correspondente.</response>
+        /// <response code="404">Id não encontrado no corpus (também devolvido se a leitura do arquivo falhar).</response>
         [HttpGet("{id}")]
         public async Task<IActionResult> GetContent(string id, CancellationToken cancellationToken)
         {

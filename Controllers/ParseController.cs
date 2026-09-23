@@ -1,4 +1,5 @@
 ﻿using LayoutParserApi.Models.Entities;
+using LayoutParserApi.Models.Entities.Fiscal;
 using LayoutParserApi.Models.Enums;
 using LayoutParserApi.Models.Parsing;
 using LayoutParserApi.Models.Responses;
@@ -31,6 +32,14 @@ namespace LayoutParserApi.Controllers
         private readonly LowCodeAutoTransformationService _lowCodeAuto;
         private readonly LowCodeRunnerOptions _lowCodeOpt;
         private readonly LowCodeTransformationStore _transformationStore;
+        private readonly IFiscalAnalysisService? _analysisService;
+        private readonly ICurrentUser? _currentUser;
+
+        /// <summary>Teto do registro de histórico (issue #366): estourou, a análise segue sem AnalysisId.</summary>
+        private static readonly TimeSpan AnalysisHistoryTimeout = TimeSpan.FromSeconds(5);
+
+        // Contexto de histórico repassado de Upload/Auto ao núcleo do upload (issue #366).
+        private sealed record AnalysisHistoryContext(string? WorkspaceIdRaw, string Source, string? LayoutGuid, string? OriginalDocumentName);
 
         public ParseController(
             ILayoutParserService parserService,
@@ -41,8 +50,13 @@ namespace LayoutParserApi.Controllers
             IConfiguration configuration,
             LowCodeAutoTransformationService lowCodeAuto,
             IOptions<LowCodeRunnerOptions> lowCodeOptions,
-            LowCodeTransformationStore transformationStore)
+            LowCodeTransformationStore transformationStore,
+            // Issue #366 (histórico de análises): opcionais — sem eles o parse segue sem histórico.
+            IFiscalAnalysisService? analysisService = null,
+            ICurrentUser? currentUser = null)
         {
+            _analysisService = analysisService;
+            _currentUser = currentUser;
             _parserService = parserService;
             _logger = logger;
             _layoutDetector = layoutDetector;
@@ -68,12 +82,19 @@ namespace LayoutParserApi.Controllers
         /// aprendizado (<c>TransformationPipeline:ExamplesPath</c>) e para dar override no tipo
         /// detectado quando contém "MQ".
         /// </param>
+        /// <param name="workspaceId">
+        /// Opcional (issue #366). GUID do workspace; quando presente, válido, com usuário identificado
+        /// e membro do workspace, a análise (documento + layout) é registrada no histórico
+        /// (<c>GET api/workspaces/{ws}/analyses</c>). Sem ele, ou se o registro falhar/estourar 5 s, o
+        /// parse segue normalmente e <c>historyRegistered</c> vem <c>false</c>.
+        /// </param>
         /// <returns>
         /// Documento parseado (<c>layout</c>, <c>fields</c>, <c>documentStructure</c>,
         /// <c>lineValidations</c>) + estado do pathway de transformação low-code
         /// (<c>transformations</c>, <c>transformationsStatus</c>, <c>transformationsTicket</c>).
         /// Se o arquivo enviado for XML, retorna instrução para processar no front-end em vez de
-        /// tentar parsear no servidor.
+        /// tentar parsear no servidor. Campos aditivos do histórico (#366): <c>analysisId</c> (omitido
+        /// quando a análise não foi registrada) e <c>historyRegistered</c> (bool).
         /// </returns>
         /// <response code="200">Parse concluído (mesmo com <c>validationErrors</c> — o parse degrada, não falha, quando o defeito é localizável).</response>
         /// <response code="400">Layout XML ou documento ausente, ou layout não é <c>.xml</c>.</response>
@@ -87,8 +108,13 @@ namespace LayoutParserApi.Controllers
 #pragma warning disable SCS0016
         [ServiceFilter(typeof(AuditActionFilter))]
         [HttpPost("upload")]
-        public async Task<IActionResult> Upload(IFormFile layoutFile, IFormFile txtFile, [FromForm] string layoutName = null)
+        public Task<IActionResult> Upload(IFormFile layoutFile, IFormFile txtFile, [FromForm] string layoutName = null, [FromForm] string? workspaceId = null)
 #pragma warning restore SCS0016
+            => UploadCoreAsync(layoutFile, txtFile, layoutName, new AnalysisHistoryContext(workspaceId, FiscalAnalysisSource.Upload, null, null));
+
+        // Núcleo do /upload — /auto reusa este método (com contexto de histórico próprio) em vez de
+        // chamar o endpoint público, para não gravar o XML descriptografado do catálogo no histórico.
+        private async Task<IActionResult> UploadCoreAsync(IFormFile layoutFile, IFormFile txtFile, string layoutName, AnalysisHistoryContext? history)
         {
             if (layoutFile == null || txtFile == null)
                 return BadRequest("Layout XML e arquivo são obrigatórios.");
@@ -325,10 +351,15 @@ namespace LayoutParserApi.Controllers
                     transformationsReason = LowCodeTransformationEligibility.StructuralErrorReason;
                 }
 
+                // ✅ Issue #366: histórico opt-in (workspaceId) — falha/timeout NUNCA derruba o parse.
+                var analysisId = await TryRegisterAnalysisAsync(history, layoutFile, txtFile, layoutName, detectedType);
+
                 return Ok(new
                 {
                     success = true,
                     detectedType,
+                    analysisId, // null (omitido no JSON) quando não registrado; ver historyRegistered
+                    historyRegistered = analysisId.HasValue,
                     // ✅ Defeito localizável NÃO é 422: o documento parseou e é renderizável, só
                     // vai anotado. A UI decide o modo de exibição por este campo (spec §2.1).
                     documentHealth = DocumentHealth.Resolve(result.ValidationErrors),
@@ -741,6 +772,12 @@ namespace LayoutParserApi.Controllers
         /// <param name="layoutGuidOverride">GUID opcional escolhido entre os candidatos ranked da detecção atual.</param>
         /// <param name="automaticLayoutDetection">Serviço determinístico de detecção.</param>
         /// <param name="cancellationToken">Cancelamento da requisição.</param>
+        /// <param name="workspaceId">
+        /// Opcional (issue #366). Mesmo comportamento de <c>POST /api/parse/upload</c>: registra a
+        /// análise no histórico do workspace. Em <c>/auto</c> o <c>analysisId</c>/<c>historyRegistered</c>
+        /// ficam dentro de <c>parseResult</c>, e o layout do catálogo é guardado só como GUID (o XML
+        /// descriptografado nunca vai para o histórico).
+        /// </param>
         [ServiceFilter(typeof(AuditActionFilter))]
         [HttpPost("auto")]
         [Consumes("multipart/form-data")]
@@ -756,7 +793,8 @@ namespace LayoutParserApi.Controllers
             IFormFile? documentFile,
             [FromForm] string? layoutGuidOverride,
             [FromServices] IAutomaticLayoutDetectionService automaticLayoutDetection,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            [FromForm] string? workspaceId = null)
 #pragma warning restore SCS0016
         {
             var correlationId = EnsureCorrelationId();
@@ -872,7 +910,10 @@ namespace LayoutParserApi.Controllers
                     ContentType = "application/octet-stream"
                 };
 
-                var uploadResult = await Upload(internalLayoutFile, internalDocumentFile, selectedRecord.Name);
+                // Histórico (#366): layout do catálogo guarda só o GUID; documento guarda o nome ORIGINAL.
+                var uploadResult = await UploadCoreAsync(
+                    internalLayoutFile, internalDocumentFile, selectedRecord.Name,
+                    new AnalysisHistoryContext(workspaceId, FiscalAnalysisSource.Auto, selectedCandidate.LayoutGuid, documentFile.FileName));
                 return WrapUploadResult(uploadResult, detection, correlationId);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -899,6 +940,53 @@ namespace LayoutParserApi.Controllers
                     message = "Não foi possível concluir a detecção automática."
                 });
             }
+        }
+
+        /// <summary>
+        /// Registra a análise no histórico (issue #366) quando há <c>workspaceId</c> válido e usuário
+        /// identificado. AGUARDADO com timeout de 5s (o cliente precisa do <c>analysisId</c> na resposta);
+        /// qualquer falha vira <c>null</c> — o parse principal nunca é afetado.
+        /// </summary>
+        private async Task<Guid?> TryRegisterAnalysisAsync(
+            AnalysisHistoryContext? history, IFormFile layoutFile, IFormFile txtFile, string? layoutName, string? detectedType)
+        {
+            if (history == null || _analysisService == null || _currentUser?.UserId is not Guid userId
+                || !Guid.TryParse(history.WorkspaceIdRaw, out var workspaceId))
+                return null;
+
+            try
+            {
+                var files = new List<FiscalAnalysisFileInput>
+                {
+                    new(FiscalAnalysisFileRole.Document, history.OriginalDocumentName ?? txtFile.FileName, await ReadAllBytesAsync(txtFile))
+                };
+
+                var isCatalog = history.Source == FiscalAnalysisSource.Auto;
+                if (!isCatalog)
+                    files.Add(new(FiscalAnalysisFileRole.Layout, layoutFile.FileName, await ReadAllBytesAsync(layoutFile)));
+
+                return await _analysisService.RegisterAsync(
+                    new FiscalAnalysisRegistration(
+                        workspaceId, userId, history.Source,
+                        isCatalog ? FiscalAnalysisLayoutMode.Catalog : FiscalAnalysisLayoutMode.File,
+                        history.LayoutGuid,
+                        !string.IsNullOrWhiteSpace(layoutName) ? layoutName : layoutFile.FileName,
+                        detectedType, files),
+                    AnalysisHistoryTimeout);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Falha ao preparar registro de histórico da análise (parse não afetado)");
+                return null;
+            }
+        }
+
+        private static async Task<byte[]> ReadAllBytesAsync(IFormFile file)
+        {
+            await using var stream = file.OpenReadStream();
+            using var buffer = new MemoryStream();
+            await stream.CopyToAsync(buffer);
+            return buffer.ToArray();
         }
 
         private IActionResult WrapUploadResult(
