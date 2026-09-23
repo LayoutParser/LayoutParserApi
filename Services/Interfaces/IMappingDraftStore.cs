@@ -19,6 +19,22 @@ namespace LayoutParserApi.Services.Interfaces
         DateTimeOffset CreatedAt,
         string ETag);
 
+    /// <summary>
+    /// Item de listagem de <see cref="MappingDraft"/> (issue #416) — sem as regras (evita N+1/payload
+    /// pesado numa lista paginada; para o detalhe completo, o cliente segue com
+    /// <c>GET .../mapping-drafts/{draftId}</c>). <c>RulesCount</c> dá um sinal de progresso sem
+    /// precisar carregar cada regra.
+    /// </summary>
+    public sealed record MappingDraftSummary(
+        Guid DraftId,
+        Guid WorkspaceId,
+        Guid PackageId,
+        Guid RevisionId,
+        string Engine,
+        DateTimeOffset CreatedAt,
+        int RulesCount,
+        FiscalProfile? FiscalProfile);
+
     /// <summary>Draft com todas as regras atuais (não-superseded incluídas — o cliente decide o que exibir).</summary>
     public sealed record MappingDraftDetail(
         Guid DraftId,
@@ -27,7 +43,9 @@ namespace LayoutParserApi.Services.Interfaces
         Guid RevisionId,
         string Engine,
         DateTimeOffset CreatedAt,
-        IReadOnlyList<MappingDraftRuleDetail> Rules);
+        IReadOnlyList<MappingDraftRuleDetail> Rules,
+        // Issue #379 (ADR perfil fiscal): trailing com default — não quebra call sites existentes.
+        FiscalProfile? FiscalProfile = null);
 
     /// <summary>Resultado de um PATCH de regra — distingue NotFound (404) de Conflict (412 — ETag divergente).</summary>
     public enum UpdateRuleResult
@@ -52,8 +70,12 @@ namespace LayoutParserApi.Services.Interfaces
         string Status,
         IReadOnlyList<string> OpenQuestions);
 
-    /// <summary>Referência a um artefato em filesystem — usado pelo job de sugestão para ler o conteúdo-fonte.</summary>
-    public sealed record ArtifactFileRef(Guid ArtifactId, string Kind, string StoragePath, string OriginalFileName);
+    /// <summary>
+    /// Referência a um artefato em filesystem — usado pelo job de sugestão para ler o conteúdo-fonte.
+    /// <paramref name="Provenance"/> ver <see cref="Models.Entities.Fiscal.ArtifactProvenance"/>
+    /// (issue #341) — <c>null</c> é tratado como amostra real (fail-closed) por quem consome este DTO.
+    /// </summary>
+    public sealed record ArtifactFileRef(Guid ArtifactId, string Kind, string StoragePath, string OriginalFileName, string? Provenance = null);
 
     /// <summary>
     /// Acesso a dado de <see cref="MappingDraft"/>/<see cref="MappingDraftRule"/>/
@@ -63,8 +85,22 @@ namespace LayoutParserApi.Services.Interfaces
     /// </summary>
     public interface IMappingDraftStore
     {
-        /// <summary>Confirma que a revisão pertence ao pacote informado (o Draft referencia uma revisão EXATA, nunca implícita).</summary>
-        Task<bool> RevisionBelongsToPackageAsync(Guid packageId, Guid revisionId, CancellationToken cancellationToken);
+        /// <summary>
+        /// Confirma que a revisão pertence ao pacote informado (o Draft referencia uma revisão EXATA,
+        /// nunca implícita) E que o pacote pertence ao <paramref name="workspaceId"/> da rota (issue
+        /// LayoutParserReact#196 — sem isso, membro do workspace A criava draft apontando para pacote/
+        /// revisão do workspace B).
+        /// </summary>
+        Task<bool> RevisionBelongsToWorkspacePackageAsync(Guid workspaceId, Guid packageId, Guid revisionId, CancellationToken cancellationToken);
+
+        /// <summary>
+        /// Lista drafts do workspace, paginado (issue #416 — não havia forma de descobrir drafts sem
+        /// já conhecer o GUID). Isolamento por workspace direto no WHERE. Filtro opcional
+        /// <paramref name="engine"/> ("tcl"/"xslt") — draft não tem "status" próprio (só as regras
+        /// têm, via <see cref="MappingDraftRuleStatus"/>), então não há filtro de status aqui.
+        /// </summary>
+        Task<(IReadOnlyList<MappingDraftSummary> Items, int TotalCount)> ListByWorkspaceAsync(
+            Guid workspaceId, int page, int pageSize, string? engine, CancellationToken cancellationToken);
 
         /// <summary>Lista os artefatos (com caminho de storage) da revisão — usado pelo job de sugestão para ler o conteúdo-fonte.</summary>
         Task<IReadOnlyList<ArtifactFileRef>> GetArtifactFilesForRevisionAsync(Guid revisionId, CancellationToken cancellationToken);
@@ -99,5 +135,13 @@ namespace LayoutParserApi.Services.Interfaces
             IReadOnlyList<string>? editedTargetRefs,
             string? editedOperation,
             CancellationToken cancellationToken);
+
+        /// <summary>
+        /// Grava/substitui o <see cref="MappingDraft.FiscalProfile"/> — idempotente (issue #379, ADR
+        /// §2.2/§2.6): editar depois de já existir release derivada é permitido e NÃO retroage às
+        /// releases já compiladas (elas guardam o snapshot delas). <c>null</c> se o draft não existe ou
+        /// não pertence a um workspace do qual <paramref name="userId"/> é membro (404 fail-closed).
+        /// </summary>
+        Task<MappingDraftDetail?> SetFiscalProfileAsync(Guid draftId, Guid userId, FiscalProfile profile, CancellationToken cancellationToken);
     }
 }

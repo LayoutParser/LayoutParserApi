@@ -57,6 +57,33 @@ namespace LayoutParserApi.Services.Fiscal
             _logger = logger;
         }
 
+        /// <summary>
+        /// Dependência real: catálogo de mappers Sysmiddle (<see cref="ICachedMapperService"/>, por
+        /// trás dele SQL + decryptor). Timeout curto (issue #90) — é sonda, não caminho de dados.
+        /// </summary>
+        public async Task<CapabilityHealth> CheckAvailabilityAsync(CancellationToken cancellationToken)
+        {
+            // GetAllMappersAsync não aceita CancellationToken — timeout aplicado por fora via
+            // Task.WhenAny, mesmo racional de "sonda com timeout curto" do resto do health check.
+            try
+            {
+                var mappersTask = _cachedMapperService.GetAllMappersAsync();
+                var completed = await Task.WhenAny(mappersTask, Task.Delay(TimeSpan.FromSeconds(3), cancellationToken));
+                if (completed != mappersTask)
+                    return new CapabilityHealth(CapabilityStatus.Unavailable, "Catálogo de mappers Sysmiddle não respondeu dentro do timeout (3s).");
+
+                var mappers = await mappersTask;
+                return mappers.Count > 0
+                    ? new CapabilityHealth(CapabilityStatus.Healthy, $"Catálogo de mappers Sysmiddle com {mappers.Count} entrada(s).")
+                    : new CapabilityHealth(CapabilityStatus.Degraded, "Catálogo de mappers Sysmiddle vazio — explicação sem conteúdo pra retornar.");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Gate de capacidade (#90): catálogo de mappers Sysmiddle indisponível.");
+                return new CapabilityHealth(CapabilityStatus.Unavailable, $"Catálogo de mappers Sysmiddle falhou: {ex.Message}");
+            }
+        }
+
         public async Task<MappingExplanation?> ExplainAsync(MappingExplanationRequest request, CancellationToken cancellationToken)
         {
             // Sysmiddle não tem versionamento explícito — só "current" é aceito (design §0).
@@ -115,12 +142,23 @@ namespace LayoutParserApi.Services.Fiscal
                 OpaqueRuleCount: opaqueCount);
         }
 
-        /// <summary>Mapeamento direto campo→campo (sem DSL) — sempre <c>authoritative</c>, é dado de vinculação puro.</summary>
+        /// <summary>
+        /// Mapeamento direto campo→campo (sem DSL) — sempre <c>authoritative</c>, é dado de vinculação puro.
+        ///
+        /// <para><b>Issue #430 (alinhamento de identidade de nó):</b> <c>SourceRefs</c>/<c>TargetRefs</c>
+        /// usam sempre <c>InputGuid</c>/<c>TargetGuid</c> — a MESMA fonte que <see cref="LayoutTreeService"/>
+        /// usa em <c>LayoutTreeRule.SourceElementGuid</c>/<c>TargetElementGuid</c>. Antes, <c>TargetLeafName</c>
+        /// (nome legível) tinha prioridade sobre o GUID aqui, mas o layout-tree sempre usa o GUID —
+        /// isso quebrava o cruzamento regra↔nó no front. O nome legível continua disponível, só que
+        /// em <c>HumanDescription</c> (texto pra humano, não em identificador estrutural).</para>
+        /// </summary>
         private static ExplainedRule ToExplainedRule(LinkMappingItem link)
         {
             var ruleId = link.ElementGuid ?? $"link:{link.Name}";
-            var target = link.TargetLeafName ?? link.TargetGuid ?? "?";
-            var source = link.InputGuid ?? link.Name ?? "?";
+            var target = link.TargetGuid ?? "?";
+            var source = link.InputGuid ?? "?";
+            var targetLabel = link.TargetLeafName ?? target;
+            var sourceLabel = link.Name ?? source;
 
             return new ExplainedRule(
                 RuleId: ruleId,
@@ -130,7 +168,7 @@ namespace LayoutParserApi.Services.Fiscal
                 Operations: new[] { "copy" },
                 Cardinality: "1:1",
                 Evidence: new[] { new EvidenceRef("sysmiddle-link-mapping", link.Name ?? ruleId) },
-                HumanDescription: $"Copia o valor de \"{source}\" diretamente para \"{target}\".",
+                HumanDescription: $"Copia o valor de \"{sourceLabel}\" diretamente para \"{targetLabel}\".",
                 TechnicalDetail: null,
                 SupportLevel: MappingExplanationSupportLevel.Authoritative);
         }

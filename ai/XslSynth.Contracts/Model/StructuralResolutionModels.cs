@@ -32,10 +32,30 @@ public enum XmlNodeKind
 /// <summary>Confiança da resolução — critério objetivo e binário (design §5), nunca subjetivo.</summary>
 public enum Confidence
 {
-    /// <summary>Todas as 5 condições objetivas do design §5 são verdadeiras.</summary>
+    /// <summary>Todas as condições objetivas do design §5 (+ condição de reversibilidade em
+    /// <see cref="Direction.Reverse"/>, Fase B da issue #151) são verdadeiras.</summary>
     Authoritative,
     /// <summary>Qualquer outro caso — inclusive fallback heurístico ou divergência não eliminável.</summary>
     BestEffort
+}
+
+/// <summary>
+/// Fase B da issue #151 (spike aprovado pelo dono em 2026-09-07, design em
+/// docs/architecture/design-reconstrucao-reversa-xml-txt-2026-09-03.md §4): sentido da resolução
+/// estrutural. <see cref="Forward"/> é o caminho já em produção (#140/#141): TXT posicional →
+/// XML. <see cref="Reverse"/> é o caso de uso novo da issue #151 (XML → TXT, "reconstrução
+/// reversa best-effort") — reaproveita o MESMO <see cref="FieldToXmlMappingComposer"/> e as
+/// mesmas 5 condições de <c>authoritative</c>/<c>best-effort</c>, só troca qual lado é o
+/// "conhecido" e adiciona a condição extra de reversibilidade da função/branch (Fase A).
+/// Deliberadamente NÃO inclui um <c>OccurrenceResolver</c> simétrico completo (XML-ocorrência →
+/// linha física do TXT) — isso é escopo da Fase C, fora deste spike.
+/// </summary>
+public enum Direction
+{
+    /// <summary>TXT posicional (origem) → XML (destino) — caminho existente de #140/#141.</summary>
+    Forward,
+    /// <summary>XML (conhecido) → TXT posicional (a reconstruir) — caso de uso da issue #151.</summary>
+    Reverse
 }
 
 /// <summary>Referência a um campo de origem no layout posicional (TXT/MQSeries/IDOC).</summary>
@@ -65,4 +85,7 @@ public sealed record FieldToXmlMapping(
     MappingKind Kind,
     Confidence Confidence,
     /// <summary>Motivo(s) quando <see cref="Confidence.BestEffort"/> — nunca null nesse caso (design §7).</summary>
-    IReadOnlyList<string>? Limitations = null);
+    IReadOnlyList<string>? Limitations = null,
+    /// <summary>Fase B da issue #151 — sentido em que este mapeamento foi composto. Default
+    /// <see cref="Model.Direction.Forward"/> preserva 100% o comportamento de #140/#141.</summary>
+    Direction Direction = Direction.Forward);

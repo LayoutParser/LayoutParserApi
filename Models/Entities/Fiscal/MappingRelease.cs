@@ -40,6 +40,19 @@ namespace LayoutParserApi.Models.Entities.Fiscal
     /// <summary>"tcl" ou "xslt" — o conteúdo gerado pelo <c>MappingDraftRuleTranspiler</c> para o motor.</summary>
     public sealed record MappingReleaseArtifact(string Kind, string Content, string Hash, DateTimeOffset GeneratedAt);
 
+    /// <summary>
+    /// Origem do(s) artefato(s) de uma <see cref="MappingRelease"/> (issue #381, ADR
+    /// <c>adr-edicao-manual-artefato-versionamento-2026-09-10.md</c> §2.1). <c>Compiled</c> é o
+    /// default — todas as releases nascidas de <c>POST .../compile</c>. <c>ManualEdit</c> marca uma
+    /// release derivada via <c>PATCH .../artifacts/{engine}</c>: o artefato deixou de ser função das
+    /// regras estruturadas, e o diff por regra do Fiscal Test Lab fica desabilitado para os kinds editados.
+    /// </summary>
+    public static class MappingReleaseArtifactSource
+    {
+        public const string Compiled = "compiled";
+        public const string ManualEdit = "manual_edit";
+    }
+
     /// <summary>Diagnóstico de uma regra que não pôde ser transpilada (espelha <c>TranspileDiagnostic</c>, persistido).</summary>
     public sealed record MappingReleaseCompileDiagnostic(Guid RuleId, string Severity, string Message);
 
@@ -65,7 +78,48 @@ namespace LayoutParserApi.Models.Entities.Fiscal
         bool RequiredGatesPassed,
         bool XsdValid,
         IReadOnlyList<string> XsdErrors,
-        IReadOnlyList<MappingTestRunDivergence> Divergences);
+        IReadOnlyList<MappingTestRunDivergence> Divergences,
+        // Issue #380 (#198.2b): XML real produzido pelo XSLT e o gabarito sanitizado usados no
+        // diff canônico deste test-run — persistidos para permitir diff release×release
+        // (GET .../releases/diff) via CanonicalDiffer sem precisar reexecutar o XSLT. Trailing
+        // com default — não quebra call sites existentes. null quando o test-run não chegou a
+        // produzir XML (falha antes/durante a aplicação do XSLT, ou engine=tcl sem runner).
+        string? ActualXml = null,
+        string? ExpectedXml = null);
+
+    /// <summary>
+    /// Diff granular por regra (issue #367 / LayoutParserReact #228): agrupa as divergências de
+    /// <see cref="MappingTestRunSummary.Divergences"/> que resolveram provenance até a mesma
+    /// <c>RuleId</c> — "por ruleId, o(s) XPath(s) afetados + o diff naquele escopo" (critério de
+    /// aceite da #367). Não substitui <see cref="MappingTestRunSummary.Divergences"/> (agregado por
+    /// release já consumido pelo front em <c>8cff185</c>) — é uma view adicional sobre os mesmos dados.
+    /// </summary>
+    public sealed record MappingTestRunDivergenceGroup(
+        Guid RuleId,
+        IReadOnlyList<string>? SourceRefs,
+        IReadOnlyList<MappingDraftRuleEvidence>? Evidence,
+        IReadOnlyList<MappingTestRunDivergence> Diffs);
+
+    /// <summary>Helpers de projeção sobre <see cref="MappingTestRunSummary"/> — issue #367.</summary>
+    public static class MappingTestRunSummaryExtensions
+    {
+        /// <summary>
+        /// Agrupa <see cref="MappingTestRunSummary.Divergences"/> por <c>RuleId</c>. Divergências sem
+        /// provenance resolvida (<c>RuleId == null</c> — ex.: nó estrutural extra/faltante que
+        /// nenhuma regra aceita/editada tentou gerar) ficam de fora do agrupamento; elas continuam
+        /// visíveis na lista plana <see cref="MappingTestRunSummary.Divergences"/>.
+        /// </summary>
+        public static IReadOnlyList<MappingTestRunDivergenceGroup> GroupDivergencesByRule(this MappingTestRunSummary summary)
+            => summary.Divergences
+                .Where(d => d.RuleId.HasValue)
+                .GroupBy(d => d.RuleId!.Value)
+                .Select(g => new MappingTestRunDivergenceGroup(
+                    g.Key,
+                    g.First().SourceRefs,
+                    g.First().Evidence,
+                    g.ToList()))
+                .ToList();
+    }
 
     /// <summary>
     /// Artefato compilado + resultado de teste de um <see cref="MappingDraft"/> (Slice 5 — issue #231).
@@ -119,6 +173,21 @@ namespace LayoutParserApi.Models.Entities.Fiscal
 
         /// <summary>Snapshot gravado no momento do <c>publish</c>: a release que estava <c>Published</c> antes desta (design §3, rollback).</summary>
         public Guid? PreviousPublishedReleaseId { get; set; }
+
+        /// <summary>Snapshot congelado do perfil fiscal do draft na hora da compilação (issue #379, ADR §2.1/§2.2). Imutável desde a criação da release. <c>null</c> = draft compilado sem perfil definido.</summary>
+        public FiscalProfile? FiscalProfile { get; set; }
+
+        /// <summary>"compiled" (default) ou "manual_edit" (issue #381, ADR §2.1).</summary>
+        public string ArtifactSource { get; set; } = MappingReleaseArtifactSource.Compiled;
+
+        /// <summary>Release-base cuja cópia de artefato foi editada à mão. <c>null</c> para releases <c>compiled</c>.</summary>
+        public Guid? DerivedFromReleaseId { get; set; }
+
+        /// <summary><c>justification</c> do <c>PATCH .../artifacts/{engine}</c> — obrigatória para <c>manual_edit</c>.</summary>
+        public string? ManualEditReason { get; set; }
+
+        /// <summary>Quais artefatos (<c>Artifacts</c>) foram editados à mão. Vazio para releases <c>compiled</c>.</summary>
+        public IReadOnlyList<string> ManuallyEditedArtifactKinds { get; set; } = Array.Empty<string>();
 
         public byte[] RowVersion { get; set; } = Array.Empty<byte>();
     }

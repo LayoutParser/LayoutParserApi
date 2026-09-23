@@ -43,6 +43,31 @@ namespace LayoutParserApi.Services.Fiscal
             _logger = logger;
         }
 
+        /// <summary>
+        /// Dependência real: mesmo <see cref="IMappingDraftStore"/> (SQL) usado pelo Tcl adapter —
+        /// ver <see cref="TclExplanationAdapter.CheckAvailabilityAsync"/> para o racional completo.
+        /// </summary>
+        public async Task<CapabilityHealth> CheckAvailabilityAsync(CancellationToken cancellationToken)
+        {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(3));
+
+            try
+            {
+                await _store.GetDraftIfMemberAsync(Guid.Empty, Guid.Empty, timeoutCts.Token);
+                return new CapabilityHealth(CapabilityStatus.Healthy, "MappingDraftStore respondeu.");
+            }
+            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            {
+                return new CapabilityHealth(CapabilityStatus.Unavailable, "MappingDraftStore não respondeu dentro do timeout (3s).");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Gate de capacidade (#90): MappingDraftStore indisponível para engine=xslt.");
+                return new CapabilityHealth(CapabilityStatus.Unavailable, $"MappingDraftStore falhou: {ex.Message}");
+            }
+        }
+
         public async Task<MappingExplanation?> ExplainAsync(MappingExplanationRequest request, CancellationToken cancellationToken)
         {
             if (!Guid.TryParse(request.MappingId, out var draftId))
