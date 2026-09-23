@@ -69,6 +69,54 @@ namespace LayoutParserApi.Controllers
             _logger = logger;
         }
 
+        /// <summary>
+        /// Lista drafts do workspace, paginado (issue #416 — front não tinha forma de descobrir
+        /// drafts sem já saber o GUID; único endpoint de leitura era <c>GET .../mapping-drafts/{draftId}</c>,
+        /// que exige o GUID de antemão). Mesmo padrão de descoberta do <c>MappingGovernanceController.List</c>
+        /// (issue #198/#377).
+        /// </summary>
+        /// <remarks>
+        /// RBAC: qualquer papel de membro (<c>owner</c>/<c>fiscal_admin</c>/<c>mapper</c>/
+        /// <c>reviewer</c>/<c>operator</c>/<c>viewer</c>). Não-membro ou sem identidade → 404.
+        /// Filtro opcional <c>engine</c> (<c>tcl</c>/<c>xslt</c> — valor fora disso → 400). Draft não
+        /// tem "status" próprio (só as regras têm), então não há filtro de status aqui.
+        /// </remarks>
+        /// <param name="workspaceId">Workspace dono dos drafts.</param>
+        /// <param name="page">Página (1-based). Default 1.</param>
+        /// <param name="pageSize">Tamanho da página (1..100). Default 20.</param>
+        /// <param name="engine">Opcional. Filtra por motor do draft (<c>tcl</c>/<c>xslt</c>).</param>
+        /// <param name="cancellationToken">Token de cancelamento.</param>
+        [HttpGet("mapping-drafts")]
+        [RequireWorkspaceRole(WorkspaceRole.Owner, WorkspaceRole.FiscalAdmin, WorkspaceRole.Mapper, WorkspaceRole.Reviewer, WorkspaceRole.Operator, WorkspaceRole.Viewer)]
+        public async Task<IActionResult> ListDrafts(
+            Guid workspaceId,
+            [FromQuery] int page = 1,
+            [FromQuery] int pageSize = 20,
+            [FromQuery] string? engine = null,
+            CancellationToken cancellationToken = default)
+        {
+            if (page < 1)
+                return BadRequest(new { error = "\"page\" deve ser >= 1." });
+
+            if (pageSize < 1 || pageSize > 100)
+                return BadRequest(new { error = "\"pageSize\" deve estar entre 1 e 100." });
+
+            if (!string.IsNullOrWhiteSpace(engine) && !AllowedEngines.Contains(engine, StringComparer.OrdinalIgnoreCase))
+                return BadRequest(new { error = $"\"engine\" inválido. Valores aceitos: {string.Join(", ", AllowedEngines)}." });
+
+            var engineFilter = string.IsNullOrWhiteSpace(engine) ? null : engine.ToLowerInvariant();
+
+            var (items, totalCount) = await _store.ListByWorkspaceAsync(workspaceId, page, pageSize, engineFilter, cancellationToken);
+
+            return Ok(new
+            {
+                items = items.Select(ToDraftSummaryResponse),
+                page,
+                pageSize,
+                totalCount,
+            });
+        }
+
         /// <summary>Cria um Draft a partir de uma revisão EXATA de um pacote (Slice 2) — nunca "a mais recente" implícita.</summary>
         [HttpPost("mapping-packages/{packageId:guid}/drafts")]
         public async Task<IActionResult> CreateDraft(Guid workspaceId, Guid packageId, [FromBody] CreateDraftRequest request, CancellationToken cancellationToken)
@@ -97,10 +145,12 @@ namespace LayoutParserApi.Controllers
             if (membership == null)
                 return NotFound();
 
+            // Pacote/revisão de OUTRO workspace recebem a mesma resposta (404) de "revisão não pertence
+            // ao pacote" — não revela a existência do pacote fora do workspace da rota (#196).
             bool revisionBelongs;
             try
             {
-                revisionBelongs = await _store.RevisionBelongsToPackageAsync(packageId, request.RevisionId, cancellationToken);
+                revisionBelongs = await _store.RevisionBelongsToWorkspacePackageAsync(workspaceId, packageId, request.RevisionId, cancellationToken);
             }
             catch (Exception ex)
             {
@@ -345,6 +395,18 @@ namespace LayoutParserApi.Controllers
 
             return null;
         }
+
+        private object ToDraftSummaryResponse(MappingDraftSummary draft) => new
+        {
+            draftId = draft.DraftId,
+            workspaceId = draft.WorkspaceId,
+            packageId = draft.PackageId,
+            revisionId = draft.RevisionId,
+            engine = draft.Engine,
+            createdAt = draft.CreatedAt,
+            rulesCount = draft.RulesCount,
+            fiscalProfile = draft.FiscalProfile == null ? null : ToFiscalProfileResponse(draft.FiscalProfile),
+        };
 
         private object ToDraftResponse(MappingDraftDetail draft) => new
         {

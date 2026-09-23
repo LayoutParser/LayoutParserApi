@@ -624,6 +624,321 @@ consumir sem esperar backend novo (issue #376, derivada do cross-check #226/#198
 waiting on new backend work (issue #376). Full detail, JSON examples and file/line pointers:
 [`docs/architecture/contrato-rbac-erro-diff-mapping-fiscal-2026-09-10.md`](docs/architecture/contrato-rbac-erro-diff-mapping-fiscal-2026-09-10.md).
 
+### 8.2 Gate React#200 / epic #368 — 6 itens já fecham só documentando / Gate React#200 / epic #368 — 6 items close by documenting only
+
+**🇧🇷** A tabela original do gate #200 (aberta em agosto contra a epic #368) listava 8 itens.
+Um cross-check de 2026-09-15 (issue #413) confirmou que **6 já estão implementados**:
+`GET /api/workspaces/me`, pacote fiscal versionado, `MappingDraft` (com `FiscalProfile`/editor
+manual/filtros/arquivamento), contrato de saída TCL/XSL/XSLT (hash, status, imutabilidade
+pós-`publish`), `MappingExplanation` (era "não existe" em agosto, hoje completo) e o Test Lab
+(diff por regra, diff release×release, cobertura de obrigatórios). Só **1 gap pequeno** ficou
+confirmado: capability Sysmiddle read-only tem enforcement (`MappingEngineGuardFilter`, issue
+#232) mas **não** tem payload consultável tipo `GET .../capabilities` — rastreado na issue #415,
+não tratar como resolvido.
+
+**🇺🇸** The original gate #200 table listed 8 items. A 2026-09-15 cross-check confirmed **6 are
+already implemented** — see detail below. Only **1 small gap** remains: Sysmiddle read-only
+capability has server-side enforcement but no queryable capability payload (tracked as issue
+#415).
+
+Detalhe completo, contratos JSON e ponteiros de arquivo/linha:
+[`docs/architecture/contratos-gate-200-368-2026-09-15.md`](docs/architecture/contratos-gate-200-368-2026-09-15.md).
+Análise de delta que originou este fechamento:
+[`docs/architecture/cross-check-gate-200-368-2026-09-15.md`](docs/architecture/cross-check-gate-200-368-2026-09-15.md).
+
+### 8.3 `GET .../mappings/{mappingId}/layout-tree` — árvore dupla origem/destino / dual source/target layout tree
+
+**🇧🇷** Issue #425 (endpoint) + #430 (correção de identidade de nó). Devolve, para um `mappingId`
+Sysmiddle já conhecido, a árvore completa dos layouts de **origem** e **destino** (hierarquia,
+atributos, cardinalidade) mais os vínculos diretos campo→campo entre as duas árvores — pensado
+para o [LayoutParserReact](#2-ecossistema-de-projetos--project-ecosystem) replicar a UI de
+dupla-árvore do Connect Us. Rota de leitura: `[ApiController]`
+[`Controllers/LayoutTreeController.cs`](Controllers/LayoutTreeController.cs), DTOs em
+[`Models/Dtos/Fiscal/LayoutTree.cs`](Models/Dtos/Fiscal/LayoutTree.cs).
+
+```
+GET /api/workspaces/{workspaceId}/mappings/{mappingId}/layout-tree
+```
+
+- **RBAC:** qualquer papel de membro do workspace (`Owner`, `FiscalAdmin`, `Mapper`, `Reviewer`,
+  `Operator`, `Viewer`). Sem identidade ou não-membro → `404` (fail-closed, mesmo padrão do
+  restante da API — **não existe `401`** aqui). `mappingId` não resolvido no catálogo `tbMapper`
+  → `404` também, indistinguível do caso de RBAC.
+- **Não** passa por `MappingEngineGuardFilter` (Slice 6) — ler/explicar a árvore de um mapper
+  Sysmiddle é sempre permitido, só escrita é bloqueada.
+
+**Resposta (resumida):**
+
+```json
+{
+  "mapperGuid": "GRT_0001",
+  "source": {
+    "layoutGuid": "LAY_ORIGEM",
+    "kind": "text",
+    "roots": [
+      { "elementGuid": "GRT_0010", "name": "Cabecalho", "kind": "group",
+        "cardinality": { "min": 1, "max": 1 },
+        "children": [
+          { "elementGuid": "FLD_0011", "name": "cnpjEmitente", "kind": "element",
+            "cardinality": null, "children": [] }
+        ] }
+    ]
+  },
+  "target": { "layoutGuid": "LAY_DESTINO", "kind": "xml", "roots": [ "..." ] },
+  "rules": [
+    { "ruleId": "RULE_0001", "sourceElementGuid": "FLD_0011", "targetElementGuid": "ATT_0022" }
+  ],
+  "limitations": [
+    "Este mapper tem regras condicionais (DSL) que não aparecem em rules[] — consulte GET .../explanation."
+  ]
+}
+```
+
+- `source`/`target`: `kind` é `"text"` ou `"xml"`, cada nó de `roots[]`/`children[]` tem
+  `kind` `"group"` (tem filhos), `"element"` (folha) ou `"attribute"`. `elementGuid` é o GUID
+  estável do catálogo (`TAG_`/`GRT_`/`ATT_`/`FLD_`/`LIN_…`), `null` quando o nó não tem GUID no
+  XML de layout.
+- `rules[]`: cobre **só vínculo direto campo→campo** (`LinkMappingItemVO` real do Sysmiddle),
+  casando `sourceElementGuid`/`targetElementGuid` com os `elementGuid` das árvores acima.
+- **`limitations[]` (novo na issue #430):** ⚠️ **divergência de cobertura importante para o
+  consumidor.** `rules[]` aqui **não inclui** regras condicionais/DSL (`MapperRule`/branches) —
+  essas só aparecem em `GET .../mappings/{mappingId}/explanation` (Slice 4,
+  [§8](#8-fundação-da-plataforma-fiscal--fiscal-platform-foundation)), com `sourceRefs`/`targetRefs`
+  prefixados `I.`/`T.`. A origem dessas regras é texto da DSL (ex. `I.xMun`), não um GUID de nó do
+  catálogo — o catálogo GUID→XPath (`GuidXPathCatalog`) resolve por GUID, não por nome de campo,
+  então reconstruir esse vínculo aqui exigiria "inventar" um GUID sem garantia de unicidade
+  (decisão deliberada de escopo, não pendência). Quando o mapper tem regras DSL, `limitations[]`
+  sinaliza isso em texto explicativo; o front **deve tratar essas regras como "sem linha desenhável
+  no layout-tree, só lista"** e completá-las consultando `explanation.rules` separadamente — não
+  assumir que `layout-tree.rules[]` é a lista completa de vínculos do mapper.
+
+**🇺🇸** Issue #425 (endpoint) + #430 (node identity fix). Returns the full **source** and
+**destination** layout trees (hierarchy, attributes, cardinality) plus direct field-to-field links
+between them, for a known `mappingId` — built for the React front-end's dual-tree UI (Connect Us
+parity). Same RBAC as above (any member role, fail-closed `404`, no `401`).
+
+⚠️ **Important consumer note on `limitations[]`:** `rules[]` in this endpoint covers **only**
+direct field-to-field links (`LinkMappingItemVO`) — conditional/DSL rules (`MapperRule`/branches)
+never appear here, only in `GET .../explanation` (`sourceRefs`/`targetRefs` prefixed `I.`/`T.`).
+That's a deliberate scope decision (the DSL rule origin is text, not a catalog GUID — synthesizing
+one would risk fabricating a non-unique identifier), not a bug to be fixed later. When present,
+`limitations[]` names this gap explicitly; the front-end should treat those DSL rules as
+"listable but not drawable" on the layout-tree and merge them in from `explanation.rules`
+separately — `layout-tree.rules[]` alone is not the complete link list for a mapper.
+
+### 8.4 Estado de produção vs `develop` / Production vs `develop` status
+
+**🇧🇷** Os contratos das seções 8.5 a 8.10 abaixo estão **mesclados em `develop`** (referência:
+commit `5b0f103`). O deploy de produção é disparado por push em `master`
+([`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)), portanto o que está em `develop`
+**não implica** que esteja rodando no servidor: confira o último deploy antes de assumir que um
+endpoint existe lá. Este README não registra datas de deploy.
+
+**🇺🇸** The contracts in 8.5 to 8.10 are **merged into `develop`** (reference: commit `5b0f103`).
+Production deploys are triggered by a push to `master`, so being in `develop` **does not imply** the
+endpoint is live on the server: check the latest deploy first. This README records no deploy dates.
+
+### 8.5 `GET .../mappings/{mapperGuid}/generated-transformation` — candidato TCL/XSLT gerado automaticamente / auto-generated TCL/XSLT candidate
+
+**🇧🇷** Issue #438. Decisão de arquitetura: [`docs/architecture/adr-geracao-automatica-gabarito-sysmiddle.md`](docs/architecture/adr-geracao-automatica-gabarito-sysmiddle.md) (geração automática e gabarito = o DSL declarado do Sysmiddle; a seção "Estado da implementação" do ADR lista os desvios da implementação).
+Devolve o candidato TCL/XSL/XSLT sintetizado a partir do mapeador Sysmiddle, para que operações vejam o
+gerado sem rodar o CLI `ai/XslSynth` à mão. Rota de **leitura**: [`Controllers/GeneratedMapperArtifactController.cs`](Controllers/GeneratedMapperArtifactController.cs)
+(o segmento de rota se chama `{mappingId}` no código; é o GUID do mapeador em `tbMapper`).
+
+```
+GET /api/workspaces/{workspaceId}/mappings/{mapperGuid}/generated-transformation
+```
+
+- **RBAC:** qualquer papel de membro. Sem identidade, não-membro ou mapeador inexistente no catálogo → `404` (fail-closed). Catálogo indisponível → `503`.
+- **Geração lazy, sem bloqueio:** se o candidato não existe ou está defasado, **este próprio GET** dispara a geração em background e responde `status: "generating"`; o front deve repetir a consulta até `ready`.
+- **`status`** devolvido: `generating` ou `ready`. `stale` (existia um candidato `ready`, mas o hash do DSL do mapeador ou a `generatorVersion` mudou) é calculado só na leitura e **nunca volta como valor final**: vira regeneração e o GET responde `generating`. `none` só aparece no caso residual em que o MapeadorVO do catálogo não é XML bem-formado.
+- **`validationBasis` é sempre `declared_dsl`:** a cobertura é medida contra a regra **declarada** no mapeador, **não** contra execução real do Sysmiddle (o runner está bloqueado por licença do host FiatMQ). Não apresente `linkPct`/`rulePct` como "validado contra o motor real".
+
+```json
+{
+  "mapperGuid": "GRT_0001",
+  "status": "ready",
+  "content": "<xsl:stylesheet ...>",
+  "coverageJson": "{\"generatorVersion\":\"2\",\"shell\":{...},\"limitations\":[...],\"linkPct\":...}",
+  "validationBasis": "declared_dsl",
+  "generatedAt": "2026-09-21T12:00:00Z",
+  "correlationId": "..."
+}
+```
+
+`coverageJson` é uma **string** JSON (não objeto) com campos aditivos desta rodada:
+
+| Campo | Significado |
+|-------|-------------|
+| `generatorVersion` | Versão do **gerador** (hoje `"2"`). Entra no hash usado para `stale`: artefatos gerados pela versão anterior são regenerados sob demanda ao abrir o detalhe. |
+| `shell` | Casca do documento: `{ rootElement, namespace, attributes }`. |
+| `limitations[]` | Limites conhecidos deste gerador, em texto (raiz não determinada, namespace não constante, destinos `ATT_` sem elemento-pai resolvido etc.). Exibir ao usuário. |
+| `compiles`, `compileError`, `linksCovered/linksTotal/linkPct`, `rulesCovered/rulesTotal/rulePct`, `provenanceEntries`, `linkMappingsSemFolha` | Cobertura e proveniência (já existentes). |
+
+Como a casca é gerada: atributos do elemento raiz (`versao`, `Id`…) saem como `xsl:attribute`; o namespace
+(`xmlns`) **só** é declarado quando é constante no próprio mapeador (nunca é inventado; se o layout de
+destino tem `xmlns` e nenhuma regra constante o define, entra uma linha em `limitations[]`). Na tradução
+da DSL, `Concat`, `Substring` (base 0 → `substring` base 1) e `GetLength` viram XPath; **`Trim`, `Replace` e
+demais funções não são traduzidas** (a regra fica de fora, sem aproximação).
+
+**🇺🇸** Issue #438. Architecture decision: [`docs/architecture/adr-geracao-automatica-gabarito-sysmiddle.md`](docs/architecture/adr-geracao-automatica-gabarito-sysmiddle.md)
+(automatic generation; the reference oracle is Sysmiddle's *declared* DSL; the ADR's "Estado da implementação" section lists the implementation deviations).
+Returns the TCL/XSL/XSLT candidate synthesized from a Sysmiddle mapper. Read-only
+route, any member role, fail-closed `404`. The **GET itself triggers lazy background generation** when
+the candidate is missing or stale and answers `generating`; poll until `ready`. `stale` is computed at
+read time only (mapper DSL hash or `generatorVersion` changed) and is never returned as a final value.
+`validationBasis` is always `declared_dsl`: coverage is measured against the rule **declared** in the
+mapper, **not** against real Sysmiddle execution (runner blocked by licensing). `coverageJson` is a JSON
+**string** with additive fields `generatorVersion` (currently `"2"`, part of the `stale` hash, so
+artifacts from the previous version regenerate on demand), `shell { rootElement, namespace, attributes }`
+and `limitations[]`. Root attributes are emitted as `xsl:attribute`; the namespace is emitted only when
+it is constant in the mapper itself; the DSL's `Concat`/`Substring`/`GetLength` are translated,
+`Trim`/`Replace` are not.
+
+### 8.6 `GET .../mapping-releases` — listagem unificada / unified listing
+
+**🇧🇷** Issue #438 (ADR [`adr-unificacao-generated-artifact-mapping-release.md`](docs/architecture/adr-unificacao-generated-artifact-mapping-release.md),
+opção b: nada migra de tabela). A lista de releases do workspace passa a incluir também os candidatos
+auto-gerados de 8.5. Código: `MappingGovernanceController.List` ([`Controllers/MappingGovernanceController.cs`](Controllers/MappingGovernanceController.cs)).
+
+```
+GET /api/workspaces/{workspaceId}/mapping-releases?page=1&pageSize=20&status=&draftId=&environment=&origin=
+```
+
+Resposta: `{ items, page, pageSize, totalCount, autoGeneratedUnavailable }`. `pageSize` vai de 1 a 100
+(fora disso `400`). Qualquer papel de membro; não-membro → `404`.
+
+| Aspecto | Comportamento |
+|---------|---------------|
+| `origin` (por item) | `draft_compile` (release real) ou `auto_generated`. Filtro `?origin=` aceita os mesmos dois valores; ausente = ambos. |
+| Item `auto_generated` | Campos: `origin`, `mapperGuid`, `mapperName`, `status`, `validationBasis`, `coverage`, `generatedAt`, `correlationId`, `detailUrl`. **Sem** `releaseId`, `draftId`, `testRunSummary`, `approvedByUserId`, `environment`, `engine`, `content` (campos **omitidos**, não `null`). `coverage` aqui é objeto JSON (no detalhe 8.5 é a string `coverageJson`). O conteúdo TCL/XSLT vem só pelo `detailUrl`. |
+| `status` | Aceita o ciclo de vida da release (`draft_compiled`, `test_passed`, `test_failed`, `in_review`, `approved`, `published`, `deprecated`, `archived`) **ou** `ready`/`generating`/`stale`. `stale` **não é persistido**: a lista não devolve nada para ele (só o detalhe o calcula). Valor fora do vocabulário → `400`. |
+| `draftId` / `environment` | Existem só em release real: quando informados, os auto-gerados são **excluídos**. |
+| Ordem e paginação | Sequência única: releases reais (mais recentes primeiro) e depois os auto-gerados; `totalCount` soma as duas fontes. |
+| Degradação | Se o store de auto-gerados falha, a lista devolve só as releases e `autoGeneratedUnavailable: true`. |
+| Ações | Auto-gerado **não** é elegível a approve/publish/rollback (essas rotas exigem `releaseId`). |
+
+⚠️ **Vínculo mapper→workspace é PROVISÓRIO (issue #417):** todo workspace enxerga **todos** os
+artefatos gerados, porque o catálogo Sysmiddle é org-wide. Não há isolamento por workspace nos itens
+`auto_generated`.
+
+**🇺🇸** Issue #438. The workspace release list now also includes the auto-generated candidates from 8.5,
+with a per-item `origin` (`draft_compile` | `auto_generated`) and an `origin` filter. Auto-generated items
+omit (not `null`) `releaseId`/`draftId`/`testRunSummary`/`approvedByUserId`/`environment`/`engine`/`content`
+and carry `detailUrl`. `draftId`/`environment` filters exclude them; `status` accepts the release
+lifecycle or `ready`/`generating`/`stale` (`stale` is never persisted, so the list returns nothing for
+it). Order: real releases first, then generated ones. ⚠️ The mapper-to-workspace link is **provisional**
+(issue #417): every workspace sees every generated artifact.
+
+### 8.7 `GET /api/reference-examples` — catálogo de exemplos reais da Neogrid / Neogrid real-example catalog
+
+**🇧🇷** Corpus de referência (pares TCL/XSL reais da Neogrid) servido em rota **própria e global**
+([`Controllers/ReferenceExamplesController.cs`](Controllers/ReferenceExamplesController.cs)), deliberadamente
+**separada** de `mapping-releases`: é material de apoio/oráculo, não release compilada pelo pipeline nem
+dado de cliente. Sem `workspaceId` na rota e sem `RequireWorkspaceRole` neste controller.
+
+- `GET /api/reference-examples?docType=NFe` → lista de metadados (`id`, `docType`, `version`, `scenario`, `direction`, `tclFileName`, `xslFileName`), sem conteúdo. `docType` é opcional (sem diferenciar maiúsculas).
+- `GET /api/reference-examples/{id}` → `{ id, tclContent?, xslContent? }`. `404` se o `id` não existe (também se a leitura do arquivo falhar).
+- **Configuração:** `ReferenceExamples:BasePath` (vazio por padrão em [`appsettings.json`](appsettings.json)). Estrutura esperada: `{BasePath}/tcl/{DocType}/{Versao}/{Arquivo}.tcl` e `{BasePath}/xsl/{DocType}/{Versao}/{Arquivo}.xsl`. Sem `BasePath`, pasta inexistente ou erro de leitura, a **lista vem vazia** (degrada, nunca erro). O catálogo é reconstruído do disco a cada chamada.
+- `scenario`/`direction` são extraídos do nome do arquivo em melhor esforço (sufixo `_XxxToYyy`).
+
+**🇺🇸** Reference corpus (real Neogrid TCL/XSL pairs) on its own global route, intentionally separate from
+`mapping-releases`. Configure `ReferenceExamples:BasePath` (empty by default); when unset/missing, the
+list is empty rather than an error.
+
+### 8.8 Suíte de teste versionada e runner TCL do Fiscal Test Lab / Versioned test suite and TCL runner
+
+**🇧🇷** Issue #423 (suíte) e #421 (runner TCL). Código: [`Controllers/TestSuiteController.cs`](Controllers/TestSuiteController.cs).
+Agrupa fixtures (pares XML de entrada/gabarito) sob um `MappingDraft` e roda todas contra uma release, com
+histórico persistido para comparar regressão entre versões. Base:
+`api/workspaces/{ws}/mapping-drafts/{draftId}/test-suites`.
+
+| Método e rota (relativa à base) | Papel | Resultado |
+|---------------------------------|-------|-----------|
+| `POST` (base) `{ name, description? }` | `mapper`/`fiscal_admin`/`owner` | `201` suíte; `422` sem `name`. |
+| `GET` (base) | membro | Lista as suítes do draft. |
+| `GET {suiteId}` | membro | Uma suíte. |
+| `POST {suiteId}/fixtures` `{ name, inputXml, expectedXml, xsdVersion? }` | `mapper`/`fiscal_admin`/`owner` | `201` fixture; `422` se faltar campo. Só **cria e lista**: não há edição/remoção. |
+| `GET {suiteId}/fixtures` | membro | Fixtures na ordem de execução (`sortOrder`). |
+| `POST {suiteId}/run` `{ releaseId }` | `mapper`/`fiscal_admin`/`owner` | `200` com a execução completa; `422` (sem `releaseId`, release/suíte fora do workspace/draft, ou suíte sem fixtures); `503` falha inesperada. |
+| `GET {suiteId}/runs?page=&pageSize=` | membro | `{ items, totalCount }`, mais recente primeiro (defaults: página 1, 20 itens). |
+
+- **`run` é SÍNCRONO:** o `200` já traz o resultado (`totalFixtures`, `passed`, `failed`, `requiredGatesPassed`, `durationMs`, `fixtureResults[]`); não há job para consultar. Uma fixture com falha interna vira "falhou" e as demais continuam. `requiredGatesPassed` é verdadeiro só se **todas** passam.
+- Não-membro/sem identidade → `404` (não existe `401`). As rotas de escrita passam pelo `MappingEngineGuardFilter` (Sysmiddle nunca é mutado).
+- **Fora do escopo:** endpoint de comparação entre duas execuções (o front monta a comparação a partir do histórico).
+- **Runner TCL (#421):** `engine=tcl` agora **executa de verdade** no Test Lab, com o mesmo contrato `MappingTestRunSummary` do XSLT (XSD, divergências com proveniência). Implementação: `TclRuleApplier`, que **interpreta as `MappingDraftRule` aceitas/editadas** contra o XML de entrada. Não há motor Tcl externo (o "TCL" aqui é o dialeto declarativo `<MAP><LINE><FIELD>` interno, não a linguagem Tcl), e o runner Sysmiddle segue fora de alcance.
+
+**🇺🇸** Issues #423 (suite) and #421 (TCL runner). Fixtures (input/expected XML pairs) grouped under a
+`MappingDraft`, run against a release with persisted history. `POST {suiteId}/run` (`{ releaseId }`) is
+**synchronous** and returns the full result; `GET {suiteId}/runs` is the paginated history. Create/list
+only for suites and fixtures (no edit/delete). `engine=tcl` now really executes in the Test Lab through
+`TclRuleApplier`, which interprets the accepted/edited `MappingDraftRule`s (no external Tcl engine), with
+the same `MappingTestRunSummary` contract as XSLT.
+
+### 8.9 Resposta livre do revisor às perguntas abertas da IA / Reviewer free-text answers
+
+**🇧🇷** Issue #422. Código: [`Controllers/MappingRuleAnswersController.cs`](Controllers/MappingRuleAnswersController.cs).
+O revisor responde às perguntas em aberto (`OpenQuestions`) de uma regra. **Só persistência:** a resposta
+não alimenta nenhum dataset de treino (se um dia virar exemplo, passa pela curadoria da issue #346).
+Base: `api/workspaces/{ws}/mapping-drafts/{draftId}`.
+
+| Método e rota (relativa à base) | Papel | Resultado |
+|---------------------------------|-------|-----------|
+| `PUT rules/{ruleId}/questions/{questionIndex}/answer` `{ answer }` | `owner`/`fiscal_admin`/`mapper`/`reviewer` | `200` resposta vigente; `400` texto vazio ou > 4000 caracteres; `404` regra/pergunta inexistente; `503` falha ao gravar. |
+| `GET question-answers?includeHistory=` | qualquer membro | Respostas do draft, todas as regras. |
+| `GET rules/{ruleId}/question-answers?includeHistory=` | qualquer membro | Respostas de uma regra. |
+
+- **Chave e limitação:** a pergunta não tem id estável (é uma `string` numa lista), então a chave é
+  `(draft, regra, questionIndex)`, com `questionIndex` **0-based** em `OpenQuestions`. Isso só é seguro
+  porque a lista é **imutável depois que a regra é criada** (o PATCH não a altera; uma regra nova
+  substitui a antiga via `superseded`). Cada resposta guarda um **snapshot do texto da pergunta**
+  (`question`), então um índice defasado seria detectável na leitura.
+- **Versionamento (append-only):** reenviar o **mesmo** texto (após `Trim`) não cria versão nova (`200`, mesma `version`); texto **diferente** cria a versão N+1. Nada é sobrescrito.
+- **Leitura:** por padrão só a versão mais recente de cada pergunta; `includeHistory=true` traz todas. Resposta: `{ draftId, ruleId, includeHistory, items[] }`, com cada item `{ answerId, draftId, ruleId, questionIndex, question, answer, answeredByUserId, answeredByName, answeredAt, version }`.
+
+**🇺🇸** Issue #422. Reviewer answers to a rule's `OpenQuestions`; persistence only, no training dataset.
+Key is `(draft, rule, questionIndex)` with a **0-based** index into `OpenQuestions`, safe only because that
+list is immutable after the rule is created; each answer stores a snapshot of the question text. Re-sending
+identical text creates no version; different text creates version N+1 (append-only). Reads return the latest
+version per question unless `includeHistory=true`.
+
+### 8.10 Histórico de análises fiscais / Fiscal analysis history
+
+**🇧🇷** Issue #366 (ADR [`adr-historico-analises-fiscais-366.md`](docs/architecture/adr-historico-analises-fiscais-366.md)).
+Códigos: [`Controllers/FiscalAnalysesController.cs`](Controllers/FiscalAnalysesController.cs) e `ParseController`.
+
+**Registro (opt-in, dentro do parse):**
+
+- `POST /api/parse/upload` e `POST /api/parse/auto` aceitam o campo de formulário **opcional** `workspaceId`. Só registra se o GUID for válido, houver usuário identificado e ele for **membro** do workspace; arquivo acima do limite de artefato (50 MB) também não é registrado.
+- Campos aditivos na resposta: `analysisId` (**omitido** quando não registrado) e `historyRegistered` (bool). Em `/auto` ficam dentro de `parseResult` (`parseResult.analysisId`).
+- **Nunca derruba o parse:** o registro é aguardado com **timeout de 5 s**; falha ou estouro apenas resultam em `historyRegistered: false`. Em `/auto` o layout do catálogo é guardado só como GUID (o XML descriptografado não vai para o histórico).
+
+**Consulta** (`api/workspaces/{ws}/analyses`, qualquer papel de membro):
+
+| Rota (relativa a `.../analyses`) | Resultado |
+|----------------------------------|-----------|
+| `GET ?page=&pageSize=` | `{ page, pageSize, total, items[] }`, mais recente primeiro (`pageSize` máx. 100; inválido → `400`). |
+| `GET {analysisId}` | Detalhe: layout usado e `files[]` (`fileId`, `role`, `fileName`, `sizeBytes`, `sha256`, `downloadUrl`), sem caminho de disco. |
+| `GET {analysisId}/files/{fileId}` | Download (`application/octet-stream`, `attachment`, `nosniff`), com **sha256 conferido** na leitura; hash divergente → `500` sem servir o conteúdo. |
+| `DELETE {analysisId}` | `204`; apaga a linha SQL e os arquivos em disco. |
+
+- **Isolamento por DONO:** só quem criou a análise a vê, baixa ou apaga. Outro membro do workspace recebe `404` (indistinguível de inexistente).
+- **Retenção:** TTL de **90 dias** com purga automática em background. Configuração: `FiscalAnalysisHistory:RetentionDays` (default 90; valor <= 0 volta ao default) e `FiscalAnalysisHistory:CleanupIntervalMinutes` (default 360).
+- **Armazenamento:** metadados no banco de identidade (`IdentityDatabase:*`), arquivos em disco sob `ML:FiscalAnalysesPath` (raiz própria, separada da pasta de exemplos de aprendizado: histórico do usuário **não** alimenta dataset de IA). A chave não está no `appsettings.json`; sem ela o default é `{pasta da aplicação}/MLData/FiscalAnalyses`.
+
+> ⚠️ **PENDENTE DE PRODUÇÃO:** definir **caminho, permissões e tamanho da pasta** de `ML:FiscalAnalysesPath`.
+> A pasta guarda **documento fiscal de cliente** (LGPD): precisa de ACL restrita à conta do serviço e de
+> capacidade dimensionada para 90 dias de retenção. Ainda não há decisão registrada sobre esses três itens.
+
+**🇺🇸** Issue #366. `POST /api/parse/upload` and `/auto` accept an optional `workspaceId` form field; on
+success the response gains `analysisId` (omitted when not registered; in `/auto` under
+`parseResult.analysisId`) and `historyRegistered`. Registration never breaks the parse (5 s timeout; failure
+just yields `historyRegistered: false`). `GET/DELETE api/workspaces/{ws}/analyses[/{analysisId}]` and
+`GET .../files/{fileId}` are **owner-only** (other members get `404`); downloads verify the stored sha256.
+90-day TTL with automatic purge (`FiscalAnalysisHistory:RetentionDays`, `CleanupIntervalMinutes`); files
+live under `ML:FiscalAnalysesPath`. ⚠️ **Production pending:** decide path, permissions and size of that
+folder (it stores customer fiscal documents).
+
 ---
 
 ## 9. Configuração / Configuration
@@ -640,6 +955,9 @@ waiting on new backend work (issue #376). Full detail, JSON examples and file/li
 | `LayoutParserDecrypt:Path` | Caminho do `.exe` de descriptografia. |
 | `TransformationPipeline` | Caminhos de TCL/XSL/exemplos/modelos aprendidos. |
 | `XsdValidation` | XSDs por tipo de documento fiscal (NFe, CTe, NFCom, MDFe). |
+| `ReferenceExamples:BasePath` | Corpus de exemplos reais TCL/XSL da Neogrid (vazio por padrão; lista vazia se ausente). Ver §8.7. |
+| `ML:FiscalAnalysesPath` | Pasta dos arquivos do histórico de análises fiscais (**pendente de definição em produção**). Ver §8.10. |
+| `FiscalAnalysisHistory` | `RetentionDays` (default 90) e `CleanupIntervalMinutes` (default 360) do histórico de análises. Ver §8.10. |
 | `Kestrel:Endpoints:Http:Url` | Porta de escuta (default `http://0.0.0.0:5000`). |
 
 > ⚠️ **Nunca** comite credenciais. Ver [§11 Segurança](#11-segurança--security-).
@@ -697,6 +1015,26 @@ docker run -p 5000:5000 \
 ```
 
 > Em ambiente, o CORS já libera as origens do front (`localhost:81`, `172.25.32.42:*` etc.) — ver `Program.cs:149`.
+
+### CI: check de contrato OpenAPI (issue #414) / OpenAPI contract check
+
+**🇧🇷** O workflow [`.github/workflows/pr-validate.yml`](.github/workflows/pr-validate.yml) (PRs contra
+`develop`) compara o OpenAPI gerado pela PR com o da base (`develop`) usando o
+[`oasdiff`](https://github.com/oasdiff/oasdiff) e relata *breaking changes* (endpoint removido, campo
+obrigatório novo em request, tipo alterado, campo de resposta removido) no resumo do job. Mudança **aditiva**
+(endpoint/campo opcional novo) aparece só como informativa.
+
+- **Hoje está em modo advisory:** `OPENAPI_CONTRACT_BLOCKING: 'false'` (bloco `env` no topo do workflow). O step reporta, mas **nunca reprova a PR**, nem por falha de infraestrutura (download, build da base, extração).
+- **Como funciona:** o OpenAPI é extraído com `swagger tofile` (Swashbuckle CLI) a partir do assembly compilado, sem subir o serviço, com `ASPNETCORE_ENVIRONMENT=Testing`. O `oasdiff` é baixado uma vez, com versão e SHA256 fixados, e cacheado no `RUNNER_TOOL_CACHE`.
+- **Como promover para bloqueante:** trocar `OPENAPI_CONTRACT_BLOCKING` para `'true'`. Nada mais muda: o step passa a sair com código 1 quando houver breaking change de nível erro. Antes de promover, observar algumas PRs em advisory para medir falso positivo.
+- ⚠️ **Limite:** sem branch protection nativa (repositório privado no plano free), um check vermelho **não impede o merge** por si só. Para o gate valer de fato é preciso exigi-lo como *required status check* (exige GitHub Pro/Team) ou manter a convenção de não mesclar PR vermelha. Mudança breaking **intencional** passa a exigir aprovação explícita do dono.
+
+**🇺🇸** `pr-validate.yml` diffs the PR's OpenAPI against `develop` with `oasdiff` and reports breaking changes
+in the job summary; additive changes are informational only. It is **advisory today**
+(`OPENAPI_CONTRACT_BLOCKING: 'false'`): it never fails the PR. To make it blocking, set that variable to
+`'true'` (after watching a few PRs for false positives). Without native branch protection (private repo on
+the free plan) a red check does not block a merge by itself: require it as a status check (GitHub Pro/Team)
+or keep the convention of not merging red PRs.
 
 ---
 

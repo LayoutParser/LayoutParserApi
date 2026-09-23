@@ -66,7 +66,11 @@ namespace LayoutParserApi.Tests.Services.Fiscal
         {
             public MappingDraftDetail? Draft { get; set; }
 
-            public Task<bool> RevisionBelongsToPackageAsync(Guid packageId, Guid revisionId, CancellationToken cancellationToken) => Task.FromResult(true);
+            public Task<bool> RevisionBelongsToWorkspacePackageAsync(Guid workspaceId, Guid packageId, Guid revisionId, CancellationToken cancellationToken) => Task.FromResult(true);
+            public Task<(IReadOnlyList<MappingDraftSummary> Items, int TotalCount)> ListByWorkspaceAsync(
+                Guid workspaceId, int page, int pageSize, string? engine, CancellationToken cancellationToken)
+                => throw new NotSupportedException("Não exercitado por este fake — cobertos em MappingDraftsControllerListTests.");
+
             public Task<IReadOnlyList<ArtifactFileRef>> GetArtifactFilesForRevisionAsync(Guid revisionId, CancellationToken cancellationToken)
                 => Task.FromResult<IReadOnlyList<ArtifactFileRef>>(Array.Empty<ArtifactFileRef>());
             public Task<MappingDraftDetail> CreateDraftAsync(Guid workspaceId, Guid packageId, Guid revisionId, Guid createdByUserId, string engine, CancellationToken cancellationToken)
@@ -253,6 +257,103 @@ namespace LayoutParserApi.Tests.Services.Fiscal
             var summary = releaseStore.LastAppliedSummary!;
             Assert.False(summary.RequiredGatesPassed);
             Assert.DoesNotContain(summary.XsdErrors.Concat(new[] { string.Empty }), e => e.Contains("[fonts]", StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static MappingReleaseDetail BuildCompiledTclRelease(Guid workspaceId, Guid draftId, IReadOnlyList<MappingDraftRule> rules)
+        {
+            var result = MappingDraftRuleTranspiler.ToTcl(rules, new SchemaRef("origem"), new SchemaRef("dest"));
+            var artifact = new MappingReleaseArtifact("tcl", result.Content, "hash", DateTimeOffset.UtcNow);
+            return new MappingReleaseDetail(
+                Guid.NewGuid(), workspaceId, draftId, "tcl", new[] { artifact }, rules.Select(r => r.RuleId).ToList(),
+                Array.Empty<MappingReleaseCompileDiagnostic>(), "hash", null, MappingReleaseStatus.DraftCompiled,
+                "corr-0", DateTimeOffset.UtcNow, "AAAA",
+                "development", null, null, null, null, null, null);
+        }
+
+        /// <summary>
+        /// Issue #421 — runner determinístico de TCL: interpreta a regra estruturada diretamente
+        /// (não reexecuta o texto TCL gerado) contra o input e compara com o gabarito.
+        /// </summary>
+        [Fact]
+        public async Task TestRun_EngineTcl_SaidaBateComGabarito_PassaEComProvenance()
+        {
+            var workspaceId = Guid.NewGuid();
+            var draftId = Guid.NewGuid();
+            var userId = Guid.NewGuid();
+            var ruleId = Guid.NewGuid();
+            var packageId = Guid.NewGuid();
+
+            var ruleDetail = AcceptedCopyRule(ruleId, "/nfe/emit/CNPJ", "/dest/cnpj");
+            var draft = new MappingDraftDetail(draftId, workspaceId, packageId, Guid.NewGuid(), "tcl", DateTimeOffset.UtcNow, new[] { ruleDetail });
+
+            var rule = new MappingDraftRule
+            {
+                RuleId = ruleId, DraftId = draftId, SourceRefs = new[] { "/nfe/emit/CNPJ" },
+                TargetRefs = new[] { "/dest/cnpj" }, Operation = "copy", Status = MappingDraftRuleStatus.Accepted,
+            };
+            var release = BuildCompiledTclRelease(workspaceId, draftId, new[] { rule });
+
+            var draftStore = new FakeDraftStore { Draft = draft };
+            var releaseStore = new FakeReleaseStore { Release = release };
+            var scopeFactory = BuildScopeFactory(draftStore, releaseStore);
+
+            var service = new MappingTestRunService(NullLogger<MappingTestRunService>.Instance, scopeFactory);
+
+            var inputXml = "<nfe><emit><CNPJ>12345678000199</CNPJ></emit></nfe>";
+            // Raiz esperada segue a mesma convenção do MappingCompileService (root{PackageId:N}).
+            var expectedXml = $"<root{packageId:N}><cnpj>12345678000199</cnpj></root{packageId:N}>";
+
+            var jobId = await service.EnqueueAsync(workspaceId, draftId, release.ReleaseId, userId, inputXml, expectedXml, null, "corr-tcl-1", CancellationToken.None);
+            var state = await WaitForCompletionAsync(service, jobId);
+
+            Assert.Equal(TestRunJobStatus.Completed, state.Status);
+            Assert.True(state.RequiredGatesPassed);
+            Assert.NotNull(releaseStore.LastAppliedSummary);
+            Assert.True(releaseStore.LastAppliedSummary!.RequiredGatesPassed);
+            Assert.Empty(releaseStore.LastAppliedSummary.Divergences);
+            Assert.Equal(MappingReleaseStatus.TestPassed, releaseStore.Release!.Status);
+        }
+
+        [Fact]
+        public async Task TestRun_EngineTcl_SaidaDivergeDoGabarito_FalhaComProvenanceAteARegra()
+        {
+            var workspaceId = Guid.NewGuid();
+            var draftId = Guid.NewGuid();
+            var userId = Guid.NewGuid();
+            var ruleId = Guid.NewGuid();
+            var packageId = Guid.NewGuid();
+
+            var ruleDetail = AcceptedCopyRule(ruleId, "/nfe/emit/CNPJ", "/dest/cnpj");
+            var draft = new MappingDraftDetail(draftId, workspaceId, packageId, Guid.NewGuid(), "tcl", DateTimeOffset.UtcNow, new[] { ruleDetail });
+
+            var rule = new MappingDraftRule
+            {
+                RuleId = ruleId, DraftId = draftId, SourceRefs = new[] { "/nfe/emit/CNPJ" },
+                TargetRefs = new[] { "/dest/cnpj" }, Operation = "copy", Status = MappingDraftRuleStatus.Accepted,
+            };
+            var release = BuildCompiledTclRelease(workspaceId, draftId, new[] { rule });
+
+            var draftStore = new FakeDraftStore { Draft = draft };
+            var releaseStore = new FakeReleaseStore { Release = release };
+            var scopeFactory = BuildScopeFactory(draftStore, releaseStore);
+
+            var service = new MappingTestRunService(NullLogger<MappingTestRunService>.Instance, scopeFactory);
+
+            var inputXml = "<nfe><emit><CNPJ>12345678000199</CNPJ></emit></nfe>";
+            var expectedXml = $"<root{packageId:N}><cnpj>00000000000000</cnpj></root{packageId:N}>"; // gabarito diferente
+
+            var jobId = await service.EnqueueAsync(workspaceId, draftId, release.ReleaseId, userId, inputXml, expectedXml, null, "corr-tcl-2", CancellationToken.None);
+            var state = await WaitForCompletionAsync(service, jobId);
+
+            Assert.Equal(TestRunJobStatus.Completed, state.Status);
+            Assert.False(state.RequiredGatesPassed);
+            var summary = releaseStore.LastAppliedSummary!;
+            Assert.False(summary.RequiredGatesPassed);
+            Assert.Single(summary.Divergences);
+            var divergence = summary.Divergences[0];
+            Assert.Equal(ruleId, divergence.RuleId); // provenance: nó divergente -> regra de origem
+            Assert.Equal(new[] { "/nfe/emit/CNPJ" }, divergence.SourceRefs);
+            Assert.Equal(MappingReleaseStatus.TestFailed, releaseStore.Release!.Status);
         }
 
         [Fact]
