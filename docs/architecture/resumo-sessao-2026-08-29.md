@@ -60,6 +60,12 @@ em vez de hardcode NFe`).
 ### 2.6 Varredura de gaps quadro vs. solicitado
 - Issue #51 encontrada fechada indevidamente (correção já estava no código) — comentário de
   correção postado na issue, sem reabertura necessária.
+- Issue #179 criada (tech-debt: hook de pre-commit local `gitleaks`/`detect-secrets`).
+  **Nota de duplicidade:** existe issue #180 com título idêntico, já **CLOSED** (PR #123,
+  mesclado em 2026-08-15, implementou o hook). A #179 aberta nesta sessão parece redundante com
+  o trabalho já entregue em #180/PR#123 — **sinalizado aqui, não fechado por este agente**
+  (decisão de fechar/manter é do dono ou de quem reabriu a necessidade).
+**Status:** #51 corrigida (comentário postado); #179 aberta e pendente de triagem de duplicidade.
 - Issue #179 criada (tech-debt: hook de pre-commit local `gitleaks`/`detect-secrets`) —
   duplicava diretamente o **trabalho já entregue pelo PR #123** (`.githooks/pre-commit` +
   `.gitleaks.toml`, mesclado em 2026-08-15), não a issue #180. Fechada em 2026-08-29 com
@@ -127,6 +133,11 @@ por `@lp-devops`.
 | PR #181 | docs(ci): causa raiz do warmup (deploy/CatalogHealthCheck) | Merged |
 | PR #177 | fix: detecta tipo de documento em vez de hardcode NFe (#171) | Merged |
 | PR #175 | chore(ci): pin SHA + permissions mínimas | Merged |
+| PR #123 | chore(security): hook de pre-commit anti-segredo (#180) | Merged |
+| Issue #137 | story: plano de execução fieldMappings/sectionMappings (PBI #128/Epic #126) | Open (guarda-chuva) |
+| Issue #172 | story: leitura de PDF de orientações | **Open — sem PR** |
+| Issue #174 | tech-debt: MetricsController sem modelos reais | **Open — sem PR** |
+| Issue #179 | tech-debt: hook pre-commit gitleaks | **Open — possível duplicata de #180 (closed)** |
 | PR #123 | chore(security): hook de pre-commit anti-segredo | Merged |
 | Issue #137 | story: plano de execução fieldMappings/sectionMappings (PBI #128/Epic #126) | Open (guarda-chuva) |
 | Issue #172 | story: leitura de PDF de orientações | **Open — sem PR** |
@@ -146,6 +157,9 @@ por `@lp-devops`.
    `SMTP_USERNAME`, `SMTP_PASSWORD`, `ALERT_EMAIL_TO` ainda não criados; sem eles os steps de
    alerta em `deploy.yml` são pulados silenciosamente. Passo a passo (Gmail) em
    `.claude/rules/security.md` §"Alerta de deploy por e-mail".
+3. **Triagem da duplicidade #179 vs #180** — decidir se #179 deve ser fechada como duplicata ou
+   se há escopo residual real não coberto pelo PR #123.
+4. **Revisão/merge do PR #211** (RepairOrchestrator) — decisão de produto/arquitetura sobre
 3. **Revisão/merge do PR #211** (RepairOrchestrator) — decisão de produto/arquitetura sobre
    substituir XML-direto como motor primário; merge é exclusivo de `@lp-devops`, mas a aprovação
    de escopo é do dono.

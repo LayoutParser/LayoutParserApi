@@ -22,5 +22,22 @@ namespace LayoutParserApi.Services.Interfaces
 
         /// <summary>Cria o reporte com <c>Status = pending</c> (ADR §6) e retorna o <c>ReportId</c> gerado.</summary>
         Task<Guid> CreateReportAsync(FieldCorrectionReportInput input, Guid reportedByUserId, CancellationToken cancellationToken);
+
+        /// <summary>
+        /// Fila de curadoria (issue #346): reportes ainda <c>pending</c>, mais antigos primeiro,
+        /// limitados a <paramref name="limit"/>.
+        /// </summary>
+        Task<IReadOnlyList<FieldCorrectionReportSummary>> ListPendingReportsAsync(int limit, CancellationToken cancellationToken);
+
+        /// <summary>Retorna uma linha de reporte por id, ou <c>null</c> se não existir.</summary>
+        Task<FieldCorrectionReportSummary?> GetReportAsync(Guid reportId, CancellationToken cancellationToken);
+
+        /// <summary>
+        /// Transição de curadoria (issue #346): grava <paramref name="newStatus"/> +
+        /// <paramref name="reviewedByUserId"/> + <c>ReviewedAtUtc</c> <b>somente</b> se o reporte
+        /// estava <c>pending</c>. Retorna <c>false</c> se o reporte não existe ou já foi revisado
+        /// (idempotente — uma segunda chamada não reverte nem re-transiciona).
+        /// </summary>
+        Task<bool> TransitionStatusAsync(Guid reportId, string newStatus, Guid reviewedByUserId, CancellationToken cancellationToken);
     }
 }
