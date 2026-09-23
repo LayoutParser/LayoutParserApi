@@ -15,6 +15,14 @@ namespace LayoutParserApi.Models.Transformation
 
         public string TransformedXml { get; set; } = "";
 
+        /// <summary>
+        /// XSLT sintetizado pelo <c>RepairOrchestrator</c> (ai/XslSynth.Core), quando o candidato
+        /// veio do pathway IA via <see cref="LayoutParserApi.Services.Transformation.Ai.IXslSynthesizerService"/>.
+        /// <c>null</c> nos demais pathways (sysmiddle/tcl-xsl já têm XSLT persistido em disco,
+        /// não neste campo) ou quando o loop caiu no fallback legado XML-direto (sem XSLT reutilizável).
+        /// </summary>
+        public string? GeneratedXslt { get; set; }
+
         public double? Score { get; set; }
 
         public Dictionary<string, string>? SegmentMappings { get; set; }
@@ -76,5 +84,13 @@ namespace LayoutParserApi.Models.Transformation
         /// <summary>CorrelationId da request (<see cref="LayoutParserApi.Services.Logging.CorrelationContext.CurrentId"/>),
         /// permite ao suporte cruzar com o log estruturado completo (não sanitizado) desta chamada.</summary>
         public string? CorrelationId { get; set; }
+
+        /// <summary>Identificador estável do documento (ADR docs/architecture/adr-contrato-correcao-
+        /// guiada-humano-2026-09-08.md §4, Gap 1) — "doc_" + SHA256(InputContent + "|" +
+        /// resolvedLayoutGuid) truncado a 16 hex. Determinístico: mesmo InputContent + mesmo
+        /// LayoutGuid resolvido sempre produzem o mesmo valor. Usado pelo front para futuramente
+        /// referenciar este documento num reporte de correção humana (endpoint ainda não
+        /// implementado — só o identificador, campo aditivo).</summary>
+        public string? DocumentId { get; set; }
     }
 }
