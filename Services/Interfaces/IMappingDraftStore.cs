@@ -85,8 +85,13 @@ namespace LayoutParserApi.Services.Interfaces
     /// </summary>
     public interface IMappingDraftStore
     {
-        /// <summary>Confirma que a revisão pertence ao pacote informado (o Draft referencia uma revisão EXATA, nunca implícita).</summary>
-        Task<bool> RevisionBelongsToPackageAsync(Guid packageId, Guid revisionId, CancellationToken cancellationToken);
+        /// <summary>
+        /// Confirma que a revisão pertence ao pacote informado (o Draft referencia uma revisão EXATA,
+        /// nunca implícita) E que o pacote pertence ao <paramref name="workspaceId"/> da rota (issue
+        /// LayoutParserReact#196 — sem isso, membro do workspace A criava draft apontando para pacote/
+        /// revisão do workspace B).
+        /// </summary>
+        Task<bool> RevisionBelongsToWorkspacePackageAsync(Guid workspaceId, Guid packageId, Guid revisionId, CancellationToken cancellationToken);
 
         /// <summary>
         /// Lista drafts do workspace, paginado (issue #416 — não havia forma de descobrir drafts sem

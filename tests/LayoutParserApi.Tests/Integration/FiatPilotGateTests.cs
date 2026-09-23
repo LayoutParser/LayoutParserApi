@@ -129,7 +129,7 @@ namespace LayoutParserApi.Tests.Integration
             public Dictionary<Guid, MappingDraftDetail> Drafts { get; } = new();
             public Dictionary<(Guid DraftId, Guid RuleId), MappingDraftRuleDetail> Rules { get; } = new();
 
-            public Task<bool> RevisionBelongsToPackageAsync(Guid packageId, Guid revisionId, CancellationToken cancellationToken) => Task.FromResult(true);
+            public Task<bool> RevisionBelongsToWorkspacePackageAsync(Guid workspaceId, Guid packageId, Guid revisionId, CancellationToken cancellationToken) => Task.FromResult(true);
             public Task<(IReadOnlyList<MappingDraftSummary> Items, int TotalCount)> ListByWorkspaceAsync(
                 Guid workspaceId, int page, int pageSize, string? engine, CancellationToken cancellationToken)
                 => throw new NotSupportedException("Não exercitado por este fake — cobertos em MappingDraftsControllerListTests.");
@@ -489,7 +489,7 @@ namespace LayoutParserApi.Tests.Integration
             releaseStore.ById[release.ReleaseId] = releaseAposTestRunOk;
 
             // ---- 11) Regressão antecede publicação (Slice 7) — bloqueio explícito de test_failed ----
-            var governanceController = new MappingGovernanceController(releaseStore, new FakeCurrentUser { UserId = userReviewer }, NullLogger<MappingGovernanceController>.Instance);
+            var governanceController = new MappingGovernanceController(releaseStore, new LayoutParserApi.Tests.Controllers.EmptyGeneratedMapperListService(), new FakeCurrentUser { UserId = userReviewer }, NullLogger<MappingGovernanceController>.Instance);
 
             releaseStore.ById[release.ReleaseId] = releaseAposTestRunDivergente; // simula tentar publicar um release que falhou
             var publishSemAprovarComFalha = await governanceController.Publish(workspaceId, release.ReleaseId, null, CancellationToken.None);
