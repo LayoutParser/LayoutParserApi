@@ -1,0 +1,15 @@
+feat(fiscal): listagem de projetos, nova revisao de pacote e inventario de Excel (issue #201)
+
+Fecha os 3 gaps de contrato reportados pelo front-end (LayoutParserReact #201):
+
+- GET /api/workspaces/{workspaceId}/projects: leitura de FiscalProject por workspace
+  (nao e o CRUD completo descartado na issue #229 original - so listagem).
+- POST /api/workspaces/{workspaceId}/mapping-packages/{packageId}/revisions: nova
+  revisao de um FiscalMappingPackage existente, reaproveitando o conceito de
+  RevisionNumber ja modelado em FiscalMappingPackageRevision (nunca usado via API
+  antes deste commit - so a revisao 1 era criada).
+- GET .../mapping-packages/{packageId}/artifacts/{artifactId}/excel-inventory:
+  inventario de abas/colunas/linhas de um artefato spec (XLSX), reaproveitando
+  IFiscalMappingRuleExtractor (issue #103) sem parser de Excel novo.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
