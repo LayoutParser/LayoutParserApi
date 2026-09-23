@@ -9,6 +9,7 @@ using LayoutParserApi.Services.Transformation.LowCode;
 using LayoutParserApi.Services.Transformation.Ai;
 
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -52,7 +53,7 @@ namespace LayoutParserApi.Tests.Controllers
             public Task EnqueueAsync(
                 string userId, string ticket, string layoutName, Guid layoutGuid, string mapperGuid,
                 string inputContent, string? groundTruthXml, CancellationToken cancellationToken,
-                IReadOnlyList<Models.Entities.ParsedField>? parsedFields = null)
+                IReadOnlyList<LayoutParserApi.Models.Entities.ParsedField>? parsedFields = null)
             {
                 LastEnqueueUserId = userId;
                 return Task.CompletedTask;
@@ -105,11 +106,19 @@ namespace LayoutParserApi.Tests.Controllers
                 aiCandidateService: spy,
                 aiFallbackGate: new SpyAiFallbackSuppressionGate(),
                 aiUserInstructionStore: new LayoutParserApi.Services.Transformation.Ai.AiUserInstructionStore(),
+                aiUserSessionStore: new LayoutParserApi.Services.Database.SqlAiUserSessionStore(
+                    NullLogger<LayoutParserApi.Services.Database.SqlAiUserSessionStore>.Instance,
+                    new ConfigurationBuilder().Build(),
+                    Microsoft.Extensions.Options.Options.Create(new LayoutParserApi.Services.Database.AiUserSessionHistoryOptions())),
                 currentUser: user,
                 mapperDb: null!,
                 layoutParser: null!,
                 fieldMappingComposition: null!,
-                scopeFactory: null!);
+                scopeFactory: null!,
+                canaryAlert: new LayoutParserApi.Services.Security.CanaryAlertService(
+                    NullLogger<LayoutParserApi.Services.Security.CanaryAlertService>.Instance),
+                fieldCorrectionStore: null!,
+                trainingDataCapture: null!);
 
             return (controller, spy, user);
         }

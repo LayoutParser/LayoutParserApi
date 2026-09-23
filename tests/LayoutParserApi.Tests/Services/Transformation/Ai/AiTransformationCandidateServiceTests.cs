@@ -312,7 +312,8 @@ namespace LayoutParserApi.Tests.Services.Transformation.Ai
         // cobrem persistencia de historico em si.
         private static LayoutParserApi.Services.Database.SqlAiUserSessionStore CreateSessionStore()
             => new(NullLogger<LayoutParserApi.Services.Database.SqlAiUserSessionStore>.Instance,
-                   new ConfigurationBuilder().Build());
+                   new ConfigurationBuilder().Build(),
+                   Microsoft.Extensions.Options.Options.Create(new LayoutParserApi.Services.Database.AiUserSessionHistoryOptions()));
 
         private class FakeOllamaHandler : HttpMessageHandler
         {

@@ -31,7 +31,11 @@ namespace LayoutParserApi.Tests.Fiscal
         {
             public Dictionary<Guid, MappingDraftDetail> Drafts { get; } = new();
 
-            public Task<bool> RevisionBelongsToPackageAsync(Guid packageId, Guid revisionId, CancellationToken cancellationToken) => Task.FromResult(true);
+            public Task<bool> RevisionBelongsToWorkspacePackageAsync(Guid workspaceId, Guid packageId, Guid revisionId, CancellationToken cancellationToken) => Task.FromResult(true);
+            public Task<(IReadOnlyList<MappingDraftSummary> Items, int TotalCount)> ListByWorkspaceAsync(
+                Guid workspaceId, int page, int pageSize, string? engine, CancellationToken cancellationToken)
+                => throw new NotSupportedException("Não exercitado por este fake — cobertos em MappingDraftsControllerListTests.");
+
             public Task<IReadOnlyList<ArtifactFileRef>> GetArtifactFilesForRevisionAsync(Guid revisionId, CancellationToken cancellationToken)
                 => Task.FromResult<IReadOnlyList<ArtifactFileRef>>(Array.Empty<ArtifactFileRef>());
             public Task<MappingDraftDetail> CreateDraftAsync(Guid workspaceId, Guid packageId, Guid revisionId, Guid createdByUserId, string engine, CancellationToken cancellationToken)
@@ -43,6 +47,8 @@ namespace LayoutParserApi.Tests.Fiscal
             public Task InsertProposedRulesAsync(Guid draftId, Guid jobId, IReadOnlyList<MappingDraftRuleProposal> proposals, CancellationToken cancellationToken)
                 => throw new NotSupportedException();
             public Task<UpdateRuleOutcome> UpdateRuleStatusAsync(Guid draftId, Guid ruleId, Guid userId, byte[] expectedRowVersion, string newStatus, string? justification, IReadOnlyList<string>? editedSourceRefs, IReadOnlyList<string>? editedTargetRefs, string? editedOperation, CancellationToken cancellationToken)
+                => throw new NotSupportedException();
+            public Task<MappingDraftDetail?> SetFiscalProfileAsync(Guid draftId, Guid userId, FiscalProfile profile, CancellationToken cancellationToken)
                 => throw new NotSupportedException();
         }
 
@@ -119,6 +125,54 @@ namespace LayoutParserApi.Tests.Fiscal
 
             Assert.NotNull(explanation);
             Assert.Contains(explanation!.Rules, r => r.SupportLevel == MappingExplanationSupportLevel.Authoritative);
+        }
+
+        // ── issue #430: target/source de LinkMapping usam sempre GUID, mesma fonte do layout-tree ──
+
+        [Fact]
+        public async Task Sysmiddle_LinkMapping_UsaGuidComoTarget_MesmoComTargetLeafNamePreenchido()
+        {
+            var cache = new FakeCachedMapperService();
+            cache.Mappers.Add(new Mapper
+            {
+                MapperGuid = "MAP_LINK",
+                Name = "Mapper de teste",
+                Description = "Descrição",
+                InputLayoutGuid = "LAY_SOURCE",
+                TargetLayoutGuid = "LAY_TARGET",
+                DecryptedContent = """
+                    <MapperVO>
+                        <MapperGuid>MAP_LINK</MapperGuid>
+                        <Name>Mapper de teste</Name>
+                        <InputLayoutGuid>LAY_SOURCE</InputLayoutGuid>
+                        <TargetLayoutGuid>LAY_TARGET</TargetLayoutGuid>
+                        <LinkMappings>
+                            <LinkMappingItem>
+                                <Name>Municipio/xMun</Name>
+                                <Sequence>1</Sequence>
+                                <ElementGuid>LNK_1</ElementGuid>
+                                <InputLayoutGuid>FLD_Municipio</InputLayoutGuid>
+                                <TargetLayoutGuid>ATT_xMun</TargetLayoutGuid>
+                            </LinkMappingItem>
+                        </LinkMappings>
+                    </MapperVO>
+                    """,
+            });
+            var adapter = new SysmiddleExplanationAdapter(cache, NullLogger<SysmiddleExplanationAdapter>.Instance);
+
+            var explanation = await adapter.ExplainAsync(
+                new MappingExplanationRequest(Guid.NewGuid(), Guid.NewGuid(), "MAP_LINK", "current"), CancellationToken.None);
+
+            Assert.NotNull(explanation);
+            var rule = Assert.Single(explanation!.Rules);
+
+            // TargetLeafName ("xMun", derivado de "Municipio/xMun") NÃO pode vazar pro TargetRefs —
+            // tem que ser o mesmo GUID que LayoutTreeService.ResolveRules usa (link.TargetGuid).
+            Assert.Equal("ATT_xMun", Assert.Single(rule.TargetRefs));
+            Assert.Equal("FLD_Municipio", Assert.Single(rule.SourceRefs));
+
+            // O nome legível continua disponível pra humano, só que fora do identificador estrutural.
+            Assert.Contains("xMun", rule.HumanDescription);
         }
 
         [Fact]

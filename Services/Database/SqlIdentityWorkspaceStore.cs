@@ -252,18 +252,12 @@ namespace LayoutParserApi.Services.Database
             return ReadWorkspaceSummary(reader);
         }
 
-        private static async Task EnsureSchemaAsync(SqlConnection connection, CancellationToken cancellationToken)
-        {
-            if (_schemaEnsured)
-                return;
-
-            await _schemaLock.WaitAsync(cancellationToken);
-            try
-            {
-                if (_schemaEnsured)
-                    return;
-
-                const string ddl = @"
+        // ✅ Campo público-de-assembly (não mais `const string` local) para o
+        // `FiscalSchemaInitializer` poder disparar o schema de identidade no startup, junto com o
+        // de `SqlAiUserSessionStore` (mesmo banco `IdentityDatabase:*`). Autossuficiente — todas as
+        // FKs abaixo apontam para tabelas criadas neste mesmo bloco, então não há dependência de
+        // ordem com outro store.
+        public static readonly string SchemaDdl = @"
 IF OBJECT_ID('dbo.tbLpUser', 'U') IS NULL
 CREATE TABLE dbo.tbLpUser (
     UserId UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
@@ -303,7 +297,18 @@ CREATE TABLE dbo.tbLpWorkspaceMembership (
     CONSTRAINT UQ_tbLpWorkspaceMembership UNIQUE (WorkspaceId, UserId)
 );";
 
-                using var command = new SqlCommand(ddl, connection);
+        internal static async Task EnsureSchemaAsync(SqlConnection connection, CancellationToken cancellationToken)
+        {
+            if (_schemaEnsured)
+                return;
+
+            await _schemaLock.WaitAsync(cancellationToken);
+            try
+            {
+                if (_schemaEnsured)
+                    return;
+
+                using var command = new SqlCommand(SchemaDdl, connection);
                 await command.ExecuteNonQueryAsync(cancellationToken);
                 _schemaEnsured = true;
             }

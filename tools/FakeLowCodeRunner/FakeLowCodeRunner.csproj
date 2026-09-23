@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Double (fake/stub) do runner LowCode real (tools/LowCodeRunner/LayoutParserLowCodeRunner.csproj)
+    para viabilizar teste e2e de TryEnqueueAiCandidate sem depender do binário Sysmiddle real.
+    Ver docs/architecture/plano-tecnico-backlog-pendente-2026-09-02.md #104.
+
+    NÃO é o mesmo runtime do runner real: o runner real é net481 (PlatformTarget x86, casado com
+    as DLLs Sysmiddle nativas x86 — ver comentário em tools/LowCodeRunner/LayoutParserLowCodeRunner.csproj).
+    Este double não carrega nenhuma DLL Sysmiddle, então não precisa de net481 nem de x86 "de verdade"
+    para funcionar — mas publicamos como win-x86 self-contained mesmo assim, de propósito: o objetivo
+    do double é imitar o CONTRATO DE PROCESSO observável pelo chamador (LowCodeTransformationService),
+    e parte desse contrato inclui rodar como processo 32-bit (o caminho de detecção de bitness/gates
+    de ambiente do lado da API não deveria distinguir "x86 de verdade" vs "x64 fingindo" sem que
+    testássemos isso também).
+
+    Self-contained (não framework-dependent) é a escolha deliberada de viabilidade: o runner
+    self-hosted do GitHub Actions (.github/workflows/ci-dev.yml) só garante o SDK/runtime .NET 10
+    x64 via actions/setup-dotnet (dotnet-version 10.0.x) — não instala o runtime x86 correspondente.
+    Um publish framework-dependent x86 quebraria em runtime nesse ambiente por falta do host x86.
+    Self-contained embute o runtime x86 no publish e roda via WOW64 (suporte nativo do Windows para
+    32-bit em host 64-bit, sem instalação adicional) — dispensa qualquer mudança de infraestrutura
+    do runner. Avaliação completa: ver memória de @lp-qa
+    (.claude/agent-memory/lp-qa/issue104-double-runner-x86-viabilidade.md).
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <RuntimeIdentifier>win-x86</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>FakeLowCodeRunner</AssemblyName>
+    <RootNamespace>FakeLowCodeRunner</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+</Project>

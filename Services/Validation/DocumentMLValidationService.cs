@@ -173,9 +173,15 @@ namespace LayoutParserApi.Services.Validation
 
                 // IMPORTANT: concorrência (multi-thread/process). Criar marker de forma atômica.
                 // Se já existir (ou estiver sendo criado), consideramos duplicata.
+                // ✅ SCS0018 (issue #88): dedupeMarker é montado só com sha256 (hash hexadecimal
+                // calculado aqui mesmo, não digitado pelo cliente) sobre "folder", que por sua vez
+                // vem de _trainingSamplesPath + dateFolder (DateTime.UtcNow) — nenhum segmento do
+                // caminho é controlável pelo request.
                 try
                 {
+#pragma warning disable SCS0018
                     using var _ = new FileStream(dedupeMarker, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+#pragma warning restore SCS0018
                 }
                 catch (IOException)
                 {
@@ -203,7 +209,11 @@ namespace LayoutParserApi.Services.Validation
                 sample.SavedMetadataPath = metaPath;
 
                 // Escrever o SampleId dentro do marker (best-effort; mantendo o arquivo já criado acima)
+                // ✅ SCS0018 (issue #88): mesma justificativa acima — dedupeMarker não carrega
+                // segmento controlável pelo request.
+#pragma warning disable SCS0018
                 try { await File.WriteAllTextAsync(dedupeMarker, sample.SampleId, Encoding.UTF8); } catch { }
+#pragma warning restore SCS0018
 
                 _logger.LogInformation(
                     "Amostra de treino salva: valid={IsValid}, layout={LayoutGuid}, sha256={Sha256}, meta={MetaPath}",
