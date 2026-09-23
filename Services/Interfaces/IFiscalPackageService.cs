@@ -1,3 +1,5 @@
+using LayoutParserApi.Services.Fiscal;
+
 namespace LayoutParserApi.Services.Interfaces
 {
     /// <summary>Um arquivo recebido no upload, já lido em memória pelo controller (até o limite de tamanho).</summary>
@@ -78,5 +80,12 @@ namespace LayoutParserApi.Services.Interfaces
             Guid artifactId,
             Guid userId,
             CancellationToken cancellationToken);
+
+        /// <summary>
+        /// Sinais de qualidade (issue #424) dos artefatos <c>spec</c> da revisão mais recente de
+        /// <paramref name="package"/> (chave = ArtifactId). Calculado na leitura, nada persistido. NUNCA
+        /// lança: planilha ilegível vira <c>failed</c> com mensagem segura para aquele artefato.
+        /// </summary>
+        Task<IReadOnlyDictionary<Guid, SpecQualityResult>> GetSpecQualityAsync(PackageDetail package, CancellationToken cancellationToken);
     }
 }

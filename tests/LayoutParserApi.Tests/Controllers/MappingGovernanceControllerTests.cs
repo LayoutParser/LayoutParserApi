@@ -3,6 +3,7 @@ using LayoutParserApi.Models.Entities.Fiscal;
 using LayoutParserApi.Models.Entities.Identity;
 using LayoutParserApi.Services.Filters;
 using LayoutParserApi.Services.Interfaces;
+using LayoutParserApi.Services.Transformation.Ai;
 
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -67,7 +68,10 @@ namespace LayoutParserApi.Tests.Controllers
             public Dictionary<Guid, MappingReleaseDetail> ById { get; } = new();
             public List<(Guid ReleaseId, string From, string To, Guid Actor, string? Justification)> Transitions { get; } = new();
 
-            public Task<MappingReleaseDetail> CreateOrGetCompiledReleaseAsync(Guid workspaceId, Guid draftId, string engine, string rulesSnapshotHash, IReadOnlyList<Guid> sourceRuleIds, IReadOnlyList<MappingReleaseArtifact> artifacts, IReadOnlyList<MappingReleaseCompileDiagnostic> compileDiagnostics, string correlationId, Guid jobId, CancellationToken cancellationToken)
+            public Task<MappingReleaseDetail> CreateOrGetCompiledReleaseAsync(Guid workspaceId, Guid draftId, string engine, string rulesSnapshotHash, IReadOnlyList<Guid> sourceRuleIds, IReadOnlyList<MappingReleaseArtifact> artifacts, IReadOnlyList<MappingReleaseCompileDiagnostic> compileDiagnostics, string correlationId, Guid jobId, CancellationToken cancellationToken, FiscalProfile? fiscalProfile = null)
+                => throw new NotSupportedException();
+
+            public Task<CreateManualEditOutcome> CreateManualEditArtifactReleaseAsync(Guid workspaceId, Guid draftId, string engine, string content, string manualEditReason, string expectedArtifactHash, Guid actorUserId, string correlationId, CancellationToken cancellationToken)
                 => throw new NotSupportedException();
 
             public Task<MappingReleaseDetail?> GetReleaseIfMemberAsync(Guid releaseId, Guid userId, CancellationToken cancellationToken)
@@ -156,6 +160,43 @@ namespace LayoutParserApi.Tests.Controllers
 
                 return Task.FromResult(ById[releaseId]);
             }
+
+            private static readonly string[] ArchivableFrom =
+            {
+                MappingReleaseStatus.Deprecated, MappingReleaseStatus.TestFailed, MappingReleaseStatus.InReview,
+            };
+
+            public Task<MappingReleaseDetail> DeprecateAsync(Guid releaseId, Guid actorUserId, string? justification, CancellationToken cancellationToken)
+            {
+                var current = ById[releaseId];
+                // Idempotente: já deprecada — no-op.
+                if (current.Status == MappingReleaseStatus.Deprecated)
+                    return Task.FromResult(current);
+
+                if (current.Status != MappingReleaseStatus.Published)
+                    throw new InvalidOperationException($"Release {releaseId} está em \"{current.Status}\"; deprecação manual exige \"{MappingReleaseStatus.Published}\".");
+
+                Transitions.Add((releaseId, MappingReleaseStatus.Published, MappingReleaseStatus.Deprecated, actorUserId, justification ?? "Deprecação manual."));
+                var updated = current with { Status = MappingReleaseStatus.Deprecated };
+                ById[releaseId] = updated;
+                return Task.FromResult(updated);
+            }
+
+            public Task<MappingReleaseDetail> ArchiveAsync(Guid releaseId, Guid actorUserId, string? justification, CancellationToken cancellationToken)
+            {
+                var current = ById[releaseId];
+                // Idempotente: já arquivada — no-op.
+                if (current.Status == MappingReleaseStatus.Archived)
+                    return Task.FromResult(current);
+
+                if (Array.IndexOf(ArchivableFrom, current.Status) < 0)
+                    throw new InvalidOperationException($"Release {releaseId} está em \"{current.Status}\"; arquivamento manual exige um destes: {string.Join(", ", ArchivableFrom)}.");
+
+                Transitions.Add((releaseId, current.Status, MappingReleaseStatus.Archived, actorUserId, justification ?? "Arquivamento manual."));
+                var updated = current with { Status = MappingReleaseStatus.Archived };
+                ById[releaseId] = updated;
+                return Task.FromResult(updated);
+            }
         }
 
         private static MappingReleaseDetail NewRelease(Guid workspaceId, Guid draftId, string status) => new(
@@ -163,8 +204,8 @@ namespace LayoutParserApi.Tests.Controllers
             Array.Empty<MappingReleaseCompileDiagnostic>(), "hash", null, status, "corr-0", DateTimeOffset.UtcNow, "AAAA",
             "development", null, null, null, null, null, null);
 
-        private static MappingGovernanceController BuildController(FakeReleaseStore store, FakeCurrentUser user)
-            => new(store, user, NullLogger<MappingGovernanceController>.Instance);
+        private static MappingGovernanceController BuildController(FakeReleaseStore store, FakeCurrentUser user, IGeneratedMapperListService? generated = null)
+            => new(store, generated ?? new EmptyGeneratedMapperListService(), user, NullLogger<MappingGovernanceController>.Instance);
 
         // --- Transição bloqueada: test_failed não pode ir pra in_review/approved ---
 
@@ -285,6 +326,131 @@ namespace LayoutParserApi.Tests.Controllers
             Assert.Equal(transitionCountAposPrimeiro, store.Transitions.Count); // no-op: nenhuma transição nova gravada.
         }
 
+        // --- Deprecação/arquivamento manual (issue #378) ---
+
+        [Fact]
+        public async Task Deprecate_release_published_promove_para_deprecated()
+        {
+            var store = new FakeReleaseStore();
+            var workspaceId = Guid.NewGuid();
+            var actor = Guid.NewGuid();
+            var release = NewRelease(workspaceId, Guid.NewGuid(), MappingReleaseStatus.Published);
+            store.ById[release.ReleaseId] = release;
+
+            var result = await controllerFor(store, actor).Deprecate(workspaceId, release.ReleaseId, new LifecycleTransitionRequest { Justification = "fim de vida" }, CancellationToken.None);
+
+            Assert.IsType<OkObjectResult>(result);
+            Assert.Equal(MappingReleaseStatus.Deprecated, store.ById[release.ReleaseId].Status);
+            Assert.Contains(store.Transitions, t => t.ReleaseId == release.ReleaseId && t.From == MappingReleaseStatus.Published && t.To == MappingReleaseStatus.Deprecated && t.Actor == actor && t.Justification == "fim de vida");
+        }
+
+        [Fact]
+        public async Task Deprecate_release_nao_published_retorna_422()
+        {
+            var store = new FakeReleaseStore();
+            var workspaceId = Guid.NewGuid();
+            var release = NewRelease(workspaceId, Guid.NewGuid(), MappingReleaseStatus.TestPassed);
+            store.ById[release.ReleaseId] = release;
+
+            var result = await controllerFor(store, Guid.NewGuid()).Deprecate(workspaceId, release.ReleaseId, null, CancellationToken.None);
+
+            Assert.IsType<UnprocessableEntityObjectResult>(result);
+            Assert.Equal(MappingReleaseStatus.TestPassed, store.ById[release.ReleaseId].Status);
+        }
+
+        [Fact]
+        public async Task Deprecate_duas_vezes_e_idempotente_no_op()
+        {
+            var store = new FakeReleaseStore();
+            var workspaceId = Guid.NewGuid();
+            var actor = Guid.NewGuid();
+            var release = NewRelease(workspaceId, Guid.NewGuid(), MappingReleaseStatus.Published);
+            store.ById[release.ReleaseId] = release;
+
+            await controllerFor(store, actor).Deprecate(workspaceId, release.ReleaseId, null, CancellationToken.None);
+            var transitionsApos1 = store.Transitions.Count;
+            var segundo = await controllerFor(store, actor).Deprecate(workspaceId, release.ReleaseId, null, CancellationToken.None);
+
+            Assert.IsType<OkObjectResult>(segundo);
+            Assert.Equal(MappingReleaseStatus.Deprecated, store.ById[release.ReleaseId].Status);
+            Assert.Equal(transitionsApos1, store.Transitions.Count);
+        }
+
+        [Fact]
+        public async Task Archive_release_deprecated_promove_para_archived()
+        {
+            var store = new FakeReleaseStore();
+            var workspaceId = Guid.NewGuid();
+            var actor = Guid.NewGuid();
+            var release = NewRelease(workspaceId, Guid.NewGuid(), MappingReleaseStatus.Deprecated);
+            store.ById[release.ReleaseId] = release;
+
+            var result = await controllerFor(store, actor).Archive(workspaceId, release.ReleaseId, new LifecycleTransitionRequest { Justification = "encerrada" }, CancellationToken.None);
+
+            Assert.IsType<OkObjectResult>(result);
+            Assert.Equal(MappingReleaseStatus.Archived, store.ById[release.ReleaseId].Status);
+            Assert.Contains(store.Transitions, t => t.ReleaseId == release.ReleaseId && t.From == MappingReleaseStatus.Deprecated && t.To == MappingReleaseStatus.Archived && t.Actor == actor);
+        }
+
+        [Fact]
+        public async Task Archive_release_test_failed_abandonada_promove_para_archived()
+        {
+            var store = new FakeReleaseStore();
+            var workspaceId = Guid.NewGuid();
+            var release = NewRelease(workspaceId, Guid.NewGuid(), MappingReleaseStatus.TestFailed);
+            store.ById[release.ReleaseId] = release;
+
+            var result = await controllerFor(store, Guid.NewGuid()).Archive(workspaceId, release.ReleaseId, null, CancellationToken.None);
+
+            Assert.IsType<OkObjectResult>(result);
+            Assert.Equal(MappingReleaseStatus.Archived, store.ById[release.ReleaseId].Status);
+        }
+
+        [Fact]
+        public async Task Archive_release_published_retorna_422()
+        {
+            var store = new FakeReleaseStore();
+            var workspaceId = Guid.NewGuid();
+            var release = NewRelease(workspaceId, Guid.NewGuid(), MappingReleaseStatus.Published);
+            store.ById[release.ReleaseId] = release;
+
+            var result = await controllerFor(store, Guid.NewGuid()).Archive(workspaceId, release.ReleaseId, null, CancellationToken.None);
+
+            Assert.IsType<UnprocessableEntityObjectResult>(result);
+            Assert.Equal(MappingReleaseStatus.Published, store.ById[release.ReleaseId].Status);
+        }
+
+        [Fact]
+        public async Task Archive_duas_vezes_e_idempotente_no_op()
+        {
+            var store = new FakeReleaseStore();
+            var workspaceId = Guid.NewGuid();
+            var actor = Guid.NewGuid();
+            var release = NewRelease(workspaceId, Guid.NewGuid(), MappingReleaseStatus.Deprecated);
+            store.ById[release.ReleaseId] = release;
+
+            await controllerFor(store, actor).Archive(workspaceId, release.ReleaseId, null, CancellationToken.None);
+            var transitionsApos1 = store.Transitions.Count;
+            var segundo = await controllerFor(store, actor).Archive(workspaceId, release.ReleaseId, null, CancellationToken.None);
+
+            Assert.IsType<OkObjectResult>(segundo);
+            Assert.Equal(MappingReleaseStatus.Archived, store.ById[release.ReleaseId].Status);
+            Assert.Equal(transitionsApos1, store.Transitions.Count);
+        }
+
+        [Fact]
+        public async Task Deprecate_release_de_outro_workspace_retorna_404()
+        {
+            var store = new FakeReleaseStore();
+            var workspaceDoAtacante = Guid.NewGuid();
+            var release = NewRelease(Guid.NewGuid(), Guid.NewGuid(), MappingReleaseStatus.Published);
+            store.ById[release.ReleaseId] = release;
+
+            var result = await controllerFor(store, Guid.NewGuid()).Deprecate(workspaceDoAtacante, release.ReleaseId, null, CancellationToken.None);
+
+            Assert.IsType<NotFoundResult>(result);
+        }
+
         // --- Isolamento cross-workspace (mesmo padrão dos slices anteriores) ---
 
         [Fact]
@@ -365,6 +531,56 @@ namespace LayoutParserApi.Tests.Controllers
             var filter = new RequireWorkspaceRoleFilter(new[] { WorkspaceRole.FiscalAdmin, WorkspaceRole.Owner }, currentUser, workspaceStore, NullLogger<RequireWorkspaceRoleFilter>.Instance);
 
             var result = await RunFilterAsync(filter, workspaceId, userId, currentUser);
+
+            Assert.IsType<NotFoundResult>(result);
+        }
+
+        // ✅ LayoutParserReact#196 — isolamento cross-workspace no filtro: "Usuário A não acessa
+        // workspace B alterando a URL". Membership em OUTRO workspace não dá acesso a este (404
+        // uniforme, indistinguível de "não existe"), mesmo com o papel mais alto lá.
+        [Fact]
+        public async Task RequireWorkspaceRole_membership_de_outro_workspace_retorna_404_mesmo_sendo_owner_la()
+        {
+            var workspaceDoUsuario = Guid.NewGuid();
+            var workspaceAlheio = Guid.NewGuid();
+            var userId = Guid.NewGuid();
+            var workspaceStore = new FakeIdentityWorkspaceStore();
+            workspaceStore.Memberships[(workspaceDoUsuario, userId)] = WorkspaceRole.Owner;
+            var currentUser = new FakeCurrentUser { UserId = userId };
+            var filter = new RequireWorkspaceRoleFilter(new[] { WorkspaceRole.FiscalAdmin, WorkspaceRole.Owner }, currentUser, workspaceStore, NullLogger<RequireWorkspaceRoleFilter>.Instance);
+
+            // Usuário troca o workspaceId na URL para o de outra pessoa.
+            var result = await RunFilterAsync(filter, workspaceAlheio, userId, currentUser);
+
+            Assert.IsType<NotFoundResult>(result);
+        }
+
+        [Fact]
+        public async Task RequireWorkspaceRole_membership_de_outro_usuario_no_mesmo_workspace_retorna_404()
+        {
+            var workspaceId = Guid.NewGuid();
+            var donoDoWorkspace = Guid.NewGuid();
+            var intruso = Guid.NewGuid();
+            var workspaceStore = new FakeIdentityWorkspaceStore();
+            workspaceStore.Memberships[(workspaceId, donoDoWorkspace)] = WorkspaceRole.Owner;
+            var currentUser = new FakeCurrentUser { UserId = intruso };
+            var filter = new RequireWorkspaceRoleFilter(new[] { WorkspaceRole.Owner }, currentUser, workspaceStore, NullLogger<RequireWorkspaceRoleFilter>.Instance);
+
+            var result = await RunFilterAsync(filter, workspaceId, intruso, currentUser);
+
+            Assert.IsType<NotFoundResult>(result);
+        }
+
+        [Fact]
+        public async Task RequireWorkspaceRole_sem_identidade_resolvida_retorna_404_e_nao_consulta_o_store()
+        {
+            var workspaceId = Guid.NewGuid();
+            var workspaceStore = new FakeIdentityWorkspaceStore();
+            workspaceStore.Memberships[(workspaceId, Guid.NewGuid())] = WorkspaceRole.Owner;
+            var currentUser = new FakeCurrentUser { UserId = null }; // fail-closed do incidente #408
+            var filter = new RequireWorkspaceRoleFilter(new[] { WorkspaceRole.Owner }, currentUser, workspaceStore, NullLogger<RequireWorkspaceRoleFilter>.Instance);
+
+            var result = await RunFilterAsync(filter, workspaceId, Guid.Empty, currentUser);
 
             Assert.IsType<NotFoundResult>(result);
         }

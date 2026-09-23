@@ -176,7 +176,7 @@ namespace LayoutParserApi.Tests.Security
             identityService.Memberships.Add((workspaceId, user));
 
             var controller = new MappingDraftsController(
-                store, new FakeSuggestionService(), identityService, new FakeCurrentUser { UserId = user }, NullLogger<MappingDraftsController>.Instance);
+                store, new FakeSuggestionService(), identityService, new FakeFiscalProfileResolver(), new FakeCurrentUser { UserId = user }, NullLogger<MappingDraftsController>.Instance);
             controller.ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() };
 
             var result = await controller.CreateDraft(workspaceId, Guid.NewGuid(), new CreateDraftRequest { RevisionId = Guid.NewGuid() }, CancellationToken.None);
@@ -450,8 +450,12 @@ namespace LayoutParserApi.Tests.Security
             public Dictionary<Guid, MappingDraftDetail> Drafts { get; } = new();
             public Dictionary<(Guid DraftId, Guid RuleId), MappingDraftRuleDetail> Rules { get; } = new();
 
-            public Task<bool> RevisionBelongsToPackageAsync(Guid packageId, Guid revisionId, CancellationToken cancellationToken)
+            public Task<bool> RevisionBelongsToWorkspacePackageAsync(Guid workspaceId, Guid packageId, Guid revisionId, CancellationToken cancellationToken)
                 => Task.FromResult(true);
+
+            public Task<(IReadOnlyList<MappingDraftSummary> Items, int TotalCount)> ListByWorkspaceAsync(
+                Guid workspaceId, int page, int pageSize, string? engine, CancellationToken cancellationToken)
+                => throw new NotSupportedException("Não exercitado por este fake — cobertos em MappingDraftsControllerListTests.");
 
             public Task<IReadOnlyList<ArtifactFileRef>> GetArtifactFilesForRevisionAsync(Guid revisionId, CancellationToken cancellationToken)
                 => Task.FromResult<IReadOnlyList<ArtifactFileRef>>(Array.Empty<ArtifactFileRef>());
@@ -473,6 +477,9 @@ namespace LayoutParserApi.Tests.Security
                 IReadOnlyList<string>? editedSourceRefs, IReadOnlyList<string>? editedTargetRefs, string? editedOperation,
                 CancellationToken cancellationToken)
                 => throw new NotSupportedException();
+
+            public Task<MappingDraftDetail?> SetFiscalProfileAsync(Guid draftId, Guid userId, FiscalProfile profile, CancellationToken cancellationToken)
+                => throw new NotSupportedException();
         }
 
         private sealed class FakeSuggestionService : IMappingSuggestionService
@@ -487,6 +494,16 @@ namespace LayoutParserApi.Tests.Security
 
             public Task<bool> CancelAsync(Guid jobId, CancellationToken cancellationToken)
                 => Task.FromResult(true);
+        }
+
+        /// <summary>Stub sempre-válido — a cascata de validação do §2.4 é coberta em testes dedicados do resolver.</summary>
+        private sealed class FakeFiscalProfileResolver : LayoutParserApi.Services.Fiscal.IFiscalProfileResolver
+        {
+            public LayoutParserApi.Services.Fiscal.FiscalProfileValidationResult Validate(FiscalProfile profile)
+                => new(true, null, new FiscalResolvedXsd(profile.SchemaVersion, "urn:test", "Root"));
+
+            public FiscalResolvedXsd? Resolve(string documentType, string schemaVersion)
+                => new(schemaVersion, "urn:test", "Root");
         }
 
         private sealed class FakeCachedMapperService : ICachedMapperService

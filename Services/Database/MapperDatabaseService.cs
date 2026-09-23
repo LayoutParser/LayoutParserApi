@@ -115,18 +115,28 @@ namespace LayoutParserApi.Services.Database
                 using var connection = new SqlConnection(_connectionString);
                 await connection.OpenAsync();
 
+                // ✅ Os GUIDs de layout em [tbMapper] são gravados COM o prefixo "LAY_"
+                // (ex.: LAY_ad4fb6f4-...), mas os chamadores costumam passar o GUID "cru"
+                // (layout.LayoutGuid.ToString()). Sem normalizar, a igualdade exata do WHERE
+                // devolve 0 linhas e o pathway de XSL reporta "Nenhum mapeador encontrado"
+                // mesmo existindo mapper (bug do Cypress #14 / FIAT ENVNFE). Mesma
+                // normalização já usada em GetMappersByLayoutGuidForPackagesAsync.
+                var layoutNoPrefix = NormalizeLayoutGuid(layoutGuid);
+                var layoutWithPrefix = $"LAY_{layoutNoPrefix}";
+
                 var query = @"
-                    SELECT 
+                    SELECT
                         [Id], [MapperGuid], [PackageGuid], [Name], [Description],
                         [IsXPathMapper], [InputLayoutGuid], [TargetLayoutGuid],
                         [ValueContent], [ProjectId], [LastUpdateDate]
                     FROM [ConnectUS_Macgyver].[dbo].[tbMapper]
-                    WHERE [InputLayoutGuid] = @LayoutGuid 
-                       OR [TargetLayoutGuid] = @LayoutGuid
+                    WHERE [InputLayoutGuid] IN (@LayoutNoPrefix, @LayoutWithPrefix)
+                       OR [TargetLayoutGuid] IN (@LayoutNoPrefix, @LayoutWithPrefix)
                     ORDER BY [LastUpdateDate] DESC";
 
                 using var command = new SqlCommand(query, connection);
-                command.Parameters.AddWithValue("@LayoutGuid", layoutGuid);
+                command.Parameters.AddWithValue("@LayoutNoPrefix", layoutNoPrefix);
+                command.Parameters.AddWithValue("@LayoutWithPrefix", layoutWithPrefix);
 
                 using var reader = await command.ExecuteReaderAsync();
 
@@ -135,19 +145,12 @@ namespace LayoutParserApi.Services.Database
                     var mapper = await MapReaderToMapperAsync(reader);
 
                     // Verificar se o layoutGuid corresponde ao InputLayoutGuid ou TargetLayoutGuid
-                    // Tanto das colunas quanto do XML descriptografado
-                    bool matches = false;
-
-                    // Verificar colunas do banco
-                    if (mapper.InputLayoutGuid == layoutGuid || mapper.TargetLayoutGuid == layoutGuid)
-                        matches = true;
-
-                    // Verificar XML descriptografado (mais confiável)
-                    if (!string.IsNullOrEmpty(mapper.InputLayoutGuidFromXml) && mapper.InputLayoutGuidFromXml == layoutGuid)
-                        matches = true;
-
-                    if (!string.IsNullOrEmpty(mapper.TargetLayoutGuidFromXml) && mapper.TargetLayoutGuidFromXml == layoutGuid)
-                        matches = true;
+                    // Tanto das colunas quanto do XML descriptografado (comparação sem prefixo LAY_)
+                    bool matches = layoutNoPrefix.Length > 0 && (
+                        NormalizeLayoutGuid(mapper.InputLayoutGuid) == layoutNoPrefix ||
+                        NormalizeLayoutGuid(mapper.TargetLayoutGuid) == layoutNoPrefix ||
+                        NormalizeLayoutGuid(mapper.InputLayoutGuidFromXml) == layoutNoPrefix ||
+                        NormalizeLayoutGuid(mapper.TargetLayoutGuidFromXml) == layoutNoPrefix);
 
                     if (matches)
                         mappers.Add(mapper);
@@ -168,7 +171,10 @@ namespace LayoutParserApi.Services.Database
         public async Task<Mapper> GetMapperByInputLayoutGuidAsync(string inputLayoutGuid)
         {
             var mappers = await GetMappersByLayoutGuidAsync(inputLayoutGuid);
-            return mappers.FirstOrDefault(m => m.InputLayoutGuid == inputLayoutGuid || m.InputLayoutGuidFromXml == inputLayoutGuid);
+            var wanted = NormalizeLayoutGuid(inputLayoutGuid);
+            return mappers.FirstOrDefault(m =>
+                NormalizeLayoutGuid(m.InputLayoutGuid) == wanted ||
+                NormalizeLayoutGuid(m.InputLayoutGuidFromXml) == wanted);
         }
 
         /// <summary>
@@ -177,7 +183,10 @@ namespace LayoutParserApi.Services.Database
         public async Task<Mapper> GetMapperByTargetLayoutGuidAsync(string targetLayoutGuid)
         {
             var mappers = await GetMappersByLayoutGuidAsync(targetLayoutGuid);
-            return mappers.FirstOrDefault(m => m.TargetLayoutGuid == targetLayoutGuid || m.TargetLayoutGuidFromXml == targetLayoutGuid);
+            var wanted = NormalizeLayoutGuid(targetLayoutGuid);
+            return mappers.FirstOrDefault(m =>
+                NormalizeLayoutGuid(m.TargetLayoutGuid) == wanted ||
+                NormalizeLayoutGuid(m.TargetLayoutGuidFromXml) == wanted);
         }
 
         /// <summary>
@@ -273,6 +282,20 @@ namespace LayoutParserApi.Services.Database
             }
 
             return ranked;
+        }
+
+        /// <summary>
+        /// Normaliza um GUID de layout removendo o prefixo "LAY_" e espaços, em minúsculas.
+        /// Os chamadores ora passam o GUID cru (layout.LayoutGuid), ora com o prefixo
+        /// "LAY_" (como gravado em [tbMapper]) — normalizar dos dois lados evita falso
+        /// "não encontrado". Retorna "" para entrada nula/vazia.
+        /// </summary>
+        private static string NormalizeLayoutGuid(string layoutGuid)
+        {
+            if (string.IsNullOrWhiteSpace(layoutGuid)) return "";
+            var g = layoutGuid.Trim();
+            if (g.StartsWith("LAY_", StringComparison.OrdinalIgnoreCase)) g = g.Substring(4);
+            return g.Trim().ToLowerInvariant();
         }
 
         private static string NormalizePackageGuid(string packageGuid)
