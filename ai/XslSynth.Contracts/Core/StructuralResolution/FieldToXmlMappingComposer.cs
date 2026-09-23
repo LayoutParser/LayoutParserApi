@@ -30,12 +30,27 @@ public sealed record MappingCandidate(
     bool SourcesHavePositionalGroupRepetition,
     /// <summary>Catálogo de funções conhecidas (Camada 2, <c>FunctionCatalog</c>) — <c>null</c>
     /// quando indisponível no host (degrada para best-effort, não lança exceção — dotnet-standards.md).</summary>
-    IReadOnlySet<string>? KnownFunctions = null);
+    IReadOnlySet<string>? KnownFunctions = null,
+    /// <summary>Fase B da issue #151. Default <see cref="Direction.Forward"/> preserva 100% o
+    /// comportamento de #140/#141 — <see cref="Direction.Reverse"/> ativa a condição extra de
+    /// reversibilidade (ver <see cref="Reversibility"/>).</summary>
+    Direction Direction = Direction.Forward,
+    /// <summary>Fase A/B da issue #151 — resultado de <see cref="BranchReversibilityResolver.Resolve"/>
+    /// para o(s) branch(es) de origem deste candidato. Só é considerado quando
+    /// <see cref="Direction"/> == <see cref="Direction.Reverse"/>; <c>null</c> em <see cref="Direction.Forward"/>
+    /// não afeta o resultado (condição 6 não se aplica nesse sentido).</summary>
+    BranchReversibility? Reversibility = null);
 
 /// <summary>
 /// Item 5 da divisão de trabalho da issue #140 (design §5, §8): junta os itens 1-4 (catálogo XML,
 /// classificador de <c>mappingKind</c>, resolução de ocorrência) e aplica o critério objetivo
 /// <c>authoritative</c>/<c>best-effort</c>.
+///
+/// Fase B da issue #151 (spike aprovado 2026-09-07): generalizado para aceitar
+/// <see cref="Direction"/> no candidato — reaproveita as mesmas 5 condições estruturais para os
+/// dois sentidos e adiciona uma 6ª condição (reversibilidade, Fase A) só relevante em
+/// <see cref="Direction.Reverse"/>. Não conhece qual lado é "o conhecido" na prática — quem monta
+/// o <see cref="MappingCandidate"/> já decide isso (mesmo desenho de responsabilidade do Forward).
 /// </summary>
 public sealed class FieldToXmlMappingComposer
 {
@@ -119,7 +134,18 @@ public sealed class FieldToXmlMappingComposer
             ? "FunctionCatalog indisponível — não foi possível confirmar as funções referenciadas."
             : "Função referenciada não catalogada — destino pode divergir de forma não estrutural.");
 
-        var authoritative = condition1 && condition2 && condition3 && condition4 && condition5;
+        // Condição 6 (Fase B, issue #151) — só se aplica no sentido Reverse: a reconstrução do
+        // TXT a partir do XML só é auditável (authoritative) se a função/branch que ligou os dois
+        // lados for, de fato, bijetora (Fase A, FunctionReversibilityCatalog). No sentido Forward
+        // a condição é trivialmente satisfeita — preserva 100% o comportamento de #140/#141.
+        var condition6 = candidate.Direction == Direction.Forward || (candidate.Reversibility?.Reversible ?? false);
+        if (candidate.Direction == Direction.Reverse && !condition6)
+        {
+            limitations.Add(candidate.Reversibility?.Reason
+                ?? "Direção reversa exige função/branch reversível — reversibilidade não confirmada (Fase A/B da issue #151).");
+        }
+
+        var authoritative = condition1 && condition2 && condition3 && condition4 && condition5 && condition6;
 
         return new FieldToXmlMapping(
             candidate.MappingId,
@@ -127,6 +153,7 @@ public sealed class FieldToXmlMappingComposer
             targets,
             candidate.Kind,
             authoritative ? Confidence.Authoritative : Confidence.BestEffort,
-            authoritative ? null : limitations.Distinct().ToList());
+            authoritative ? null : limitations.Distinct().ToList(),
+            candidate.Direction);
     }
 }
