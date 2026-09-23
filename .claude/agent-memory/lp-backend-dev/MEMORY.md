@@ -1,5 +1,7 @@
 # Memory Index — lp-backend-dev (Dex)
 
+- [WebApplicationFactory + double do runner x86 (issues #90/#104, PRs #298/#299)](webapplicationfactory-composition-root-testing.md) — public partial Program, controllers via ActivatorUtilities (não GetRequiredService), double por herança em métodos virtual (ExecuteRunnerProcessAsync/GetRankedMapperCandidatesForLayoutGuidAsync).
+
 - [Runner low-code roda da Bin, não de Functions/](runner-lowcode-roda-da-bin-nao-de-functions.md) — Functions/ tem assemblies velhos; o blocker mudou de Spring para log4net quando o bootstrap saiu.
 - [Comando do gate de equivalência do gabarito FIAT](gabarito-fiat-comando-de-verificacao.md) — o mapper certo é MAP_MQSERIES_SEND_ENV_TXT_XML_NFE; o MAP_MARELLI_ homônimo dá exit=0 com saída errada.
 - [Remover o Bootstrap não foi ganho de tempo](bootstrap-removal-nao-e-ganho-de-tempo.md) — bootstrap era ~1s de 48-130s; o custo é o mapeador + init do APIManager, que ficaram. Timeout de 15s segue inviável.
@@ -29,3 +31,4 @@
 - [Persistência experimental RAG->XSLT validada (2026-09-16)](mapping-release-experimental-persistence-validated-2026-09-16.md) — round-trip real via SqlMappingReleaseStore contra IdentityDatabase, ReleaseId confirmado; teste removido antes do commit (ci-dev.yml não injeta a credencial no step de `dotnet test`).
 - [Catálogo de exemplos de referência Neogrid (2026-09-16)](reference-examples-catalog-neogrid-2026-09-16.md) — endpoint separado (não ArtifactSource em MappingRelease); path do corpus não hardcoded; 4ª ocorrência de branch race concorrente.
 - [target.roots vazio no layout-tree — issue #433](layout-tree-target-roots-vazio-433.md) — filtro TextPositional do warmup Redis (LayoutDatabaseService) vazava pro fallback de GetLayoutByGuidAsync; layout de destino é sempre XmlLayoutVO, então nunca era achado.
+- [Geração lazy de TCL/XSL/XSLT — issue #438](generated-mapper-artifact-lazy-438-2026-09-17.md) — item de "maior esforço" do ADR já estava pronto (ai/XslSynth.Core in-process); tabela nova sem FK (não IMappingReleaseStore); RealMapperParser não lança pra formato sample, hash real diverge do MapperExtractor.

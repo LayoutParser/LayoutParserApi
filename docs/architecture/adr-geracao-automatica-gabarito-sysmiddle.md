@@ -165,3 +165,26 @@ como tal) sem fingir que o Sysmiddle real foi executado.
 - **Sem event source real em `tbMapper`:** a dependência de polling periódico (c) significa que
   a "automação" tem uma janela de atraso (não é instantânea). Aceitável dado que atualização de
   mapeador é evento raro; documentar essa latência no README/contrato se o dono perguntar.
+
+## Estado da implementação (2026-09)
+
+Acrescentado após a implementação da issue #438. O corpo da decisão acima não foi alterado; esta
+seção só registra onde a implementação real se desviou ou precisou de detalhe adicional.
+
+- **Persistência em tabela própria, não em `IMappingReleaseStore`.** O artefato gerado ficou na
+  tabela nova `tbGeneratedMapperArtifact` (criada em
+  [`Services/Database/FiscalSchemaInitializer.cs`](../../Services/Database/FiscalSchemaInitializer.cs),
+  acesso via [`SqlGeneratedMapperArtifactStore`](../../Services/Database/SqlGeneratedMapperArtifactStore.cs) /
+  [`IGeneratedMapperArtifactStore`](../../Services/Interfaces/IGeneratedMapperArtifactStore.cs)),
+  autossuficiente e sem FK para as tabelas de release. Vive no `IdentityDatabase:*`, nunca no SQL
+  compartilhado `172.31.249.51`.
+- **Unificação com `mapping-releases` decidida em outro ADR.** A relação entre o artefato gerado e o
+  ciclo de vida de `MappingRelease` (listagem unificada, sem fundir as tabelas) está em
+  [`adr-unificacao-generated-artifact-mapping-release.md`](adr-unificacao-generated-artifact-mapping-release.md).
+- **Gabarito = DSL declarado, rótulo explícito.** Como o runner Sysmiddle segue bloqueado por
+  licença (FiatMQ), o gabarito é o DSL decifrado e o contrato o rotula com
+  `validationBasis: "declared_dsl"` (constante `ValidationBasisDeclaredDsl` em
+  [`GeneratedMapperArtifactService.cs`](../../Services/Transformation/Ai/GeneratedMapperArtifactService.cs)),
+  em linha com o item 3 do escopo da seção 5. Diff contra execução real, job periódico e hash de
+  versão continuam fora do escopo implementado.
+- **Ponto de entrada:** [`GeneratedMapperArtifactController`](../../Controllers/GeneratedMapperArtifactController.cs).
