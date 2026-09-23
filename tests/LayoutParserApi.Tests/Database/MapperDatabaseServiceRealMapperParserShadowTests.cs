@@ -178,6 +178,44 @@ namespace LayoutParserApi.Tests.Database
             Assert.Equal("<xsl:stylesheet>valor-unico</xsl:stylesheet>", mapper.XslContent);
         }
 
+        // ----------------------------------------------------------------------------------
+        // Regressão do Cypress #14 / FIAT LAY_TXT_MQSERIES_ENVNFE_4.00_NFe: generate-for-layout
+        // gerava o .tcl mas nenhum .xsl, com warning "Nenhum mapeador encontrado". Causa: os
+        // GUIDs em [tbMapper] são gravados com prefixo "LAY_", mas o chamador passa o GUID cru
+        // (layout.LayoutGuid.ToString()) e a busca fazia igualdade exata. NormalizeLayoutGuid
+        // remove o prefixo dos dois lados antes de comparar.
+        // ----------------------------------------------------------------------------------
+
+        private static string InvocarNormalizeLayoutGuid(string entrada)
+        {
+            var metodo = typeof(MapperDatabaseService).GetMethod(
+                "NormalizeLayoutGuid",
+                BindingFlags.NonPublic | BindingFlags.Static);
+
+            Assert.NotNull(metodo);
+            return (string)metodo!.Invoke(null, new object?[] { entrada })!;
+        }
+
+        [Theory]
+        [InlineData("ad4fb6f4-9ff5-44fd-988b-3da5ed56b22c", "ad4fb6f4-9ff5-44fd-988b-3da5ed56b22c")]
+        [InlineData("LAY_ad4fb6f4-9ff5-44fd-988b-3da5ed56b22c", "ad4fb6f4-9ff5-44fd-988b-3da5ed56b22c")]
+        [InlineData("  lay_AD4FB6F4-9FF5-44FD-988B-3DA5ED56B22C  ", "ad4fb6f4-9ff5-44fd-988b-3da5ed56b22c")]
+        [InlineData(null, "")]
+        [InlineData("   ", "")]
+        public void NormalizeLayoutGuid_RemovePrefixoLayEEspacos_ParaComparacaoConsistente(string? entrada, string esperado)
+        {
+            Assert.Equal(esperado, InvocarNormalizeLayoutGuid(entrada!));
+        }
+
+        [Fact]
+        public void NormalizeLayoutGuid_GuidCruEComPrefixo_ColidemAposNormalizacao()
+        {
+            // O cerne do bug: estes dois valores representam o MESMO layout e precisam bater.
+            Assert.Equal(
+                InvocarNormalizeLayoutGuid("ad4fb6f4-9ff5-44fd-988b-3da5ed56b22c"),
+                InvocarNormalizeLayoutGuid("LAY_ad4fb6f4-9ff5-44fd-988b-3da5ed56b22c"));
+        }
+
         [Fact]
         public void ExtractLayoutGuids_ComContentVazio_NaoExecutaNadaEMantemMapperInalterado()
         {
