@@ -492,6 +492,14 @@ try
     builder.Services.AddScoped<IFiscalPackageStore, SqlFiscalPackageStore>();
     builder.Services.AddScoped<IAntivirusScanner, LayoutParserApi.Services.Fiscal.WindowsDefenderAntivirusScanner>();
     builder.Services.AddScoped<IFiscalPackageService, LayoutParserApi.Services.Fiscal.FiscalPackageService>();
+    // ✅ Issue #366 (ADR adr-historico-analises-fiscais-366): histórico de análises fiscais com
+    // AnalysisId durável — metadado no IdentityDatabase, arquivos em disco (ML:FiscalAnalysesPath),
+    // TTL 90 dias com purga em background. Registrado dentro de /parse/upload e /parse/auto.
+    builder.Services.AddScoped<IFiscalAnalysisStore, SqlFiscalAnalysisStore>();
+    builder.Services.Configure<LayoutParserApi.Services.Fiscal.FiscalAnalysisHistoryOptions>(
+        builder.Configuration.GetSection("FiscalAnalysisHistory"));
+    builder.Services.AddScoped<IFiscalAnalysisService, LayoutParserApi.Services.Fiscal.FiscalAnalysisService>();
+    builder.Services.AddHostedService<LayoutParserApi.Services.Fiscal.FiscalAnalysisPurgeBackgroundService>();
     // ✅ Slice 3 (issue #230): MappingDraft human-in-the-loop — mesmo banco/padrão ADO.NET.
     // MappingSuggestionService consome ILlmProvider (issue #340/F1) — sem HttpClient direto aqui;
     // o pooling de conexão HTTP fica encapsulado dentro do registro do OllamaLlmProvider (grupo Llm, abaixo).
@@ -525,6 +533,23 @@ try
     // ✅ Issue #345 (ADR docs/architecture/adr-contrato-correcao-guiada-humano-2026-09-08.md):
     // contexto de documento + reporte de correção humana — mesmo banco/padrão ADO.NET.
     builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.IFieldCorrectionStore, LayoutParserApi.Services.Database.SqlFieldCorrectionStore>();
+    // ✅ Issue #422: resposta livre do revisor às perguntas em aberto da IA — mesmo banco/padrão ADO.NET.
+    builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.IMappingRuleAnswerStore, LayoutParserApi.Services.Database.SqlMappingRuleAnswerStore>();
+    // ✅ Issue #438 (ADR docs/architecture/adr-geracao-automatica-gabarito-sysmiddle.md §5): geração
+    // automática lazy de TCL/XSL/XSLT para um mapper Sysmiddle — mesmo banco/padrão ADO.NET, tabela
+    // autossuficiente (sem FK). Reaproveita o loop determinístico de ai/XslSynth.Core in-process.
+    builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.IGeneratedMapperArtifactStore, LayoutParserApi.Services.Database.SqlGeneratedMapperArtifactStore>();
+    // ✅ Issue #473 (fase 2 do trigger lazy #438, ADR §3/§6): config do job periódico + limite de
+    // concorrência ÚNICO, compartilhado entre o trigger lazy e o job periódico (Singleton — um só
+    // SemaphoreSlim no processo, nunca dois limites independentes).
+    builder.Services.Configure<LayoutParserApi.Services.Transformation.Ai.GeneratedMapperSweepOptions>(
+        builder.Configuration.GetSection("GeneratedMapperSweep"));
+    builder.Services.AddSingleton<LayoutParserApi.Services.Transformation.Ai.GeneratedMapperGenerationLimiter>();
+    builder.Services.AddScoped<LayoutParserApi.Services.Transformation.Ai.IGeneratedMapperArtifactService, LayoutParserApi.Services.Transformation.Ai.GeneratedMapperArtifactService>();
+    builder.Services.AddScoped<LayoutParserApi.Services.Transformation.Ai.IGeneratedMapperListService, LayoutParserApi.Services.Transformation.Ai.GeneratedMapperListService>();
+    // Job periódico (issue #473): varre tbMapper e dispara geração para quem não tem candidato ou está
+    // stale, reaproveitando GetOrTriggerAsync acima — não bloqueia o startup (delay inicial de 2min).
+    builder.Services.AddHostedService<LayoutParserApi.Services.Transformation.Ai.GeneratedMapperArtifactSweepService>();
     // ✅ Investigação PR #310 (2026-09-05): schema fiscal criado em ordem de dependência de FK no
     // startup, em vez de depender de qual store acima uma requisição real exercita primeiro. Ver
     // <see cref="LayoutParserApi.Services.Database.FiscalSchemaInitializer"/> para o grafo completo.
@@ -533,6 +558,11 @@ try
     builder.Services.AddHostedService<LayoutParserApi.Services.Database.FiscalSchemaInitializerBackgroundService>();
     builder.Services.AddScoped<IMappingCompileService, LayoutParserApi.Services.Fiscal.MappingCompileService>();
     builder.Services.AddScoped<IMappingTestRunService, LayoutParserApi.Services.Fiscal.MappingTestRunService>();
+    // ✅ Issue #423: suíte de teste versionada do Fiscal Test Lab (múltiplas fixtures agrupadas +
+    // histórico de execução) — mesmo banco/padrão ADO.NET, reaproveita IMappingTestRunService.
+    // EvaluateFixtureAsync fixture-a-fixture (sem duplicar diff/XSD).
+    builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.ITestSuiteStore, LayoutParserApi.Services.Database.SqlTestSuiteStore>();
+    builder.Services.AddScoped<LayoutParserApi.Services.Fiscal.ITestSuiteRunService, LayoutParserApi.Services.Fiscal.TestSuiteRunService>();
     // ✅ Issue #103 Passo 1: extração determinística (sem LLM) de tabelas de decisão fiscal a
     // partir de Excel real do dono. Sem estado por-requisição, poderia ser Singleton — Scoped
     // por consistência com o resto do grupo Fiscal.
