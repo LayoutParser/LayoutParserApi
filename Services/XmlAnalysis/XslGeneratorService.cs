@@ -1,8 +1,10 @@
-using LayoutParserApi.Models.Entities;
 using LayoutParserApi.Services.XmlAnalysis.Models;
 
 using System.Text;
 using System.Xml.Linq;
+
+using XslSynth.Core;
+using XslSynth.Model;
 
 namespace LayoutParserApi.Services.XmlAnalysis
 {
@@ -77,8 +79,16 @@ namespace LayoutParserApi.Services.XmlAnalysis
         {
             var sb = new StringBuilder();
 
-            // Parsear MapperVO para estrutura tipada
-            var mapperVo = MapperVo.FromXml(mapDoc);
+            // Parsear MapperVO para estrutura tipada (RealMapperParser, ver issue #139)
+            MapperVo mapperVo = null;
+            try
+            {
+                mapperVo = new RealMapperParser().Parse(mapDoc);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Falha ao parsear MapperVO com RealMapperParser; seguindo com fallback baseado no XML bruto");
+            }
 
             // Determinar estrutura baseada no exemplo ou usar padrão
             var rootElementName = exampleStructure?.RootElementName ?? "enviNFe";
@@ -397,7 +407,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
             foreach (var linkMapping in orderedLinkMappings)
             {
                 _logger.LogInformation("Processando LinkMapping: {Name} (InputGuid: {InputGuid}, TargetGuid: {TargetGuid})",
-                    linkMapping.Name, linkMapping.InputLayoutGuid, linkMapping.TargetLayoutGuid);
+                    linkMapping.Name, linkMapping.InputGuid, linkMapping.TargetGuid);
 
                 if (string.IsNullOrEmpty(linkMapping.Name))
                     continue;
@@ -422,7 +432,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
 
                 // Gerar elemento XSL que busca valor do XML intermediário usando múltiplas estratégias
                 sb.AppendLine($"\t\t\t\t\t<{elementName}>");
-                sb.AppendLine($"\t\t\t\t\t\t<!-- LinkMapping: {linkMapping.Name} (InputGuid: {linkMapping.InputLayoutGuid}, TargetGuid: {linkMapping.TargetLayoutGuid}) -->");
+                sb.AppendLine($"\t\t\t\t\t\t<!-- LinkMapping: {linkMapping.Name} (InputGuid: {linkMapping.InputGuid}, TargetGuid: {linkMapping.TargetGuid}) -->");
 
                 // Gerar XSL que tenta múltiplos XPaths até encontrar um valor
                 // Usar xsl:choose para tentar cada XPath em ordem

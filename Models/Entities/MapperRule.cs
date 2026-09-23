@@ -5,6 +5,7 @@ namespace LayoutParserApi.Models.Entities
     /// <summary>
     /// Representa uma Rule do MapperVO com código C#
     /// </summary>
+    [Obsolete("Use XslSynth.Model.MapperRule / RealMapperParser. Ver docs/architecture/inventario-parsers-mapperVo-issue-139.md")]
     public class MapperRule
     {
         public string ElementGuid { get; set; }

@@ -5,6 +5,7 @@ namespace LayoutParserApi.Models.Entities
     /// <summary>
     /// Representa um LinkMappingItem do MapperVO para mapeamento direto de campos
     /// </summary>
+    [Obsolete("Use XslSynth.Model.LinkMappingItem / RealMapperParser. Ver docs/architecture/inventario-parsers-mapperVo-issue-139.md")]
     public class LinkMappingItem
     {
         public string ElementGuid { get; set; }

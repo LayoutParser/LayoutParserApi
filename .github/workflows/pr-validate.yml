@@ -18,6 +18,27 @@ on:
     branches:
       - develop
 
+# Minimo necessario: checkout deste repo + LayoutParserLib/LayoutParserDecrypt (via
+# GH_PAT_TOKEN, fora do escopo do GITHUB_TOKEN) - nenhum step comenta PR, cria release ou
+# escreve outro recurso do GitHub. GITHUB_TOKEN so participa do proprio checkout.
+permissions:
+  contents: read
+
+# Contract check de OpenAPI (issue #414) - COMO PROMOVER DE ADVISORY PARA BLOQUEANTE:
+# basta trocar o valor abaixo para 'true'. Nada mais precisa mudar: o step passa a sair com
+# codigo 1 quando houver breaking change (nivel ERR do oasdiff) e o continue-on-error do step
+# (calculado a partir desta mesma variavel) deixa de mascarar a falha. Em modo advisory
+# (padrao) o step reporta no resumo do job e como aviso, mas nunca reprova a PR.
+#
+# Antes de promover: (1) observar algumas PRs em advisory para medir falso positivo;
+# (2) lembrar que sem branch protection nativa (plano free, repo privado) um check vermelho
+# NAO impede o merge - para o gate valer de fato, adicionar este job como required status
+# check (exige GitHub Pro/Team) ou manter a convencao de nao mergear PR vermelha; (3) mudanca
+# breaking INTENCIONAL passa a exigir aprovacao explicita do dono (ex.: marcar a PR e trocar
+# a variavel temporariamente, ou ignorar o check conscientemente).
+env:
+  OPENAPI_CONTRACT_BLOCKING: 'false'
+
 concurrency:
   group: pr-validate-${{ github.event.pull_request.number }}
   cancel-in-progress: true
@@ -234,3 +255,173 @@ jobs:
         }
 
         Write-Host "Suite de testes verde."
+
+    # ---------------------------------------------------------------------------------------
+    # Contract check de OpenAPI (issue #414) - ADVISORY por padrao.
+    #
+    # Compara o OpenAPI da PR com o da base (develop) e reporta breaking changes (endpoint
+    # removido, campo obrigatorio novo em request, tipo alterado, campo de resposta removido).
+    # Mudanca ADITIVA (endpoint/campo novo opcional) e reportada so como informativa.
+    #
+    # Extracao deterministica, sem subir o servico de verdade nem depender de SQL/Redis/Ollama:
+    # 'swagger tofile' (Swashbuckle.AspNetCore.Cli, mesma versao do pacote do .csproj) carrega
+    # o assembly compilado e gera o documento sem chamar app.Run() (sem porta, sem hosted
+    # services). ASPNETCORE_ENVIRONMENT=Testing usa appsettings.Testing.json, que aponta
+    # Redis/SQL para hosts inalcancaveis com timeout curto - o mesmo mecanismo do
+    # ProgramCompositionRootTests. Nenhuma mudanca em Program.cs foi necessaria.
+    #
+    # Diff: oasdiff (Apache-2.0), binario de release fixado por versao + SHA256 e cacheado no
+    # RUNNER_TOOL_CACHE do runner (baixa uma unica vez; nada e instalado globalmente).
+    #
+    # Promover para bloqueante: ver a variavel OPENAPI_CONTRACT_BLOCKING no topo do arquivo.
+    # ---------------------------------------------------------------------------------------
+    - name: Checkout base (develop) para comparar OpenAPI
+      continue-on-error: ${{ env.OPENAPI_CONTRACT_BLOCKING != 'true' }}
+      uses: actions/checkout@v7
+      with:
+        ref: ${{ github.event.pull_request.base.sha }}
+        path: LayoutParserApi-base
+
+    - name: Contract check de OpenAPI (oasdiff, advisory)
+      # Advisory: qualquer falha do step (inclusive de infraestrutura - download, build da base,
+      # extracao) NAO reprova a PR. Em modo bloqueante (variavel = 'true') a falha reprova.
+      continue-on-error: ${{ env.OPENAPI_CONTRACT_BLOCKING != 'true' }}
+      run: |
+        $OASDIFF_VERSION = "1.32.1"
+        $OASDIFF_SHA256  = "4d0758b32d454e6011e59db93884af1ca27ae2b212d990f36738ea5efb5d7f28"
+        $BLOQUEANTE = ($env:OPENAPI_CONTRACT_BLOCKING -eq "true")
+
+        $raiz = $PWD.Path
+        $cache = $env:RUNNER_TOOL_CACHE
+        if (-not $cache) { $cache = $env:RUNNER_TEMP }
+        $scratch = Join-Path $env:RUNNER_TEMP "openapi-contract"
+        if (Test-Path $scratch) { Remove-Item $scratch -Recurse -Force }
+        New-Item -ItemType Directory -Path $scratch | Out-Null
+
+        # --- 1. oasdiff (baixa uma vez, valida SHA256, cacheia) ---
+        $oasDir = Join-Path $cache ("oasdiff\" + $OASDIFF_VERSION)
+        $oasExe = Join-Path $oasDir "oasdiff.exe"
+        if (-not (Test-Path $oasExe)) {
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          New-Item -ItemType Directory -Force -Path $oasDir | Out-Null
+          $tgz = Join-Path $scratch "oasdiff.tar.gz"
+          $url = "https://github.com/oasdiff/oasdiff/releases/download/v$OASDIFF_VERSION/oasdiff_$($OASDIFF_VERSION)_windows_amd64.tar.gz"
+          Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $tgz
+          $hash = (Get-FileHash $tgz -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $OASDIFF_SHA256) {
+            Remove-Item $oasDir -Recurse -Force
+            Write-Error "SHA256 do oasdiff nao confere (esperado $OASDIFF_SHA256, obtido $hash)."
+            exit 1
+          }
+          tar -xzf $tgz -C $oasDir
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $oasExe)) {
+            Write-Error "Falha ao extrair o oasdiff."
+            exit 1
+          }
+        }
+        Write-Host "oasdiff: $(& $oasExe --version)"
+
+        # --- 2. Extracao do OpenAPI (swagger tofile) da base e da PR ---
+        function Get-OpenApi([string]$projDir, [string]$saida) {
+          $csproj = Join-Path $projDir "LayoutParserApi.csproj"
+          $m = [regex]::Match((Get-Content $csproj -Raw), 'Swashbuckle\.AspNetCore"\s+Version="([^"]+)"')
+          if (-not $m.Success) { throw "Versao do Swashbuckle.AspNetCore nao encontrada em $csproj" }
+          $ver = $m.Groups[1].Value
+
+          $toolDir = Join-Path $cache ("swashbuckle-cli\" + $ver)
+          $swagger = Join-Path $toolDir "swagger.exe"
+          if (-not (Test-Path $swagger)) {
+            dotnet tool install Swashbuckle.AspNetCore.Cli --version $ver --tool-path $toolDir
+            if ($LASTEXITCODE -ne 0) { throw "Falha ao instalar Swashbuckle.AspNetCore.Cli $ver" }
+          }
+
+          $dll = Join-Path $projDir "bin\Release\net10.0\LayoutParserApi.dll"
+          if (-not (Test-Path $dll)) {
+            # A base ainda nao foi compilada neste runner (a PR ja foi, no step de build acima).
+            dotnet restore $csproj
+            if ($LASTEXITCODE -ne 0) { throw "Falha no restore de $csproj" }
+            dotnet build $csproj --configuration Release --no-restore -p:RunAnalyzers=false -v q
+            if ($LASTEXITCODE -ne 0) { throw "Falha no build de $csproj" }
+          }
+
+          $env:ASPNETCORE_ENVIRONMENT = "Testing"
+          Push-Location $projDir
+          try {
+            & $swagger tofile --output $saida $dll v1
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path $saida)) { throw "swagger tofile falhou para $projDir" }
+          } finally {
+            Pop-Location
+            Remove-Item Env:ASPNETCORE_ENVIRONMENT -ErrorAction SilentlyContinue
+          }
+        }
+
+        $baseJson = Join-Path $scratch "openapi-base.json"
+        $prJson   = Join-Path $scratch "openapi-pr.json"
+        Get-OpenApi (Join-Path $raiz "LayoutParserApi-base") $baseJson
+        Get-OpenApi (Join-Path $raiz "LayoutParserApi") $prJson
+
+        # --- 3. Diff: breaking (ERR/WARN) x total de mudancas (aditivas = nivel info) ---
+        $breakingTxt = (& $oasExe breaking $baseJson $prJson --format json) -join "`n"
+        if ($LASTEXITCODE -ne 0) { throw "oasdiff breaking falhou" }
+        $changelogTxt = (& $oasExe changelog $baseJson $prJson --format json) -join "`n"
+        if ($LASTEXITCODE -ne 0) { throw "oasdiff changelog falhou" }
+
+        $breaking = @()
+        if ($breakingTxt.Trim().StartsWith("[")) { $breaking = @($breakingTxt | ConvertFrom-Json) }
+        $changelog = @()
+        if ($changelogTxt.Trim().StartsWith("[")) { $changelog = @($changelogTxt | ConvertFrom-Json) }
+
+        $erros    = @($breaking | Where-Object { $_.level -ge 3 })
+        $avisos   = @($breaking | Where-Object { $_.level -eq 2 })
+        $aditivas = @($changelog | Where-Object { $_.level -le 1 })
+
+        # --- 4. Relatorio no resumo do job + annotations ---
+        $resumo = New-Object System.Collections.Generic.List[string]
+        $resumo.Add("## Contract check de OpenAPI (oasdiff $OASDIFF_VERSION)")
+        $resumo.Add("")
+        if ($BLOQUEANTE) { $resumo.Add("Modo: **BLOQUEANTE**") } else { $resumo.Add("Modo: **advisory** (nao reprova a PR; ver OPENAPI_CONTRACT_BLOCKING no topo do workflow)") }
+        $resumo.Add("")
+        $resumo.Add("| Categoria | Qtde |")
+        $resumo.Add("|---|---|")
+        $resumo.Add("| Breaking changes (erro) | $($erros.Count) |")
+        $resumo.Add("| Avisos (potencialmente breaking) | $($avisos.Count) |")
+        $resumo.Add("| Mudancas aditivas / informativas (ok) | $($aditivas.Count) |")
+        $resumo.Add("")
+
+        if ($erros.Count -gt 0 -or $avisos.Count -gt 0) {
+          $resumo.Add("### Breaking changes e avisos")
+          $resumo.Add("")
+          foreach ($c in ($erros + $avisos)) {
+            $nivel = if ($c.level -ge 3) { "ERRO" } else { "AVISO" }
+            $resumo.Add("- [$nivel] ``$($c.operation) $($c.path)`` - $($c.text) (``$($c.id)``)")
+          }
+          $resumo.Add("")
+        } else {
+          $resumo.Add("Nenhuma breaking change detectada.")
+          $resumo.Add("")
+        }
+
+        if ($aditivas.Count -gt 0) {
+          $resumo.Add("<details><summary>Mudancas aditivas (ok)</summary>")
+          $resumo.Add("")
+          foreach ($c in ($aditivas | Select-Object -First 100)) {
+            $resumo.Add("- ``$($c.operation) $($c.path)`` - $($c.text)")
+          }
+          $resumo.Add("")
+          $resumo.Add("</details>")
+        }
+
+        if ($env:GITHUB_STEP_SUMMARY) {
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $resumo -Encoding UTF8
+        }
+
+        foreach ($c in ($erros | Select-Object -First 20)) {
+          Write-Host "::warning title=OpenAPI breaking change::$($c.operation) $($c.path) - $($c.text) [$($c.id)]"
+        }
+        Write-Host "OpenAPI: $($erros.Count) breaking, $($avisos.Count) aviso(s), $($aditivas.Count) aditiva(s)/informativa(s)."
+
+        if ($erros.Count -gt 0 -and $BLOQUEANTE) {
+          Write-Error "Contract check de OpenAPI: $($erros.Count) breaking change(s) - PR bloqueada."
+          exit 1
+        }
+        exit 0

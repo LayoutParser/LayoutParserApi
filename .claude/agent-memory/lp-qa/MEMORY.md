@@ -1,8 +1,18 @@
 # Memory Index — lp-qa (Quinn)
 
+- [Issue #104 double runner x86 viabilidade](issue104-double-runner-x86-viabilidade.md) — VIÁVEL sem infra nova (publish win-x86 self-contained); esqueleto em tools/FakeLowCodeRunner validado (dotnet publish gera .exe real).
+
 - [Unified logging parse bug + log dir incident](unified-logging-parse-bug-and-log-dir-incident.md) — bug DateTimeStyles + incidente de log dir; RE-VALIDADO PASS (975a84b) com arquivos reais via harness isolado (nunca subir API no dir de produção).
 - [LowCode-auto multi-candidate QA gate](lowcode-auto-multicandidate-qa-gate.md) — dedup/paralelismo OK; timeout/semáforo+entrega síncrona RE-VALIDADO PASS (bd8279c); achado à parte: branch XML omite transformationsStatus.
 - [Fine-tuning POC Fase 1 dataset QA](finetuning-poc-fase1-dataset-qa.md) — 39 pares filtrados (NFe 31/MDFe 6/CTe 2); 11/11 amostras OK; CTe com amostra fina (só 2); dataset OK p/ Fase 2 RAG.
 - [AI metrics Gap 3 QA gate](ai-metrics-gap3-qa-gate.md) — 6 bloqueios FECHADOS (9e48650) + hardening CONCERNS (e6df0b7); em aberto: duas pontes ativas contam cada geração 2x (54 vira 108, aprovação 100% vira 50%).
 - [Técnica: matriz de mutação](tecnica-matriz-de-mutacao.md) — julgue suíte reintroduzindo bugs numa cópia via `git archive` no scratchpad; nunca mutar a árvore compartilhada.
+- [InformacoesParaEDI OccurrenceCount fix QA gate](informacoesparaedi-occurrencecount-fix-qa-gate.md) — PASS a330af2 validado c/ amostra real; baseline 704 era stale, correto é 705 (pré-existente, não regressão).
 - [Cypress alpha emissão normal spec](cypress-alpha-emissao-normal-spec.md) — spec escrita em LayoutParserCypress; ambos pathways (TCL/XSL e LowCode) bloqueados no dev workstation por arquivos que só existem em `C:\inetpub\wwwroot\layoutparser\` de produção.
+- [PR #198 LineInfo signals QA gate](pr198-linhainfo-signals-qa-gate.md) — PASS; achado: IsDeclaredEmpty inalcançável na prática (matcher exige prefixo não-espaço); incidente de commits concorrentes no mesmo checkout.
+- [Issue #86 pathwayDiagnostics QA gate](issue86-pathwaydiagnostics-qa-gate.md) — PASS; gap: ramos not_applicable/failed não geram log estruturado, só payload sanitizado; verificado via clone isolado (branch trocado por outro agente no checkout compartilhado).
+- [Issue #138 sectionMappings Fase 0 QA gate](issue138-sectionmappings-fase0-qa-gate.md) — PASS; 2 gaps fechados: XPath resolvido via motor real (não só string) + teste tcl-xsl sucesso confirmando null.
+- [Issue #140 resolução estrutural TXT->XML QA gate](issue140-resolucao-estrutural-qa-gate.md) — PASS estrutural (build/testes limpos, 23 testes da matriz de 20 cenários); validação comportamental contra LowCodeRunner.exe impossível em Linux, pendente do dono; gap real: IsDeclaredEmpty/PositionalAlignmentFailed não chegam ao composer.
+- [Eval-benchmark IA plano 2026-09-08](eval-benchmark-ia-plano-2026-09-08.md) — metrics-batch já existe (eval+benchmark multi-modelo); gap real é convergência via RepairOrchestrator, não similaridade tolerante.
+- [Issue #196 identidade/workspace QA gate](issue196-identidade-workspace-qa-gate.md) — idempotência concorrente PROVADA no SQL real; isolamento OK exceto CreateDraft (packageId de outro workspace); teste de reflexão permanente.
+- [Issue #141 fieldMappings em execute-candidates QA gate](issue141-fieldmappings-execute-candidates-qa-gate.md) — PASS (98b527e); Compose() não filtra por resolução de origem ([] só sem link/rule algum); overhead isolado ~0.1ms p95 com cache XSD quente (374ms se frio — não usar cache frio em microbenchmark); p95 real do runner .exe inacessível em Linux.

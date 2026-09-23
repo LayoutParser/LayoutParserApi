@@ -240,8 +240,13 @@ namespace LayoutParserApi.Services.Transformation.LowCode
             var outputFile = $"{baseName}.lowcode.xml";
             var outPath = Path.Combine(folder, outputFile);
 
+            // ✅ SCS0018 (issue #88): inPath/outPath/metaPath (abaixo) são montados só com
+            // _storePath + dateFolder (DateTime.UtcNow) + baseName (sha do conteúdo + hora) —
+            // nenhum segmento vem cru da requisição.
+#pragma warning disable SCS0018
             await File.WriteAllTextAsync(inPath, txtContent, Encoding.UTF8);
             await File.WriteAllTextAsync(outPath, lowCodeXml ?? "", Encoding.UTF8);
+#pragma warning restore SCS0018
 
             var meta = LowCodeDatasetMetaBuilder.AddPositionalMetadata(new Dictionary<string, object?>
             {
@@ -259,7 +264,11 @@ namespace LayoutParserApi.Services.Transformation.LowCode
                 ["outputLength"] = (lowCodeXml ?? "").Length
             }, positionalMetadata);
             var json = System.Text.Json.JsonSerializer.Serialize(meta, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+            // ✅ SCS0018 (issue #88): mesma justificativa de inPath/outPath acima — metaPath também
+            // é montado só a partir de _storePath/dateFolder/baseName, internos.
+#pragma warning disable SCS0018
             await File.WriteAllTextAsync(metaPath, json, Encoding.UTF8);
+#pragma warning restore SCS0018
 
             var candidato = new LowCodeCandidateResult
             {
@@ -269,7 +278,11 @@ namespace LayoutParserApi.Services.Transformation.LowCode
                 PackageGuid = mapper.PackageGuid,
                 Success = true,
                 OutputXml = lowCodeXml,
-                OutputLength = (lowCodeXml ?? "").Length
+                OutputLength = (lowCodeXml ?? "").Length,
+                // ✅ Issue #141/#138: reexpõe o mapper já decifrado (nenhuma consulta SQL nova) para o
+                // controller compor fieldMappings/sectionMappings sem repetir
+                // GetRankedMapperCandidatesForLayoutGuidAsync.
+                DecryptedMapperContent = mapper.DecryptedContent
             };
 
             // ✅ Índice de leitura ao lado dos artefatos (spec §2.3): é o que torna o store
@@ -319,7 +332,10 @@ namespace LayoutParserApi.Services.Transformation.LowCode
                         PackageGuid = mapper.PackageGuid,
                         Success = true,
                         OutputXml = xml,
-                        OutputLength = (xml ?? "").Length
+                        OutputLength = (xml ?? "").Length,
+                        // ✅ Issue #141/#138: idem TransformSingleAndPersistAsync — mapper já decifrado,
+                        // sem nova consulta SQL para compor fieldMappings/sectionMappings no controller.
+                        DecryptedMapperContent = mapper.DecryptedContent
                     };
                 }
                 catch (Exception ex)
@@ -361,7 +377,11 @@ namespace LayoutParserApi.Services.Transformation.LowCode
             var metaPath = Path.Combine(folder, $"{baseName}.meta.json");
             var inPath = Path.Combine(folder, $"{baseName}.input.txt");
 
+            // ✅ SCS0018 (issue #88): mesma justificativa do caminho single-candidato acima —
+            // inPath/metaPath (abaixo) só usam _storePath/dateFolder/baseName, internos.
+#pragma warning disable SCS0018
             await File.WriteAllTextAsync(inPath, txtContent, Encoding.UTF8);
+#pragma warning restore SCS0018
 
             var candidateMeta = new List<object>();
             var paraIndice = new List<(LowCodeCandidateResult candidato, string? outputFile)>();
@@ -405,7 +425,10 @@ namespace LayoutParserApi.Services.Transformation.LowCode
                 ["candidates"] = candidateMeta
             }, positionalMetadata);
             var json = System.Text.Json.JsonSerializer.Serialize(meta, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+            // ✅ SCS0018 (issue #88): metaPath idem — sem segmento controlável pelo request.
+#pragma warning disable SCS0018
             await File.WriteAllTextAsync(metaPath, json, Encoding.UTF8);
+#pragma warning restore SCS0018
 
             // ✅ Índice de leitura (spec §2.3). "parcial" quando o chamador cancelou: o que ficou
             // pronto continua consultável por ticket, mas um conjunto truncado NUNCA vira cache.
@@ -418,6 +441,11 @@ namespace LayoutParserApi.Services.Transformation.LowCode
         /// <summary>
         /// Fecha o índice de leitura da execução (disco + Redis opcional). Nunca lança: falha de
         /// índice é degradação de leitura, não pode derrubar uma transformação que já aconteceu.
+        ///
+        /// <para>✅ Fecha como <see cref="LowCodeTransformationIndexEntry.FailedStatus"/> (em vez de
+        /// "completed") quando existe ao menos um candidato e NENHUM teve sucesso — antes o front
+        /// via "completed" com todo mundo em erro e tinha que inferir "deu tudo errado" varrendo o
+        /// array de candidatos (spec §2, contrato aditivo 2026-08-27).</para>
         /// </summary>
         private async Task EscreverIndiceAsync(
             string sha,
@@ -437,7 +465,9 @@ namespace LayoutParserApi.Services.Transformation.LowCode
                 };
 
                 var bodies = new Dictionary<string, string?>();
-                foreach (var (c, outputFile) in candidatos)
+                var candidatosLista = candidatos as ICollection<(LowCodeCandidateResult candidato, string? outputFile)>
+                    ?? candidatos.ToList();
+                foreach (var (c, outputFile) in candidatosLista)
                 {
                     entrada.Candidates.Add(new LowCodeTransformationIndexCandidate
                     {
@@ -455,7 +485,9 @@ namespace LayoutParserApi.Services.Transformation.LowCode
                         bodies[c.MapperGuid] = c.OutputXml;
                 }
 
-                await _store.WriteCompletedAsync(sha, layoutGuid, entrada, bodies);
+                var falhouEstruturalmente = candidatosLista.Count > 0 && candidatosLista.All(x => !x.candidato.Success);
+
+                await _store.WriteCompletedAsync(sha, layoutGuid, entrada, bodies, falhouEstruturalmente);
             }
             catch (Exception ex)
             {

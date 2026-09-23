@@ -7,6 +7,7 @@ namespace LayoutParserApi.Models.Entities
     /// <summary>
     /// ValueObject que representa a estrutura completa do MapperVO
     /// </summary>
+    [Obsolete("Use XslSynth.Model.MapperVo / RealMapperParser. Ver docs/architecture/inventario-parsers-mapperVo-issue-139.md")]
     public class MapperVo
     {
         public string MapperGuid { get; set; }

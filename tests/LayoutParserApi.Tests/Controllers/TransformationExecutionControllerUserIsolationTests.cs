@@ -9,6 +9,7 @@ using LayoutParserApi.Services.Transformation.LowCode;
 using LayoutParserApi.Services.Transformation.Ai;
 
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -39,6 +40,7 @@ namespace LayoutParserApi.Tests.Controllers
             public IReadOnlyList<string> Roles { get; set; } = Array.Empty<string>();
             public bool IsAuthenticated => Name != null;
             public bool IsInRole(string role) => Roles.Contains(role, StringComparer.OrdinalIgnoreCase);
+            public Guid? UserId => null;
         }
 
         /// <summary>Spy: captura o userId recebido em cada chamada, sem executar lógica real de IA.</summary>
@@ -50,7 +52,8 @@ namespace LayoutParserApi.Tests.Controllers
 
             public Task EnqueueAsync(
                 string userId, string ticket, string layoutName, Guid layoutGuid, string mapperGuid,
-                string inputContent, string? groundTruthXml, CancellationToken cancellationToken)
+                string inputContent, string? groundTruthXml, CancellationToken cancellationToken,
+                IReadOnlyList<LayoutParserApi.Models.Entities.ParsedField>? parsedFields = null)
             {
                 LastEnqueueUserId = userId;
                 return Task.CompletedTask;
@@ -102,7 +105,20 @@ namespace LayoutParserApi.Tests.Controllers
                 lowCodeOptions: Options.Create(new LowCodeRunnerOptions()),
                 aiCandidateService: spy,
                 aiFallbackGate: new SpyAiFallbackSuppressionGate(),
-                currentUser: user);
+                aiUserInstructionStore: new LayoutParserApi.Services.Transformation.Ai.AiUserInstructionStore(),
+                aiUserSessionStore: new LayoutParserApi.Services.Database.SqlAiUserSessionStore(
+                    NullLogger<LayoutParserApi.Services.Database.SqlAiUserSessionStore>.Instance,
+                    new ConfigurationBuilder().Build(),
+                    Microsoft.Extensions.Options.Options.Create(new LayoutParserApi.Services.Database.AiUserSessionHistoryOptions())),
+                currentUser: user,
+                mapperDb: null!,
+                layoutParser: null!,
+                fieldMappingComposition: null!,
+                scopeFactory: null!,
+                canaryAlert: new LayoutParserApi.Services.Security.CanaryAlertService(
+                    NullLogger<LayoutParserApi.Services.Security.CanaryAlertService>.Instance),
+                fieldCorrectionStore: null!,
+                trainingDataCapture: null!);
 
             return (controller, spy, user);
         }
@@ -181,7 +197,16 @@ namespace LayoutParserApi.Tests.Controllers
                 .GetMethod("TryEnqueueAiCandidate", BindingFlags.NonPublic | BindingFlags.Instance)
                 ?? throw new InvalidOperationException("Método TryEnqueueAiCandidate não encontrado — o controller mudou de forma incompatível com este teste.");
 
+            // ✅ Correção pós-review da Quinn (2026-08-29): TryEnqueueAiCandidate deixou de ser
+            // "await"ado no caminho síncrono do controller — o ParseAsync/EnqueueAsync agora rodam
+            // dentro de um Task.Run fire-and-forget (nunca atrasa a resposta síncrona). O
+            // method.Invoke abaixo retorna antes do job terminar, então o teste faz polling
+            // (com teto de sanidade) em vez de assumir conclusão síncrona.
             method.Invoke(controller, new object?[] { request, layoutRecord, candidates, false, currentUserId });
+
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (spy.LastEnqueueUserId == null && DateTime.UtcNow < deadline)
+                await Task.Delay(10);
 
             Assert.Equal("carol", spy.LastEnqueueUserId);
         }
@@ -190,16 +215,18 @@ namespace LayoutParserApi.Tests.Controllers
         // TryEnqueueAiFallback é privado — mesma técnica de reflection do teste acima, pelo mesmo
         // motivo (exercitar o pathway sysmiddle real fugiria do escopo de um teste unitário).
 
-        private static void InvokeTryEnqueueAiFallback(
+        private static List<PathwayDiagnostic> InvokeTryEnqueueAiFallback(
             TransformationExecutionController controller, TransformationRequest request, LayoutRecord layoutRecord,
             bool isXmlInput, IEnumerable<FailureKind> failureKinds, List<string> warnings, string userId)
         {
             var bag = new System.Collections.Concurrent.ConcurrentBag<FailureKind>(failureKinds);
+            var diagnostics = new System.Collections.Concurrent.ConcurrentBag<PathwayDiagnostic>();
             var method = typeof(TransformationExecutionController)
                 .GetMethod("TryEnqueueAiFallback", BindingFlags.NonPublic | BindingFlags.Instance)
                 ?? throw new InvalidOperationException("Método TryEnqueueAiFallback não encontrado — o controller mudou de forma incompatível com este teste.");
 
-            method.Invoke(controller, new object?[] { request, layoutRecord, isXmlInput, bag, warnings, userId });
+            method.Invoke(controller, new object?[] { request, layoutRecord, isXmlInput, bag, warnings, diagnostics, userId });
+            return diagnostics.ToList();
         }
 
         [Fact]
@@ -219,13 +246,16 @@ namespace LayoutParserApi.Tests.Controllers
             var warnings = new List<string>();
 
             // Estado A: nenhum pathway falhou por infra — só "não aplicável"/"sem heurística".
-            InvokeTryEnqueueAiFallback(
+            var diagnostics = InvokeTryEnqueueAiFallback(
                 controller, request, layoutRecord, isXmlInput: false,
                 failureKinds: new[] { FailureKind.NotApplicable, FailureKind.NotApplicable },
                 warnings, "dave");
 
             Assert.Equal("dave", spy.LastEnqueueUserId);
             Assert.Contains(warnings, w => w.Contains("fallback automático de IA enfileirado", StringComparison.OrdinalIgnoreCase));
+            var diag = Assert.Single(diagnostics);
+            Assert.Equal("ai-fallback", diag.Pathway);
+            Assert.Equal("candidate_generated", diag.Status);
         }
 
         [Fact]
@@ -246,14 +276,16 @@ namespace LayoutParserApi.Tests.Controllers
 
             // Estado B: pelo menos um pathway falhou por infra — mapper existe, IA não deve tentar
             // recriar algo que já é a fonte de verdade (regressão explícita do caso já diagnosticado
-            // em diagnostico-mapper-nao-encontrado-producao-2026-08-15.md).
-            InvokeTryEnqueueAiFallback(
+            // em diagnostico-mapper-nao-encontrado-producao-2026-08-15.md). Nenhum diagnóstico próprio
+            // de "ai-fallback" é emitido aqui — o item failed do pathway que quebrou já é o sinal.
+            var diagnostics = InvokeTryEnqueueAiFallback(
                 controller, request, layoutRecord, isXmlInput: false,
                 failureKinds: new[] { FailureKind.ExecutionInfraError, FailureKind.NotApplicable },
                 warnings, "erin");
 
             Assert.Null(spy.LastEnqueueUserId);
             Assert.DoesNotContain(warnings, w => w.Contains("fallback automático de IA enfileirado", StringComparison.OrdinalIgnoreCase));
+            Assert.Empty(diagnostics);
         }
 
         // --- TAREFA 3 (regressão geral): os 3 endpoints deixaram de exigir o papel "admin" ---

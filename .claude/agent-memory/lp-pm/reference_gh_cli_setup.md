@@ -5,7 +5,7 @@ metadata:
   type: reference
 ---
 
-- `gh` CLI está em `C:\Users\elson.lopes\.local\bin\gh.exe` (caminho completo — não está no PATH). Usar sempre o caminho absoluto nas chamadas Bash.
+- `gh` CLI: no shell **PowerShell/Windows** está em `C:\Users\elson.lopes\.local\bin\gh.exe` (não está no PATH lá, usar caminho absoluto). No shell **WSL/bash** (ambiente mais comum destas sessões) `gh` já está no PATH direto (`/usr/bin/gh`, v2.45.0) — usar só `gh` sem prefixo de caminho. Confirmar o shell atual antes de assumir qual dos dois vale.
 - Repo alvo: `LayoutParser/LayoutParserApi`. Autenticado, com escopo `read:project` já concedido.
 - Checar duplicata antes de criar: `gh issue list --repo LayoutParser/LayoutParserApi --search "<termos>" --state all`.
 - Dono já autorizou criação direta de issues (sem rascunho prévio) quando a fonte é um diagnóstico técnico bem documentado (ex.: memória de outro agente `@lp-*`). Formato de corpo: `## Contexto` (com link pro arquivo de origem em `.claude/agent-memory/<agente>/`), `## O que falta`, `## Critério de aceite` (checklist), `## Dono natural`, `## Severidade` (ou `## Por que agora` para stories). Ver issues #30-#40 como padrão de capricho.

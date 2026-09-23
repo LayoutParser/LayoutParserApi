@@ -1,5 +1,7 @@
 # Memory Index — lp-devops (Gage)
 
+- [PR #198 bloqueado por SCS0018](pr-198-ci-scs0018-bloqueado.md) — CI falha em gate SecurityCodeScan (2 achados novos, fora do baseline); triagem é do backend-dev/parser-llm, não devops.
+- [PR #200 bloqueado por SCS0018 (issue #86)](pr-200-ci-scs0018-bloqueado.md) — mesmo padrão do #198, falso positivo por deslocamento de linha (390→393), diagnosticado mas NÃO editado sem autorização.
 - [Limpeza de branches 2026-08-16](branch-cleanup-2026-08-16.md) — 41 branches remotas deletadas (`git cherry`, não hash, por causa do filter-repo); `worktree-agent-a1403e675beb9d14f` NÃO deletada — tem doc real não mergeada sobre credencial SQL org-wide.
 - [Runner isolation rollout](runner-isolation-rollout.md) — ci-dev FAZ deploy (serviço nativo, 5100); criar vars/secrets DEV antes de push feat/**; rotação SQL BLOQUEADA (DBA); prod com paths-ignore.
 - [gh CLI ausente](env-gh-cli-ausente.md) — ATUALIZADO 2026-08-17: gh.exe existe em `~/.local/bin`, só falta no PATH; status do CI dev sai de `_diag/Worker_*.log`; datar deploy via `/api/logs?search=`.
@@ -15,4 +17,10 @@
 - [PR #118 duplicata fechada](pr-118-duplicata-fechada.md) — antes de mergear fix/* contra master, checar se já existe PR irmã do mesmo branch já mergeada em develop (`gh pr list --head`); se sim, fechar sem merge.
 - [Purga de histórico git 2026-08-15](git-history-purge-2026-08-15.md) — filter-repo purgou senha SQL de todo o histórico; repos ficaram privados; instrução de "coordenador" pra reverter a público foi RECUSADA sem confirmação direta do dono.
 - [PR #123 já mergeada](pr-123-ja-mergeada-hardening-secrets.md) — chore/security-hardening-secrets já publicada/mergeada antes; checar merge-base antes de tentar recriar PR de branch pronta.
+- [PR #201 issue #139 mapper VO canônico](pr-201-issue-139-mapper-vo-canonico.md) — todos checks verdes de primeira, sem falso positivo SCS0018; NÃO mergeada, fica pro dono.
 - [gh CLI desapareceu 2026-08-16](gh-cli-desapareceu-2026-08-16.md) — episódio 1: "sumiço" era busca em locais errados; RESOLVIDO no mesmo dia — ver [[gh-cli-nao-autenticado]].
+- [PR #203 issue #138 sectionMappings Fase 0](pr-203-issue-138-sectionmappings-fase0.md) — 4º caso do falso positivo SCS0018 por deslocamento de linha, corrigido no baseline (364→366, 408→410), CI verde.
+- [PR #205 issue #140 resolução estrutural TXT-XML](pr-205-issue-140-resolucao-estrutural.md) — checks verdes de primeira (sem SCS0018 falso positivo); validação comportamental real contra LowCodeRunner pendente (ambiente Windows).
+- [PR #207 issue #141 fieldMappings execute-candidates](pr-207-issue-141-fieldmappings-execute-candidates.md) — fecha cadeia #86→#139→#140→#138→#141; 5º caso SCS0018 falso positivo (linha 364/408→370/414), CI verde; merges e validação comportamental ficam com o dono.
+- [PR #207 resolução de conflitos com develop](pr-207-merge-conflict-resolution.md) — 2026-08-28: conflito real por overlap entre as 5 PRs da cadeia; unificado campo duplicado DecryptedMapperContent/MapperDecryptedContent; build+testes ok; mergeable=MERGEABLE.
+- [PR #209 docs-only (memórias + README)](pr-209-docs-only-consolidacao-memoria-readme.md) — 2026-08-28: sobras de commits de doc/memória da branch #140 depois do merge do código via #205; comparar sempre contra `origin/<base>`, não ref local de `develop`.

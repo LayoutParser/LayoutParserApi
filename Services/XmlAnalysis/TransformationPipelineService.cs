@@ -3,6 +3,8 @@ using System.Xml;
 using System.Xml.Linq;
 using System.Xml.Xsl;
 
+using LayoutParserApi.Services.Logging;
+using LayoutParserApi.Services.Security;
 using LayoutParserApi.Services.XmlAnalysis.Models;
 
 namespace LayoutParserApi.Services.XmlAnalysis
@@ -106,10 +108,11 @@ namespace LayoutParserApi.Services.XmlAnalysis
                     sourceDocumentType, targetDocumentType);
 
                 // Carregar XSL apropriado
-                var xslPath = FindXslFile(sourceDocumentType, targetDocumentType, layoutName);
+                var xslPath = FindXslFile(layoutName);
                 if (string.IsNullOrEmpty(xslPath) || !File.Exists(xslPath))
                 {
                     result.Success = false;
+                    result.ErrorCode = "xsl_not_found";
                     result.Errors.Add($"Arquivo XSL não encontrado para transformação {sourceDocumentType} → {targetDocumentType}");
                     return result;
                 }
@@ -151,6 +154,7 @@ namespace LayoutParserApi.Services.XmlAnalysis
                 var mapContent = await LoadMappingFileAsync(layoutName);
                 if (mapContent == null)
                 {
+                    result.ErrorCode = "map_not_found";
                     result.Errors.Add($"Arquivo MAP não encontrado para layout: {layoutName}");
                     return null;
                 }
@@ -306,9 +310,10 @@ namespace LayoutParserApi.Services.XmlAnalysis
             try
             {
                 // Encontrar arquivo XSL apropriado
-                var xslPath = FindXslFile("Intermediate", targetDocumentType, layoutName);
+                var xslPath = FindXslFile(layoutName);
                 if (string.IsNullOrEmpty(xslPath) || !File.Exists(xslPath))
                 {
+                    result.ErrorCode = "xsl_not_found";
                     result.Errors.Add($"Arquivo XSL não encontrado para transformação Intermediate → {targetDocumentType}");
                     return null;
                 }
@@ -383,11 +388,25 @@ namespace LayoutParserApi.Services.XmlAnalysis
         {
             try
             {
-                var mapFileName = $"{layoutName}.tcl";
-                var mapPath = Path.Combine(_tclBasePath, mapFileName);
+                // ✅ SCS0018 (issue #88, achado real): layoutName chega sem validação a partir de
+                // TransformTxtToXmlAsync, cujos chamadores incluem
+                // TransformationExecutionController.RunTransformationTest ([FromBody] request.LayoutName
+                // cru). Diferente dos outros sites do projeto (que já usam
+                // IsValidLayoutName+IsWithinBasePath ou SafePathResolver), este nunca teve barreira —
+                // "..\..\..\Windows\win.ini" (sem a extensão .tcl importar, já que Windows aceita
+                // caminho com pontos extras) chegava direto ao Path.Combine/File.ReadAllTextAsync.
+                // Fechado com o mesmo SafePathResolver.Resolve já padronizado no projeto.
+                var mapPath = SafePathResolver.Resolve(_tclBasePath, $"{layoutName}.tcl");
+                if (mapPath == null)
+                {
+                    _logger.LogWarning("Layout rejeitado para leitura de MAP/TCL: {LayoutName}", LogMessageSanitizer.Sanitize(layoutName));
+                    return null;
+                }
 
+#pragma warning disable SCS0018
                 if (File.Exists(mapPath))
                     return await File.ReadAllTextAsync(mapPath, Encoding.UTF8);
+#pragma warning restore SCS0018
 
                 _logger.LogWarning("Arquivo MAP (TCL) não encontrado: {Path}", mapPath);
                 return null;
@@ -411,16 +430,21 @@ namespace LayoutParserApi.Services.XmlAnalysis
         /// <c>*_{layoutName}.xsl</c>, que casa com a convenção real sem depender do prefixo do mapper.
         /// Sem <paramref name="layoutName"/>, ou sem nenhum arquivo casando o padrão, retorna
         /// <see langword="null"/> com log de erro claro — não há mais fallback silencioso para "qualquer XSL".
+        ///
+        /// <para><b>Issue #96:</b> os parâmetros <c>sourceType</c>/<c>targetType</c> foram removidos —
+        /// nunca influenciaram a busca (o padrão de arquivo usa só <paramref name="layoutName"/>,
+        /// ver linha do <c>pattern</c> abaixo); apareciam apenas no log de erro do caminho "sem
+        /// layoutName", que os dois call-sites já registram por conta própria antes de chamar este
+        /// método.</para>
         /// </summary>
-        private string FindXslFile(string sourceType, string targetType, string layoutName = null)
+        private string FindXslFile(string layoutName = null)
         {
             try
             {
                 if (string.IsNullOrEmpty(layoutName))
                 {
                     _logger.LogError(
-                        "Não é possível localizar o XSL sem o nome do layout (convenção real é {{mapperName}}_{{layoutName}}.xsl). Source: {SourceType}, Target: {TargetType}",
-                        sourceType, targetType);
+                        "Não é possível localizar o XSL sem o nome do layout (convenção real é {{mapperName}}_{{layoutName}}.xsl).");
                     return null;
                 }
 

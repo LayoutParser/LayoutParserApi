@@ -9,7 +9,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace LayoutParserApi.Tests.Services.Transformation
 {
     /// <summary>
-    /// Cobre <c>TransformationLearningService.GetAllModelsSummaryAsync</c>, usado pelo endpoint
+    /// Cobre <c>TransformationLearningService.GetLearningSummaryAsync</c>, usado pelo endpoint
     /// GET /api/metrics/learning/summary (débito técnico antes marcado como TODO em
     /// MetricsController.cs:127).
     /// </summary>
@@ -30,7 +30,7 @@ namespace LayoutParserApi.Tests.Services.Transformation
         }
 
         [Fact]
-        public async Task GetAllModelsSummaryAsync_sem_modelos_retorna_zerado()
+        public async Task GetLearningSummaryAsync_sem_modelos_retorna_zerado()
         {
             // Caminho feliz de degrade gracioso: pasta existe (o construtor já cria via
             // Directory.CreateDirectory) mas está vazia — não pode lançar, deve retornar zerado.
@@ -39,7 +39,7 @@ namespace LayoutParserApi.Tests.Services.Transformation
             {
                 var service = CreateService(learningModelsPath);
 
-                var summary = await service.GetAllModelsSummaryAsync();
+                var summary = await service.GetLearningSummaryAsync();
 
                 Assert.Equal(0, summary.TotalModels);
                 Assert.Equal(0, summary.TotalPatterns);
@@ -53,7 +53,7 @@ namespace LayoutParserApi.Tests.Services.Transformation
         }
 
         [Fact]
-        public async Task GetAllModelsSummaryAsync_agrega_modelos_tcl_e_xsl_e_ignora_json_corrompido()
+        public async Task GetLearningSummaryAsync_agrega_modelos_tcl_e_xsl_e_ignora_json_corrompido()
         {
             var learningModelsPath = Directory.CreateTempSubdirectory("lp-learning-summary-").FullName;
             try
@@ -93,7 +93,7 @@ namespace LayoutParserApi.Tests.Services.Transformation
 
                 var service = CreateService(learningModelsPath);
 
-                var summary = await service.GetAllModelsSummaryAsync();
+                var summary = await service.GetLearningSummaryAsync();
 
                 Assert.Equal(2, summary.TotalModels);
                 Assert.Equal(3, summary.TotalPatterns);

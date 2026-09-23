@@ -28,9 +28,14 @@
 
   <ItemGroup>
     <PackageReference Include="coverlet.collector" Version="10.0.1" />
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.9.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.10.1" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="4.0.0" />
+    <!-- Issue #90: WebApplicationFactory<Program> para o teste de composition root real
+         (ProgramCompositionRootTests). Traz Microsoft.AspNetCore.Mvc.Testing, que já referencia
+         o FrameworkReference correto — não conflita com o FrameworkReference herdado via
+         ProjectReference da API abaixo. -->
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.12" />
   </ItemGroup>
 
   <ItemGroup>
@@ -62,6 +67,23 @@
 
   <ItemGroup>
     <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Issue #140: mesmo XSD público (mirror nfephp-org/sped-nfe) já usado como fixture em
+         ai/XslSynth.Core.Tests/StructuralResolution/fixtures — copiado aqui (não referenciado por
+         caminho relativo cross-projeto) para o teste de wiring ponta-a-ponta do
+         FieldMappingCompositionService não depender da localização do outro projeto de teste. -->
+    <None Include="StructuralResolution\fixtures\*.xsd" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Issue #103 Passo 1: fixture SINTÉTICA (não é o Excel real do dono) que espelha a estrutura
+         confirmada em sessão 2026-09-02 contra
+         "Layout_NF-e_Mensageria_Envio_ReformaTritutária_v1 - NT 1.50.xlsx" — conteúdo genérico de
+         domínio fiscal público (tabela CST), sem nomes de cliente. O arquivo real não entra no
+         repo por conter nomes de cliente em outra aba (ver FiscalMappingRuleExtractorTests). -->
+    <None Include="Fixtures\Fiscal\*.xlsx" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

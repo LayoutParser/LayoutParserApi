@@ -6,6 +6,8 @@ using Microsoft.Data.SqlClient;
 using System.Data;
 using System.Xml.Linq;
 
+using XslSynth.Core;
+
 namespace LayoutParserApi.Services.Database
 {
     /// <summary>
@@ -113,18 +115,28 @@ namespace LayoutParserApi.Services.Database
                 using var connection = new SqlConnection(_connectionString);
                 await connection.OpenAsync();
 
+                // ✅ Os GUIDs de layout em [tbMapper] são gravados COM o prefixo "LAY_"
+                // (ex.: LAY_ad4fb6f4-...), mas os chamadores costumam passar o GUID "cru"
+                // (layout.LayoutGuid.ToString()). Sem normalizar, a igualdade exata do WHERE
+                // devolve 0 linhas e o pathway de XSL reporta "Nenhum mapeador encontrado"
+                // mesmo existindo mapper (bug do Cypress #14 / FIAT ENVNFE). Mesma
+                // normalização já usada em GetMappersByLayoutGuidForPackagesAsync.
+                var layoutNoPrefix = NormalizeLayoutGuid(layoutGuid);
+                var layoutWithPrefix = $"LAY_{layoutNoPrefix}";
+
                 var query = @"
-                    SELECT 
+                    SELECT
                         [Id], [MapperGuid], [PackageGuid], [Name], [Description],
                         [IsXPathMapper], [InputLayoutGuid], [TargetLayoutGuid],
                         [ValueContent], [ProjectId], [LastUpdateDate]
                     FROM [ConnectUS_Macgyver].[dbo].[tbMapper]
-                    WHERE [InputLayoutGuid] = @LayoutGuid 
-                       OR [TargetLayoutGuid] = @LayoutGuid
+                    WHERE [InputLayoutGuid] IN (@LayoutNoPrefix, @LayoutWithPrefix)
+                       OR [TargetLayoutGuid] IN (@LayoutNoPrefix, @LayoutWithPrefix)
                     ORDER BY [LastUpdateDate] DESC";
 
                 using var command = new SqlCommand(query, connection);
-                command.Parameters.AddWithValue("@LayoutGuid", layoutGuid);
+                command.Parameters.AddWithValue("@LayoutNoPrefix", layoutNoPrefix);
+                command.Parameters.AddWithValue("@LayoutWithPrefix", layoutWithPrefix);
 
                 using var reader = await command.ExecuteReaderAsync();
 
@@ -133,19 +145,12 @@ namespace LayoutParserApi.Services.Database
                     var mapper = await MapReaderToMapperAsync(reader);
 
                     // Verificar se o layoutGuid corresponde ao InputLayoutGuid ou TargetLayoutGuid
-                    // Tanto das colunas quanto do XML descriptografado
-                    bool matches = false;
-
-                    // Verificar colunas do banco
-                    if (mapper.InputLayoutGuid == layoutGuid || mapper.TargetLayoutGuid == layoutGuid)
-                        matches = true;
-
-                    // Verificar XML descriptografado (mais confiável)
-                    if (!string.IsNullOrEmpty(mapper.InputLayoutGuidFromXml) && mapper.InputLayoutGuidFromXml == layoutGuid)
-                        matches = true;
-
-                    if (!string.IsNullOrEmpty(mapper.TargetLayoutGuidFromXml) && mapper.TargetLayoutGuidFromXml == layoutGuid)
-                        matches = true;
+                    // Tanto das colunas quanto do XML descriptografado (comparação sem prefixo LAY_)
+                    bool matches = layoutNoPrefix.Length > 0 && (
+                        NormalizeLayoutGuid(mapper.InputLayoutGuid) == layoutNoPrefix ||
+                        NormalizeLayoutGuid(mapper.TargetLayoutGuid) == layoutNoPrefix ||
+                        NormalizeLayoutGuid(mapper.InputLayoutGuidFromXml) == layoutNoPrefix ||
+                        NormalizeLayoutGuid(mapper.TargetLayoutGuidFromXml) == layoutNoPrefix);
 
                     if (matches)
                         mappers.Add(mapper);
@@ -166,7 +171,10 @@ namespace LayoutParserApi.Services.Database
         public async Task<Mapper> GetMapperByInputLayoutGuidAsync(string inputLayoutGuid)
         {
             var mappers = await GetMappersByLayoutGuidAsync(inputLayoutGuid);
-            return mappers.FirstOrDefault(m => m.InputLayoutGuid == inputLayoutGuid || m.InputLayoutGuidFromXml == inputLayoutGuid);
+            var wanted = NormalizeLayoutGuid(inputLayoutGuid);
+            return mappers.FirstOrDefault(m =>
+                NormalizeLayoutGuid(m.InputLayoutGuid) == wanted ||
+                NormalizeLayoutGuid(m.InputLayoutGuidFromXml) == wanted);
         }
 
         /// <summary>
@@ -175,14 +183,20 @@ namespace LayoutParserApi.Services.Database
         public async Task<Mapper> GetMapperByTargetLayoutGuidAsync(string targetLayoutGuid)
         {
             var mappers = await GetMappersByLayoutGuidAsync(targetLayoutGuid);
-            return mappers.FirstOrDefault(m => m.TargetLayoutGuid == targetLayoutGuid || m.TargetLayoutGuidFromXml == targetLayoutGuid);
+            var wanted = NormalizeLayoutGuid(targetLayoutGuid);
+            return mappers.FirstOrDefault(m =>
+                NormalizeLayoutGuid(m.TargetLayoutGuid) == wanted ||
+                NormalizeLayoutGuid(m.TargetLayoutGuidFromXml) == wanted);
         }
 
         /// <summary>
         /// Busca o "melhor" mapeador para um layoutGuid, restrito a ProjectId e uma lista de PackageGuids permitidos.
         /// Prioriza mappers onde o layoutGuid é InputLayoutGuid; se não encontrar, tenta TargetLayoutGuid.
         /// </summary>
-        public async Task<Mapper?> GetBestMapperForLayoutGuidAsync(string layoutGuid, int projectId, IReadOnlyCollection<string> allowedPackageGuids)
+        // virtual: mesmo ponto de substituição de GetRankedMapperCandidatesForLayoutGuidAsync —
+        // testes de endpoints que decidem 404 "sem mapper" (ex.: LayoutsController.GenerateSample,
+        // issue #355) precisam exercitar essa decisão sem SQL Server real.
+        public virtual async Task<Mapper?> GetBestMapperForLayoutGuidAsync(string layoutGuid, int projectId, IReadOnlyCollection<string> allowedPackageGuids)
         {
             var candidates = await GetMappersByLayoutGuidForPackagesAsync(layoutGuid, projectId, allowedPackageGuids);
             if (candidates.Count == 0)
@@ -268,6 +282,20 @@ namespace LayoutParserApi.Services.Database
             }
 
             return ranked;
+        }
+
+        /// <summary>
+        /// Normaliza um GUID de layout removendo o prefixo "LAY_" e espaços, em minúsculas.
+        /// Os chamadores ora passam o GUID cru (layout.LayoutGuid), ora com o prefixo
+        /// "LAY_" (como gravado em [tbMapper]) — normalizar dos dois lados evita falso
+        /// "não encontrado". Retorna "" para entrada nula/vazia.
+        /// </summary>
+        private static string NormalizeLayoutGuid(string layoutGuid)
+        {
+            if (string.IsNullOrWhiteSpace(layoutGuid)) return "";
+            var g = layoutGuid.Trim();
+            if (g.StartsWith("LAY_", StringComparison.OrdinalIgnoreCase)) g = g.Substring(4);
+            return g.Trim().ToLowerInvariant();
         }
 
         private static string NormalizePackageGuid(string packageGuid)
@@ -465,14 +493,29 @@ namespace LayoutParserApi.Services.Database
                         mapper.TargetLayoutGuid = mapper.TargetLayoutGuidFromXml;
                 }
 
+                // Fase de sombra (issue #139, passo 1): comparar, apenas para telemetria,
+                // os GUIDs que o RealMapperParser (parser canônico) extrairia contra os já
+                // obtidos pela leitura ad-hoc acima (que continua sendo o caminho de produção
+                // para InputLayoutGuid/TargetLayoutGuid — critério do passo 2 é não alterar esse
+                // comportamento). Mantida após o passo 2: mesmo sem mais nenhum uso do parser
+                // legado MapperVo.FromXml neste arquivo, a leitura ad-hoc de GUIDs acima é um
+                // caminho de parsing DIFERENTE do RealMapperParser, então a comparação continua
+                // tendo valor (não virou "comparar contra nada"). NUNCA altera o valor
+                // retornado/usado por este método — só loga GUIDs e um booleano de divergência.
+                CompareWithRealMapperParserShadow(mapper, doc);
+
                 // Extrair XSL do XML do mapper se existir
                 ExtractXslFromDecryptedContent(mapper, doc);
 
-                // Extrair estrutura completa do MapperVO para uso futuro
-                // Isso permite processar Rules e LinkMappings adequadamente
+                // Extrair estrutura completa do MapperVO para uso futuro (issue #139, passo 2:
+                // migrado do parser legado obsoleto LayoutParserApi.Models.Entities.MapperVo.FromXml
+                // para o parser canônico RealMapperParser/XslSynth.Model.MapperVo — mesmo parser
+                // já usado na fase de sombra acima e em XslGeneratorService.cs).
+                // Isso permite processar Rules e LinkMappings adequadamente.
                 try
                 {
-                    var parsedMapperVo = MapperVo.FromXml(doc);
+                    var realParser = new RealMapperParser();
+                    var parsedMapperVo = realParser.Parse(doc);
                     if (parsedMapperVo != null)
                     {
                         _logger.LogInformation("MapperVO parseado para mapeador {Name} (ID: {Id}): {RulesCount} Rules, {LinkMappingsCount} LinkMappings",mapper.Name, mapper.Id, parsedMapperVo.Rules.Count, parsedMapperVo.LinkMappings.Count);
@@ -493,6 +536,44 @@ namespace LayoutParserApi.Services.Database
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Erro ao extrair LayoutGuids do XML descriptografado do mapeador {Id}", mapper.Id);
+            }
+        }
+
+        /// <summary>
+        /// Fase de sombra (issue #139, passo 1 do plano de migração descrito em
+        /// docs/architecture/inventario-parsers-mapperVo-issue-139.md): roda o
+        /// <see cref="RealMapperParser"/> (parser B, candidato a canônico) sobre o mesmo
+        /// XDocument já parseado pela leitura ad-hoc legada e loga se os
+        /// InputLayoutGuid/TargetLayoutGuid extraídos divergem. Log-only, sem side effect —
+        /// nunca deve alterar o comportamento de <see cref="ExtractLayoutGuidsFromDecryptedContent"/>.
+        /// Nenhum conteúdo do documento (DSL, XSL, nomes de campo) é logado, só GUIDs/booleanos.
+        /// </summary>
+        private void CompareWithRealMapperParserShadow(Mapper mapper, XDocument doc)
+        {
+            try
+            {
+                var realParser = new RealMapperParser();
+                var realMapperVo = realParser.Parse(doc);
+
+                var legacyInputGuid = mapper.InputLayoutGuidFromXml;
+                var legacyTargetGuid = mapper.TargetLayoutGuidFromXml;
+                var realInputGuid = realMapperVo.InputLayoutGuid;
+                var realTargetGuid = realMapperVo.TargetLayoutGuid;
+
+                var diverged =
+                    !string.Equals(legacyInputGuid, realInputGuid, StringComparison.Ordinal) ||
+                    !string.Equals(legacyTargetGuid, realTargetGuid, StringComparison.Ordinal);
+
+                var logLevel = diverged ? LogLevel.Warning : LogLevel.Debug;
+                _logger.Log(
+                    logLevel,
+                    "MapperVO parser comparison (sombra #139) mapeador {Id}: legadoInput={LegacyInputGuid} realInput={RealInputGuid} legadoTarget={LegacyTargetGuid} realTarget={RealTargetGuid} diverged={Diverged}",
+                    mapper.Id, legacyInputGuid, realInputGuid, legacyTargetGuid, realTargetGuid, diverged);
+            }
+            catch (Exception ex)
+            {
+                // Log-only: falha do RealMapperParser NUNCA pode afetar o fluxo legado.
+                _logger.LogWarning(ex, "RealMapperParser falhou ao processar MapperVO do mapeador {Id} — comparação log-only ignorada.", mapper.Id);
             }
         }
 

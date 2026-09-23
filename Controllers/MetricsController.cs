@@ -15,6 +15,11 @@ using LayoutParserApi.Services.Security;
 
 namespace LayoutParserApi.Controllers
 {
+    /// <summary>
+    /// Métricas de aprendizado (padrões TCL/XSL aprendidos) e de qualidade (cobertura de campos
+    /// do layout pelos artefatos TCL/XSL já gerados em disco) — dashboard/diagnóstico, não
+    /// afeta o pathway de transformação em runtime.
+    /// </summary>
     [ApiController]
     [Route("api/[controller]")]
     public class MetricsController : ControllerBase
@@ -46,9 +51,9 @@ namespace LayoutParserApi.Controllers
                 ?? @"C:\inetpub\wwwroot\layoutparser\XSL";
         }
 
-        /// <summary>
-        /// Obtém métricas de aprendizado para um layout
-        /// </summary>
+        /// <summary>Métricas do modelo de aprendizado (padrões/exemplos/confiança) de TCL e XSL para um layout.</summary>
+        /// <response code="200">Métricas (campos <c>tclMetrics</c>/<c>xslMetrics</c> nulos se o layout nunca foi treinado).</response>
+        /// <response code="500">Falha não catalogada.</response>
         [HttpGet("learning/{layoutName}")]
         public async Task<IActionResult> GetLearningMetrics(string layoutName)
         {
@@ -115,8 +120,10 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
-        /// Obtém estatísticas gerais de aprendizado
+        /// Resumo agregado de aprendizado entre todos os layouts — soma os modelos TCL/XSL já
+        /// persistidos em disco (<c>TransformationPipeline:LearningModelsPath</c>).
         /// </summary>
+        /// <response code="200">Resumo agregado (zerado se nenhum layout foi treinado ainda, ou se a leitura falhar — degrade gracioso).</response>
         [HttpGet("learning/summary")]
         public async Task<IActionResult> GetLearningSummary()
         {
@@ -127,14 +134,17 @@ namespace LayoutParserApi.Controllers
                 // Fonte de dado: arquivos tcl_*.json/xsl_*.json em LearningModelsPath — mesmo
                 // local usado por GetLearningMetrics (LoadTclModelAsync/LoadXslModelAsync), não
                 // há SQL/cache para modelos aprendidos.
-                var aggregated = await _learningService.GetAllModelsSummaryAsync();
+                var aggregate = await _learningService.GetLearningSummaryAsync();
 
                 var summary = new
                 {
-                    totalModels = aggregated.TotalModels,
-                    totalPatterns = aggregated.TotalPatterns,
-                    totalExamples = aggregated.TotalExamples,
-                    averageConfidence = aggregated.AverageConfidence
+                    totalModels = aggregate.TotalModels,
+                    totalPatterns = aggregate.TotalPatterns,
+                    totalExamples = aggregate.TotalExamples,
+                    // Média simples entre TODOS os padrões de TODOS os modelos — não há uma métrica
+                    // de "confiança real" única no pipeline hoje, apenas a confiança por padrão já
+                    // calculada no treino individual (ver GetLearningMetrics).
+                    averageConfidence = aggregate.AverageConfidence
                 };
 
                 return Ok(summary);
@@ -147,9 +157,12 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
-        /// Obtém métricas de qualidade dos TCL e XSL gerados, comparando com o layout do Redis
-        /// Similar ao LayoutParserService que faz Parse do XML do layout
+        /// Compara os artefatos TCL/XSL já gerados em disco contra os campos declarados no layout
+        /// (Redis) e calcula cobertura + score de qualidade geral.
         /// </summary>
+        /// <response code="200">Métricas de qualidade calculadas.</response>
+        /// <response code="404">Layout, XML do layout, TCL ou XSL não encontrado.</response>
+        /// <response code="500">Falha não catalogada.</response>
         [HttpGet("quality/{layoutName}")]
         public async Task<IActionResult> GetQualityMetrics(string layoutName)
         {
@@ -267,7 +280,11 @@ namespace LayoutParserApi.Controllers
 
             try
             {
+                // SCS0018 (issue #88): falso positivo — tclPath já saiu sanitizado de
+                // SafePathResolver.Resolve(_tclBasePath, ...) no chamador; SCS não reconhece o helper.
+#pragma warning disable SCS0018
                 var tclContent = await System.IO.File.ReadAllTextAsync(tclPath, Encoding.UTF8);
+#pragma warning restore SCS0018
                 
                 // Parse do TCL (XML)
                 var tclDoc = XDocument.Parse(tclContent);
@@ -325,7 +342,11 @@ namespace LayoutParserApi.Controllers
 
             try
             {
+                // SCS0018 (issue #88): mesmo falso positivo — xslPath já saiu sanitizado de
+                // SafePathResolver.Resolve(_xslBasePath, ...) no chamador.
+#pragma warning disable SCS0018
                 var xslContent = await System.IO.File.ReadAllTextAsync(xslPath, Encoding.UTF8);
+#pragma warning restore SCS0018
                 
                 // Parse do XSL
                 var xslDoc = XDocument.Parse(xslContent);

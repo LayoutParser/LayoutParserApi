@@ -214,6 +214,35 @@ namespace LayoutParserApi.Tests.Transformation
             Assert.Null(await store.TryGetCachedResultAsync(ShaValido, LayoutGuidValido));
         }
 
+        // ── contrato aditivo 2026-08-27: fase "failed" quando nenhum candidato teve sucesso ────
+
+        [Fact]
+        public async Task WriteCompletedAsync_com_falhouEstruturalmente_fecha_como_failed()
+        {
+            var (store, _) = CriarStore();
+
+            var entrada = new LowCodeTransformationIndexEntry
+            {
+                BaseName = "base",
+                DateFolder = "20260805",
+                Candidates = { new LowCodeTransformationIndexCandidate { MapperGuid = "M1", Success = false, ErrorMessage = "falhou" } }
+            };
+            await store.WriteCompletedAsync(ShaValido, LayoutGuidValido, entrada, falhouEstruturalmente: true);
+
+            var lida = await store.ReadEntryAsync(ShaValido, LayoutGuidValido);
+            Assert.Equal(LowCodeTransformationIndexEntry.FailedStatus, lida!.Status);
+        }
+
+        [Fact]
+        public async Task WriteCompletedAsync_com_sucesso_nao_vira_failed_mesmo_se_flag_default()
+        {
+            var (store, raiz) = CriarStore();
+            await PersistirExecucaoAsync(store, raiz, "<nfe/>");
+
+            var lida = await store.ReadEntryAsync(ShaValido, LayoutGuidValido);
+            Assert.Equal(LowCodeTransformationIndexEntry.CompletedStatus, lida!.Status);
+        }
+
         [Fact]
         public async Task Entrada_expirada_nao_vira_cache()
         {

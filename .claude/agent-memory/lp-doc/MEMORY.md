@@ -1,0 +1,8 @@
+- [Gap LineInfos não exposto em /api/parse/upload](lineinfos-nao-exposto-gap.md) — IsDeclaredEmpty/PositionalAlignmentFailed existem no back-end mas não chegam ao front por esse endpoint
+- [Concorrência de git na working tree principal](concorrencia-git-worktree-isolado.md) — se branch/lock instáveis, isolar em `git worktree` temporário pra commitar com segurança
+- [README: sectionMappings/xmlNamespaces (issue #138/#126)](sectionmappings-readme-doc-issue138.md) — onde/como retomar ao documentar #140/#141 (campo-a-campo)
+- [fieldMappings em execute-candidates documentado (#141)](fieldmappings-execute-candidates-141-doc.md) — implementação estava em worktree separado (LayoutParserApi-wt-141); Swagger não expõe XML docs (sem IncludeXmlComments)
+- [README reconciliado: §5/Roadmap vs §7 sobre #138-141](readme-reconciliacao-fieldmappings-sectionmappings-138-141.md) — working tree local ficava atrás de origin/develop; sempre git fetch antes de assumir "não implementado"; commit dc4ef79
+- [Contrato RBAC/erro/diff fiscal para o front (#376)](rbac-erro-diff-376-doc.md) — doc dedicado + README §8.1 + XML docs; reconciliar filtros de `mapping-releases` quando #377 mesclar
+- [Gate React#200/epic #368 fechado só documentando (#413)](gate-200-368-doc-issue413.md) — doc em docs/architecture/contratos-gate-200-368-2026-09-15.md; achou GET /api/workspaces/me com 401 explícito (exceção ao "sem 401" geral); Swagger já tem IncludeXmlComments (atualiza memória antiga)
+- [GET .../layout-tree documentado, limitations vs explanation (#425/#430)](layout-tree-limitations-425-430-doc.md) — README §8.3; layout-tree.rules[] só vínculo direto, explanation.rules[] tem DSL; XML docs já estavam completos

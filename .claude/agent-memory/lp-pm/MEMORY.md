@@ -7,4 +7,11 @@
 - [Catalog warmup / issue #67](project_catalog-warmup-single-shot-bug.md) — #67 corrigida de verdade; buraco que anulava o retry está em `d608539`, pendente de merge na PR #89.
 - [RBAC genérico TXT/XML 2026-08-14](project_rbac-generico-txt-xml-2026-08-14.md) — issues #92-#98 do doc de `@lp-architect` (branch `fix/auditoria-gates-2026-08-14`); #92 bloqueia #93.
 - [Mapeamento campo TXT<->XML 2026-08-16](project_mapeamento-campo-txt-xml-2026-08-16.md) — issues #137-#141 (guarda-chuva + Fases 0-3), plano de `@lp-architect` pro PBI #128/Epic #126 do front-end.
+- [Bug/gate issues 2026-08-20](project_bug-gate-issues-2026-08-20.md) — #171-#174, 4 TODOs de @lp-architect confirmados no código (NFe hardcoded, PDF, validação, métricas).
 - [Board-sync 2026-08-18](project_board-sync-2026-08-18.md) — 7 issues fechadas com evidência (#122,#33,#111,#113,#92,#93,#51); `Closes #N` na PR não garante fechamento automático, conferir sempre.
+- [Contrato linha vazia/progresso/degradação 2026-08-27](project_contrato-linha-vazia-progresso-degradacao-2026-08-27.md) — issues #194-#197; InformacoesParaEDI já resolvido em PR #191, não virou issue nova.
+- [Board-sync 2026-08-28](project_board-sync-2026-08-28.md) — 5 issues fechadas (#140,#138,#139,#141,#86); closing keyword nunca atravessa repositório, PR cross-repo exige fechamento manual sempre.
+- [LLM provider plugável 2026-09-08](project_llm-provider-plugavel-2026-09-08.md) — #340 (F1 ILlmProvider) e #341 (F2 gap proveniência); F3/F4 aguardam dono escolher provedor.
+- [Correção humana de campo 2026-09-08](project_correcao-humana-campo-2026-09-08.md) — #345 (endpoint+DocumentId, urgente pro React#234) e #346 (curadoria, depende de #345).
+- [Retraining automatizado F4 2026-09-08](project_retraining-automatizado-f4-2026-09-08.md) — #351 (F4.1-F4.3 faseado), continuação de #151; backfill em lote deliberadamente não formalizado.
+- [Board-sync 2026-09-16](project_board-sync-2026-09-16.md) — varredura completa autorizada; board foi de 74→104 itens, agora 1:1 com o repo; 30 issues adicionadas (24 Done, 6 Todo).
