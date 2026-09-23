@@ -12,11 +12,13 @@ using XslSynth.Core;
 namespace LayoutParserApi.Services.Fiscal
 {
     /// <summary>
-    /// Implementação de <see cref="IMappingTestRunService"/> — Slice 5 (issue #231). Só suporta
-    /// execução real para <c>engine=xslt</c> (via <see cref="XsltApplier"/>) — <c>engine=tcl</c> não tem
-    /// runner determinístico disponível neste repositório (o runner Sysmiddle real está fora do
-    /// alcance deste slice, ver design/achados). Para TCL, o job termina <c>completed</c> com
-    /// <c>RequiredGatesPassed=false</c> e diagnóstico explicando a limitação — nunca finge sucesso.
+    /// Implementação de <see cref="IMappingTestRunService"/> — Slice 5 (issue #231) + runner
+    /// determinístico de TCL (issue #421). Executa <c>engine=xslt</c> via <see cref="XsltApplier"/>
+    /// (compila e roda o XSLT de verdade) e <c>engine=tcl</c> via <see cref="TclRuleApplier"/>
+    /// (interpreta diretamente as regras estruturadas aceitas/editadas do draft, sem depender de um
+    /// interpretador Tcl real — não existe nenhum neste repositório; o runner Sysmiddle está fora de
+    /// alcance por bloqueio de licença). Os dois caminhos compartilham diff canônico, validação XSD
+    /// best-effort e provenance por regra — mesmo contrato de <see cref="MappingTestRunSummary"/>.
     /// </summary>
     public sealed class MappingTestRunService : IMappingTestRunService
     {
@@ -62,8 +64,6 @@ namespace LayoutParserApi.Services.Fiscal
             var state = new TestRunJobState { JobId = jobId, Status = TestRunJobStatus.Queued, ReleaseId = releaseId };
             Jobs[jobId] = state;
 
-            var rulesById = draft.Rules.ToDictionary(r => r.RuleId);
-
             // ✅ Fire-and-forget real (dotnet-standards.md §Background work): nunca propaga exceção
             // para o chamador do POST .../test-runs, que já retornou 202 antes deste ponto.
             _ = Task.Run(async () =>
@@ -72,9 +72,7 @@ namespace LayoutParserApi.Services.Fiscal
                 var stopwatch = Stopwatch.StartNew();
                 try
                 {
-                    var summary = release.Engine.Equals("tcl", StringComparison.OrdinalIgnoreCase)
-                        ? BuildUnsupportedTclSummary()
-                        : await RunXsltTestAsync(release, inputXml, expectedXml, xsdVersion, rulesById, cancellationToken);
+                    var summary = await EvaluateFixtureAsync(release, draft, inputXml, expectedXml, xsdVersion, cancellationToken);
 
                     using var scope = _scopeFactory.CreateScope();
                     var releaseStore = scope.ServiceProvider.GetRequiredService<IMappingReleaseStore>();
@@ -107,6 +105,26 @@ namespace LayoutParserApi.Services.Fiscal
 
         public Task<TestRunJobState?> GetStatusAsync(Guid jobId, CancellationToken cancellationToken)
             => Task.FromResult(Jobs.TryGetValue(jobId, out var state) ? state : null);
+
+        /// <summary>
+        /// Issue #423: núcleo síncrono de um único test-run, extraído do corpo do job de
+        /// <see cref="EnqueueAsync"/> — mesma seleção xslt/tcl e o mesmo <see cref="EvaluateAsync"/>
+        /// compartilhado (diff canônico + XSD + provenance). Reaproveitado fixture-a-fixture por
+        /// <c>TestSuiteRunService</c> ao rodar uma suíte inteira contra uma release.
+        /// </summary>
+        public Task<MappingTestRunSummary> EvaluateFixtureAsync(
+            MappingReleaseDetail release,
+            MappingDraftDetail draft,
+            string inputXml,
+            string expectedXml,
+            string? xsdVersion,
+            CancellationToken cancellationToken)
+        {
+            var rulesById = draft.Rules.ToDictionary(r => r.RuleId);
+            return release.Engine.Equals("tcl", StringComparison.OrdinalIgnoreCase)
+                ? RunTclTestAsync(release, draft, inputXml, expectedXml, xsdVersion, rulesById, cancellationToken)
+                : RunXsltTestAsync(release, inputXml, expectedXml, xsdVersion, rulesById, cancellationToken);
+        }
 
         private async Task<MappingTestRunSummary> RunXsltTestAsync(
             MappingReleaseDetail release,
@@ -141,6 +159,85 @@ namespace LayoutParserApi.Services.Fiscal
                     new[] { $"Falha ao aplicar o XSLT: {ex.Message}" }, Array.Empty<MappingTestRunDivergence>());
             }
 
+            return await EvaluateAsync(actualXml, expectedXml, xsdVersion, rulesById, cancellationToken);
+        }
+
+        /// <summary>
+        /// Runner determinístico de <c>engine=tcl</c> (issue #421) — interpreta diretamente as regras
+        /// aceitas/editadas do draft (<see cref="TclRuleApplier"/>) em vez de reexecutar o texto
+        /// <c>&lt;MAP&gt;&lt;LINE&gt;&lt;FIELD&gt;</c> compilado (esse dialeto é lossy para
+        /// <c>conditional</c>, ver comentário em <see cref="TclRuleApplier"/>). Mesmo nome de raiz
+        /// usado por <see cref="MappingCompileService"/> na compilação (<c>root{'{'}PackageId:N{'}'}</c>),
+        /// mesmo subconjunto de regras (<see cref="MappingReleaseDetail.SourceRuleIds"/>, ordenado por
+        /// <c>RuleId</c> — paridade com <see cref="MappingDraftRuleTranspiler.ToTcl"/>).
+        /// </summary>
+        private async Task<MappingTestRunSummary> RunTclTestAsync(
+            MappingReleaseDetail release,
+            MappingDraftDetail draft,
+            string inputXml,
+            string expectedXml,
+            string? xsdVersion,
+            IReadOnlyDictionary<Guid, MappingDraftRuleDetail> rulesById,
+            CancellationToken cancellationToken)
+        {
+            var processableRules = release.SourceRuleIds
+                .Select(id => rulesById.TryGetValue(id, out var r) ? r : null)
+                .Where(r => r != null && r.Status is MappingDraftRuleStatus.Accepted or MappingDraftRuleStatus.Edited)
+                .Select(r => ToEntity(r!))
+                .OrderBy(r => r.RuleId)
+                .ToList();
+
+            var targetRootName = $"root{draft.PackageId:N}";
+
+            string actualXml;
+            try
+            {
+                // inputXml vem do corpo HTTP (fixture do Test Lab, não confiável) — mesma defesa XXE
+                // usada no caminho XSLT.
+                var output = TclRuleApplier.Apply(processableRules, targetRootName, ParseXmlSafe(inputXml));
+                actualXml = output.ToString(SaveOptions.None);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Falha ao interpretar as regras TCL contra o XML de entrada do test-run.");
+                return new MappingTestRunSummary(0, 1, 0, false, false,
+                    new[] { $"Falha ao interpretar o mapeamento TCL: {ex.Message}" }, Array.Empty<MappingTestRunDivergence>());
+            }
+
+            return await EvaluateAsync(actualXml, expectedXml, xsdVersion, rulesById, cancellationToken);
+        }
+
+        /// <summary>Conversão mínima DTO→entidade — mesmos campos de <c>MappingCompileService.ToEntity</c> (não reaproveitado por ser <c>private</c> naquele serviço).</summary>
+        private static MappingDraftRule ToEntity(MappingDraftRuleDetail detail) => new()
+        {
+            RuleId = detail.RuleId,
+            DraftId = detail.DraftId,
+            SourceRefs = detail.SourceRefs,
+            TargetRefs = detail.TargetRefs,
+            Operation = detail.Operation,
+            ConditionsJson = detail.ConditionsJson,
+            TransformationsJson = detail.TransformationsJson,
+            Cardinality = detail.Cardinality,
+            Evidence = detail.Evidence,
+            Confidence = detail.Confidence,
+            Status = detail.Status,
+            OpenQuestions = detail.OpenQuestions,
+            CreatedAt = detail.CreatedAt,
+        };
+
+        /// <summary>
+        /// Núcleo compartilhado entre XSLT e TCL (issue #421): diff canônico + provenance por regra +
+        /// validação XSD best-effort + cálculo de cobertura. As duas engines só diferem em como
+        /// <c>actualXml</c> é produzido — a partir daqui o contrato de <see cref="MappingTestRunSummary"/>
+        /// é idêntico.
+        /// </summary>
+        private async Task<MappingTestRunSummary> EvaluateAsync(
+            string actualXml,
+            string expectedXml,
+            string? xsdVersion,
+            IReadOnlyDictionary<Guid, MappingDraftRuleDetail> rulesById,
+            CancellationToken cancellationToken)
+        {
             // expectedXml também vem do corpo HTTP (gabarito ad-hoc do Test Lab) — mesma defesa XXE.
             // Sanitiza aqui (parse seguro + reserialização) antes de repassar pro CanonicalDiffer, que
             // faz o próprio XDocument.Parse internamente sem hardening (biblioteca compartilhada
@@ -273,13 +370,5 @@ namespace LayoutParserApi.Services.Fiscal
             return idx >= 0 ? trimmed[(idx + 1)..] : trimmed;
         }
 
-        private static MappingTestRunSummary BuildUnsupportedTclSummary() => new(
-            Passed: 0,
-            Failed: 1,
-            CoveragePercent: 0,
-            RequiredGatesPassed: false,
-            XsdValid: false,
-            XsdErrors: new[] { "engine=tcl não tem runner determinístico disponível neste slice — Fiscal Test Lab só executa artefatos xslt." },
-            Divergences: Array.Empty<MappingTestRunDivergence>());
     }
 }
