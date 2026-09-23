@@ -4,6 +4,10 @@ using LayoutParserApi.Models.RAG;
 
 namespace LayoutParserApi.Controllers
 {
+    /// <summary>
+    /// Gestão do corpus RAG (exemplos TCL/XSL usados como referência pelo motor de geração/Ollama)
+    /// — inspeção, recarga do disco e adição manual de exemplo.
+    /// </summary>
     [ApiController]
     [Route("api/[controller]")]
     public class RAGController : ControllerBase
@@ -17,9 +21,9 @@ namespace LayoutParserApi.Controllers
             _logger = logger;
         }
 
-        /// <summary>
-        /// Obtém estatísticas do RAG
-        /// </summary>
+        /// <summary>Estatísticas do corpus RAG carregado em memória (contagem de exemplos, etc.).</summary>
+        /// <response code="200">Estatísticas.</response>
+        /// <response code="500">Falha não catalogada.</response>
         [HttpGet("stats")]
         public IActionResult GetStats()
         {
@@ -35,9 +39,9 @@ namespace LayoutParserApi.Controllers
             }
         }
 
-        /// <summary>
-        /// Recarrega exemplos do disco
-        /// </summary>
+        /// <summary>Força a releitura dos exemplos em disco para dentro do índice RAG em memória.</summary>
+        /// <response code="200">Recarregado.</response>
+        /// <response code="500">Falha ao ler os exemplos do disco.</response>
         [HttpPost("reload")]
         public IActionResult ReloadExamples()
         {
@@ -54,9 +58,10 @@ namespace LayoutParserApi.Controllers
             }
         }
 
-        /// <summary>
-        /// Adiciona um novo exemplo
-        /// </summary>
+        /// <summary>Adiciona manualmente um exemplo (par entrada/transformação) ao corpus RAG.</summary>
+        /// <response code="200">Exemplo adicionado.</response>
+        /// <response code="400"><c>FileName</c>/<c>Content</c> ausente.</response>
+        /// <response code="500">Falha ao gravar o exemplo.</response>
         [HttpPost("add-example")]
         public IActionResult AddExample([FromBody] AddExampleRequest request)
         {
@@ -79,9 +84,11 @@ namespace LayoutParserApi.Controllers
             }
         }
 
-        /// <summary>
-        /// Busca exemplos relevantes para um layout
-        /// </summary>
+        /// <summary>Busca no corpus RAG os exemplos mais relevantes (similaridade) para um layout XML — usado para montar o contexto de prompt do Ollama.</summary>
+        /// <param name="request"><c>LayoutXml</c> obrigatório; <c>MaxExamples</c> opcional (default 5).</param>
+        /// <response code="200">Exemplos encontrados (pode ser vazio).</response>
+        /// <response code="400"><c>LayoutXml</c> ausente.</response>
+        /// <response code="500">Falha não catalogada.</response>
         [HttpPost("find-relevant")]
         public IActionResult FindRelevantExamples([FromBody] FindRelevantRequest request)
         {

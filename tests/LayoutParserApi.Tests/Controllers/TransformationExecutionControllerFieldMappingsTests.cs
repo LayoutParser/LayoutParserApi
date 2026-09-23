@@ -68,6 +68,7 @@ namespace LayoutParserApi.Tests.Controllers
             public IReadOnlyList<string> Roles { get; set; } = Array.Empty<string>();
             public bool IsAuthenticated => Name != null;
             public bool IsInRole(string role) => Roles.Contains(role, StringComparer.OrdinalIgnoreCase);
+            public Guid? UserId => null;
         }
 
         private sealed class FakeLayoutDatabaseService : ILayoutDatabaseService
@@ -190,7 +191,8 @@ namespace LayoutParserApi.Tests.Controllers
         private sealed class SpyAiCandidateService : IAiTransformationCandidateService
         {
             public Task EnqueueAsync(string userId, string ticket, string layoutName, Guid layoutGuid, string mapperGuid,
-                string inputContent, string? groundTruthXml, CancellationToken cancellationToken) => Task.CompletedTask;
+                string inputContent, string? groundTruthXml, CancellationToken cancellationToken,
+                IReadOnlyList<LayoutParserApi.Models.Entities.ParsedField>? parsedFields = null) => Task.CompletedTask;
 
             public Task<AiCandidateStatus> GetStatusAsync(string userId, string ticket, CancellationToken cancellationToken) =>
                 Task.FromResult(new AiCandidateStatus { Status = AiCandidateStatus.StatusNotFound });
@@ -247,12 +249,16 @@ namespace LayoutParserApi.Tests.Controllers
             var runner = new RunnerFalso(lowCodeOptions, lowCodeConfig);
             var mapperDb = new MapperDbFalso(lowCodeConfig, mappers);
 
+            var parserFake = new FakeLayoutParserService { Falhar = parseFalha };
+
             var services = new ServiceCollection();
             services.AddScoped<MapperDatabaseService>(_ => mapperDb);
+            services.AddScoped<ILayoutParserService>(_ => parserFake);
+            var scopeFactory = services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
 
             var lowCodeAuto = new LowCodeAutoTransformationService(
                 NullLogger<LowCodeAutoTransformationService>.Instance,
-                services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
+                scopeFactory,
                 runner,
                 store,
                 lowCodeOptions);
@@ -268,8 +274,6 @@ namespace LayoutParserApi.Tests.Controllers
             Directory.CreateDirectory(Path.Combine(raiz, "xsl"));
             var pipelineService = new TransformationPipelineService(NullLogger<TransformationPipelineService>.Instance, pipelineConfig);
 
-            var parserFake = new FakeLayoutParserService { Falhar = parseFalha };
-
             var controller = new TransformationExecutionController(
                 NullLogger<TransformationExecutionController>.Instance,
                 pipelineService: pipelineService,
@@ -282,10 +286,20 @@ namespace LayoutParserApi.Tests.Controllers
                 lowCodeOptions: lowCodeOptions,
                 aiCandidateService: new SpyAiCandidateService(),
                 aiFallbackGate: new SpyAiFallbackSuppressionGate(),
+                aiUserInstructionStore: new LayoutParserApi.Services.Transformation.Ai.AiUserInstructionStore(),
+                aiUserSessionStore: new LayoutParserApi.Services.Database.SqlAiUserSessionStore(
+                    NullLogger<LayoutParserApi.Services.Database.SqlAiUserSessionStore>.Instance,
+                    new ConfigurationBuilder().Build(),
+                    Microsoft.Extensions.Options.Options.Create(new LayoutParserApi.Services.Database.AiUserSessionHistoryOptions())),
                 currentUser: new FakeCurrentUser(),
                 mapperDb: mapperDb,
                 layoutParser: parserFake,
-                fieldMappingComposition: BuildFieldMappingComposition());
+                fieldMappingComposition: BuildFieldMappingComposition(),
+                scopeFactory: scopeFactory,
+                canaryAlert: new LayoutParserApi.Services.Security.CanaryAlertService(
+                    NullLogger<LayoutParserApi.Services.Security.CanaryAlertService>.Instance),
+                fieldCorrectionStore: null!,
+                trainingDataCapture: null!);
 
             return (controller, parserFake, runner);
         }

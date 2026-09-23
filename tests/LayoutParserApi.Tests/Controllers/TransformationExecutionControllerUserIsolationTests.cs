@@ -9,6 +9,7 @@ using LayoutParserApi.Services.Transformation.LowCode;
 using LayoutParserApi.Services.Transformation.Ai;
 
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -39,6 +40,7 @@ namespace LayoutParserApi.Tests.Controllers
             public IReadOnlyList<string> Roles { get; set; } = Array.Empty<string>();
             public bool IsAuthenticated => Name != null;
             public bool IsInRole(string role) => Roles.Contains(role, StringComparer.OrdinalIgnoreCase);
+            public Guid? UserId => null;
         }
 
         /// <summary>Spy: captura o userId recebido em cada chamada, sem executar lógica real de IA.</summary>
@@ -50,7 +52,8 @@ namespace LayoutParserApi.Tests.Controllers
 
             public Task EnqueueAsync(
                 string userId, string ticket, string layoutName, Guid layoutGuid, string mapperGuid,
-                string inputContent, string? groundTruthXml, CancellationToken cancellationToken)
+                string inputContent, string? groundTruthXml, CancellationToken cancellationToken,
+                IReadOnlyList<LayoutParserApi.Models.Entities.ParsedField>? parsedFields = null)
             {
                 LastEnqueueUserId = userId;
                 return Task.CompletedTask;
@@ -102,10 +105,20 @@ namespace LayoutParserApi.Tests.Controllers
                 lowCodeOptions: Options.Create(new LowCodeRunnerOptions()),
                 aiCandidateService: spy,
                 aiFallbackGate: new SpyAiFallbackSuppressionGate(),
+                aiUserInstructionStore: new LayoutParserApi.Services.Transformation.Ai.AiUserInstructionStore(),
+                aiUserSessionStore: new LayoutParserApi.Services.Database.SqlAiUserSessionStore(
+                    NullLogger<LayoutParserApi.Services.Database.SqlAiUserSessionStore>.Instance,
+                    new ConfigurationBuilder().Build(),
+                    Microsoft.Extensions.Options.Options.Create(new LayoutParserApi.Services.Database.AiUserSessionHistoryOptions())),
                 currentUser: user,
                 mapperDb: null!,
                 layoutParser: null!,
-                fieldMappingComposition: null!);
+                fieldMappingComposition: null!,
+                scopeFactory: null!,
+                canaryAlert: new LayoutParserApi.Services.Security.CanaryAlertService(
+                    NullLogger<LayoutParserApi.Services.Security.CanaryAlertService>.Instance),
+                fieldCorrectionStore: null!,
+                trainingDataCapture: null!);
 
             return (controller, spy, user);
         }
@@ -184,7 +197,16 @@ namespace LayoutParserApi.Tests.Controllers
                 .GetMethod("TryEnqueueAiCandidate", BindingFlags.NonPublic | BindingFlags.Instance)
                 ?? throw new InvalidOperationException("Método TryEnqueueAiCandidate não encontrado — o controller mudou de forma incompatível com este teste.");
 
+            // ✅ Correção pós-review da Quinn (2026-08-29): TryEnqueueAiCandidate deixou de ser
+            // "await"ado no caminho síncrono do controller — o ParseAsync/EnqueueAsync agora rodam
+            // dentro de um Task.Run fire-and-forget (nunca atrasa a resposta síncrona). O
+            // method.Invoke abaixo retorna antes do job terminar, então o teste faz polling
+            // (com teto de sanidade) em vez de assumir conclusão síncrona.
             method.Invoke(controller, new object?[] { request, layoutRecord, candidates, false, currentUserId });
+
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (spy.LastEnqueueUserId == null && DateTime.UtcNow < deadline)
+                await Task.Delay(10);
 
             Assert.Equal("carol", spy.LastEnqueueUserId);
         }

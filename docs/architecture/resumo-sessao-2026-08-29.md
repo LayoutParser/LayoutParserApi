@@ -66,6 +66,17 @@ em vez de hardcode NFe`).
   o trabalho já entregue em #180/PR#123 — **sinalizado aqui, não fechado por este agente**
   (decisão de fechar/manter é do dono ou de quem reabriu a necessidade).
 **Status:** #51 corrigida (comentário postado); #179 aberta e pendente de triagem de duplicidade.
+- Issue #179 criada (tech-debt: hook de pre-commit local `gitleaks`/`detect-secrets`) —
+  duplicava diretamente o **trabalho já entregue pelo PR #123** (`.githooks/pre-commit` +
+  `.gitleaks.toml`, mesclado em 2026-08-15), não a issue #180. Fechada em 2026-08-29 com
+  comentário explicando a origem do gap (a varredura que a originou não checou o filesystem
+  antes de propor o item).
+  **Nota separada sobre #180:** título idêntico ao de #179, mas **sem relação com o PR #123** —
+  foi aberta e fechada dentro desta mesma sessão (`2026-08-21T22:19:31Z` →
+  `2026-08-21T22:21:13Z`) por uma instância duplicada de agente, e já ficou corretamente
+  registrada como fechada por esse motivo no próprio comentário de fechamento da #180.
+**Status:** #51 corrigida (comentário postado); #179 e #180 ambas **CLOSED**, cada uma pelo
+motivo correto (não são duplicatas uma da outra).
 
 ### 2.7 Auditoria de remoção da senha SQL do código
 Confirmado que o código/JSON está limpo (ver `.claude/rules/security.md`). Falta apenas o
@@ -127,6 +138,12 @@ por `@lp-devops`.
 | Issue #172 | story: leitura de PDF de orientações | **Open — sem PR** |
 | Issue #174 | tech-debt: MetricsController sem modelos reais | **Open — sem PR** |
 | Issue #179 | tech-debt: hook pre-commit gitleaks | **Open — possível duplicata de #180 (closed)** |
+| PR #123 | chore(security): hook de pre-commit anti-segredo | Merged |
+| Issue #137 | story: plano de execução fieldMappings/sectionMappings (PBI #128/Epic #126) | Open (guarda-chuva) |
+| Issue #172 | story: leitura de PDF de orientações | **Open — sem PR** |
+| Issue #174 | tech-debt: MetricsController sem modelos reais | **Open — sem PR** |
+| Issue #179 | tech-debt: hook pre-commit gitleaks | **Closed — duplicava trabalho do PR #123** |
+| Issue #180 | tech-debt: hook pre-commit gitleaks (título idêntico) | **Closed — erro isolado de sessão, sem relação com PR #123** |
 | Issue #51 | (histórica) | Closed indevidamente; comentário de correção postado |
 
 ---
@@ -143,6 +160,7 @@ por `@lp-devops`.
 3. **Triagem da duplicidade #179 vs #180** — decidir se #179 deve ser fechada como duplicata ou
    se há escopo residual real não coberto pelo PR #123.
 4. **Revisão/merge do PR #211** (RepairOrchestrator) — decisão de produto/arquitetura sobre
+3. **Revisão/merge do PR #211** (RepairOrchestrator) — decisão de produto/arquitetura sobre
    substituir XML-direto como motor primário; merge é exclusivo de `@lp-devops`, mas a aprovação
    de escopo é do dono.
 
