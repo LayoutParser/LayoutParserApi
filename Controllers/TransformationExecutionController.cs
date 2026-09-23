@@ -11,12 +11,15 @@ using LayoutParserApi.Services.Database;
 
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using LayoutParserApi.Services.XmlAnalysis.Models;
 using LayoutParserApi.Services.Interfaces;
 using LayoutParserApi.Services.Filters;
 using LayoutParserApi.Models.Database;
 using LayoutParserApi.Models.Transformation;
+using LayoutParserApi.Models.Parsing;
+using LayoutParserApi.Models.Fiscal;
 
 using XslSynth.Core;
 
@@ -47,10 +50,16 @@ namespace LayoutParserApi.Controllers
         private readonly LowCodeRunnerOptions _lowCodeOpt;
         private readonly IAiTransformationCandidateService _aiCandidateService;
         private readonly IAiFallbackSuppressionGate _aiFallbackGate;
+        private readonly AiUserInstructionStore _aiUserInstructionStore;
+        private readonly Services.Database.SqlAiUserSessionStore _aiUserSessionStore;
         private readonly ICurrentUser _currentUser;
         private readonly MapperDatabaseService _mapperDb;
         private readonly ILayoutParserService _layoutParser;
         private readonly FieldMappingCompositionService _fieldMappingComposition;
+        private readonly IServiceScopeFactory _scopeFactory;
+        private readonly Services.Security.ICanaryAlertService _canaryAlert;
+        private readonly IFieldCorrectionStore _fieldCorrectionStore;
+        private readonly TrainingDataCaptureService _trainingDataCapture;
 
         public TransformationExecutionController(
             ILogger<TransformationExecutionController> logger,
@@ -64,10 +73,16 @@ namespace LayoutParserApi.Controllers
             IOptions<LowCodeRunnerOptions> lowCodeOptions,
             IAiTransformationCandidateService aiCandidateService,
             IAiFallbackSuppressionGate aiFallbackGate,
+            AiUserInstructionStore aiUserInstructionStore,
+            Services.Database.SqlAiUserSessionStore aiUserSessionStore,
             ICurrentUser currentUser,
             MapperDatabaseService mapperDb,
             ILayoutParserService layoutParser,
-            FieldMappingCompositionService fieldMappingComposition)
+            FieldMappingCompositionService fieldMappingComposition,
+            IServiceScopeFactory scopeFactory,
+            Services.Security.ICanaryAlertService canaryAlert,
+            IFieldCorrectionStore fieldCorrectionStore,
+            TrainingDataCaptureService trainingDataCapture)
         {
             _logger = logger;
             _pipelineService = pipelineService;
@@ -80,10 +95,16 @@ namespace LayoutParserApi.Controllers
             _lowCodeOpt = lowCodeOptions.Value;
             _aiCandidateService = aiCandidateService;
             _aiFallbackGate = aiFallbackGate;
+            _aiUserInstructionStore = aiUserInstructionStore;
+            _aiUserSessionStore = aiUserSessionStore;
             _currentUser = currentUser;
             _mapperDb = mapperDb;
             _layoutParser = layoutParser;
             _fieldMappingComposition = fieldMappingComposition;
+            _scopeFactory = scopeFactory;
+            _canaryAlert = canaryAlert;
+            _fieldCorrectionStore = fieldCorrectionStore;
+            _trainingDataCapture = trainingDataCapture;
         }
 
         // Issue #92: chave de particionamento da AiCandidateStore. ICurrentUser.Name é null quando
@@ -92,8 +113,15 @@ namespace LayoutParserApi.Controllers
         private string CurrentUserId => _currentUser.Name ?? string.Empty;
 
         /// <summary>
-        /// Executa transformação completa (TXT -> XML ou XML -> XML)
+        /// Executa transformação completa (TXT -> XML ou XML -> XML) usando o pathway tcl-xsl
+        /// (canônico, único candidato). Para obter todos os candidatos plausíveis dos dois
+        /// pathways, use <see cref="ExecuteTransformationCandidates"/>.
         /// </summary>
+        /// <param name="request"><c>InputContent</c> e <c>LayoutName</c> são obrigatórios; <c>Validate</c> dispara validação XSD/diff do resultado.</param>
+        /// <returns><c>transformedXml</c> + <c>segmentMappings</c> (indexado por linha, só para entrada MQSeries) e, se <c>Validate=true</c>, o objeto <c>validation</c>.</returns>
+        /// <response code="200">Transformação concluída.</response>
+        /// <response code="400"><c>InputContent</c>/<c>LayoutName</c> ausente, ou pipeline não conseguiu transformar (ver <c>errors</c>/<c>warnings</c>).</response>
+        /// <response code="500">Falha não catalogada no pipeline.</response>
         [HttpPost("execute")]
         public async Task<IActionResult> ExecuteTransformation([FromBody] TransformationRequest request)
         {
@@ -180,6 +208,34 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
+        /// Endpoint-isca (honeypot) — ADR M2M
+        /// (<c>docs/architecture/adr-autenticacao-m2m-e2e-cypress-2026-09-03.md</c>), Parte 2.
+        /// </summary>
+        /// <remarks>
+        /// <para>🔴 <b>ISTO É DETECÇÃO, NÃO PREVENÇÃO — não implementa nenhuma lógica de negócio
+        /// real.</b> Não substitui os controles de auth reais (<see cref="TrustedIdentityMiddleware"/>,
+        /// esquema <c>ServiceClient</c> da Parte 1). Imita, de propósito, um endpoint "legado"
+        /// plausível dado o padrão de nomes já existente neste controller (<c>execute</c>,
+        /// <c>execute-lowcode</c>, <c>execute-candidates</c>) — nenhum consumidor legítimo (React,
+        /// MCP, Cypress real) jamais deveria chamar esta rota.</para>
+        ///
+        /// <para>Aceita QUALQUER requisição, sem exigir <c>[Authorize]</c> — é isso que torna a
+        /// rota atrativa para quem está enumerando endpoints. Não parseia nem repassa o corpo a
+        /// nenhum serviço real (risco zero de virar vetor de fato). Todo hit — independente do
+        /// conteúdo — dispara <see cref="ICanaryAlertService"/> e responde com algo plausível
+        /// (202), para não denunciar a armadilha por um comportamento diferente do resto da API.</para>
+        /// </remarks>
+        /// <response code="202">Sempre retornado — resposta genérica, propositalmente plausível.</response>
+        [HttpPost("execute-legacy")]
+        public IActionResult ExecuteLegacyHoneypot()
+        {
+            _canaryAlert.Raise(Services.Security.CanaryConstants.EndpointCanaryType, HttpContext);
+
+            // Resposta plausível e genérica — não denuncia a detecção nem executa nada real.
+            return Accepted(new { success = true, ticket = Guid.NewGuid().ToString() });
+        }
+
+        /// <summary>
         /// Executa transformação retornando TODOS os candidatos plausíveis dos dois pathways
         /// (sysmiddle/low-code e tcl-xsl/canônico) em vez de um resultado singular. Contrato completo
         /// (casos-limite de zero candidatos, falha parcial, timeout etc.) em
@@ -198,6 +254,16 @@ namespace LayoutParserApi.Controllers
         /// <c>Message</c> nesse array já passou por <see cref="Services.Transformation.LowCode.LowCodeErrorSanitizer"/>
         /// — nunca contém caminho físico de disco ou detalhe interno cru.</para>
         /// </summary>
+        /// <param name="request"><c>InputContent</c> e <c>LayoutName</c> obrigatórios; <c>LayoutGuid</c> opcional (tem precedência sobre o do catálogo).</param>
+        /// <returns>
+        /// <see cref="Models.Transformation.TransformationExecutionCandidatesResponse"/>: array <c>Candidates</c>
+        /// (um por pathway/mapper que produziu XML), <c>RecommendedCandidateId</c> (melhor <c>Score</c>),
+        /// <c>PathwayDiagnostics</c> (status por pathway avaliado) e <c>CorrelationId</c> para suporte.
+        /// </returns>
+        /// <response code="200">Ao menos um pathway foi avaliado (mesmo com <c>Candidates</c> vazio — ver <c>PathwayDiagnostics</c>).</response>
+        /// <response code="400"><c>InputContent</c>/<c>LayoutName</c> ausente, ou layout não encontrado no catálogo.</response>
+        /// <response code="500">Falha de infraestrutura ao consultar o catálogo de layouts.</response>
+        /// <response code="504">Timeout do conjunto de candidatos (teto calculado por <c>LowCodeCandidatesBudget</c>).</response>
         // Issue #32: dispara processos externos (runner x86) e é operação privilegiada — era
         // restrita ao papel "admin". Issue #93: reabre para qualquer usuário autenticado (o
         // isolamento por dono via CurrentUserId/AiCandidateStore, já feito na issue #92, é quem
@@ -318,6 +384,21 @@ namespace LayoutParserApi.Controllers
                 recommendedId = bestScored?.CandidateId ?? candidates[0].CandidateId;
             }
 
+            // DocumentId (ADR docs/architecture/adr-contrato-correcao-guiada-humano-2026-09-08.md §4,
+            // Gap 1): identificador estável derivado de hash, mesma resolução de LayoutGuid já usada
+            // pelo pathway sysmiddle (request.LayoutGuid tem precedência sobre o catálogo, que pode
+            // vir Guid.Empty). Quando nenhum dos dois resolve, cai no LayoutGuid cru do catálogo —
+            // ainda determinístico, nunca lança.
+            var resolvedLayoutGuidForDocumentId =
+                LowCodeLayoutGuidResolver.Resolve(request.LayoutGuid, layoutRecord.LayoutGuid)
+                ?? layoutRecord.LayoutGuid.ToString();
+            var documentId = DocumentIdCalculator.Calculate(request.InputContent, resolvedLayoutGuidForDocumentId);
+
+            // tbFieldCorrectionContext (issue #345, ADR §4/§7): gravação best-effort, fire-and-forget —
+            // nunca atrasa nem derruba esta resposta. Habilita o futuro POST field-correction a
+            // resolver documentId -> contexto do documento.
+            TryPersistFieldCorrectionContext(request, layoutRecord, candidates, documentId, resolvedLayoutGuidForDocumentId);
+
             return Ok(new TransformationExecutionCandidatesResponse
             {
                 Success = true,
@@ -327,8 +408,281 @@ namespace LayoutParserApi.Controllers
                 // pathwayDiagnostics (Issue #86): populado na origem por cada pathway (sysmiddle,
                 // tcl-xsl, ai-fallback) — ver docs/architecture/diagnostico-issue-86-*.md §4.
                 PathwayDiagnostics = pathwayDiagnostics.ToList(),
-                CorrelationId = Services.Logging.CorrelationContext.CurrentId
+                CorrelationId = Services.Logging.CorrelationContext.CurrentId,
+                DocumentId = documentId
             });
+        }
+
+        /// <summary>
+        /// Best-effort (issue #345, ADR §4/§7): grava <c>tbFieldCorrectionContext</c> com o
+        /// documentId já calculado, o gabarito sysmiddle quando existir (primeiro candidato do
+        /// pathway sysmiddle) e o LayoutGuid/Name resolvidos. Mapper/GroundTruth ficam <c>null</c>
+        /// quando a request não produziu candidato sysmiddle (ex.: entrada XML) — reporte de
+        /// correção continua possível, só sem o gabarito ao lado. Fire-and-forget: qualquer falha
+        /// (IdentityDatabase indisponível etc.) vira log, nunca afeta a resposta síncrona já calculada.
+        /// </summary>
+        private void TryPersistFieldCorrectionContext(
+            TransformationRequest request, LayoutRecord layoutRecord, List<TransformationCandidate> candidates,
+            string documentId, string resolvedLayoutGuid)
+        {
+            var sysmiddleCandidate = candidates.FirstOrDefault(c => c.Pathway == "sysmiddle" && !string.IsNullOrEmpty(c.TransformedXml));
+            var mapperGuid = sysmiddleCandidate != null && sysmiddleCandidate.CandidateId.StartsWith("sysmiddle-", StringComparison.Ordinal)
+                ? sysmiddleCandidate.CandidateId["sysmiddle-".Length..]
+                : null;
+            var groundTruthXml = sysmiddleCandidate?.TransformedXml;
+            var layoutName = request.LayoutName;
+            var inputContent = request.InputContent;
+            var safeLayoutNameForLog = Services.Logging.LogMessageSanitizer.Sanitize(layoutName);
+
+            // ✅ Mesmo padrão de TryEnqueueAiCandidate: Task.Run + CancellationToken.None, sobrevive
+            // ao fim da request HTTP; IFieldCorrectionStore é Scoped, então precisa de scope próprio.
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    using var scope = _scopeFactory.CreateScope();
+                    var scopedStore = scope.ServiceProvider.GetRequiredService<IFieldCorrectionStore>();
+                    await scopedStore.SaveContextAsync(
+                        new FieldCorrectionContext(
+                            documentId,
+                            mapperGuid,
+                            MapperName: null, // não disponível neste ponto sem consulta SQL adicional — best-effort, campo aditivo.
+                            resolvedLayoutGuid,
+                            layoutName,
+                            inputContent,
+                            groundTruthXml,
+                            DateTimeOffset.UtcNow),
+                        CancellationToken.None);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex,
+                        "Falha ao persistir tbFieldCorrectionContext (best-effort) para documentId={DocumentId} layout={LayoutName}",
+                        documentId, safeLayoutNameForLog);
+                }
+            }, CancellationToken.None);
+        }
+
+        /// <summary>
+        /// Issue #345 (ADR docs/architecture/adr-contrato-correcao-guiada-humano-2026-09-08.md §3/§5/§7):
+        /// reporte de correção humana de um campo divergente. Assíncrono por design — não
+        /// re-executa nenhum pathway nem chama Ollama no request; só valida, resolve o contexto
+        /// via <c>documentId</c> e persiste com <c>Status = pending</c> (curadoria humana é a Issue 2,
+        /// fora do escopo aqui). Fail-closed via <c>_currentUser.UserId</c>, mesmo padrão de
+        /// <see cref="MappingGovernanceController"/> — sem identidade resolvida, <c>404</c> (não
+        /// <c>401</c>), para não distinguir "recurso inexistente" de "sem permissão".
+        /// </summary>
+        /// <param name="request">
+        /// <c>documentId</c>/<c>candidateId</c>/<c>fieldPath</c>/<c>observedValue</c>/<c>expectedValue</c>
+        /// obrigatórios; <c>justification</c> e <c>documentType</c> (só telemetria) opcionais.
+        /// </param>
+        /// <response code="202">Reporte registrado — <c>{ reportId, status: "queued", message }</c>.</response>
+        /// <response code="400">Campo obrigatório ausente.</response>
+        /// <response code="404">
+        /// Sem identidade resolvida, OU <c>documentId</c> não resolve contexto persistido (mensagem
+        /// pede para reenviar o parse — contexto pode ter expirado, gravação best-effort pode ter
+        /// falhado, ou o id nunca existiu).
+        /// </response>
+        [Authorize]
+        [HttpPost("field-correction")]
+        public async Task<IActionResult> ReportFieldCorrection([FromBody] FieldCorrectionRequest request, CancellationToken cancellationToken)
+        {
+            if (_currentUser.UserId is not Guid userId)
+                return NotFound(); // fail-closed, mesmo padrão de MappingGovernanceController.
+
+            if (request == null || string.IsNullOrWhiteSpace(request.DocumentId))
+                return BadRequest(new { success = false, error = "documentId é obrigatório" });
+            if (string.IsNullOrWhiteSpace(request.CandidateId))
+                return BadRequest(new { success = false, error = "candidateId é obrigatório" });
+            if (string.IsNullOrWhiteSpace(request.FieldPath))
+                return BadRequest(new { success = false, error = "fieldPath é obrigatório" });
+            if (string.IsNullOrWhiteSpace(request.ObservedValue))
+                return BadRequest(new { success = false, error = "observedValue é obrigatório" });
+            if (string.IsNullOrWhiteSpace(request.ExpectedValue))
+                return BadRequest(new { success = false, error = "expectedValue é obrigatório" });
+
+            FieldCorrectionContext? context;
+            try
+            {
+                context = await _fieldCorrectionStore.GetContextAsync(request.DocumentId, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                // Diferente da gravação (best-effort, nunca falha), a LEITURA aqui é o caminho crítico
+                // do endpoint — se o IdentityDatabase estiver fora do ar, não há como resolver o
+                // documentId, então degrada para 404 (mesma mensagem do caso "nunca existiu"), nunca
+                // deixa a exceção subir.
+                _logger.LogWarning(ex, "Falha ao consultar tbFieldCorrectionContext para documentId={DocumentId}", request.DocumentId);
+                context = null;
+            }
+
+            if (context == null)
+                return NotFound(new { success = false, error = "contexto do documento expirado — reenvie o parse para reportar uma correção" });
+
+            Guid reportId;
+            try
+            {
+                reportId = await _fieldCorrectionStore.CreateReportAsync(
+                    new FieldCorrectionReportInput(
+                        request.DocumentId,
+                        request.CandidateId,
+                        request.FieldPath,
+                        request.ObservedValue,
+                        request.ExpectedValue,
+                        request.Justification),
+                    userId,
+                    cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Falha ao persistir tbFieldCorrectionReport para documentId={DocumentId}", request.DocumentId);
+                return StatusCode(500, new { success = false, error = "Falha de infraestrutura ao registrar a correção" });
+            }
+
+            _logger.LogInformation(
+                "Correção humana registrada: reportId={ReportId} documentId={DocumentId} candidateId={CandidateId} usuario={UserId}",
+                reportId, request.DocumentId, Services.Logging.LogMessageSanitizer.Sanitize(request.CandidateId), userId);
+
+            return Accepted(new
+            {
+                reportId,
+                status = "queued",
+                message = "Correção registrada. Será usada para refinar o modelo em treinos futuros."
+            });
+        }
+
+        // ─────────────────────────────────────────────────────────────────────────────
+        // Curadoria de correção humana (issue #346, ADR §6/§8)
+        //
+        // NOTA DE AUTORIZAÇÃO: não existe hoje um papel dedicado de revisor fiscal no projeto —
+        // os papéis em uso são "admin" (DataGenerationController, LogsController) e "operador"
+        // (MapperDatabaseController). Curar o que vira dado de treino do modelo é uma operação
+        // privilegiada, então cai em "admin". TODO(#346): trocar por um papel "fiscal"/"revisor"
+        // quando o produto definir a matriz de papéis (ver docs/architecture/rollout-p2-autenticacao.md).
+        // ─────────────────────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Fila de curadoria: reportes de correção humana ainda <c>pending</c> (issue #346), mais
+        /// antigos primeiro. Somente <c>admin</c>.
+        /// </summary>
+        /// <param name="limit">Teto de itens retornados (default 100, máx. 500).</param>
+        /// <response code="200"><c>{ success, count, reports[] }</c>.</response>
+        /// <response code="404">Sem identidade resolvida (fail-closed).</response>
+        /// <response code="500">Falha de infraestrutura ao consultar o <c>IdentityDatabase</c>.</response>
+        [Authorize(Roles = "admin")]
+        [HttpGet("field-correction/pending")]
+        public async Task<IActionResult> ListPendingFieldCorrections([FromQuery] int limit = 100, CancellationToken cancellationToken = default)
+        {
+            if (_currentUser.UserId is not Guid)
+                return NotFound(); // fail-closed, mesmo padrão de ReportFieldCorrection.
+
+            if (limit <= 0) limit = 100;
+            if (limit > 500) limit = 500;
+
+            try
+            {
+                var pending = await _fieldCorrectionStore.ListPendingReportsAsync(limit, cancellationToken);
+                return Ok(new { success = true, count = pending.Count, reports = pending });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Falha ao listar reportes de correção pendentes");
+                return StatusCode(500, new { success = false, error = "Falha de infraestrutura ao listar pendências de curadoria" });
+            }
+        }
+
+        /// <summary>
+        /// Transição de curadoria de um reporte: <c>pending → reviewed_accepted | reviewed_rejected</c>
+        /// (issue #346). Grava <c>ReviewedByUserId</c> (via <see cref="ICurrentUser"/>) e
+        /// <c>ReviewedAtUtc</c>. Idempotente: um segundo review do mesmo reporte devolve <c>409</c>.
+        /// Só <c>reviewed_accepted</c> gera uma linha no dataset de treino incremental
+        /// (<c>source = "human-correction-reviewed"</c>); <c>reviewed_rejected</c> apenas encerra o
+        /// ciclo de vida. O <c>GroundTruthXml</c> do contexto NUNCA é tocado — a revisão só decide
+        /// o que vira treino. Somente <c>admin</c>.
+        /// </summary>
+        /// <response code="200"><c>{ reportId, status }</c> — transição efetuada.</response>
+        /// <response code="400"><c>decision</c> ausente ou diferente de <c>accepted</c>/<c>rejected</c>.</response>
+        /// <response code="404">Sem identidade resolvida (fail-closed).</response>
+        /// <response code="409">Reporte inexistente ou já revisado (só <c>pending</c> transiciona).</response>
+        /// <response code="500">Falha de infraestrutura ao gravar a transição.</response>
+        [Authorize(Roles = "admin")]
+        [HttpPost("field-correction/{reportId:guid}/review")]
+        public async Task<IActionResult> ReviewFieldCorrection(Guid reportId, [FromBody] FieldCorrectionReviewRequest request, CancellationToken cancellationToken)
+        {
+            if (_currentUser.UserId is not Guid reviewerId)
+                return NotFound(); // fail-closed.
+
+            var decision = request?.Decision?.Trim().ToLowerInvariant();
+            var newStatus = decision switch
+            {
+                "accepted" => FieldCorrectionReportStatus.ReviewedAccepted,
+                "rejected" => FieldCorrectionReportStatus.ReviewedRejected,
+                _ => null
+            };
+            if (newStatus is null)
+                return BadRequest(new { success = false, error = "decision é obrigatório e deve ser 'accepted' ou 'rejected'" });
+
+            bool transitioned;
+            try
+            {
+                transitioned = await _fieldCorrectionStore.TransitionStatusAsync(reportId, newStatus, reviewerId, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Falha ao transicionar reporte de correção reportId={ReportId}", reportId);
+                return StatusCode(500, new { success = false, error = "Falha de infraestrutura ao registrar a revisão" });
+            }
+
+            if (!transitioned)
+                return Conflict(new { success = false, error = "reporte inexistente ou já revisado — apenas reportes 'pending' podem ser curados" });
+
+            _logger.LogInformation(
+                "Curadoria de correção humana: reportId={ReportId} status={Status} revisor={ReviewerId}",
+                reportId, newStatus, reviewerId);
+
+            // Só o aceite alimenta o dataset incremental. Best-effort: a transição já está gravada,
+            // uma falha aqui (contexto expirado, disco cheio) vira warning, nunca reverte a revisão
+            // nem derruba a resposta.
+            if (newStatus == FieldCorrectionReportStatus.ReviewedAccepted)
+                await TryCaptureAcceptedCorrectionAsync(reportId, cancellationToken);
+
+            return Ok(new { reportId, status = newStatus });
+        }
+
+        /// <summary>
+        /// Monta o exemplo de treino incremental de um reporte recém-aceito: contexto original
+        /// (<c>InputXml</c>/<c>GroundTruthXml</c>) + <c>ExpectedValue</c> do reporte como saída
+        /// esperada. Delega a escrita ao <see cref="TrainingDataCaptureService"/> (mesmo arquivo
+        /// diário e formato do runtime capture). Best-effort — nunca lança.
+        /// </summary>
+        private async Task TryCaptureAcceptedCorrectionAsync(Guid reportId, CancellationToken cancellationToken)
+        {
+            try
+            {
+                var report = await _fieldCorrectionStore.GetReportAsync(reportId, cancellationToken);
+                if (report is null)
+                {
+                    _logger.LogWarning("Reporte aceito não encontrado ao montar o exemplo de treino (reportId={ReportId})", reportId);
+                    return;
+                }
+
+                var context = await _fieldCorrectionStore.GetContextAsync(report.DocumentId, cancellationToken);
+                if (context is null)
+                {
+                    _logger.LogWarning(
+                        "Contexto do documento ausente/expirado ao montar o exemplo de treino do reporte aceito (reportId={ReportId} documentId={DocumentId})",
+                        reportId, report.DocumentId);
+                    return;
+                }
+
+                _trainingDataCapture.TryCaptureHumanCorrection(context, report);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "Falha ao capturar o exemplo de treino do reporte aceito — best-effort, a revisão permanece gravada (reportId={ReportId})",
+                    reportId);
+            }
         }
 
         /// <summary>
@@ -347,6 +701,10 @@ namespace LayoutParserApi.Controllers
             CancellationToken cancellationToken)
         {
             var result = new List<TransformationCandidate>();
+            // ✅ CodeQL cs/log-forging: LayoutName vem do request (usuário) e pode conter \r/\n —
+            // saneia UMA VEZ aqui e reusa nos logs deste método (o valor cru continua sendo usado
+            // fora dos logs — SearchTerm, ticket, EnqueueAsync — onde forjar log não se aplica).
+            var safeLayoutName = Services.Logging.LogMessageSanitizer.Sanitize(request.LayoutName);
 
             // Sysmiddle/low-code espera texto posicional (TXT), não XML — não é uma falha do
             // pathway, é entrada fora de escopo (a IA não deveria disparar por causa disso).
@@ -354,7 +712,7 @@ namespace LayoutParserApi.Controllers
             {
                 _logger.LogInformation(
                     "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code} layout={LayoutName} motivo=entrada XML fora do escopo do pathway sysmiddle",
-                    Services.Logging.CorrelationContext.CurrentId, "sysmiddle", "not_applicable", "not_applicable", request.LayoutName);
+                    Services.Logging.CorrelationContext.CurrentId, "sysmiddle", "not_applicable", "not_applicable", safeLayoutName);
                 pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
                 {
                     Pathway = "sysmiddle",
@@ -368,6 +726,7 @@ namespace LayoutParserApi.Controllers
             try
             {
                 var resolvedLayoutGuid = LowCodeLayoutGuidResolver.Resolve(request.LayoutGuid, layoutRecord.LayoutGuid);
+                var safeResolvedLayoutGuid = Services.Logging.LogMessageSanitizer.Sanitize(resolvedLayoutGuid);
                 if (resolvedLayoutGuid == null)
                 {
                     var msg = $"Layout {request.LayoutName} sem LayoutGuid válido no request ou no catálogo — pathway sysmiddle não aplicável";
@@ -375,7 +734,7 @@ namespace LayoutParserApi.Controllers
                     failureKinds.Add(FailureKind.NotApplicable);
                     _logger.LogInformation(
                         "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code} layout={LayoutName} fonte=request.LayoutGuid/catalogo (nenhum resolvível)",
-                        Services.Logging.CorrelationContext.CurrentId, "sysmiddle", "not_applicable", "not_applicable", request.LayoutName);
+                        Services.Logging.CorrelationContext.CurrentId, "sysmiddle", "not_applicable", "not_applicable", safeLayoutName);
                     pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
                     {
                         Pathway = "sysmiddle",
@@ -407,7 +766,7 @@ namespace LayoutParserApi.Controllers
                     failureKinds.Add(FailureKind.NotApplicable);
                     _logger.LogInformation(
                         "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code} layout={LayoutName} layoutGuid={LayoutGuid} fonte=catalogo (consulta a mapeadores low-code sem resultado)",
-                        Services.Logging.CorrelationContext.CurrentId, "sysmiddle", "not_applicable", "no_mapper", request.LayoutName, resolvedLayoutGuid);
+                        Services.Logging.CorrelationContext.CurrentId, "sysmiddle", "not_applicable", "no_mapper", safeLayoutName, safeResolvedLayoutGuid);
                     pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
                     {
                         Pathway = "sysmiddle",
@@ -418,17 +777,59 @@ namespace LayoutParserApi.Controllers
                     return result;
                 }
 
+                // ✅ Issue #141 (design §2, opção B): parse posicional do documento é feito UMA VEZ por
+                // request (compartilhado entre todos os candidatos sysmiddle — mesmo documento de
+                // entrada) em vez de recalculado por candidato. O mapper de cada candidato já veio
+                // decifrado de volta em LowCodeCandidateResult.DecryptedMapperContent (sem 2ª consulta
+                // SQL) — só falta parsear o TXT contra o Layout de origem, que RunAsync não expõe (o
+                // runner .exe parseia por dentro do processo externo, não via ILayoutParserService).
+                ParsingResult? sharedParsingResult = null;
+                if (!string.IsNullOrWhiteSpace(layoutRecord.DecryptedContent))
+                {
+                    try
+                    {
+                        using var layoutStream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(layoutRecord.DecryptedContent));
+                        using var txtStream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(request.InputContent));
+                        sharedParsingResult = await _layoutParser.ParseAsync(layoutStream, txtStream);
+                        if (!sharedParsingResult.Success || sharedParsingResult.Layout == null)
+                        {
+                            _logger.LogWarning(
+                                "fieldMappings (issue #141): parse posicional compartilhado falhou para layout {LayoutName} — candidatos sysmiddle seguem sem fieldMappings. Erro={ErrorMessage}",
+                                safeLayoutName, Services.Logging.LogMessageSanitizer.Sanitize(sharedParsingResult.ErrorMessage));
+                            sharedParsingResult = null;
+                        }
+                    }
+                    catch (Exception parseEx)
+                    {
+                        // Nunca deixa a composição de fieldMappings afetar o XML já produzido pelo runner.
+                        _logger.LogWarning(parseEx,
+                            "fieldMappings (issue #141): exceção no parse posicional compartilhado para layout {LayoutName} — candidatos sysmiddle seguem sem fieldMappings",
+                            safeLayoutName);
+                        sharedParsingResult = null;
+                    }
+                }
+
                 var anyCandidateFailed = false;
                 string lastCandidateFailureMessage = null;
                 foreach (var c in autoResult.Candidates)
                 {
                     if (c.Success && !string.IsNullOrEmpty(c.OutputXml))
                     {
+                        // Issue #138 (Fase 0): resolução estrutural de SectionMappings a partir do
+                        // MapeadorVO já decifrado deste candidato — nunca lança (degrada para [] com
+                        // xmlNamespaces=null; ver SysmiddleSectionMappingResolver).
+                        var (sectionMappings, xmlNamespaces) = SysmiddleSectionMappingResolver.Resolve(
+                            c.DecryptedMapperContent, c.OutputXml,
+                            msg => _logger.LogDebug("{Message} (mapper={MapperGuid})", msg, c.MapperGuid));
+
                         result.Add(new TransformationCandidate
                         {
                             CandidateId = $"sysmiddle-{c.MapperGuid}",
                             Pathway = "sysmiddle",
-                            TransformedXml = c.OutputXml
+                            TransformedXml = c.OutputXml,
+                            FieldMappings = TryComposeFieldMappings(sharedParsingResult, c, request.LayoutName, warnings),
+                            SectionMappings = sectionMappings,
+                            XmlNamespaces = xmlNamespaces
                         });
                     }
                     else
@@ -449,7 +850,7 @@ namespace LayoutParserApi.Controllers
                 {
                     _logger.LogInformation(
                         "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} layout={LayoutName} layoutGuid={LayoutGuid} candidatos={CandidateCount} fonte=mapeadores low-code do catalogo",
-                        Services.Logging.CorrelationContext.CurrentId, "sysmiddle", "candidate_generated", request.LayoutName, resolvedLayoutGuid, result.Count);
+                        Services.Logging.CorrelationContext.CurrentId, "sysmiddle", "candidate_generated", safeLayoutName, safeResolvedLayoutGuid, result.Count);
                     pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
                     {
                         Pathway = "sysmiddle",
@@ -464,7 +865,7 @@ namespace LayoutParserApi.Controllers
                     // falharam na execução — infra/runner, não gap de cobertura (§4.3 "runner_unavailable").
                     _logger.LogWarning(
                         "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code} layout={LayoutName} layoutGuid={LayoutGuid} fonte=execução do runner (mapper existe, execução falhou)",
-                        Services.Logging.CorrelationContext.CurrentId, "sysmiddle", "failed", "runner_unavailable", request.LayoutName, resolvedLayoutGuid);
+                        Services.Logging.CorrelationContext.CurrentId, "sysmiddle", "failed", "runner_unavailable", safeLayoutName, safeResolvedLayoutGuid);
                     pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
                     {
                         Pathway = "sysmiddle",
@@ -478,7 +879,7 @@ namespace LayoutParserApi.Controllers
             {
                 _logger.LogWarning(ex,
                     "Falha estrutural no pathway sysmiddle ao gerar candidatos para layout {LayoutName}. PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code}",
-                    request.LayoutName, Services.Logging.CorrelationContext.CurrentId, "sysmiddle", "failed", "execution_error");
+                    safeLayoutName, Services.Logging.CorrelationContext.CurrentId, "sysmiddle", "failed", "execution_error");
                 // Saneado: exceção de I/O deste pathway carrega caminho de disco do servidor e este
                 // warning sai no payload 200 (mesmo defeito do §3.1 da spec, outro ponto de saída).
                 var sanitizedEx = LowCodeErrorSanitizer.ForWire(ex);
@@ -498,6 +899,39 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
+        /// Compõe <c>fieldMappings</c> (issue #141) para UM candidato sysmiddle bem-sucedido, sobre o
+        /// <paramref name="sharedParsingResult"/> já calculado uma vez por request e o mapper decifrado
+        /// que o próprio candidato já carrega (<see cref="LowCodeCandidateResult.DecryptedMapperContent"/>
+        /// — nenhuma consulta SQL nova). Nunca lança: qualquer falha (parse indisponível, mapper
+        /// ilegível, exceção do motor de composição) vira <c>null</c> + warning, e o candidato mantém
+        /// o <c>TransformedXml</c> já produzido pelo runner (design §2, "isolamento total").
+        /// </summary>
+        private IReadOnlyList<XslSynth.Model.FieldToXmlMapping>? TryComposeFieldMappings(
+            ParsingResult? sharedParsingResult, LowCodeCandidateResult candidate, string layoutName, List<string> warnings)
+        {
+            if (sharedParsingResult == null || sharedParsingResult.Layout == null)
+                return null; // já logado como warning no ponto em que o parse compartilhado falhou.
+
+            if (string.IsNullOrWhiteSpace(candidate.DecryptedMapperContent))
+                return null; // candidato sem mapper decifrado disponível (ex.: falha antes da resolução do mapper).
+
+            try
+            {
+                var mapperVo = new RealMapperParser().Parse(XDocument.Parse(candidate.DecryptedMapperContent));
+                return _fieldMappingComposition.Compose(
+                    sharedParsingResult.Layout, sharedParsingResult.ParsedFields, mapperVo, sharedParsingResult.LineInfos);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "fieldMappings (issue #141): falha ao compor mapeamentos estruturais para candidato mapper={MapperGuid} do layout {LayoutName}",
+                    candidate.MapperGuid, Services.Logging.LogMessageSanitizer.Sanitize(layoutName));
+                warnings.Add($"Candidato {candidate.MapperGuid} (pathway sysmiddle): falha ao compor fieldMappings — ver log do servidor");
+                return null;
+            }
+        }
+
+        /// <summary>
         /// Dispara o job assíncrono do pathway IA (Issue #40) quando há gabarito sysmiddle
         /// disponível — o dono do projeto fechou que a IA "sempre trabalha" nessa condição,
         /// não é um fallback condicionado ao tcl-xsl. Nunca lança: qualquer falha aqui vira
@@ -512,29 +946,80 @@ namespace LayoutParserApi.Controllers
             if (plan == null)
                 return; // sem gabarito sysmiddle bem-sucedido ou sem LayoutGuid resolvível: IA não aplicável (§2.1/§3.2 do desenho).
 
-            try
+            // ✅ Correção pós-review da Quinn (2026-08-29, docs/architecture/pathway-ia-execute-
+            // candidates.md §3): o ParseAsync que monta os ParsedField pro RepairOrchestrator
+            // (Issue #140) NÃO pode rodar no caminho síncrono da request — atrasa toda chamada de
+            // execute-candidates que tenha gabarito+LayoutGuid resolvível, contrariando o comentário
+            // "Fire-and-forget: NUNCA atrasa..." acima do call site. O parse posicional entra DENTRO
+            // do job em background, junto com o resto do trabalho de EnqueueAsync/RunLoopAsync —
+            // capturamos só o conteúdo bruto aqui (string), nada de IO/CPU síncrono.
+            var layoutName = request.LayoutName;
+            // ✅ CodeQL cs/log-forging: valor saneado só para logging deste job em background.
+            var safeLayoutNameForLog = Services.Logging.LogMessageSanitizer.Sanitize(layoutName);
+            var decryptedLayoutContent = layoutRecord.DecryptedContent;
+            var inputContent = request.InputContent;
+
+            // ✅ Não usa a request.HttpContext.RequestAborted — o job sobrevive ao fim da request
+            // (dotnet-standards.md §Background work). CancellationToken.None + teto de sanidade
+            // interno do serviço (AiTransformationCandidateOptions.SanityTimeoutMinutes).
+            _ = Task.Run(async () =>
             {
-                // ✅ Não usa a request.HttpContext.RequestAborted — o job sobrevive ao fim da request
-                // (dotnet-standards.md §Background work). CancellationToken.None + teto de sanidade
-                // interno do serviço (AiTransformationCandidateOptions.SanityTimeoutMinutes).
-                // userId (issue #92): particiona o ticket na AiCandidateStore — só quem disparou o job
-                // consegue consultá-lo depois em ia-status.
-                _ = _aiCandidateService.EnqueueAsync(
-                    userId,
-                    plan.Ticket,
-                    request.LayoutName,
-                    plan.LayoutGuid,
-                    plan.MapperGuid,
-                    request.InputContent,
-                    plan.GroundTruthXml,
-                    CancellationToken.None);
-            }
-            catch (Exception ex)
-            {
-                // EnqueueAsync não deveria lançar (contrato do serviço), mas isolamento total aqui
-                // também — nunca derrubar a resposta síncrona de execute-candidates por causa da IA.
-                _logger.LogWarning(ex, "Falha ao disparar o pathway IA para layout {LayoutName}", request.LayoutName);
-            }
+                // ✅ Issue #140/decisão 2026-08-29 (docs/architecture/decisao-pendente-input-xml-
+                // repairorchestrator-2026-08-29.md): o RepairOrchestrator (motor novo de
+                // AiTransformationCandidateService) exige o resultado do parse posicional REAL
+                // (ParsedField) para montar o XML de entrada via ParsedFieldRootTreeBuilder — TXT cru
+                // não é XML e nunca vai ser aceito por XDocument.Parse. Parse próprio (não reaproveita
+                // o sharedParsingResult de ExecuteSysmiddleCandidatesAsync — escopo local ao método,
+                // reestruturar o retorno dele para isso não vale o acoplamento). Nunca lança: falha
+                // aqui apenas degrada o motor novo para o loop legado XML-direto (parsedFields=null).
+                IReadOnlyList<Models.Entities.ParsedField>? parsedFields = null;
+                if (!string.IsNullOrWhiteSpace(decryptedLayoutContent) && !isXmlInput)
+                {
+                    try
+                    {
+                        // ✅ ILayoutParserService é Scoped (dotnet-standards.md) — o job sobrevive ao
+                        // fim do scope da request HTTP, então não pode capturar o _layoutParser do
+                        // controller (seria usar um serviço Scoped fora do seu ciclo de vida, mesmo
+                        // padrão já documentado em AiTransformationCandidateService). Abrimos um scope
+                        // próprio aqui dentro do job.
+                        using var scope = _scopeFactory.CreateScope();
+                        var scopedLayoutParser = scope.ServiceProvider.GetRequiredService<ILayoutParserService>();
+                        using var layoutStream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(decryptedLayoutContent));
+                        using var txtStream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(inputContent));
+                        var parseResult = await scopedLayoutParser.ParseAsync(layoutStream, txtStream);
+                        if (parseResult.Success && parseResult.ParsedFields is { Count: > 0 })
+                            parsedFields = parseResult.ParsedFields;
+                    }
+                    catch (Exception parseEx)
+                    {
+                        _logger.LogDebug(parseEx,
+                            "Pathway IA: parse posicional para ParsedFieldRootTreeBuilder falhou — motor novo degrada para o loop legado (layout={LayoutName})",
+                            safeLayoutNameForLog);
+                    }
+                }
+
+                try
+                {
+                    // userId (issue #92): particiona o ticket na AiCandidateStore — só quem disparou o
+                    // job consegue consultá-lo depois em ia-status.
+                    await _aiCandidateService.EnqueueAsync(
+                        userId,
+                        plan.Ticket,
+                        layoutName,
+                        plan.LayoutGuid,
+                        plan.MapperGuid,
+                        inputContent,
+                        plan.GroundTruthXml,
+                        CancellationToken.None,
+                        parsedFields);
+                }
+                catch (Exception ex)
+                {
+                    // EnqueueAsync não deveria lançar (contrato do serviço), mas isolamento total aqui
+                    // também — nunca derrubar o job em background por causa da IA.
+                    _logger.LogWarning(ex, "Falha ao disparar o pathway IA para layout {LayoutName}", safeLayoutNameForLog);
+                }
+            }, CancellationToken.None); // O próprio Task.Run não deve morrer com a request HTTP.
         }
 
         /// <summary>
@@ -552,6 +1037,8 @@ namespace LayoutParserApi.Controllers
             ConcurrentBag<FailureKind> failureKinds, List<string> warnings,
             ConcurrentBag<Models.Transformation.PathwayDiagnostic> pathwayDiagnostics, string userId)
         {
+            // ✅ CodeQL cs/log-forging: saneado uma vez, reusado só nos logs deste método.
+            var safeLayoutName = Services.Logging.LogMessageSanitizer.Sanitize(request.LayoutName);
             try
             {
                 if (failureKinds.Any(k => k == FailureKind.ExecutionInfraError))
@@ -571,7 +1058,7 @@ namespace LayoutParserApi.Controllers
                     warnings.Add(msg);
                     _logger.LogInformation(
                         "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code} layout={LayoutName} fonte=request.LayoutGuid/catalogo (nenhum resolvível)",
-                        Services.Logging.CorrelationContext.CurrentId, "ai-fallback", "not_applicable", "not_applicable", request.LayoutName);
+                        Services.Logging.CorrelationContext.CurrentId, "ai-fallback", "not_applicable", "not_applicable", safeLayoutName);
                     pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
                     {
                         Pathway = "ai-fallback",
@@ -588,7 +1075,7 @@ namespace LayoutParserApi.Controllers
                     warnings.Add(msg);
                     _logger.LogInformation(
                         "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code} layout={LayoutName} layoutGuid={LayoutGuid} fonte=IAiFallbackSuppressionGate (cooldown ativo até {RetryAt})",
-                        Services.Logging.CorrelationContext.CurrentId, "ai-fallback", "not_applicable", "not_applicable", request.LayoutName, resolvedLayoutGuid, retryAt);
+                        Services.Logging.CorrelationContext.CurrentId, "ai-fallback", "not_applicable", "not_applicable", safeLayoutName, resolvedLayoutGuid, retryAt);
                     pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
                     {
                         Pathway = "ai-fallback",
@@ -606,7 +1093,7 @@ namespace LayoutParserApi.Controllers
                     warnings.Add(msg);
                     _logger.LogWarning(
                         "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code} layout={LayoutName} layoutGuid={LayoutGuid} fonte=LowCodeTransformationStore.BuildTicketFromContent (retornou null)",
-                        Services.Logging.CorrelationContext.CurrentId, "ai-fallback", "failed", "configuration_error", request.LayoutName, resolvedLayoutGuid);
+                        Services.Logging.CorrelationContext.CurrentId, "ai-fallback", "failed", "configuration_error", safeLayoutName, resolvedLayoutGuid);
                     pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
                     {
                         Pathway = "ai-fallback",
@@ -638,7 +1125,7 @@ namespace LayoutParserApi.Controllers
                 // sentido de estar em processamento").
                 _logger.LogInformation(
                     "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} layout={LayoutName} layoutGuid={LayoutGuid} ticket={Ticket} fonte=IAiTransformationCandidateService.EnqueueAsync (sem gabarito)",
-                    Services.Logging.CorrelationContext.CurrentId, "ai-fallback", "candidate_generated", request.LayoutName, resolvedLayoutGuid, ticket);
+                    Services.Logging.CorrelationContext.CurrentId, "ai-fallback", "candidate_generated", safeLayoutName, resolvedLayoutGuid, Services.Logging.LogMessageSanitizer.Sanitize(ticket));
                 pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
                 {
                     Pathway = "ai-fallback",
@@ -651,7 +1138,7 @@ namespace LayoutParserApi.Controllers
             {
                 _logger.LogWarning(ex,
                     "Falha ao disparar o fallback automático de IA para layout {LayoutName}. PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code}",
-                    request.LayoutName, Services.Logging.CorrelationContext.CurrentId, "ai-fallback", "failed", "execution_error");
+                    safeLayoutName, Services.Logging.CorrelationContext.CurrentId, "ai-fallback", "failed", "execution_error");
                 pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
                 {
                     Pathway = "ai-fallback",
@@ -677,6 +1164,9 @@ namespace LayoutParserApi.Controllers
         /// <c>HasGroundTruth=false</c>: não há gabarito/histórico de validação para o layout, então
         /// o resultado é uma sugestão que exige revisão humana antes de ir para produção.
         /// </remarks>
+        /// <param name="ticket">Ticket devolvido em <c>execute-candidates</c> (correlato ao fallback/pathway IA).</param>
+        /// <response code="200">Status do job (ver <c>AiCandidateStatus</c>: pending/running/completed/failed).</response>
+        /// <response code="404">Ticket inexistente ou pertencente a outro usuário (não distinguível de propósito — evita enumeração).</response>
         [Authorize]
         [HttpGet("execute-candidates/{ticket}/ia-status")]
         public async Task<IActionResult> GetAiCandidateStatus(string ticket, CancellationToken cancellationToken)
@@ -689,6 +1179,215 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
+        /// Issue #98: define/atualiza a instrução customizada que o usuário quer anexar ao prompt
+        /// padrão do pathway IA (<c>execute-candidates</c> e o fallback automático). Endpoint
+        /// dedicado, separado do payload de execução — fallback mínimo por partição de usuário
+        /// (mesma partição da issue #92), enquanto a sessão de IA completa (issue #6) não existe.
+        /// </summary>
+        /// <param name="request">Instrução em texto livre; vazio/nulo remove a instrução salva.</param>
+        /// <response code="200">Instrução salva (ou removida, se vazia).</response>
+        [Authorize]
+        [HttpPut("ai-prompt-adicional")]
+        public IActionResult SetAiPromptAdicional([FromBody] SetAiPromptAdicionalRequest request)
+        {
+            _aiUserInstructionStore.Set(CurrentUserId, request?.Instruction);
+            return Ok(new { saved = !string.IsNullOrWhiteSpace(request?.Instruction) });
+        }
+
+        /// <summary>Consulta a instrução customizada atualmente salva para o usuário (issue #98).</summary>
+        [Authorize]
+        [HttpGet("ai-prompt-adicional")]
+        public IActionResult GetAiPromptAdicional()
+        {
+            var instruction = _aiUserInstructionStore.Get(CurrentUserId);
+            return Ok(new { instruction });
+        }
+
+        /// <summary>
+        /// Issue #322: define/atualiza as 3 preferências de usuário além do prompt customizado
+        /// (idioma de exibição, nível de detalhe da explicação de mapeamento, engine padrão quando o
+        /// sistema precisa escolher entre TCL/XSLT sem sinal explícito no request). Rota dedicada,
+        /// paralela a <c>ai-prompt-adicional</c> (issue #98) em vez de consolidada nela — granularidade
+        /// mantida porque as duas evoluem em ritmos diferentes (o prompt já está em produção e não deve
+        /// ganhar um contrato novo por acidente de "juntar tudo"; preferências estruturadas têm
+        /// validação própria, `422` por valor inválido, que um campo de texto livre não tem).
+        /// Persistido em <c>tbLpAiUserSession</c> (<see cref="Services.Database.SqlAiUserSessionStore"/>,
+        /// schema da issue #102) — diferente do <see cref="AiUserInstructionStore"/> usado pelo
+        /// <c>ai-prompt-adicional</c> atual, que é só em memória (não sobrevive a restart). Campos
+        /// omitidos/nulos no corpo preservam o valor já salvo (upsert parcial); envie o valor atual de
+        /// volta para não alterá-lo.
+        /// </summary>
+        /// <param name="request">Qualquer campo pode vir nulo (preserva o valor já salvo).</param>
+        /// <response code="200"><c>{ saved: true }</c>.</response>
+        /// <response code="404">Sem identidade resolvida (fail-closed, mesmo padrão de <see cref="ReportFieldCorrection"/>).</response>
+        /// <response code="422"><c>preferredExplanationDetailLevel</c> ou <c>defaultTransformationEngine</c> fora dos valores aceitos.</response>
+        [Authorize]
+        [HttpPut("ai-preferences")]
+        public async Task<IActionResult> SetAiPreferences([FromBody] SetAiPreferencesRequest request, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(CurrentUserId))
+                return NotFound(); // fail-closed, mesmo padrão de ReportFieldCorrection.
+
+            if (!string.IsNullOrWhiteSpace(request?.PreferredExplanationDetailLevel)
+                && !Services.Database.AiUserPreferenceDefaults.ValidExplanationDetailLevels.Contains(request.PreferredExplanationDetailLevel))
+            {
+                return UnprocessableEntity(new
+                {
+                    success = false,
+                    error = $"preferredExplanationDetailLevel deve ser um de: {string.Join(", ", Services.Database.AiUserPreferenceDefaults.ValidExplanationDetailLevels)}"
+                });
+            }
+
+            if (!string.IsNullOrWhiteSpace(request?.DefaultTransformationEngine)
+                && !Services.Database.AiUserPreferenceDefaults.ValidTransformationEngines.Contains(request.DefaultTransformationEngine))
+            {
+                return UnprocessableEntity(new
+                {
+                    success = false,
+                    error = $"defaultTransformationEngine deve ser um de: {string.Join(", ", Services.Database.AiUserPreferenceDefaults.ValidTransformationEngines)}"
+                });
+            }
+
+            await _aiUserSessionStore.SetPreferencesAsync(
+                CurrentUserId,
+                request?.PreferredLanguage,
+                request?.PreferredExplanationDetailLevel,
+                request?.DefaultTransformationEngine,
+                cancellationToken);
+
+            return Ok(new { saved = true });
+        }
+
+        /// <summary>
+        /// Issue #322: consulta as 4 preferências do usuário atual (prompt customizado + idioma/nível
+        /// de detalhe/engine padrão), com defaults aplicados quando a preferência nunca foi setada (ver
+        /// <see cref="Services.Database.AiUserPreferenceDefaults"/>). <c>customPromptInstruction</c>
+        /// continua vindo do <see cref="AiUserInstructionStore"/> em memória (fonte de verdade atual do
+        /// <c>ai-prompt-adicional</c>, issue #98) — não migrado para o SQL nesta issue.
+        /// </summary>
+        /// <response code="200">Preferências com defaults já aplicados.</response>
+        /// <response code="404">Sem identidade resolvida (fail-closed).</response>
+        [Authorize]
+        [HttpGet("ai-preferences")]
+        public async Task<IActionResult> GetAiPreferences(CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(CurrentUserId))
+                return NotFound(); // fail-closed, mesmo padrão de ReportFieldCorrection.
+
+            var saved = await _aiUserSessionStore.GetPreferencesAsync(CurrentUserId, cancellationToken);
+            var customPromptInstruction = _aiUserInstructionStore.Get(CurrentUserId);
+
+            return Ok(new
+            {
+                customPromptInstruction,
+                preferredLanguage = saved?.PreferredLanguage ?? Services.Database.AiUserPreferenceDefaults.DefaultLanguage,
+                preferredExplanationDetailLevel = saved?.PreferredExplanationDetailLevel ?? Services.Database.AiUserPreferenceDefaults.DefaultExplanationDetailLevel,
+                defaultTransformationEngine = saved?.DefaultTransformationEngine ?? Services.Database.AiUserPreferenceDefaults.DefaultTransformationEngine
+            });
+        }
+
+        /// <summary>
+        /// Issue #97 (fase 2, Passo 3): histórico persistente do usuário atual — <c>Ticket</c>/
+        /// <c>Status</c>/<c>CreatedAt</c> gravados por <see cref="Services.Database.SqlAiUserSessionStore"/>
+        /// (schema já criado pela issue #102) toda vez que um job do pathway IA chega a um status
+        /// terminal. Não é "conversa" nem memória de chamada Ollama entre tickets — é só a lista que
+        /// alimenta <see cref="ResumeAiCandidateTicket"/> para o usuário escolher qual ticket falho
+        /// reabrir.
+        /// </summary>
+        /// <param name="maxEntries">Teto de entradas retornadas (mais recente primeiro); default 50.</param>
+        /// <response code="200">Lista (pode ser vazia) do histórico do usuário autenticado.</response>
+        [Authorize]
+        [HttpGet("ai-session/history")]
+        public async Task<IActionResult> GetAiSessionHistory([FromQuery] int maxEntries, CancellationToken cancellationToken)
+        {
+            var history = await _aiUserSessionStore.GetHistoryAsync(CurrentUserId, maxEntries, cancellationToken);
+            return Ok(history);
+        }
+
+        /// <summary>
+        /// Issue #97 (fase 2, Passo 3): retomada pontual de um ticket falho do pathway IA. Reabre
+        /// SÓ o ticket indicado (single-shot) — não carrega memória de tentativas anteriores para o
+        /// prompt, o loop gerar→validar→corrigir do <see cref="IAiTransformationCandidateService"/>
+        /// recomeça do zero com o conteúdo enviado agora no corpo da requisição. Isso é necessário
+        /// porque o histórico persistente (issue #102) guarda só <c>Ticket</c>/<c>Status</c> — o
+        /// TXT/XML de entrada em si é conteúdo pesado e continua vivendo só no
+        /// <see cref="Services.Transformation.Ai.AiCandidateStore"/> (cache quente, TTL curto), não
+        /// duplicado no SQL (mesmo critério de aceite documentado em
+        /// <see cref="Services.Database.SqlAiUserSessionStore"/>).
+        /// </summary>
+        /// <remarks>
+        /// Isolamento por dono (issue #92): só reabre um ticket que apareça no histórico do PRÓPRIO
+        /// usuário autenticado — <c>404</c> tanto para ticket inexistente quanto para ticket de outro
+        /// usuário (não distinguível de propósito, mesma defesa contra enumeração de
+        /// <see cref="GetAiCandidateStatus"/>).
+        /// </remarks>
+        /// <param name="ticket">Ticket que já apareceu em <c>GET ai-session/history</c> para este usuário.</param>
+        /// <param name="request"><c>InputContent</c>/<c>LayoutName</c> obrigatórios (mesmo conteúdo que originou o ticket, ou uma correção pontual); <c>ExpectedOutput</c> opcional vira gabarito.</param>
+        /// <response code="202">Retomada enfileirada — consulte <c>GET execute-candidates/{ticket}/ia-status</c>.</response>
+        /// <response code="400"><c>InputContent</c>/<c>LayoutName</c> ausente, ou layout não encontrado no catálogo.</response>
+        /// <response code="404">Ticket não encontrado no histórico do usuário autenticado.</response>
+        [Authorize]
+        [HttpPost("ai-session/history/{ticket}/resume")]
+        public async Task<IActionResult> ResumeAiCandidateTicket(string ticket, [FromBody] TransformationRequest request, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(ticket))
+                return NotFound();
+
+            if (request == null || string.IsNullOrEmpty(request.InputContent))
+                return BadRequest(new { success = false, errors = new[] { "InputContent é obrigatório" } });
+
+            if (string.IsNullOrEmpty(request.LayoutName))
+                return BadRequest(new { success = false, errors = new[] { "LayoutName é obrigatório" } });
+
+            // Só reabre ticket que já apareceu no histórico do PRÓPRIO usuário — não confia em ticket
+            // "adivinhado" no path, mesma defesa contra enumeração de GetAiCandidateStatus.
+            var history = await _aiUserSessionStore.GetHistoryAsync(CurrentUserId, maxEntries: 200, cancellationToken);
+            var owned = history.Any(entry => string.Equals(entry.Ticket, ticket, StringComparison.Ordinal));
+            if (!owned)
+                return NotFound();
+
+            LayoutRecord? layoutRecord;
+            try
+            {
+                var searchResponse = await _layoutDb.SearchLayoutsAsync(new LayoutSearchRequest { SearchTerm = request.LayoutName });
+                if (!searchResponse.Success)
+                    throw new InvalidOperationException(searchResponse.ErrorMessage);
+
+                layoutRecord = searchResponse.Layouts
+                    .FirstOrDefault(l => string.Equals(l.Name, request.LayoutName, StringComparison.OrdinalIgnoreCase));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Falha de infraestrutura ao resolver layout {LayoutName} para retomada de ticket IA", request.LayoutName);
+                return StatusCode(500, new { success = false, error = "Falha de infraestrutura ao consultar o catálogo de layouts" });
+            }
+
+            if (layoutRecord == null)
+                return BadRequest(new { success = false, errors = new[] { $"Layout '{request.LayoutName}' não encontrado" } });
+
+            var resolvedLayoutGuidText = LowCodeLayoutGuidResolver.Resolve(request.LayoutGuid, layoutRecord.LayoutGuid);
+            if (resolvedLayoutGuidText == null || !Guid.TryParse(resolvedLayoutGuidText, out var resolvedLayoutGuid))
+                return BadRequest(new { success = false, errors = new[] { $"Layout '{request.LayoutName}' sem LayoutGuid válido para retomada" } });
+
+            var userId = CurrentUserId;
+            var groundTruthXml = string.IsNullOrWhiteSpace(request.ExpectedOutput) ? null : request.ExpectedOutput;
+
+            // Fire-and-forget (mesmo padrão de TryEnqueueAiCandidate/TryEnqueueAiFallback): nunca
+            // atrasa nem derruba a resposta HTTP; EnqueueAsync já não lança para o chamador.
+            _ = _aiCandidateService.EnqueueAsync(
+                userId,
+                ticket,
+                request.LayoutName,
+                resolvedLayoutGuid,
+                mapperGuid: resolvedLayoutGuidText,
+                request.InputContent,
+                groundTruthXml,
+                CancellationToken.None);
+
+            return Accepted(new { ticket, resumed = true });
+        }
+
+        /// <summary>
         /// Pathway tcl-xsl (canônico): reaproveita <see cref="TransformationPipelineService"/>, mesma lógica
         /// já usada pelo endpoint <c>execute</c>. Hoje produz no máximo 1 candidato (o pipeline não tem
         /// noção de múltiplos TCL/XSL candidatos para o mesmo layout).
@@ -698,6 +1397,8 @@ namespace LayoutParserApi.Controllers
             ConcurrentBag<Models.Transformation.PathwayDiagnostic> pathwayDiagnostics)
         {
             var result = new List<TransformationCandidate>();
+            // ✅ CodeQL cs/log-forging: saneado uma vez, reusado só nos logs deste método.
+            var safeLayoutName = Services.Logging.LogMessageSanitizer.Sanitize(request.LayoutName);
 
             try
             {
@@ -732,7 +1433,7 @@ namespace LayoutParserApi.Controllers
                     };
                     _logger.LogWarning(
                         "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code} layout={LayoutName} fonte=TransformationPipelineService.ErrorCode={ErrorCode}",
-                        Services.Logging.CorrelationContext.CurrentId, "tcl-xsl", "failed", code, request.LayoutName, pipelineResult.ErrorCode);
+                        Services.Logging.CorrelationContext.CurrentId, "tcl-xsl", "failed", code, safeLayoutName, pipelineResult.ErrorCode);
                     pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
                     {
                         Pathway = "tcl-xsl",
@@ -759,7 +1460,7 @@ namespace LayoutParserApi.Controllers
                     {
                         // Falha de validação não invalida o candidato em si (o XML transformado existe) —
                         // só fica sem o campo Validation preenchido.
-                        _logger.LogWarning(ex, "Falha ao validar candidato tcl-xsl para layout {LayoutName}", request.LayoutName);
+                        _logger.LogWarning(ex, "Falha ao validar candidato tcl-xsl para layout {LayoutName}", safeLayoutName);
                         // Saneado (§5 do diagnóstico-issue-86): mesmo padrão do sysmiddle (linha ~385).
                         warnings.Add($"Validação do candidato tcl-xsl falhou: {LowCodeErrorSanitizer.ForWire(ex)}");
                     }
@@ -771,12 +1472,22 @@ namespace LayoutParserApi.Controllers
                     Pathway = "tcl-xsl",
                     TransformedXml = pipelineResult.TransformedXml,
                     SegmentMappings = pipelineResult.SegmentMappings?.ToDictionary(kv => kv.Key.ToString(), kv => kv.Value),
-                    Validation = validation
+                    Validation = validation,
+                    // Issue #138 (Fase 0): pathway tcl-xsl NÃO suporta rastreabilidade de linha/seção
+                    // ainda — SectionMappings=null por definição (semântica obrigatória do contrato).
+                    // O SegmentMappings existente acima é um artefato PRÉVIO e DIFERENTE: só existe
+                    // para entrada MQSeries, é indexado por número de linha (não GUID/estrutura) e
+                    // carrega um XmlElementPath fixo ("NFe/infNFe") hardcoded em MqSeriesToXmlTransformer
+                    // — não é XPath resolvido estruturalmente, não atende ao contrato de #138. Virar
+                    // SectionMappings real para tcl-xsl exigiria expor a mesma resolução estrutural que
+                    // o pathway sysmiddle já tem (GUID→XPath via RealMapperParser) dentro do
+                    // TransformationPipelineService — fora do escopo desta fase.
+                    SectionMappings = null
                 });
 
                 _logger.LogInformation(
                     "PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} layout={LayoutName} tclPath={TclPath} xslPath={XslPath} fonte=TransformationPipelineService",
-                    Services.Logging.CorrelationContext.CurrentId, "tcl-xsl", "candidate_generated", request.LayoutName,
+                    Services.Logging.CorrelationContext.CurrentId, "tcl-xsl", "candidate_generated", safeLayoutName,
                     System.IO.Path.GetFileName(pipelineResult.TclPath), System.IO.Path.GetFileName(pipelineResult.XslPath));
                 pathwayDiagnostics.Add(new Models.Transformation.PathwayDiagnostic
                 {
@@ -790,7 +1501,7 @@ namespace LayoutParserApi.Controllers
             {
                 _logger.LogWarning(ex,
                     "Falha estrutural no pathway tcl-xsl ao gerar candidato para layout {LayoutName}. PathwayDiagnostic {CorrelationId}: pathway={Pathway} status={Status} code={Code}",
-                    request.LayoutName, Services.Logging.CorrelationContext.CurrentId, "tcl-xsl", "failed", "execution_error");
+                    safeLayoutName, Services.Logging.CorrelationContext.CurrentId, "tcl-xsl", "failed", "execution_error");
                 // Saneado (§5 do diagnóstico-issue-86): mesmo padrão do sysmiddle (linha ~385).
                 var sanitizedTclXslEx = LowCodeErrorSanitizer.ForWire(ex);
                 warnings.Add($"Pathway tcl-xsl falhou: {sanitizedTclXslEx}");
@@ -809,8 +1520,11 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
-        /// Valida transformação existente
+        /// Valida um resultado de transformação já produzido (TCL/XSL em disco) contra o TXT de
+        /// entrada e/ou o XML esperado — usado para checagem manual/QA de um par TCL/XSL específico.
         /// </summary>
+        /// <response code="200">Resultado da validação (diffs/erros de schema, se houver).</response>
+        /// <response code="500">Falha ao rodar a validação.</response>
         [HttpPost("validate")]
         public async Task<IActionResult> ValidateTransformation([FromBody] ValidationRequest request)
         {
@@ -835,8 +1549,11 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
-        /// Executa aprendizado a partir de exemplos
+        /// Alimenta o motor de aprendizado com exemplos de TCL/XSL para um layout — usado para
+        /// treinar padrões reaproveitáveis na geração automática (<see cref="AutoTransformationController"/>).
         /// </summary>
+        /// <response code="200">Padrões aprendidos (ver <c>patterns</c>).</response>
+        /// <response code="500">Falha ao processar os exemplos.</response>
         [HttpPost("learn-from-examples")]
         public async Task<IActionResult> LearnFromExamples([FromBody] LearnFromExamplesRequest request)
         {
@@ -874,8 +1591,12 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
-        /// Executa teste automatizado de transformação
+        /// Roda uma transformação (pathway tcl-xsl) e imediatamente valida o resultado contra o
+        /// XML esperado — atalho para QA/regressão em um único request.
         /// </summary>
+        /// <response code="200">Transformação executada; ver <c>testPassed</c> para o veredito.</response>
+        /// <response code="400">Transformação falhou (ver <c>errors</c>) — teste não chegou a validar.</response>
+        /// <response code="500">Falha não catalogada.</response>
         [HttpPost("run-test")]
         public async Task<IActionResult> RunTransformationTest([FromBody] TransformationTestRequest request)
         {
@@ -927,8 +1648,13 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
-        /// Executa transformação usando o motor low-code (SysMiddle) via runner x86.
+        /// Executa transformação usando o motor low-code (SysMiddle) via runner x86, direto por
+        /// mapper (sem a busca multi-candidato de <see cref="ExecuteTransformationCandidates"/>).
         /// </summary>
+        /// <param name="request"><c>InputContent</c> obrigatório; <c>MapperId</c> ou <c>MapperName</c> obrigatório.</param>
+        /// <response code="200">Transformação concluída (<c>transformedXml</c>).</response>
+        /// <response code="400"><c>InputContent</c> ou identificador do mapper ausente.</response>
+        /// <response code="500">Falha do runner x86/processo externo.</response>
         // Issue #32: idem execute-candidates — era restrito ao papel "admin". Issue #93: mesma
         // reabertura para qualquer usuário autenticado.
         [Authorize]
@@ -979,6 +1705,9 @@ namespace LayoutParserApi.Controllers
         /// malformado) vira 200 com <c>fieldMappings: []</c> + warning, nunca deriuba com 500 — o
         /// motor de resolução estrutural é best-effort por natureza (design §5).</para>
         /// </summary>
+        /// <response code="200">Sempre — inclusive quando não há mapeamentos (<c>fieldMappings: []</c> + <c>warnings</c>, nunca 500 por falha do motor best-effort).</response>
+        /// <response code="400"><c>LayoutName</c>/<c>InputContent</c> ausente, layout não encontrado, ou sem <c>LayoutGuid</c> válido.</response>
+        /// <response code="500">Falha de infraestrutura ao consultar o catálogo de layouts.</response>
         [Authorize]
         [HttpPost("field-mappings")]
         public async Task<IActionResult> GetFieldMappings([FromBody] FieldMappingsRequest request)
@@ -987,6 +1716,8 @@ namespace LayoutParserApi.Controllers
                 return BadRequest(new { success = false, error = "LayoutName e InputContent são obrigatórios" });
 
             var warnings = new List<string>();
+            // ✅ CodeQL cs/log-forging: saneado uma vez, reusado nos logs deste endpoint.
+            var safeLayoutName = Services.Logging.LogMessageSanitizer.Sanitize(request.LayoutName);
 
             LayoutRecord? layoutRecord;
             try
@@ -1000,7 +1731,7 @@ namespace LayoutParserApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Falha de infraestrutura ao resolver layout {LayoutName} para field-mappings", request.LayoutName);
+                _logger.LogError(ex, "Falha de infraestrutura ao resolver layout {LayoutName} para field-mappings", safeLayoutName);
                 return StatusCode(500, new { success = false, error = "Falha de infraestrutura ao consultar o catálogo de layouts" });
             }
 
@@ -1053,11 +1784,25 @@ namespace LayoutParserApi.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Falha ao compor field mappings para layout {LayoutName}", request.LayoutName);
+                _logger.LogError(ex, "Falha ao compor field mappings para layout {LayoutName}", safeLayoutName);
                 warnings.Add("Falha ao compor mapeamentos estruturais — ver log do servidor");
                 return Ok(new { success = true, fieldMappings = Array.Empty<object>(), warnings });
             }
         }
+    }
+
+    /// <summary>Requisição de <c>PUT ai-prompt-adicional</c> (issue #98).</summary>
+    public class SetAiPromptAdicionalRequest
+    {
+        public string? Instruction { get; set; }
+    }
+
+    /// <summary>Requisição de <c>PUT ai-preferences</c> (issue #322). Campos nulos preservam o valor já salvo.</summary>
+    public class SetAiPreferencesRequest
+    {
+        public string? PreferredLanguage { get; set; }
+        public string? PreferredExplanationDetailLevel { get; set; }
+        public string? DefaultTransformationEngine { get; set; }
     }
 
     /// <summary>Request do endpoint /field-mappings (issue #140). Mesma convenção de LayoutGuid
@@ -1069,10 +1814,13 @@ namespace LayoutParserApi.Controllers
         public string? LayoutGuid { get; set; }
     }
 
+    /// <summary>Requisição do pathway low-code direto (<c>execute-lowcode</c>).</summary>
     public class LowCodeTransformationRequest
     {
         public string InputContent { get; set; } = "";
+        /// <summary>GUID do mapper Sysmiddle. Um de <see cref="MapperId"/>/<see cref="MapperName"/> é obrigatório.</summary>
         public string? MapperId { get; set; }
+        /// <summary>Nome do mapper — usado para busca quando <see cref="MapperId"/> não é informado.</summary>
         public string? MapperName { get; set; }
         public string? FileName { get; set; }
 
@@ -1080,5 +1828,30 @@ namespace LayoutParserApi.Controllers
         public string? Package { get; set; }
         public string? GlobalFolder { get; set; }
         public string? SysmiddleDir { get; set; }
+    }
+
+    /// <summary>
+    /// Request de <c>POST field-correction</c> (issue #345, ADR §7). <c>documentId</c>/<c>candidateId</c>
+    /// vêm da resposta de <c>execute-candidates</c>; <c>documentType</c> é opcional e usado só para
+    /// telemetria — nunca prevalece sobre o <c>layoutGuid</c> resolvido no contexto persistido.
+    /// </summary>
+    public class FieldCorrectionRequest
+    {
+        public string DocumentId { get; set; } = "";
+        public string CandidateId { get; set; } = "";
+        public string FieldPath { get; set; } = "";
+        public string ObservedValue { get; set; } = "";
+        public string ExpectedValue { get; set; } = "";
+        public string? Justification { get; set; }
+        public string? DocumentType { get; set; }
+    }
+
+    /// <summary>
+    /// Body de <c>POST field-correction/{reportId}/review</c> (issue #346). <c>decision</c>
+    /// obrigatório: <c>"accepted"</c> ou <c>"rejected"</c> (case-insensitive).
+    /// </summary>
+    public class FieldCorrectionReviewRequest
+    {
+        public string? Decision { get; set; }
     }
 }

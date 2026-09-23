@@ -33,6 +33,13 @@ namespace LayoutParserApi.Controllers
         /// Ver tabela de decisão de casos-limite no contrato (Gap 2): baixa confiança NUNCA vira
         /// erro HTTP — só indisponibilidade/timeout/infra genérica viram (503/504/500).
         /// </summary>
+        /// <param name="request"><c>ErrorMessage</c> obrigatório; <c>DocumentType</c>/<c>FieldName</c>/<c>TransformedXml</c> opcionais (mais contexto → diagnóstico melhor).</param>
+        /// <param name="cancellationToken">Cancelamento do request HTTP.</param>
+        /// <response code="200">Diagnóstico gerado (mesmo com baixa confiança — nunca vira erro HTTP).</response>
+        /// <response code="400"><c>ErrorMessage</c> ausente.</response>
+        /// <response code="500">Falha interna não catalogada.</response>
+        /// <response code="503">Ollama indisponível.</response>
+        /// <response code="504">Timeout ao consultar o Ollama.</response>
         [HttpPost("diagnose-validation-error")]
         public async Task<IActionResult> DiagnoseValidationError([FromBody] ValidationDiagnosticRequest request, CancellationToken cancellationToken)
         {

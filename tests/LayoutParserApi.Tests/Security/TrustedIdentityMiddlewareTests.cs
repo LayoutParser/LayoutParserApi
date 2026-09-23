@@ -22,6 +22,20 @@ namespace LayoutParserApi.Tests.Security
         private const string UserHeader = "x-iis-user";
         private const string RolesHeader = "x-iis-roles";
 
+        /// <summary>Dublê neutro (Slice 1): nunca resolve UserId, só existe para satisfazer a nova
+        /// dependência do InvokeAsync sem acoplar estes testes de guarda de loopback ao SQL.</summary>
+        private sealed class NoopIdentityWorkspaceService : IIdentityWorkspaceService
+        {
+            public Task<Guid?> ResolveOrCreateUserAsync(string provider, string? tenantOrIssuer, string subject, CancellationToken cancellationToken)
+                => Task.FromResult<Guid?>(null);
+
+            public Task<WorkspaceMeResult> GetOrCreateMyWorkspacesAsync(Guid userId, CancellationToken cancellationToken)
+                => throw new NotSupportedException();
+
+            public Task<WorkspaceSummary?> GetWorkspaceForMemberAsync(Guid workspaceId, Guid userId, CancellationToken cancellationToken)
+                => throw new NotSupportedException();
+        }
+
         [Fact]
         public async Task Loopback_com_headers_produz_identidade_com_papel()
         {
@@ -64,7 +78,7 @@ namespace LayoutParserApi.Tests.Security
             context.Request.Headers[RolesHeader] = "admin";
 
             var currentUser = new CurrentUser();
-            await CriarMiddleware(new TrustedIdentityOptions()).InvokeAsync(context, currentUser);
+            await CriarMiddleware(new TrustedIdentityOptions()).InvokeAsync(context, currentUser, new NoopIdentityWorkspaceService());
 
             // Identidade anônima: os headers de um host remoto não valem nada.
             Assert.False(currentUser.IsAuthenticated);
@@ -96,7 +110,7 @@ namespace LayoutParserApi.Tests.Security
             context.Request.Headers[UserHeader] = "admin";
 
             var currentUser = new CurrentUser();
-            await CriarMiddleware(new TrustedIdentityOptions()).InvokeAsync(context, currentUser);
+            await CriarMiddleware(new TrustedIdentityOptions()).InvokeAsync(context, currentUser, new NoopIdentityWorkspaceService());
 
             Assert.False(currentUser.IsAuthenticated);
         }
@@ -130,7 +144,7 @@ namespace LayoutParserApi.Tests.Security
             context.Request.Headers[UserHeader] = "intruso";
 
             var currentUser = new CurrentUser();
-            await CriarMiddleware(options).InvokeAsync(context, currentUser);
+            await CriarMiddleware(options).InvokeAsync(context, currentUser, new NoopIdentityWorkspaceService());
 
             Assert.Equal("carol", currentUser.Name);
             Assert.True(currentUser.IsInRole("admin"));
@@ -152,7 +166,7 @@ namespace LayoutParserApi.Tests.Security
             context.Request.Headers[RolesHeader] = "admin";
 
             var currentUser = new CurrentUser();
-            await CriarMiddleware(options).InvokeAsync(context, currentUser);
+            await CriarMiddleware(options).InvokeAsync(context, currentUser, new NoopIdentityWorkspaceService());
 
             Assert.True(currentUser.IsAuthenticated);
             Assert.Equal("alice", currentUser.Name);
@@ -167,12 +181,87 @@ namespace LayoutParserApi.Tests.Security
             context.Request.Headers[RolesHeader] = "admin";
 
             var currentUser = new CurrentUser();
-            await CriarMiddleware(new TrustedIdentityOptions()).InvokeAsync(context, currentUser);
+            await CriarMiddleware(new TrustedIdentityOptions()).InvokeAsync(context, currentUser, new NoopIdentityWorkspaceService());
 
             // HttpContext.User populado com o papel deixa um [Authorize(Roles=...)] futuro pronto.
             Assert.True(context.User.Identity?.IsAuthenticated ?? false);
             Assert.Equal("alice", context.User.Identity?.Name);
             Assert.True(context.User.IsInRole("admin"));
+        }
+
+        // --- Slice 1 (issue #225): headers novos x-layoutparser-identity-* ---
+
+        private sealed class FakeIdentityWorkspaceService : IIdentityWorkspaceService
+        {
+            public string? LastProvider;
+            public string? LastTenant;
+            public string? LastSubject;
+            public Guid? UserIdToReturn;
+
+            public Task<Guid?> ResolveOrCreateUserAsync(string provider, string? tenantOrIssuer, string subject, CancellationToken cancellationToken)
+            {
+                LastProvider = provider;
+                LastTenant = tenantOrIssuer;
+                LastSubject = subject;
+                return Task.FromResult(UserIdToReturn);
+            }
+
+            public Task<WorkspaceMeResult> GetOrCreateMyWorkspacesAsync(Guid userId, CancellationToken cancellationToken)
+                => throw new NotSupportedException();
+
+            public Task<WorkspaceSummary?> GetWorkspaceForMemberAsync(Guid workspaceId, Guid userId, CancellationToken cancellationToken)
+                => throw new NotSupportedException();
+        }
+
+        [Fact]
+        public async Task Loopback_com_headers_de_identidade_novos_resolve_UserId()
+        {
+            var context = new DefaultHttpContext();
+            context.Connection.RemoteIpAddress = IPAddress.Loopback;
+            context.Request.Headers["x-layoutparser-identity-provider"] = "entra";
+            context.Request.Headers["x-layoutparser-identity-subject"] = "sub-secreto-123";
+            context.Request.Headers["x-layoutparser-identity-tenant"] = "tenant-x";
+
+            var expectedUserId = Guid.NewGuid();
+            var identityService = new FakeIdentityWorkspaceService { UserIdToReturn = expectedUserId };
+            var currentUser = new CurrentUser();
+
+            await CriarMiddleware(new TrustedIdentityOptions()).InvokeAsync(context, currentUser, identityService);
+
+            Assert.Equal(expectedUserId, currentUser.UserId);
+            Assert.Equal("entra", identityService.LastProvider);
+            Assert.Equal("tenant-x", identityService.LastTenant);
+            Assert.Equal("sub-secreto-123", identityService.LastSubject);
+        }
+
+        /// <summary>
+        /// Mesma guarda de loopback dos headers legados: fora de loopback, os headers novos também são
+        /// ignorados — nunca chamamos o serviço de identidade.
+        /// </summary>
+        [Fact]
+        public async Task Origem_nao_loopback_tambem_ignora_os_headers_de_identidade_novos()
+        {
+            var context = new DefaultHttpContext();
+            context.Connection.RemoteIpAddress = IPAddress.Parse("172.25.32.42");
+            context.Request.Headers["x-layoutparser-identity-provider"] = "entra";
+            context.Request.Headers["x-layoutparser-identity-subject"] = "sub-secreto-123";
+
+            var identityService = new FakeIdentityWorkspaceService { UserIdToReturn = Guid.NewGuid() };
+            var currentUser = new CurrentUser();
+
+            await CriarMiddleware(new TrustedIdentityOptions()).InvokeAsync(context, currentUser, identityService);
+
+            Assert.Null(currentUser.UserId);
+            Assert.Null(identityService.LastProvider); // serviço nem foi chamado
+        }
+
+        [Fact]
+        public async Task Loopback_sem_headers_de_identidade_novos_deixa_UserId_nulo_sem_inferir_de_Name()
+        {
+            // Só x-iis-user (legado) presente — não deve inferir workspace/UserId a partir de Name.
+            var currentUser = await ExecutarAsync(remoteIp: IPAddress.Loopback, user: "alice", roles: "admin");
+
+            Assert.Null(currentUser.UserId);
         }
 
         // --- helpers ---
@@ -187,7 +276,7 @@ namespace LayoutParserApi.Tests.Security
                 context.Request.Headers[RolesHeader] = roles;
 
             var currentUser = new CurrentUser();
-            await CriarMiddleware(new TrustedIdentityOptions()).InvokeAsync(context, currentUser);
+            await CriarMiddleware(new TrustedIdentityOptions()).InvokeAsync(context, currentUser, new NoopIdentityWorkspaceService());
             return currentUser;
         }
 

@@ -8,7 +8,11 @@ public sealed record ValidationResult(
     double TagOverlapRatio,
     double TextSimilarityRatio,
     bool? XsdValid, // null = sem oráculo XSD plugável para este caso (ver limitação abaixo)
-    string? ParseError);
+    string? ParseError,
+    // Campos do gabarito (folhas literais + xsl:attribute) e quantos o candidato reproduz IDÊNTICOS
+    // (mesmo conteúdo XSLT normalizado). Loose = casa por "pai/nome" (ignora a casca acima);
+    // Strict = casa pelo caminho completo (penaliza raiz/namespace faltando). Issue #438.
+    int FieldsTotal = 0, int FieldsIdenticalLoose = 0, int FieldsIdenticalStrict = 0);
 
 /// <summary>
 /// Validação do candidato gerado no job de métricas em lote.
@@ -48,7 +52,65 @@ public static class OutputValidator
         var tagOverlap = TagOverlapRatio(generatedXslt, expectedXslt);
         var textSim = TextSimilarityRatio(generatedXslt, expectedXslt);
 
-        return new ValidationResult(wellFormed, tagOverlap, textSim, XsdValid: null, parseError);
+        var (total, loose, strict) = FieldMatch(generatedXslt, expectedXslt);
+        return new ValidationResult(wellFormed, tagOverlap, textSim, XsdValid: null, parseError, total, loose, strict);
+    }
+
+    /// <summary>
+    /// Compara campo a campo (folhas literais e xsl:attribute) o candidato com o gabarito.
+    /// Assinatura de um campo = conteúdo XSLT dele com espaços normalizados. Tolera XML malformado (0/0/0).
+    /// </summary>
+    internal static (int Total, int Loose, int Strict) FieldMatch(string generatedXslt, string expectedXslt)
+    {
+        var exp = Fields(expectedXslt);
+        var gen = Fields(generatedXslt);
+        if (exp is null || gen is null) return (exp?.Count ?? 0, 0, 0);
+
+        var genFull = new HashSet<string>(gen.Select(f => f.Path + "=" + f.Sig), StringComparer.Ordinal);
+        var genLoose = new HashSet<string>(gen.Select(f => f.Tail + "=" + f.Sig), StringComparer.Ordinal);
+        return (exp.Count,
+            exp.Count(f => genLoose.Contains(f.Tail + "=" + f.Sig)),
+            exp.Count(f => genFull.Contains(f.Path + "=" + f.Sig)));
+    }
+
+    private static List<(string Path, string Tail, string Sig)>? Fields(string xslt)
+    {
+        XElement? root;
+        try { root = XDocument.Parse(xslt).Root; }
+        catch { return null; }
+        if (root is null) return null;
+
+        XNamespace xsl = "http://www.w3.org/1999/XSL/Transform";
+        var result = new List<(string, string, string)>();
+
+        static string Sig(IEnumerable<XNode> nodes) =>
+            System.Text.RegularExpressions.Regex.Replace(
+                string.Concat(nodes.Select(n => n.ToString(SaveOptions.DisableFormatting))), @">\s+<|\s+", m => m.Value.StartsWith(">") ? "><" : " ").Trim();
+
+        // Ancestrais literais (sem namespace de prefixo xsl) até o elemento.
+        static List<string> Anc(XElement e, XNamespace xsl) =>
+            e.AncestorsAndSelf().Where(a => a.Name.Namespace != xsl).Select(a => a.Name.LocalName).Reverse().ToList();
+
+        foreach (var el in root.Descendants())
+        {
+            if (el.Name == xsl + "attribute" && (string?)el.Attribute("name") is { } an && el.Parent is { } owner && owner.Name.Namespace != xsl)
+            {
+                var path = string.Join('/', Anc(owner, xsl).Append("@" + an));
+                result.Add((path, Tail(path), Sig(el.Nodes())));
+            }
+            else if (el.Name.Namespace != xsl && !el.Elements().Any(c => c.Name.Namespace != xsl))
+            {
+                var path = string.Join('/', Anc(el, xsl));
+                result.Add((path, Tail(path), Sig(el.Nodes())));
+            }
+        }
+        return result;
+
+        static string Tail(string path)
+        {
+            var segs = path.Split('/');
+            return string.Join('/', segs.Skip(Math.Max(0, segs.Length - 2)));
+        }
     }
 
     /// <summary>Jaccard sobre o conjunto de nomes de elemento (local name) presentes em cada XML.

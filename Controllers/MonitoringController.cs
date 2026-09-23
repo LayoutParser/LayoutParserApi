@@ -10,6 +10,11 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace LayoutParserApi.Controllers
 {
+    /// <summary>
+    /// Análise/validação de layouts cadastrados no catálogo (comprimento de linha esperado x
+    /// declarado) — domínio de negócio, distinto do <see cref="LogsController"/> (que opera
+    /// sobre arquivos de log).
+    /// </summary>
     [ApiController]
     [Route("api/[controller]")]
     public class MonitoringController : ControllerBase
@@ -32,8 +37,12 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
-        /// Retorna análise completa de todos os layouts com validações e cálculos
+        /// Varre até 1000 layouts do catálogo e calcula, para cada um, se o comprimento de linha
+        /// declarado bate com o esperado (<c>LineLengthResolver</c>) — falha individual não
+        /// interrompe o batch, cada layout tem seu próprio <c>status</c> ("valid"/"invalid"/"error"/"not_configured").
         /// </summary>
+        /// <response code="200">Análise concluída (mesmo que 0 layouts encontrados).</response>
+        /// <response code="500">Falha estrutural ao rodar o batch.</response>
         [HttpGet("layouts-analysis")]
         public async Task<IActionResult> GetLayoutsAnalysis()
         {
@@ -211,8 +220,12 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
-        /// Retorna resultados de validação de layouts (apenas layouts configurados para validação)
+        /// Resultado da validação de layouts que TÊM comprimento de linha configurado — mais
+        /// enxuto que <see cref="GetLayoutsAnalysis"/> (que inclui os não configurados também).
         /// </summary>
+        /// <param name="forceRevalidation">Ignora resultado em cache e revalida do zero.</param>
+        /// <response code="200">Resultado das validações.</response>
+        /// <response code="500">Falha não catalogada.</response>
         [HttpGet("layout-validations")]
         public async Task<IActionResult> GetLayoutValidations([FromQuery] bool forceRevalidation = false)
         {

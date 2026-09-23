@@ -205,12 +205,16 @@ namespace LayoutParserApi.Services.Database
 
             if (winner != allTask)
             {
+                // ✅ CodeQL cs/log-forging: correlationId pode ecoar o header X-Correlation-ID do
+                // cliente — já saneado uma vez no middleware (Program.cs), saneia de novo aqui por
+                // segurança (defesa em profundidade, este método também é chamável fora do pipeline HTTP).
+                var safeCorrelationId = Services.Logging.LogMessageSanitizer.Sanitize(correlationId);
                 _logger.LogError(
                     "Legacy decryptor excedeu o timeout de {TimeoutMs}ms (corr={CorrelationId}) — matando processo",
-                    TimeoutMs, correlationId);
+                    TimeoutMs, safeCorrelationId);
 
                 try { if (!process.HasExited) process.Kill(entireProcessTree: true); }
-                catch (Exception killEx) { _logger.LogWarning(killEx, "Falha ao matar processo do decryptor (corr={CorrelationId})", correlationId); }
+                catch (Exception killEx) { _logger.LogWarning(killEx, "Falha ao matar processo do decryptor (corr={CorrelationId})", safeCorrelationId); }
 
                 // Best effort: janela curta para o kill liberar os streams antes de desistir.
                 try { await Task.WhenAny(allTask, Task.Delay(TimeSpan.FromSeconds(2))); } catch { }

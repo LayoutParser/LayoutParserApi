@@ -17,6 +17,7 @@ using LayoutParserApi.Services.Transformation.LowCode;
 using LayoutParserApi.Services.XmlAnalysis;
 
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Http.Features;
@@ -188,10 +189,80 @@ try
     // "TrustedHeader" não autentica nada por conta própria — só formaliza o que o middleware
     // preencheu para o AuthorizationMiddleware conseguir desafiar (401)/negar (403) via
     // [Authorize(Roles = "...")] nos controllers marcados.
-    builder.Services.AddAuthentication(TrustedHeaderAuthenticationHandler.SchemeName)
+    // ✅ ADR M2M (docs/architecture/adr-autenticacao-m2m-e2e-cypress-2026-09-03.md), Parte 1:
+    // segundo AuthenticationScheme, PARALELO ao TrustedHeader acima — não o estende. TrustedHeader
+    // confia por REDE (loopback = BFF); ServiceClient confia por CRIPTOGRAFIA (assinatura do JWT
+    // contra o tenant Entra). São dois modelos de confiança diferentes, por desenho.
+    //
+    // Esquema "SmartAuth" (AddPolicyScheme) decide por requisição qual dos dois autentica, sem
+    // exigir AuthenticationSchemes= explícito em cada [Authorize] existente (nenhum atributo foi
+    // alterado). Authority/Audience só existem quando o App Registration "de serviço" for criado
+    // no Entra (pré-requisito externo, fora do alcance de qualquer agente) — até lá,
+    // serviceClientOptions.IsConfigured é false e o SmartAuthSchemeSelector sempre cai em
+    // TrustedHeader, ou seja, o comportamento de hoje não muda.
+    var serviceClientOptions = builder.Configuration
+        .GetSection(ServiceClientAuthenticationOptions.SectionName)
+        .Get<ServiceClientAuthenticationOptions>() ?? new ServiceClientAuthenticationOptions();
+    var serviceClientConfigured = serviceClientOptions.IsConfigured;
+
+    var authenticationBuilder = builder.Services.AddAuthentication(options =>
+        {
+            options.DefaultScheme = SmartAuthenticationDefaults.SchemeName;
+            options.DefaultAuthenticateScheme = SmartAuthenticationDefaults.SchemeName;
+            options.DefaultChallengeScheme = SmartAuthenticationDefaults.SchemeName;
+        })
+        .AddPolicyScheme(SmartAuthenticationDefaults.SchemeName, "TrustedHeader ou ServiceClient (M2M)", options =>
+        {
+            options.ForwardDefaultSelector = context =>
+                SmartAuthSchemeSelector.Select(context.Request.Headers.Authorization.ToString(), serviceClientConfigured);
+        })
         .AddScheme<AuthenticationSchemeOptions, TrustedHeaderAuthenticationHandler>(
             TrustedHeaderAuthenticationHandler.SchemeName, options => { });
+
+    if (serviceClientConfigured)
+    {
+        authenticationBuilder.AddJwtBearer(ServiceClientAuthenticationDefaults.SchemeName, options =>
+        {
+            options.Authority = serviceClientOptions.Authority;
+            options.Audience = serviceClientOptions.Audience;
+            options.Events = new JwtBearerEvents
+            {
+                // Mapeia a App Role "Service.E2E" do Entra para ClaimTypes.Role "servico-e2e" —
+                // mesmo formato de role que [Authorize(Roles = "...")] já entende em todo o
+                // pipeline. Escopo mínimo por desenho: ver ServiceClientRoleMapper.
+                OnTokenValidated = tokenContext =>
+                {
+                    ServiceClientRoleMapper.MapAppRolesToInternalRoles(tokenContext.Principal);
+                    return Task.CompletedTask;
+                },
+                // Resiliência: falha de validação (token expirado, JWKS indisponível, etc.) nunca
+                // derruba o request — só nega a autenticação por este esquema (o SmartAuth já
+                // trata isso como "não autenticado", 401/403 seguem o fluxo normal do ASP.NET).
+                OnAuthenticationFailed = failedContext =>
+                {
+                    var failureLogger = failedContext.HttpContext.RequestServices
+                        .GetService<ILoggerFactory>()?.CreateLogger("ServiceClientAuthentication");
+                    failureLogger?.LogWarning(failedContext.Exception,
+                        "Falha ao validar token ServiceClient (M2M)");
+                    return Task.CompletedTask;
+                }
+            };
+        });
+    }
+    else
+    {
+        Log.Warning("Authentication:ServiceClient não configurado (Authority/Audience vazios) — " +
+            "esquema M2M (JWT Bearer) desabilitado nesta instância; endpoints [Authorize] continuam " +
+            "aceitando só a identidade do BFF (TrustedHeader). Ver ADR autenticacao-m2m-e2e-cypress.");
+    }
+
     builder.Services.AddAuthorization();
+
+    // ✅ ADR M2M, Parte 2 (Honeypots/Canary Tokens) — camada de DETECÇÃO complementar aos
+    // controles de auth reais acima; NÃO os substitui. Scoped por padrão (só usa ILogger<T>,
+    // sem estado compartilhado).
+    builder.Services.AddScoped<LayoutParserApi.Services.Security.ICanaryAlertService,
+        LayoutParserApi.Services.Security.CanaryAlertService>();
 
     builder.Services.AddControllers(options =>
         {
@@ -213,7 +284,61 @@ try
             options.JsonSerializerOptions.NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals;
         });
     builder.Services.AddEndpointsApiExplorer();
-    builder.Services.AddSwaggerGen();
+    builder.Services.AddSwaggerGen(options =>
+    {
+        // ✅ Descrição geral da API no /swagger — objetivo: qualquer pessoa/agente/dev de
+        // front-end entender e usar cada endpoint só olhando a UI, sem ler código-fonte.
+        options.SwaggerDoc("v1", new Microsoft.OpenApi.OpenApiInfo
+        {
+            Title = "LayoutParser API",
+            Version = "v1",
+            Description = "API ASP.NET Core que parseia documentos posicionais (TXT / MQSeries / IDOC) " +
+                "contra um layout XML (low-code Sysmiddle), com camada de IA/ML que aprende a gerar " +
+                "transformações (XSLT/TCL). É o hub de orquestração de parse, cache, IA e transformação " +
+                "do ecossistema LayoutParser (Api + Lib de criptografia + Decrypt.exe + front-end React). " +
+                "Endpoints agrupados por área via tag (Parsing, Transformation, Catalog, Learning, " +
+                "Validation, Metrics, Logs, Testing)."
+        });
+
+        // Inclui os comentários XML (<summary>/<param>/<returns>/<response>) gerados pelo
+        // GenerateDocumentationFile no .csproj — sem isso o Swashbuckle ignora os doc comments.
+        var xmlFile = $"{System.Reflection.Assembly.GetExecutingAssembly().GetName().Name}.xml";
+        var xmlPath = System.IO.Path.Combine(AppContext.BaseDirectory, xmlFile);
+        if (System.IO.File.Exists(xmlPath))
+        {
+            options.IncludeXmlComments(xmlPath, includeControllerXmlComments: true);
+        }
+
+        // ✅ Agrupamento por área de domínio em vez de lista plana de 17 controllers — mais
+        // fácil de navegar no /swagger. Mapeamento simples por nome de controller.
+        options.TagActionsBy(apiDesc =>
+        {
+            var controllerName = apiDesc.ActionDescriptor.RouteValues.TryGetValue("controller", out var c) ? c : null;
+            var tag = controllerName switch
+            {
+                "Parse" => "Parsing",
+                "Document" => "Parsing",
+                "XmlAnalysis" => "Parsing",
+                "AutoTransformation" => "Transformation",
+                "TransformationExecution" => "Transformation",
+                "LayoutDatabase" => "Catalog",
+                "MapperDatabase" => "Catalog",
+                "Learning" => "Learning",
+                "RAG" => "Learning",
+                "DataGeneration" => "Learning",
+                "ValidationDiagnostic" => "Validation",
+                "Testing" => "Validation",
+                "Test" => "Validation",
+                "AiMetrics" => "Metrics",
+                "Metrics" => "Metrics",
+                "Monitoring" => "Metrics",
+                "Logs" => "Logs",
+                _ => controllerName ?? "Outros"
+            };
+            return new[] { tag };
+        });
+        options.DocInclusionPredicate((docName, apiDesc) => true);
+    });
 
     // ✅ Compressão de resposta. Este payload é o caso de uso ideal: a API devolve XML e JSON —
     // documento fiscal transformado, catálogo de layouts, páginas de log — e texto marcado comprime
@@ -346,6 +471,102 @@ try
     builder.Services.AddScoped<IDecryptionService, DecryptionService>();
     builder.Services.AddScoped<MapperDatabaseService>();
     builder.Services.AddScoped<ICachedLayoutService, CachedLayoutService>();
+    // ✅ Slice 1 (issue #225/#228): identidade externa → UserId interno + workspace fiscal isolado.
+    // Banco DEDICADO (config "IdentityDatabase:*", SQL Server local à máquina da API) — NÃO é mais o
+    // ConnectUS_Macgyver do Sysmiddle (reuso causava erro de FK em produção contra tbUser legada,
+    // schema incompatível). Scoped por padrão do grupo Database.
+    builder.Services.AddScoped<IIdentityWorkspaceStore, SqlIdentityWorkspaceStore>();
+    // Histórico de longo prazo do pathway de IA por usuário (issue #102) — mesmo banco IdentityDatabase.
+    builder.Services.AddScoped<LayoutParserApi.Services.Database.SqlAiUserSessionStore>();
+    // ✅ Issue #97 (gap de TTL/retenção): sem isso, tbLpAiUserSessionHistoryEntry crescia
+    // indefinidamente — mesmo espírito do TTL do AiCandidateStore (issue #51). BackgroundService
+    // (Singleton por natureza do IHostedService) resolve SqlAiUserSessionStore via DI a cada ciclo
+    // — o store em si continua Scoped/stateless por chamada (cria SqlConnection por operação).
+    builder.Services.Configure<LayoutParserApi.Services.Database.AiUserSessionHistoryOptions>(
+        builder.Configuration.GetSection("AiUserSessionHistory"));
+    builder.Services.AddHostedService<LayoutParserApi.Services.Database.AiUserSessionHistoryCleanupBackgroundService>();
+    builder.Services.AddScoped<IIdentityWorkspaceService, LayoutParserApi.Services.Identity.IdentityWorkspaceService>();
+    // ✅ Slice 2 (issue #229): FiscalMappingPackage/Revision/Artifact — mesmo banco, mesmo padrão.
+    // WindowsDefenderAntivirusScanner só usa ILogger (sem estado por-requisição) — Scoped por
+    // consistência com o grupo, mas seria seguro como Singleton também.
+    builder.Services.AddScoped<IFiscalPackageStore, SqlFiscalPackageStore>();
+    builder.Services.AddScoped<IAntivirusScanner, LayoutParserApi.Services.Fiscal.WindowsDefenderAntivirusScanner>();
+    builder.Services.AddScoped<IFiscalPackageService, LayoutParserApi.Services.Fiscal.FiscalPackageService>();
+    // ✅ Issue #366 (ADR adr-historico-analises-fiscais-366): histórico de análises fiscais com
+    // AnalysisId durável — metadado no IdentityDatabase, arquivos em disco (ML:FiscalAnalysesPath),
+    // TTL 90 dias com purga em background. Registrado dentro de /parse/upload e /parse/auto.
+    builder.Services.AddScoped<IFiscalAnalysisStore, SqlFiscalAnalysisStore>();
+    builder.Services.Configure<LayoutParserApi.Services.Fiscal.FiscalAnalysisHistoryOptions>(
+        builder.Configuration.GetSection("FiscalAnalysisHistory"));
+    builder.Services.AddScoped<IFiscalAnalysisService, LayoutParserApi.Services.Fiscal.FiscalAnalysisService>();
+    builder.Services.AddHostedService<LayoutParserApi.Services.Fiscal.FiscalAnalysisPurgeBackgroundService>();
+    // ✅ Slice 3 (issue #230): MappingDraft human-in-the-loop — mesmo banco/padrão ADO.NET.
+    // MappingSuggestionService consome ILlmProvider (issue #340/F1) — sem HttpClient direto aqui;
+    // o pooling de conexão HTTP fica encapsulado dentro do registro do OllamaLlmProvider (grupo Llm, abaixo).
+    builder.Services.AddScoped<IMappingDraftStore, SqlMappingDraftStore>();
+    builder.Services.AddScoped<IMappingSuggestionService, LayoutParserApi.Services.Fiscal.MappingSuggestionService>();
+    builder.Services.AddScoped<LayoutParserApi.Services.Filters.MappingEngineGuardFilter>();
+    // ✅ Slice 4 (issue #226/#227): MappingExplanation — 3 adapters determinísticos (sem LLM),
+    // resolvidos por Engine no controller via IEnumerable<IMappingExplanationAdapter>.
+    builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.IMappingExplanationAdapter, LayoutParserApi.Services.Fiscal.SysmiddleExplanationAdapter>();
+    builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.IMappingExplanationAdapter, LayoutParserApi.Services.Fiscal.TclExplanationAdapter>();
+    builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.IMappingExplanationAdapter, LayoutParserApi.Services.Fiscal.XsltExplanationAdapter>();
+    // ✅ Issue #425 (ADR "adr-layout-tree-endpoint-425"): árvore dupla origem/destino + regras de um
+    // mapper Sysmiddle real — generaliza GuidXPathCatalog (ai/XslSynth.Contracts), reaproveita
+    // ICachedMapperService/ICachedLayoutService já registrados acima.
+    builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.ILayoutTreeService, LayoutParserApi.Services.Fiscal.LayoutTreeService>();
+    // ✅ Slice 5 (issue #231): compilação determinística MappingDraftRule[] → XSLT/TCL + Fiscal Test
+    // Lab. Mesmo banco/padrão ADO.NET; compile/test-run reaproveitam CanonicalDiffer/XsdValidationService
+    // (já registrados/disponíveis via DI) sem I/O externo/Ollama.
+    builder.Services.AddScoped<IMappingReleaseStore, SqlMappingReleaseStore>();
+    // ✅ Issue #379 (ADR docs/architecture/adr-perfil-fiscal-draft-release-2026-09-10.md): cruza
+    // FiscalProfile com XsdValidation:DocumentTypes (config em memória, sem I/O de banco) — Scoped
+    // por consistência com o grupo, sem estado por-requisição real.
+    builder.Services.AddScoped<LayoutParserApi.Services.Fiscal.IFiscalProfileResolver, LayoutParserApi.Services.Fiscal.FiscalProfileResolver>();
+    // ✅ Issue #380 (#198.5): cobertura estática de destinos obrigatórios do XSD alvo — sem
+    // estado por-requisição, Scoped por consistência com o grupo Fiscal.
+    builder.Services.AddScoped<LayoutParserApi.Services.Fiscal.IRequiredCoverageCalculator, LayoutParserApi.Services.Fiscal.RequiredCoverageCalculator>();
+    // Catálogo de exemplos reais de transformação TCL/XSL da Neogrid (corpus de referência/oráculo,
+    // não releases compilados pelo pipeline) — leitura de disco via ReferenceExamples:BasePath
+    // (opcional; ausente => catálogo vazio, degrada gracioso). Sem estado por-requisição.
+    builder.Services.AddScoped<LayoutParserApi.Services.Fiscal.IReferenceExampleCatalogService, LayoutParserApi.Services.Fiscal.ReferenceExampleCatalogService>();
+    // ✅ Issue #345 (ADR docs/architecture/adr-contrato-correcao-guiada-humano-2026-09-08.md):
+    // contexto de documento + reporte de correção humana — mesmo banco/padrão ADO.NET.
+    builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.IFieldCorrectionStore, LayoutParserApi.Services.Database.SqlFieldCorrectionStore>();
+    // ✅ Issue #422: resposta livre do revisor às perguntas em aberto da IA — mesmo banco/padrão ADO.NET.
+    builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.IMappingRuleAnswerStore, LayoutParserApi.Services.Database.SqlMappingRuleAnswerStore>();
+    // ✅ Issue #438 (ADR docs/architecture/adr-geracao-automatica-gabarito-sysmiddle.md §5): geração
+    // automática lazy de TCL/XSL/XSLT para um mapper Sysmiddle — mesmo banco/padrão ADO.NET, tabela
+    // autossuficiente (sem FK). Reaproveita o loop determinístico de ai/XslSynth.Core in-process.
+    builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.IGeneratedMapperArtifactStore, LayoutParserApi.Services.Database.SqlGeneratedMapperArtifactStore>();
+    // ✅ Issue #473 (fase 2 do trigger lazy #438, ADR §3/§6): config do job periódico + limite de
+    // concorrência ÚNICO, compartilhado entre o trigger lazy e o job periódico (Singleton — um só
+    // SemaphoreSlim no processo, nunca dois limites independentes).
+    builder.Services.Configure<LayoutParserApi.Services.Transformation.Ai.GeneratedMapperSweepOptions>(
+        builder.Configuration.GetSection("GeneratedMapperSweep"));
+    builder.Services.AddSingleton<LayoutParserApi.Services.Transformation.Ai.GeneratedMapperGenerationLimiter>();
+    builder.Services.AddScoped<LayoutParserApi.Services.Transformation.Ai.IGeneratedMapperArtifactService, LayoutParserApi.Services.Transformation.Ai.GeneratedMapperArtifactService>();
+    builder.Services.AddScoped<LayoutParserApi.Services.Transformation.Ai.IGeneratedMapperListService, LayoutParserApi.Services.Transformation.Ai.GeneratedMapperListService>();
+    // Job periódico (issue #473): varre tbMapper e dispara geração para quem não tem candidato ou está
+    // stale, reaproveitando GetOrTriggerAsync acima — não bloqueia o startup (delay inicial de 2min).
+    builder.Services.AddHostedService<LayoutParserApi.Services.Transformation.Ai.GeneratedMapperArtifactSweepService>();
+    // ✅ Investigação PR #310 (2026-09-05): schema fiscal criado em ordem de dependência de FK no
+    // startup, em vez de depender de qual store acima uma requisição real exercita primeiro. Ver
+    // <see cref="LayoutParserApi.Services.Database.FiscalSchemaInitializer"/> para o grafo completo.
+    builder.Services.AddScoped<IFiscalSchemaInitializer, LayoutParserApi.Services.Database.FiscalSchemaInitializer>();
+    // Roda uma vez em background, após o app subir — não bloqueia o startup se o SQL estiver lento/fora do ar.
+    builder.Services.AddHostedService<LayoutParserApi.Services.Database.FiscalSchemaInitializerBackgroundService>();
+    builder.Services.AddScoped<IMappingCompileService, LayoutParserApi.Services.Fiscal.MappingCompileService>();
+    builder.Services.AddScoped<IMappingTestRunService, LayoutParserApi.Services.Fiscal.MappingTestRunService>();
+    // ✅ Issue #423: suíte de teste versionada do Fiscal Test Lab (múltiplas fixtures agrupadas +
+    // histórico de execução) — mesmo banco/padrão ADO.NET, reaproveita IMappingTestRunService.
+    // EvaluateFixtureAsync fixture-a-fixture (sem duplicar diff/XSD).
+    builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.ITestSuiteStore, LayoutParserApi.Services.Database.SqlTestSuiteStore>();
+    builder.Services.AddScoped<LayoutParserApi.Services.Fiscal.ITestSuiteRunService, LayoutParserApi.Services.Fiscal.TestSuiteRunService>();
+    // ✅ Issue #103 Passo 1: extração determinística (sem LLM) de tabelas de decisão fiscal a
+    // partir de Excel real do dono. Sem estado por-requisição, poderia ser Singleton — Scoped
+    // por consistência com o resto do grupo Fiscal.
+    builder.Services.AddScoped<LayoutParserApi.Services.Fiscal.IFiscalMappingRuleExtractor, LayoutParserApi.Services.Fiscal.FiscalMappingRuleExtractor>();
     // ✅ Estado do warm-up do catálogo (P1.3), lido pela sonda de readiness. Singleton porque é
     // preenchido pelo IHostedService de warm-up e lido pelo health check — estado compartilhado.
     builder.Services.AddSingleton<CatalogWarmupState>();
@@ -378,12 +599,24 @@ try
             HealthStatus.Unhealthy, new[] { "ready" }))
         .Add(new HealthCheckRegistration("catalog",
             sp => new CatalogHealthCheck(sp.GetRequiredService<CatalogWarmupState>()),
-            HealthStatus.Unhealthy, new[] { "ready" }));
+            HealthStatus.Unhealthy, new[] { "ready" }))
+        // ✅ Issue #90: gate de capacidade dos 3 adapters de explicação de mapeamento (sysmiddle/
+        // tcl/xslt) — a implementação nunca reporta Unhealthy (ver classe), então o failureStatus
+        // aqui só é o piso de segurança caso o contrato seja violado no futuro.
+        .Add(new HealthCheckRegistration("mapping-explanation-capabilities",
+            sp => new MappingExplanationCapabilityHealthCheck(
+                sp.GetRequiredService<IEnumerable<LayoutParserApi.Services.Interfaces.IMappingExplanationAdapter>>(),
+                sp.GetRequiredService<ILogger<MappingExplanationCapabilityHealthCheck>>()),
+            HealthStatus.Degraded, new[] { "ready" }));
 
     // XML Analysis Services
     builder.Services.AddScoped<XmlAnalysisService>();
     builder.Services.AddScoped<XsdValidationService>();
     builder.Services.AddScoped<XmlDocumentTypeDetector>();
+    // Leitura de PDF de orientações XSD (issue #172) — sem estado, seguro como Scoped junto do resto.
+    builder.Services.AddScoped<LayoutParserApi.Services.XmlAnalysis.PdfOrientationReader>();
+    // Reconstrução reversa best-effort XML->TXT (issue #151, Fase 4) — sem estado, mesmo grupo.
+    builder.Services.AddScoped<LayoutParserApi.Services.XmlAnalysis.ReverseReconstructionService>();
     builder.Services.AddScoped<MqSeriesToXmlTransformer>();
     builder.Services.AddScoped<TransformationPipelineService>();
     builder.Services.AddScoped<TclGeneratorService>();
@@ -411,16 +644,20 @@ try
     // docs/architecture/multi-candidato-e-diagnostico-ia-contrato.md. Não usa GeminiAIService
     // (decomissionado, sem registro no DI — ver generation-services-unregistered-di.md).
     builder.Services.Configure<OllamaOptions>(builder.Configuration.GetSection("Ollama"));
-    // ✅ Desliga o HttpClient.Timeout padrão (100s) do client tipado: o timeout real de
-    // diagnóstico é o nosso próprio CancellationTokenSource (Ollama:DiagnosisTimeoutSeconds,
-    // dentro de OllamaValidationDiagnosticService). Descoberto em teste manual: sem isso, o
-    // timeout de 100s do HttpClient dispara ANTES do nosso e lança TaskCanceledException/
-    // TimeoutException que o catch dedicado de timeout não reconhecia — caía no 500 genérico
-    // em vez do 504 esperado pelo contrato (Gap 2).
-    builder.Services.AddHttpClient<OllamaValidationDiagnosticService>(client =>
+
+    // ✅ Issue #340 (F1, ADR docs/architecture/adr-llm-provider-plugavel-2026-09-08.md): abstração
+    // ILlmProvider/LlmProviderResolver — único provider registrado nesta fase é o Ollama local.
+    // Desliga o HttpClient.Timeout padrão (100s) do client tipado: cada serviço consumidor controla
+    // seu próprio timeout via CancellationToken (ex.: Ollama:DiagnosisTimeoutSeconds dentro de
+    // OllamaValidationDiagnosticService). Descoberto em teste manual (Gap 2): sem isso, o timeout de
+    // 100s do HttpClient dispara ANTES do timeout dedicado e lança TaskCanceledException/
+    // TimeoutException que o catch dedicado de timeout não reconhecia — caía no 500 genérico em
+    // vez do 504 esperado pelo contrato.
+    builder.Services.AddHttpClient<LayoutParserApi.Services.Llm.ILlmProvider, LayoutParserApi.Services.Llm.OllamaLlmProvider>(client =>
     {
         client.Timeout = Timeout.InfiniteTimeSpan;
     });
+    builder.Services.AddScoped<LayoutParserApi.Services.Llm.LlmProviderResolver>();
 
     // ✅ Pathway IA de execute-candidates (Issue #40) — loop gerar → validar XSD → comparar com o
     // gabarito sysmiddle → corrigir, assíncrono/desacoplado do ciclo síncrono do endpoint (ver
@@ -429,6 +666,9 @@ try
     builder.Services.Configure<LayoutParserApi.Services.Transformation.Ai.AiTransformationCandidateOptions>(
         builder.Configuration.GetSection("AiTransformationCandidate"));
     builder.Services.AddSingleton<LayoutParserApi.Services.Transformation.Ai.AiCandidateStore>();
+    // ✅ Issue #98: prompt customizado complementar, fallback mínimo por partição de usuário
+    // (mesma partição da issue #92) — anexado APÓS o prompt padrão em BuildPrompt, nunca o substitui.
+    builder.Services.AddSingleton<LayoutParserApi.Services.Transformation.Ai.AiUserInstructionStore>();
     // ✅ Fallback automático de IA (design-fallback-ia-automatico-2026-08-16.md §5) — circuito de
     // proteção cross-usuário por LayoutGuid, estado em memória (Singleton, mesmo padrão de
     // LowCodeTransformationService/IConnectionMultiplexer em dotnet-standards.md).
@@ -444,6 +684,34 @@ try
         client.Timeout = Timeout.InfiniteTimeSpan;
     });
 
+    // ✅ Síntese de XSLT real via RepairOrchestrator (ai/XslSynth.Core), in-process — substitui o
+    // caminho "IA gera XML final direto" dentro de AiTransformationCandidateService.
+    // docs/architecture/design-integracao-repairorchestrator-runtime-2026-08-21.md (Opção B).
+    builder.Services.AddScoped<LayoutParserApi.Services.Transformation.Ai.IXslSynthesizerService,
+        LayoutParserApi.Services.Transformation.Ai.RepairOrchestratorXslSynthesizerService>();
+
+    // ✅ Issue #338 (F3): captura best-effort de cada convergência real como exemplo do dataset
+    // de treino incremental (ai/XslSynth/training-data/*.jsonl).
+    builder.Services.AddScoped<LayoutParserApi.Services.Transformation.Ai.TrainingDataCaptureService>();
+
+    // ✅ Issue #351 (F4): retraining automatizado do modelo fine-tuned.
+    //  - F4.1: telemetria de duração/iterações do RepairOrchestrator em runtime (Source=AiMetrics).
+    //  - F4.2: contador de exemplos novos (alimentado por F3) + gatilho por volume OU teto de 90d.
+    //  - F4.3: exclusão mútua Ollama-inferência × treino (retraining.lock) + validação pós-treino.
+    // Estado durável em arquivo na árvore de XslSynth:TrainingDataPath (mesmo padrão de F3) — nunca
+    // no SQL compartilhado 172.31.249.51 (read-only, ver .claude/rules/security.md). Singletons:
+    // contador compartilhado entre o hook de F3 (escopo de request) e o background service.
+    builder.Services.Configure<LayoutParserApi.Services.Transformation.Ai.Retraining.RetrainingOptions>(
+        builder.Configuration.GetSection(
+            LayoutParserApi.Services.Transformation.Ai.Retraining.RetrainingOptions.SectionName));
+    builder.Services.AddSingleton<LayoutParserApi.Services.Transformation.Ai.Retraining.IRetrainingStateStore,
+        LayoutParserApi.Services.Transformation.Ai.Retraining.FileRetrainingStateStore>();
+    builder.Services.AddSingleton<LayoutParserApi.Services.Transformation.Ai.Retraining.IRetrainingLock,
+        LayoutParserApi.Services.Transformation.Ai.Retraining.FileRetrainingLock>();
+    builder.Services.AddSingleton<LayoutParserApi.Services.Transformation.Ai.Retraining.IRetrainingCoordinator,
+        LayoutParserApi.Services.Transformation.Ai.Retraining.RetrainingCoordinator>();
+    builder.Services.AddHostedService<LayoutParserApi.Services.Transformation.Ai.Retraining.RetrainingSchedulerBackgroundService>();
+
     // Transformation Services (ML)
     builder.Services.AddScoped<TransformationLearningService>();
     builder.Services.AddScoped<PatternComparisonService>();
@@ -456,6 +724,7 @@ try
     builder.Services.AddScoped<ILayoutValidator, LayoutValidator>();
     builder.Services.AddScoped<ILayoutNormalizer, LayoutNormalizer>();
     builder.Services.AddScoped<ILayoutDetector, LayoutDetector>();
+    builder.Services.AddScoped<IAutomaticLayoutDetectionService, AutomaticLayoutDetectionService>();
     builder.Services.AddScoped<ILayoutParserService, LayoutParserService>();
 
     // Mapper Cache Services
@@ -695,6 +964,10 @@ try
         var correlationId = context.Request.Headers["X-Correlation-ID"].FirstOrDefault();
         if (string.IsNullOrWhiteSpace(correlationId))
             correlationId = Guid.NewGuid().ToString();
+        else
+            // ✅ CodeQL cs/log-forging: X-Correlation-ID vem do cliente e é ecoado em TODO log da
+            // request (LogContext abaixo) — saneia aqui uma única vez em vez de em cada call site.
+            correlationId = LayoutParserApi.Services.Logging.LogMessageSanitizer.Sanitize(correlationId, maxLength: 200);
 
         context.Response.Headers["X-Correlation-ID"] = correlationId;
         CorrelationContext.CurrentId = correlationId;
@@ -705,18 +978,35 @@ try
         }
     });
 
+    // ✅ ADR M2M, Parte 2 (Honeypots/Canary Tokens): detecção da credencial-isca "aposentada"
+    // (X-Service-Credential). Roda ANTES de qualquer middleware de auth real — inclusive antes do
+    // TrustedIdentityMiddleware abaixo — para garantir que o alarme dispara mesmo que o valor
+    // canary por acaso colida com alguma validação futura. Nunca autentica, nunca bloqueia por
+    // conta própria: só loga Critical e deixa o pipeline seguir. Ver CanaryCredentialDetectionMiddleware.
+    app.UseMiddleware<LayoutParserApi.Services.Security.CanaryCredentialDetectionMiddleware>();
+
     // ✅ Identidade injetada pelo BFF (x-iis-user/x-iis-roles), sob a guarda de loopback. Vem DEPOIS do
     // CorrelationId (para o log de arranque/diagnóstico compartilhar o contexto) e ANTES dos endpoints,
     // para que ICurrentUser já esteja preenchido quando controllers e AuditActionFilter rodam. Fora de
     // loopback ou sem header → identidade anônima, nunca exceção. Ver TrustedIdentityMiddleware.
     app.UseMiddleware<TrustedIdentityMiddleware>();
 
+    // ✅ Swagger habilitado em todo ambiente (não só Development) — pedido explícito do dono
+    // para testar endpoints via Postman/Swagger UI direto em produção. Servido sob /api/swagger
+    // (não /swagger) de propósito: em produção o BFF/reverse proxy (LayoutParserReact/server)
+    // só encaminha /api/* para esta API — qualquer rota fora desse prefixo cai no catch-all do
+    // SPA React e devolve a página de erro 404 do front, não o Swagger.
+    app.UseSwagger(c => c.RouteTemplate = "api/swagger/{documentName}/swagger.json");
+    app.UseSwaggerUI(c =>
+    {
+        c.RoutePrefix = "api/swagger";
+        c.SwaggerEndpoint("/api/swagger/v1/swagger.json", "LayoutParserApi v1");
+    });
+
     // Enable detailed error pages in development
     if (app.Environment.IsDevelopment())
     {
         app.UseDeveloperExceptionPage();
-        app.UseSwagger();
-        app.UseSwaggerUI();
         Log.Information("Swagger UI enabled for development");
     }
     else
@@ -841,3 +1131,11 @@ finally
         // Ignore errors during shutdown
     }
 }
+
+// ✅ Issue #90: expõe a classe `Program` gerada implicitamente pelos top-level statements como
+// `public partial`, sem mudar comportamento algum em produção — é só uma declaração de tipo
+// adicional para o compilador mesclar com a gerada automaticamente (que não tem modificador
+// explícito, então herda o `public` daqui em vez de gerar conflito de acessibilidade).
+// Necessário para `WebApplicationFactory<Program>` no projeto de testes, que está em outro
+// assembly e não enxergaria a classe se ela ficasse `internal` (default do gerado).
+public partial class Program;
