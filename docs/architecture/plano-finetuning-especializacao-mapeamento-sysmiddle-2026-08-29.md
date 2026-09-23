@@ -679,6 +679,167 @@ prompt), `~/infer_single_pair.py` (validação por geração), dataset `~/single
 (57 linhas), adapter `~/lora_single_pair_adapter/`, saída `~/gerado_single_pair.xsl` — todos na VM
 (`elson@172.25.32.5:~/`), mesmo tratamento dos artefatos de teste anteriores.
 
+> **Nota de sincronismo (2026-09-01):** esta cópia do arquivo, neste worktree, estava atrasada em
+> relação à cópia usada em sessões posteriores (que já continham "Validação pós-treino completo (3
+> épocas) — 2026-08-30" e as rodadas de correção de masking de labels + teste de diversidade de
+> dados, ambas de 2026-09-01, antes desta seção). Não reconstruí esse conteúdo intermediário aqui —
+> apenas anexei a seção abaixo ao final do que já existia nesta cópia, para não inventar/duplicar
+> texto de outra branch. Recomendo, numa próxima sessão com acesso à branch/cópia mais atual,
+> conferir se este arquivo precisa de reconciliação manual entre as duas versões.
+
+## Teste da hipótese "prompt truncado" com prompt COMPLETO — 2026-09-01
+
+Objetivo desta rodada: isolar a variável de truncamento apontada como hipótese líder em sessões
+anteriores (`PROMPT_BUDGET = MAX_LEN // 2` cortava o `.tcl` de entrada a 1024 tokens, e nenhum
+`.tcl` real dos pares grandes cabia inteiro nesse orçamento — hipótese de que essa "âncora"
+ausente impedia o modelo de aprender a transição prompt→resposta). Diferente das rodadas
+anteriores, desta vez o prompt **nunca é truncado**, em treino nem em inferência.
+
+### Seleção dos pares — não foi preciso MAX_LEN=8192
+
+Tokenizando (`AutoTokenizer` do próprio `Qwen2.5-Coder-1.5B-Instruct`) todos os 259 pares brutos
+de `~/finetuning-dataset/`, os pares mais curtos do dataset real são muito menores do que a
+extrapolação de sessões anteriores sugeria (que citava exemplos na casa de milhares de tokens como
+"os mais curtos" — válido para o par de referência com 237 `LinkMappings`, mas não para o dataset
+como um todo). Os 3 menores em `prompt_tok + completion_tok`:
+
+| Par | prompt (tok) | completion (tok) | total |
+|-----|-------------:|------------------:|------:|
+| `CTe/1.04c/CTe004_consStatServCTe_NeogridToSefaz` | 86 | 174 | 260 |
+| `NFe/4.00/NFe009_4.00_ConsSitNFe_NeoGridToSefaz` | 61 | 233 | 294 |
+| `MDFe/3.00/MDFe300a_ConsSitMDFe_NeoGridToSefaz` | 62 | 238 | 300 |
+
+Todos os três cabem inteiros até em `MAX_LEN=1024` — não foi necessário chegar a 4096/6144/8192
+como o plano original desta tarefa antecipava. Usados os 3 pares acima, com `MAX_LEN=4096` como
+teto de segurança (nunca de fato atingido: o maior total real é 301 tokens).
+
+### Ajuste de script — padding dinâmico, não `padding="max_length"` fixo
+
+Reaproveitado o esqueleto de masking de labels de `~/smoke_train_ckpt_masked.py` (mascarar o
+prefixo do prompt com `-100` em `labels`, presente na VM), mas com duas mudanças deliberadas em
+`~/train_fullprompt.py`:
+
+1. **Prompt nunca truncado.** Tokeniza o prefixo (`### Instrucao:\n{tcl}\n### Resposta:\n`) sem
+   `truncation=True`, usa esse tamanho como está. Só se o total (prompt+completion) excedesse
+   `MAX_LEN` é que a *completion* seria cortada do final — nunca o prompt. Para os 3 pares
+   escolhidos isso nunca aconteceu (`completion truncada: [False, False, False]`, confirmado no
+   log de treino).
+2. **Padding dinâmico por batch** (`DataCollatorForSeq2Seq(padding=True)`), não
+   `padding="max_length"` fixo em `MAX_LEN`. Motivo: sessões anteriores já tinham mostrado que
+   `MAX_LEN=4096` com `padding="max_length"` morre por OOM mesmo com gradient checkpointing — mas
+   essa morte é causada pelo *padding* forçando todo passo a processar 4096 tokens completos, não
+   pelo conteúdo real do exemplo. Como os exemplos reais desta rodada têm 260-301 tokens, usar
+   `padding="max_length"` a 4096 teria reintroduzido artificialmente o mesmo risco de OOM sem
+   necessidade — `padding=True` (dinâmico, batch=1) faz o mesmo papel de "não truncar nada" sem
+   pagar o custo de padding que não serve a este teste. Gradient checkpointing manteve-se ligado
+   por segurança/consistência com as rodadas anteriores.
+
+### Treino — 3 exemplos, 3 épocas, MAX_LEN=4096 (teto, nunca atingido)
+
+`~/train_fullprompt.py 4096 fullprompt_pairs.jsonl 3`, rodado em background via `nohup`.
+**Concluído sem OOM, muito mais rápido que qualquer rodada anterior** (dataset minúsculo,
+exemplos curtos):
+
+- **Tempo de treino puro: 143,3s** (9 passos: 3 exemplos × 3 épocas), **14-17s/passo** — bem
+  abaixo dos ~110-140s/passo das rodadas anteriores com `MAX_LEN=2048`/`padding="max_length"`,
+  exatamente porque o padding dinâmico processa só ~260-300 tokens reais por passo, não 2048-4096
+  de padding morto.
+- **RSS de pico: 9.666.656 KB (~9,2GB)** — abaixo dos ~11,6-11,8GB de rodadas anteriores com
+  `MAX_LEN=2048` fixo, confirmando que o custo de RAM daquelas rodadas vinha majoritariamente do
+  padding fixo, não do conteúdo real.
+- `train_loss` final reportado pelo `Trainer`: **0,8605** (3 épocas, ruidoso como esperado com 3
+  exemplos só).
+- Adapter salvo em `~/lora_fullprompt_adapter`.
+
+### Inferência — prompt completo, sem truncar, greedy, `max_new_tokens=1024`
+
+`~/infer_fullprompt.py`, par `NFe/4.00/NFe009_4.00_ConsSitNFe_NeoGridToSefaz` (61 tokens de
+prompt, visto no treino). Prompt passado **inteiro** para `model.generate()` (confirmado no log:
+`tokens do prompt (nao truncado): 61`, sem truncamento nenhum desta vez — nem o corte a 1024
+tokens usado nas inferências de rodadas anteriores). Greedy (`do_sample=False`),
+`max_new_tokens=1024`, mesmo protocolo já usado antes.
+
+**Resultado, honesto — degeneração idêntica em natureza a rodadas anteriores, apesar do prompt
+completo:**
+
+- `grep -c 'xsl:' ~/gerado_fullprompt.xsl` → **0**. Nenhuma tag XSLT em nenhum ponto dos 1024
+  tokens gerados.
+- A saída não é mais eco literal do `.tcl` (formato `<FIELD name="..." length="..."/>` visto em
+  rodadas anteriores) — desta vez o modelo produz um bloco **JSON** descrevendo a estrutura do
+  `.tcl` de entrada (`{"identifier": "E", "name": "Cabecalho", "fields": [{"name": "tpAmb",
+  "length": "1"}, {"name": "chNFe", "length": "44"}]}`), seguido de uma "explicação" em
+  português do que esse JSON significa, e então **entra em loop repetindo o mesmo bloco JSON
+  literalmente idêntico dezenas de vezes** até os 1024 tokens acabarem — mesma assinatura de
+  degeneração por repetição de rodadas anteriores (padrão típico de greedy decoding preso em
+  ciclo), só que com um "sabor" de saída diferente (JSON+explicação, não eco cru de campo TCL).
+- O `.xsl` real deste par é **extremamente simples** (12 linhas: um único `<xsl:template
+  match="/">`, dois `xsl:value-of`, um atributo literal) — se a causa fosse só "não ver o
+  documento inteiro", este é exatamente o caso mais favorável possível para a hipótese (prompt
+  minúsculo, visto por completo, saída esperada trivial) e ainda assim **zero sinal de XSLT**
+  apareceu.
+
+### Conclusão — hipótese de truncamento REFUTADA
+
+**Eliminar completamente o truncamento do prompt (treino e inferência, par pequeno o suficiente
+para nunca disparar nem o teto de segurança de `MAX_LEN=4096`) não produziu nenhuma melhora
+observável.** A degeneração é idêntica em natureza (repetição em loop de um padrão que não é
+XSLT) à das rodadas com prompt truncado — muda a "forma" do conteúdo alucinado (JSON+explicação
+em vez de eco cru de TCL), não a ausência de `xsl:`. Isso **refuta a hipótese líder desta
+sessão** (falta de contexto completo do prompt como causa raiz da degeneração).
+
+Combinado com o histórico completo desta linha de investigação (masking de labels, número de
+épocas, diversidade de dados — ver seções acima e sessões de 2026-09-01 não presentes nesta cópia
+específica do arquivo, ver nota de sincronismo no início desta seção) e agora truncamento de
+prompt testado e refutado, várias hipóteses mecânicas foram eliminadas uma a uma, todas com
+evidência real medida, nenhuma delas explicando a degeneração observada desde a primeira rodada.
+
+**Isso aponta com mais força para as duas hipóteses remanescentes:**
+
+1. **Capacidade do modelo base (1.5B parâmetros) e/ou do adapter LoRA (r=4, só
+   `q_proj`/`v_proj`, 544.768 parâmetros treináveis = 0,035% do total)** — pode ser
+   estruturalmente pequeno demais para aprender a transformação TCL→XSLT com o orçamento de
+   parâmetros treináveis usado em todas as rodadas até aqui, independente de quão bem o
+   dataset/prompt sejam preparados.
+2. **Decodificação greedy (`do_sample=False`)** — já testada isoladamente com
+   `repetition_penalty`/`no_repeat_ngram_size` na rodada de 2026-08-30 acima ("Diagnóstico de
+   degeneração por época"), e não resolveu sozinha (trocou o modo de falha, de repetição para
+   alucinação fora de domínio). Ainda não testada com *sampling* real (`temperature`/`top_p` > 0)
+   nesta linha de investigação.
+
+### Recomendação honesta para o dono — 2026-09-01
+
+Depois de múltiplas variáveis mecânicas testadas isoladamente (masking de labels, número de
+épocas, diversidade de dados, truncamento de prompt) sem produzir XSLT válido uma única vez, de
+forma reprodutível, em nenhuma configuração — inclusive no caso mais favorável possível desta
+rodada (par minúsculo, visto por completo, saída esperada de 12 linhas) — a conclusão honesta é
+que o problema não é mais provavelmente um bug de pipeline de dados/treino. Os candidatos
+remanescentes (capacidade do modelo 1.5B, decodificação greedy) são mais caros de testar e mais
+fundamentais: testar capacidade do modelo exige trocar de modelo base (mais RAM/tempo de treino,
+possivelmente inviável nesta VM CPU-only de 15GB) ou aumentar o rank do LoRA/mais
+`target_modules` (mais barato de tentar antes de trocar de modelo); testar decodificação exige
+rodar `do_sample=True` com `temperature`/`top_p` variados, que é barato de testar mas não
+deveria ser necessário se o modelo tivesse de fato aprendido a distribuição correta (sampling
+não cria capacidade que o treino não ensinou, só evita ficar preso em um único caminho
+degenerado do argmax).
+
+**Recomendação concreta, em ordem de custo crescente:**
+1. **Testar sampling** (`do_sample=True`, `temperature=0.7-1.0`, `top_p=0.9`) no adapter já
+   treinado desta rodada, sem retreinar — mais barato, isola de vez a hipótese de decodificação.
+2. **Aumentar a capacidade do adapter LoRA** (rank maior, ex. r=16-32, e/ou mais
+   `target_modules` como `k_proj`/`o_proj`/MLP) sobre o mesmo dataset pequeno desta rodada —
+   ainda barato (dataset de 3 pares, ~2-3 minutos de treino), testa a hipótese de capacidade sem
+   o custo de trocar de modelo base.
+3. **Só depois de 1 e 2**, se ainda degenerado: considerar pausar a abordagem de fine-tuning LoRA
+   em CPU para este objetivo, ou escalar para um modelo base maior fora desta VM (decisão do
+   dono — já fora do escopo original "1-3B em CPU" acordado no início deste plano).
+
+### Scripts desta sessão (não commitados — artefatos de sessão na VM)
+
+`~/probe_tokens.py` (mede tokens de prompt/completion de todos os 259 pares, seleciona os mais
+curtos), `~/build_fullprompt_pairs.py` (monta `~/fullprompt_pairs.jsonl`, 3 pares),
+`~/train_fullprompt.py` (treino com prompt nunca truncado + padding dinâmico),
+`~/infer_fullprompt.py` (inferência com prompt completo), adapter `~/lora_fullprompt_adapter/`,
+saída `~/gerado_fullprompt.xsl` — todos em `elson@172.25.32.5:~/`, mesmo tratamento dos
 ## Teste da hipótese "diversidade de dados" (2026-09-01) — REFUTADA
 
 ### Contexto
