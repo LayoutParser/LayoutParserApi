@@ -1,5 +1,7 @@
 # Memória — lp-parser-llm (Lia)
 
+- [Issue #219 LayoutType numérico](issue-219-layouttype-numerico-normalizer.md) — LayoutDatabaseService.IsTextPositionalLayout já resolve LayoutType via XML mas descarta o valor; LayoutTypeNormalizer novo reaproveita a fonte autoritativa. PR #295.
+
 - [PoC-3 R4 estado](poc3-r4-estado.md) — FALTA=0/TEXTO=0 atingido 2026-07-12; SOBRA=8 + 7 XSD = Etapa B (máscara do mapeador); gotchas de diagnóstico.
 - [RAG few-shot B4](rag-fewshot-b4.md) — corpus SEM pares DSL→XSLT (exportContext criptografado); 191 XSLs reais = estilo; gotcha: interpretador parcial em regra difícil.
 - [Mapeadores multi-cliente](multi-client-mappers.md) — package único 938f9978 tem os 170 mapeadores de TODOS clientes; GUIDs SEND_ENV + variantes fiscais (ICMS10/40, IPITrib, PISNT/Outr, IDOC) p/ G3/G4.
@@ -23,6 +25,7 @@
 - [Smoke-test #3 checkpointing+chunking](finetuning-smoke-test3-checkpointing-chunking.md) — checkpointing resolve OOM em MAX_LEN=2048 (custa 2,7x/passo); chunking completo explode dataset 6,84x, inviável no fim de semana (56,6h/época).
 - [Issue #140 motor de resolução estrutural implementado](issue-140-motor-resolucao-estrutural-implementado.md) — XSD real NF-e via XmlSchemaSet (dono decidiu XSD > LayoutVO), classificador mappingKind, composer authoritative/best-effort; branch feat/resolucao-estrutural-txt-xml-140 commit 36ae5cb, 25 testes novos (36/36 verdes).
 - [Degeneração por época no fine-tuning (2026-08-30)](finetuning-degeneracao-por-epoca-2026-08-30.md) — checkpoints nunca existiam (save_strategy="no"); VM 15GB não aguenta treino+generate concorrentes (mata treino); resultado época-1 inconsistente com smoke-test #4 (protocolo frágil); repetition_penalty/no_repeat_ngram_size troca sintoma, não resolve.
+- [PR #209 falso conflito com develop](pr209-falso-conflito-develop-stale.md) — 2026-08-28: "conflito" era develop LOCAL desatualizado; origin/develop já tem 1992ed4 + fix IsDeclaredEmpty via PR #205; merge-tree limpo (docs-only), nenhum código a reconciliar.
 - [Fine-tuning smoke-test #2 dado real OOM](finetuning-smoke-test2-dado-real-oom.md) — MAX_LEN=4096 mata processo por OOM na VM; MAX_LEN=1024 usa 12Gi/15Gi e ~42s/passo; RAM é o limite real, não tempo; extrapolação anterior (256 tokens) inválida pro dado real.
 - [Smoke-test fine-tuning VM 2026-08-29](finetuning-smoke-test-vm-2026-08-29.md) — specs reais (i7-4790 4c, 15GB, sem GPU); sudo bloqueado contornado com pip --break-system-packages; bitsandbytes NÃO quantiza em CPU (LoRA fp32, não QLoRA); 10,7s/passo medido (Qwen2.5-Coder-1.5B, seq 256) — falta medir com seq_len real (~16.6k chars) antes do treino completo.
 - [Smoke-test #4 par único (Fase 1 real)](finetuning-smoke-test4-par-unico-fase1.md) — treino completo (57 chunks, 1 época, 1h55min, sem OOM) sobre 1 par real; bug crítico achado e corrigido (prompt não truncado comia 100% da completion); geração pós-treino acerta defaults semânticos reais (tpAmb/tpEmis/procEmi).

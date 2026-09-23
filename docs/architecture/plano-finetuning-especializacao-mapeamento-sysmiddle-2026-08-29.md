@@ -892,17 +892,110 @@ curtos), `~/build_fullprompt_pairs.py` (monta `~/fullprompt_pairs.jsonl`, 3 pare
 `~/train_fullprompt.py` (treino com prompt nunca truncado + padding dinâmico),
 `~/infer_fullprompt.py` (inferência com prompt completo), adapter `~/lora_fullprompt_adapter/`,
 saída `~/gerado_fullprompt.xsl` — todos em `elson@172.25.32.5:~/`, mesmo tratamento dos
+## Correção de masking de labels — 2026-09-01
+
+Continuação direta do "Diagnóstico de degeneração por época" (2026-08-30): mesmo com prompt
+truncado corretamente (bug já corrigido no smoke-test #4), a época 1 reproduzida naquela sessão
+ainda deu 100% eco do `.tcl`. Hipótese nova investigada nesta sessão: bug de masking de labels.
+
+### Causa raiz confirmada por leitura de código (não suposição)
+
+`~/smoke_train_ckpt.py` (usado em todas as rodadas de diagnóstico anteriores) monta:
+
+```python
+enc = tok(text, truncation=True, max_length=MAX_LEN, padding="max_length")
+enc["labels"] = enc["input_ids"].copy()
+```
+
+**Confirmado: não há masking.** `labels = input_ids.copy()` sem `-100` na porção do prompt
+significa que a loss é calculada sobre a sequência inteira — prompt (`.tcl`, mais longo) e
+completion (`.xsl` truncada) contribuem igualmente para o gradiente, em vez de só a completion
+(que é o padrão correto de instruction-tuning). Isso explica, em tese, o viés do modelo a
+reproduzir o prompt.
+
+### Correção aplicada
+
+`~/smoke_train_ckpt_masked.py` (variante commitável de `smoke_train_ckpt.py`): tokeniza o
+prefixo (`### Instrucao:\n{prompt_truncado}\n### Resposta:\n`) isoladamente para achar seu
+comprimento exato em tokens, e mascara essa faixa inteira com `-100` em `labels`, além de
+mascarar todo token de padding (`attention_mask == 0`). Log de instrumentação confirma a fração
+de tokens que efetivamente contribui para a loss por exemplo (~48,6% no par testado — bate com o
+tamanho real da completion vs. prompt+padding em `MAX_LEN=2048`).
+
+### Smoke-test (3 exemplos, 1 época) — sinal positivo na loss
+
+Rodou limpo, sem OOM: `train_loss=0,4055`. Mais baixo/estável que o primeiro passo de qualquer
+rodada anterior sem masking (que começava em ~0,76–0,86). Sinal encorajador, mas não decisivo por
+si só (3 exemplos, 1 época).
+
+### Treino completo (57 chunks, 1 época, MAX_LEN=2048, gradient checkpointing) — concluído
+
+`train_runtime=6.713,7s` (~1h51min52s, bate a extrapolação anterior de ~1h55min), `train_loss=
+0,4959` (época inteira) — loss consistentemente mais baixa e estável que as rodadas sem masking
+(que rondavam ~0,70–0,77 na época 1). `PEAK_RSS_KB=11.797.904` (~11,8GB, mesma margem segura de
+sempre). Adapter salvo em `~/lora_single_pair_adapter_masked`.
+
+### Validação por geração — resultado honesto: AINDA degenerado
+
+`~/infer_single_pair_masked.py` (mesmo protocolo dos smoke-tests anteriores: greedy,
+`max_new_tokens=1024`, prompt truncado a 1024 tokens) carregado com o adapter novo. Verificação
+feita **no arquivo salvo** (`~/gerado_single_pair_masked.xsl`), não só no print truncado do log
+(gotcha desta sessão: o print do log intercala "GERADO" seguido de "XSL REAL" na mesma tela, fácil
+de confundir um tail parcial com o texto errado — a checagem definitiva foi `grep -c 'xsl:'` no
+arquivo gerado de fato).
+
+- **`grep -c 'xsl:' ~/gerado_single_pair_masked.xsl` → 0**, em 72 linhas geradas. A saída inteira
+  é eco/hallucination em estilo `.tcl` (`<FIELD name="..." length=".../>`), incluindo o mesmo
+  padrão de repetição hiper-degenerada já visto no adapter de 3 épocas sem masking
+  (`indPagamento`/`indCarteira`/`indRend`/`indRecibo` repetindo em ciclo).
+- **Conclusão honesta: a correção de masking foi implementada e verificada corretamente (loss se
+  comporta como esperado, fração de tokens mascarados bate com o cálculo manual), mas NÃO resolveu
+  o sintoma de degeneração observado em nenhuma rodada anterior.** A hipótese "loss computada sobre
+  o prompt inteiro explica o eco" está descartada como causa suficiente — pode ainda ser uma causa
+  parcial (a loss durante o treino ficou mais saudável), mas não é a causa dominante da degeneração
+  na geração.
+
+### Recomendação — 2026-09-01
+
+1. **Não repetir esta hipótese específica.** Masking de labels é uma correção tecnicamente
+   correta e deve permanecer (é o padrão certo de instruction-tuning, sem trade-off negativo
+   conhecido), mas não é o gargalo que produz eco/degeneração neste par.
+2. **Duas causas mais prováveis ainda não isoladas, por ordem de suspeita:**
+   - **Dataset minúsculo e extremamente repetitivo** (57 chunks derivados de UM único par, com
+     overlap de 256 tokens entre janelas — grande sobreposição de conteúdo) pode não fornecer
+     sinal suficiente para o modelo aprender a transição robusta prompt→resposta, não importa o
+     masking. Achado já registrado no "Diagnóstico de degeneração por época": mais épocas sobre
+     esse dataset pioram, não melhoram, a saída.
+   - **Prompt truncado a 1024 tokens de um `.tcl` real de 10.101 tokens** corta a maior parte do
+     contexto de entrada tanto no treino quanto na geração — o modelo nunca vê o `.tcl` completo,
+     então a "âncora" que ensinaria quando parar de ecoar e começar a traduzir pode estar ausente
+     estruturalmente, independente de quantas épocas ou se a loss está mascarada corretamente.
+3. **Próximo experimento sugerido (fora do orçamento desta sessão):** aumentar o budget de prompt
+   (`MAX_LEN` maior, ex. 4096 com o par mais curto do dataset em vez do mais longo) para testar se
+   a falta de contexto do `.tcl` é de fato o gargalo, isolando essa variável do dataset
+   repetitivo — usar um par diferente, mais curto, que caiba inteiro sem chunking, para eliminar a
+   variável "chunking com muito overlap" ao mesmo tempo.
+4. **Reavaliar se o objetivo "aprender 1 mapeamento específico via fine-tuning" continua o caminho
+   certo** antes de investir mais tempo de CPU — depois de 4 rodadas de diagnóstico (masking,
+   truncamento de prompt, número de épocas, mitigadores de geração) sem produzir XSLT válido uma
+   única vez de forma reprodutível, a relação custo (~2h de CPU por rodada)/sinal está ficando
+   desfavorável. Escalar essa avaliação ao dono antes da próxima rodada de treino.
+
+### Scripts desta sessão (não commitados — artefatos de sessão na VM)
+
+`~/smoke_train_ckpt_masked.py` (treino com masking de labels), `~/infer_single_pair_masked.py`
+(validação por geração), adapter `~/lora_single_pair_adapter_masked/`, saída
+`~/gerado_single_pair_masked.xsl` — todos em `elson@172.25.32.5:~/`, mesmo tratamento dos
+artefatos de teste anteriores.
+
 ## Teste da hipótese "diversidade de dados" (2026-09-01) — REFUTADA
 
 ### Contexto
 
-Entre o smoke-test #4 acima e esta rodada, um ciclo intermediário (não registrado nesta cópia do
-doc, ver histórico de commits) corrigiu um bug real de masking de labels no script de treino
-(`~/smoke_train_ckpt_masked.py` — a loss estava sendo calculada sobre a sequência inteira,
-incluindo o prompt; o fix mascara com `-100` tudo até `### Resposta:\n`). Com o fix, `train_loss`
-melhorou (0.4959), mas a geração continuou **100% degenerada** — 0 tags `xsl:`, eco puro e
-repetitivo de nomes de campo do `.tcl` de entrada (ex.: `indPagamento`/`indCarteira`/`indRend`/
-`indRecibo` em loop).
+Continuação direta da seção "Correção de masking de labels" acima: mesmo com o masking corrigido
+(loss saudável, `train_loss=0.4959`), a geração continuou **100% degenerada** — 0 tags `xsl:`, eco
+puro e repetitivo de nomes de campo do `.tcl` de entrada (ex.: `indPagamento`/`indCarteira`/
+`indRend`/`indRecibo` em loop).
 
 Hipótese líder levantada: os "57 exemplos" usados até então eram todos fatias (sliding window) do
 **MESMO documento único** (`NFe009_4.00_EnvioNFe_NeoGridToSefaz`) — zero diversidade real de
@@ -1004,99 +1097,81 @@ para este objetivo.
 `~/smoke_train_ckpt_masked.py`), `~/infer_multi_pair.py` (inferência generalizada por argv),
 adapter `~/lora_multi_pair_adapter/`, saídas `~/gerado_multi_pair_NFe_2.06b.xsl`,
 `~/gerado_multi_pair_MDFe300.xsl`, `~/gerado_multi_pair_CTe004_heldout.xsl` — todos em
-`elson@172.25.32.5:~/`, mesmo tratamento dos artefatos de teste anteriores.
-## Correção de masking de labels — 2026-09-01
 
-Continuação direta do "Diagnóstico de degeneração por época" (2026-08-30): mesmo com prompt
-truncado corretamente (bug já corrigido no smoke-test #4), a época 1 reproduzida naquela sessão
-ainda deu 100% eco do `.tcl`. Hipótese nova investigada nesta sessão: bug de masking de labels.
+## Teste da hipótese "decodificação greedy" com sampling real — 2026-09-01
 
-### Causa raiz confirmada por leitura de código (não suposição)
+**Objetivo:** isolar a hipótese remanescente mais barata do item 1 da recomendação acima —
+testar se `do_sample=True` (`temperature`/`top_p` > 0) sobre o **mesmo adapter já treinado**
+(`~/lora_fullprompt_adapter`, sem retreinar nada) muda o modo de falha da geração, no mesmo par
+usado nas últimas duas rodadas (`NFe009_4.00_ConsSitNFe_NeoGridToSefaz`, prompt completo, sem
+truncar).
 
-`~/smoke_train_ckpt.py` (usado em todas as rodadas de diagnóstico anteriores) monta:
+### Método
 
-```python
-enc = tok(text, truncation=True, max_length=MAX_LEN, padding="max_length")
-enc["labels"] = enc["input_ids"].copy()
-```
+Script `~/infer_fullprompt_sampling.py` (baseado em `~/infer_fullprompt.py`, mesmo
+carregamento de modelo/adapter/par). Testadas 3 configurações, cada uma rodada 2 vezes
+(sampling é não-determinístico — 1 amostra não seria conclusiva):
 
-**Confirmado: não há masking.** `labels = input_ids.copy()` sem `-100` na porção do prompt
-significa que a loss é calculada sobre a sequência inteira — prompt (`.tcl`, mais longo) e
-completion (`.xsl` truncada) contribuem igualmente para o gradiente, em vez de só a completion
-(que é o padrão correto de instruction-tuning). Isso explica, em tese, o viés do modelo a
-reproduzir o prompt.
+- `temperature=0.7, top_p=0.9`
+- `temperature=1.0, top_p=0.95`
+- `temperature=0.3, top_p=0.9` (mais conservador)
 
-### Correção aplicada
+`max_new_tokens=1024`, mesmo prompt não truncado das rodadas anteriores. 6 gerações no total,
+cada uma levando ~6-7 minutos em CPU (execução completa: ~41 minutos, 11:08–11:49). Saídas
+salvas em `~/gerado_sampling_{config}_run{1,2}.xsl` na VM (não commitadas — mesmo tratamento de
+artefatos de sessão anteriores).
 
-`~/smoke_train_ckpt_masked.py` (variante commitável de `smoke_train_ckpt.py`): tokeniza o
-prefixo (`### Instrucao:\n{prompt_truncado}\n### Resposta:\n`) isoladamente para achar seu
-comprimento exato em tokens, e mascara essa faixa inteira com `-100` em `labels`, além de
-mascarar todo token de padding (`attention_mask == 0`). Log de instrumentação confirma a fração
-de tokens que efetivamente contribui para a loss por exemplo (~48,6% no par testado — bate com o
-tamanho real da completion vs. prompt+padding em `MAX_LEN=2048`).
+### Resultado — honesto
 
-### Smoke-test (3 exemplos, 1 época) — sinal positivo na loss
+**`grep -c 'xsl:'` = 0 nas 6 gerações, sem exceção.** Sampling não fez o adapter emitir uma
+única tag XSLT sequer, em nenhuma das 3 temperaturas, em nenhuma das 2 repetições por
+temperatura. **A hipótese "decodificação greedy" está refutada como causa raiz isolada.**
 
-Rodou limpo, sem OOM: `train_loss=0,4055`. Mais baixo/estável que o primeiro passo de qualquer
-rodada anterior sem masking (que começava em ~0,76–0,86). Sinal encorajador, mas não decisivo por
-si só (3 exemplos, 1 época).
+Mas o **modo de falha mudou de forma consistente e informativa** em relação a todas as rodadas
+anteriores (greedy, `do_sample=False`):
 
-### Treino completo (57 chunks, 1 época, MAX_LEN=2048, gradient checkpointing) — concluído
+- **Nas 6 rodadas anteriores** (masking, épocas, diversidade, truncamento — todas com
+  `do_sample=False`): degeneração em **loop de repetição literal** de um padrão (mesmo
+  fragmento de texto/token repetido até `max_new_tokens`).
+- **Nas 6 rodadas desta sessão** (`do_sample=True`): a saída **quebrou o padrão de loop** — o
+  modelo produz texto coerente e não-repetitivo (majoritariamente em `temperature=0.3` e
+  `0.7`), mas **alucina o formato errado**: gera um bloco ` ```json ` com um mapeamento
+  simplificado do cabeçalho do TCL (`identifier`, `name`, `fields` com `tpAmb`/`chNFe`) seguido
+  de uma explicação em prosa em português sobre o que o JSON representa — nunca XSLT. Em
+  `temperature=1.0` (mais alta), um dos dois runs (`t10_run1`) chegou a **alternar entre blocos
+  ` ```json `, ` ```xml ` (com tags XML genéricas tipo `<Map><Line identifier="E"
+  name="Cabecalho"><Field .../></Line></Map>`, não `xsl:`) e ` ```python `** — sinal de que o
+  modelo "sabe" que existe uma estrutura de mapeamento a representar, mas não aprendeu qual
+  vocabulário/gramática (XSLT) usar para representá-la; o outro run de `temperature=1.0`
+  (`t10_run2`) divergiu ainda mais, para prosa livre sobre o campo `tpAmb` sem nenhuma estrutura.
 
-`train_runtime=6.713,7s` (~1h51min52s, bate a extrapolação anterior de ~1h55min), `train_loss=
-0,4959` (época inteira) — loss consistentemente mais baixa e estável que as rodadas sem masking
-(que rondavam ~0,70–0,77 na época 1). `PEAK_RSS_KB=11.797.904` (~11,8GB, mesma margem segura de
-sempre). Adapter salvo em `~/lora_single_pair_adapter_masked`.
+Isto é evidência qualitativa nova e relevante: o adapter treinado **não memorizou "eco do TCL"
+nem está preso a um único caminho de argmax degenerado** — ele tem alguma noção semântica do
+conteúdo do par (nomes de campo reais do TCL, ideia de "mapa"/"linha"/"campo"), mas nunca liga
+essa noção ao formato de saída correto (tags `xsl:`, estrutura de `<xsl:template>`/`<xsl:value-of>`
+etc.). Isso é consistente com **capacidade insuficiente do adapter LoRA (r=4, só
+`q_proj`/`v_proj`) e/ou do modelo base de 1.5B** para aprender a gramática XSLT a partir do
+dataset e orçamento de parâmetros treináveis usados até aqui — não com um problema de
+decodificação.
 
-### Validação por geração — resultado honesto: AINDA degenerado
+### Conclusão
 
-`~/infer_single_pair_masked.py` (mesmo protocolo dos smoke-tests anteriores: greedy,
-`max_new_tokens=1024`, prompt truncado a 1024 tokens) carregado com o adapter novo. Verificação
-feita **no arquivo salvo** (`~/gerado_single_pair_masked.xsl`), não só no print truncado do log
-(gotcha desta sessão: o print do log intercala "GERADO" seguido de "XSL REAL" na mesma tela, fácil
-de confundir um tail parcial com o texto errado — a checagem definitiva foi `grep -c 'xsl:'` no
-arquivo gerado de fato).
+**Sampling não resolveu — nem parcialmente, no sentido de produzir XSLT.** Mas não foi um teste
+sem valor: **mudou o modo de falha de "loop mecânico" para "alucinação semântica coerente porém
+fora do formato-alvo"**, o que é evidência a favor da hipótese de capacidade (item 2 da
+recomendação de 2026-09-01 acima), não contra ela. Combinado com a rodada anterior de
+truncamento (também refutada) e todo o histórico de masking/épocas/diversidade, **as 4 hipóteses
+mecânicas mais baratas de testar estão todas refutadas com evidência medida.**
 
-- **`grep -c 'xsl:' ~/gerado_single_pair_masked.xsl` → 0**, em 72 linhas geradas. A saída inteira
-  é eco/hallucination em estilo `.tcl` (`<FIELD name="..." length=".../>`), incluindo o mesmo
-  padrão de repetição hiper-degenerada já visto no adapter de 3 épocas sem masking
-  (`indPagamento`/`indCarteira`/`indRend`/`indRecibo` repetindo em ciclo).
-- **Conclusão honesta: a correção de masking foi implementada e verificada corretamente (loss se
-  comporta como esperado, fração de tokens mascarados bate com o cálculo manual), mas NÃO resolveu
-  o sintoma de degeneração observado em nenhuma rodada anterior.** A hipótese "loss computada sobre
-  o prompt inteiro explica o eco" está descartada como causa suficiente — pode ainda ser uma causa
-  parcial (a loss durante o treino ficou mais saudável), mas não é a causa dominante da degeneração
-  na geração.
-
-### Recomendação — 2026-09-01
-
-1. **Não repetir esta hipótese específica.** Masking de labels é uma correção tecnicamente
-   correta e deve permanecer (é o padrão certo de instruction-tuning, sem trade-off negativo
-   conhecido), mas não é o gargalo que produz eco/degeneração neste par.
-2. **Duas causas mais prováveis ainda não isoladas, por ordem de suspeita:**
-   - **Dataset minúsculo e extremamente repetitivo** (57 chunks derivados de UM único par, com
-     overlap de 256 tokens entre janelas — grande sobreposição de conteúdo) pode não fornecer
-     sinal suficiente para o modelo aprender a transição robusta prompt→resposta, não importa o
-     masking. Achado já registrado no "Diagnóstico de degeneração por época": mais épocas sobre
-     esse dataset pioram, não melhoram, a saída.
-   - **Prompt truncado a 1024 tokens de um `.tcl` real de 10.101 tokens** corta a maior parte do
-     contexto de entrada tanto no treino quanto na geração — o modelo nunca vê o `.tcl` completo,
-     então a "âncora" que ensinaria quando parar de ecoar e começar a traduzir pode estar ausente
-     estruturalmente, independente de quantas épocas ou se a loss está mascarada corretamente.
-3. **Próximo experimento sugerido (fora do orçamento desta sessão):** aumentar o budget de prompt
-   (`MAX_LEN` maior, ex. 4096 com o par mais curto do dataset em vez do mais longo) para testar se
-   a falta de contexto do `.tcl` é de fato o gargalo, isolando essa variável do dataset
-   repetitivo — usar um par diferente, mais curto, que caiba inteiro sem chunking, para eliminar a
-   variável "chunking com muito overlap" ao mesmo tempo.
-4. **Reavaliar se o objetivo "aprender 1 mapeamento específico via fine-tuning" continua o caminho
-   certo** antes de investir mais tempo de CPU — depois de 4 rodadas de diagnóstico (masking,
-   truncamento de prompt, número de épocas, mitigadores de geração) sem produzir XSLT válido uma
-   única vez de forma reprodutível, a relação custo (~2h de CPU por rodada)/sinal está ficando
-   desfavorável. Escalar essa avaliação ao dono antes da próxima rodada de treino.
+**Recomendação final desta linha de investigação:** seguir para os itens 2/3 já autorizados pelo
+dono — **aumentar o rank do LoRA (r=16-32, considerar adicionar `k_proj`/`o_proj`/módulos MLP
+como `target_modules`) e/ou trocar para um modelo base maior**, mesmo que isso deixe o servidor
+mais lento (autorização explícita do dono, mesmo sem GPU). O teste de sampling desta sessão não
+elimina a necessidade desse próximo passo — ele reforça que o gargalo é capacidade de aprender a
+gramática-alvo, não a estratégia de decodificação na hora de gerar.
 
 ### Scripts desta sessão (não commitados — artefatos de sessão na VM)
 
-`~/smoke_train_ckpt_masked.py` (treino com masking de labels), `~/infer_single_pair_masked.py`
-(validação por geração), adapter `~/lora_single_pair_adapter_masked/`, saída
-`~/gerado_single_pair_masked.xsl` — todos em `elson@172.25.32.5:~/`, mesmo tratamento dos
-artefatos de teste anteriores.
+`~/infer_fullprompt_sampling.py` (3 configs × 2 runs de sampling sobre o adapter já treinado,
+sem retreinar), saídas `~/gerado_sampling_{t03,t07,t10}_run{1,2}.xsl` — todos em
+`elson@172.25.32.5:~/`, mesmo tratamento dos artefatos de teste anteriores.

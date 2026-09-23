@@ -35,7 +35,8 @@
     <!-- Leitura de PDF (issue #172, orientações de correção XSD): PdfPig, Apache-2.0, mesma
          biblioteca já validada em ai/XslSynth/NtPipeline/PdfSmokeExtractor.cs (protótipo B5 P-2) -
          evita depender de PdfSharp/iTextSharp (AGPL/comercial em versões recentes, ver TODO
-         original no XsdValidationService). -->
+         original no XsdValidationService). Não faz OCR (PDFs escaneados como imagem não são
+         cobertos). -->
     <PackageReference Include="PdfPig" Version="0.1.16" />
     <!-- Analyzer Roslyn de seguranca estatica (SAST), gratuito e sem infra extra - roda dentro
          do dotnet build normal. Alternativa ao CodeQL/GitHub Advanced Security, que exige
