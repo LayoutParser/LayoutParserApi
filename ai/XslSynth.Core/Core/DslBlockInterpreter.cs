@@ -124,8 +124,131 @@ public sealed class DslBlockInterpreter
 
         // Cópia direta de um operando (#.temp ou I.LINHA/x)
         var direct = ResolvePath(rhs, bindings);
-        return direct is null ? null : $"<xsl:value-of select=\"{direct}\"/>";
+        if (direct is not null) return $"<xsl:value-of select=\"{direct}\"/>";
+
+        // Expressão composta (Concat/Substring/GetLength) — regra de negócio "prefixo + truncamento"
+        // (ex.: xJust da inutilização) declarada NO PRÓPRIO mapeador. Sem isto a regra era perdida
+        // (caía no LLM/stub) mesmo estando explícita no DSL — issue #438.
+        var expr = ExprXPath(rhs, bindings);
+        return expr is null ? null : $"<xsl:value-of select=\"{AttrEscape(expr)}\"/>";
     }
+
+    // ── Expressões compostas ────────────────────────────────────────────────
+    // Subconjunto DETERMINÍSTICO e semanticamente exato do DSL real (confirmado no dataset
+    // sysmiddle-dsl-dataset): Concat(a, b, ...) → concat(); Substring(x, ini0, len) → substring(x, ini0+1, len)
+    // (o DSL é 0-based, XPath é 1-based); GetLength(x) → string-length(x). Qualquer outra função
+    // (Trim, Replace, PadLeft…) devolve null — "não inventa o raro" (Trim ≠ normalize-space, p.ex.).
+
+    private static readonly Regex CallRx =
+        new(@"^(Concat|Substring|GetLength)\s*\((.*)\)$", RegexOptions.Compiled | RegexOptions.Singleline | RegexOptions.IgnoreCase);
+
+    private static readonly Regex QuotedLiteral = new(@"^'([^'\\]*)'$", RegexOptions.Compiled);
+    private static readonly Regex IntArg = new(@"^'?([0-9]+)'?$", RegexOptions.Compiled);
+
+    /// <summary>Traduz uma expressão DSL composta para XPath 1.0. null = fora do subconjunto suportado.</summary>
+    internal static string? ExprXPath(string expr, IReadOnlyDictionary<string, string> bindings)
+    {
+        expr = expr.Trim();
+
+        var lit = QuotedLiteral.Match(expr);
+        if (lit.Success)
+            return "'" + lit.Groups[1].Value + "'"; // sem aspa simples/barra dentro (regex garante)
+
+        var path = ResolvePath(expr, bindings);
+        if (path is not null) return path;
+
+        var call = CallRx.Match(expr);
+        if (!call.Success || !ParensBalancedAsSingleCall(expr)) return null;
+
+        var name = call.Groups[1].Value.ToLowerInvariant();
+        var args = SplitTopLevel(call.Groups[2].Value);
+        if (args is null) return null;
+
+        switch (name)
+        {
+            case "concat":
+            {
+                if (args.Count == 0) return null;
+                var parts = new List<string>(args.Count);
+                foreach (var a in args)
+                {
+                    var p = ExprXPath(a, bindings);
+                    if (p is null) return null;
+                    parts.Add(p);
+                }
+                // XPath concat() exige >= 2 argumentos.
+                return parts.Count == 1 ? $"string({parts[0]})" : $"concat({string.Join(",", parts)})";
+            }
+            case "substring":
+            {
+                if (args.Count != 3) return null;
+                var src = ExprXPath(args[0], bindings);
+                var ini = IntArg.Match(args[1].Trim());
+                var len = IntArg.Match(args[2].Trim());
+                if (src is null || !ini.Success || !len.Success) return null;
+                return $"substring({src},{int.Parse(ini.Groups[1].Value) + 1},{len.Groups[1].Value})";
+            }
+            case "getlength":
+            {
+                if (args.Count != 1) return null;
+                var src = ExprXPath(args[0], bindings);
+                return src is null ? null : $"string-length({src})";
+            }
+            default:
+                return null;
+        }
+    }
+
+    /// <summary>Garante que o ')' final fecha o '(' da chamada externa (e não de um argumento).</summary>
+    private static bool ParensBalancedAsSingleCall(string s)
+    {
+        var open = s.IndexOf('(');
+        if (open < 0) return false;
+        var depth = 0;
+        var inQuote = false;
+        for (var i = open; i < s.Length; i++)
+        {
+            var c = s[i];
+            if (c == '\'') { inQuote = !inQuote; continue; }
+            if (inQuote) continue;
+            if (c == '(') depth++;
+            else if (c == ')')
+            {
+                depth--;
+                if (depth == 0) return i == s.Length - 1;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>Divide "a, 'b,c', f(x,y)" em argumentos no nível 0, respeitando aspas e parênteses.</summary>
+    private static List<string>? SplitTopLevel(string s)
+    {
+        var args = new List<string>();
+        var depth = 0;
+        var inQuote = false;
+        var start = 0;
+        for (var i = 0; i < s.Length; i++)
+        {
+            var c = s[i];
+            if (c == '\'') { inQuote = !inQuote; continue; }
+            if (inQuote) continue;
+            if (c == '(') depth++;
+            else if (c == ')') depth--;
+            else if (c == ',' && depth == 0)
+            {
+                args.Add(s[start..i]);
+                start = i + 1;
+            }
+            if (depth < 0) return null;
+        }
+        if (inQuote || depth != 0) return null;
+        args.Add(s[start..]);
+        return args.Any(a => a.Trim().Length == 0) ? null : args;
+    }
+
+    private static string AttrEscape(string s) =>
+        s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;").Replace("\"", "&quot;");
 
     /// <summary>Resolve um operando (#.temp | I.LINHA/x) para um XPath. null se for literal/desconhecido.</summary>
     private static string? ResolvePath(string operand, IReadOnlyDictionary<string, string> bindings)
