@@ -78,5 +78,11 @@ namespace LayoutParserApi.Models.Fiscal
         /// erro, é informação para o humano revisar se esperava uma regra ali.
         /// </summary>
         public List<string> SkippedSheets { get; set; } = new();
+
+        /// <summary>
+        /// Nomes das colunas do cabeçalho de cada aba de tabela de decisão (aba → colunas, incluindo o
+        /// rótulo "Regra"). Só nomes de cabeçalho, nunca valores de dados (issue #424).
+        /// </summary>
+        public Dictionary<string, List<string>> SheetHeaders { get; set; } = new();
     }
 }

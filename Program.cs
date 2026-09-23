@@ -539,8 +539,17 @@ try
     // automática lazy de TCL/XSL/XSLT para um mapper Sysmiddle — mesmo banco/padrão ADO.NET, tabela
     // autossuficiente (sem FK). Reaproveita o loop determinístico de ai/XslSynth.Core in-process.
     builder.Services.AddScoped<LayoutParserApi.Services.Interfaces.IGeneratedMapperArtifactStore, LayoutParserApi.Services.Database.SqlGeneratedMapperArtifactStore>();
+    // ✅ Issue #473 (fase 2 do trigger lazy #438, ADR §3/§6): config do job periódico + limite de
+    // concorrência ÚNICO, compartilhado entre o trigger lazy e o job periódico (Singleton — um só
+    // SemaphoreSlim no processo, nunca dois limites independentes).
+    builder.Services.Configure<LayoutParserApi.Services.Transformation.Ai.GeneratedMapperSweepOptions>(
+        builder.Configuration.GetSection("GeneratedMapperSweep"));
+    builder.Services.AddSingleton<LayoutParserApi.Services.Transformation.Ai.GeneratedMapperGenerationLimiter>();
     builder.Services.AddScoped<LayoutParserApi.Services.Transformation.Ai.IGeneratedMapperArtifactService, LayoutParserApi.Services.Transformation.Ai.GeneratedMapperArtifactService>();
     builder.Services.AddScoped<LayoutParserApi.Services.Transformation.Ai.IGeneratedMapperListService, LayoutParserApi.Services.Transformation.Ai.GeneratedMapperListService>();
+    // Job periódico (issue #473): varre tbMapper e dispara geração para quem não tem candidato ou está
+    // stale, reaproveitando GetOrTriggerAsync acima — não bloqueia o startup (delay inicial de 2min).
+    builder.Services.AddHostedService<LayoutParserApi.Services.Transformation.Ai.GeneratedMapperArtifactSweepService>();
     // ✅ Investigação PR #310 (2026-09-05): schema fiscal criado em ordem de dependência de FK no
     // startup, em vez de depender de qual store acima uma requisição real exercita primeiro. Ver
     // <see cref="LayoutParserApi.Services.Database.FiscalSchemaInitializer"/> para o grafo completo.

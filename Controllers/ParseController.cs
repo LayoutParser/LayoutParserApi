@@ -82,12 +82,19 @@ namespace LayoutParserApi.Controllers
         /// aprendizado (<c>TransformationPipeline:ExamplesPath</c>) e para dar override no tipo
         /// detectado quando contém "MQ".
         /// </param>
+        /// <param name="workspaceId">
+        /// Opcional (issue #366). GUID do workspace; quando presente, válido, com usuário identificado
+        /// e membro do workspace, a análise (documento + layout) é registrada no histórico
+        /// (<c>GET api/workspaces/{ws}/analyses</c>). Sem ele, ou se o registro falhar/estourar 5 s, o
+        /// parse segue normalmente e <c>historyRegistered</c> vem <c>false</c>.
+        /// </param>
         /// <returns>
         /// Documento parseado (<c>layout</c>, <c>fields</c>, <c>documentStructure</c>,
         /// <c>lineValidations</c>) + estado do pathway de transformação low-code
         /// (<c>transformations</c>, <c>transformationsStatus</c>, <c>transformationsTicket</c>).
         /// Se o arquivo enviado for XML, retorna instrução para processar no front-end em vez de
-        /// tentar parsear no servidor.
+        /// tentar parsear no servidor. Campos aditivos do histórico (#366): <c>analysisId</c> (omitido
+        /// quando a análise não foi registrada) e <c>historyRegistered</c> (bool).
         /// </returns>
         /// <response code="200">Parse concluído (mesmo com <c>validationErrors</c> — o parse degrada, não falha, quando o defeito é localizável).</response>
         /// <response code="400">Layout XML ou documento ausente, ou layout não é <c>.xml</c>.</response>
@@ -765,6 +772,12 @@ namespace LayoutParserApi.Controllers
         /// <param name="layoutGuidOverride">GUID opcional escolhido entre os candidatos ranked da detecção atual.</param>
         /// <param name="automaticLayoutDetection">Serviço determinístico de detecção.</param>
         /// <param name="cancellationToken">Cancelamento da requisição.</param>
+        /// <param name="workspaceId">
+        /// Opcional (issue #366). Mesmo comportamento de <c>POST /api/parse/upload</c>: registra a
+        /// análise no histórico do workspace. Em <c>/auto</c> o <c>analysisId</c>/<c>historyRegistered</c>
+        /// ficam dentro de <c>parseResult</c>, e o layout do catálogo é guardado só como GUID (o XML
+        /// descriptografado nunca vai para o histórico).
+        /// </param>
         [ServiceFilter(typeof(AuditActionFilter))]
         [HttpPost("auto")]
         [Consumes("multipart/form-data")]

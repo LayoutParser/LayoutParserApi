@@ -122,9 +122,12 @@ namespace LayoutParserApi.Tests.Services.Transformation.Ai
             var provider = services.BuildServiceProvider();
 
             var ollamaOptions = Options.Create(new OllamaOptions { Url = "http://127.0.0.1:1", Model = "n/a" });
+            // Issue #473: mesmo limite compartilhado que a versão real usaria via DI — instanciado
+            // direto aqui (não Singleton no container de teste) para não vazar entre testes.
+            var limiter = new GeneratedMapperGenerationLimiter(Options.Create(new GeneratedMapperSweepOptions()));
             var service = new GeneratedMapperArtifactService(
                 mapperService, store, provider.GetRequiredService<IServiceScopeFactory>(),
-                NullLogger<GeneratedMapperArtifactService>.Instance, ollamaOptions, layoutService);
+                NullLogger<GeneratedMapperArtifactService>.Instance, ollamaOptions, limiter, layoutService);
 
             return (service, store, mapperService, provider);
         }
