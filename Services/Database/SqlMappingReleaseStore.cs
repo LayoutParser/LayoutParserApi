@@ -47,22 +47,27 @@ namespace LayoutParserApi.Services.Database
             IReadOnlyList<MappingReleaseCompileDiagnostic> compileDiagnostics,
             string correlationId,
             Guid jobId,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            FiscalProfile? fiscalProfile = null)
         {
             using var connection = new SqlConnection(_connectionString);
             await connection.OpenAsync(cancellationToken);
             await EnsureSchemaAsync(connection, cancellationToken);
 
             // Idempotência (design §2): mesmo DraftId + mesmo hash do snapshot de regras já compilado
-            // devolve a release existente, não duplica.
+            // devolve a release existente, não duplica. ArtifactSource='compiled' é essencial (issue
+            // #381, ADR §2.2 item 3): uma release manual_edit herda o MESMO RulesSnapshotHash da base,
+            // então sem este filtro a compilação (no-op) devolveria a release editada à mão em vez da
+            // compiled original — quebraria "recompilar nunca sobrescreve/some com a manual_edit".
             using (var existing = new SqlCommand(
                 @"SELECT TOP 1 ReleaseId FROM dbo.tbMappingRelease
-                  WHERE DraftId = @DraftId AND RulesSnapshotHash = @RulesSnapshotHash
+                  WHERE DraftId = @DraftId AND RulesSnapshotHash = @RulesSnapshotHash AND ArtifactSource = @ArtifactSource
                   ORDER BY CreatedAt DESC;",
                 connection))
             {
                 existing.Parameters.AddWithValue("@DraftId", draftId);
                 existing.Parameters.AddWithValue("@RulesSnapshotHash", rulesSnapshotHash);
+                existing.Parameters.AddWithValue("@ArtifactSource", MappingReleaseArtifactSource.Compiled);
                 var existingId = await existing.ExecuteScalarAsync(cancellationToken);
                 if (existingId is Guid releaseId)
                 {
@@ -79,10 +84,10 @@ namespace LayoutParserApi.Services.Database
             using (var insert = new SqlCommand(
                 @"INSERT INTO dbo.tbMappingRelease
                     (ReleaseId, WorkspaceId, DraftId, Engine, ArtifactsJson, SourceRuleIdsJson, CompileDiagnosticsJson,
-                     RulesSnapshotHash, TestRunSummaryJson, Status, CorrelationId, CreatedByJobId, CreatedAt)
+                     RulesSnapshotHash, TestRunSummaryJson, Status, CorrelationId, CreatedByJobId, CreatedAt, FiscalProfileJson)
                   VALUES
                     (@ReleaseId, @WorkspaceId, @DraftId, @Engine, @ArtifactsJson, @SourceRuleIdsJson, @CompileDiagnosticsJson,
-                     @RulesSnapshotHash, NULL, @Status, @CorrelationId, @CreatedByJobId, SYSUTCDATETIME());",
+                     @RulesSnapshotHash, NULL, @Status, @CorrelationId, @CreatedByJobId, SYSUTCDATETIME(), @FiscalProfileJson);",
                 connection))
             {
                 insert.Parameters.AddWithValue("@ReleaseId", newReleaseId);
@@ -96,6 +101,7 @@ namespace LayoutParserApi.Services.Database
                 insert.Parameters.AddWithValue("@Status", MappingReleaseStatus.DraftCompiled);
                 insert.Parameters.AddWithValue("@CorrelationId", correlationId);
                 insert.Parameters.AddWithValue("@CreatedByJobId", jobId);
+                insert.Parameters.AddWithValue("@FiscalProfileJson", (object?)(fiscalProfile != null ? JsonSerializer.Serialize(fiscalProfile, JsonOptions) : null) ?? DBNull.Value);
                 await insert.ExecuteNonQueryAsync(cancellationToken);
             }
 
@@ -113,7 +119,8 @@ namespace LayoutParserApi.Services.Database
                 @"SELECT r.ReleaseId, r.WorkspaceId, r.DraftId, r.Engine, r.ArtifactsJson, r.SourceRuleIdsJson,
                          r.CompileDiagnosticsJson, r.RulesSnapshotHash, r.TestRunSummaryJson, r.Status, r.CorrelationId,
                          r.CreatedAt, r.RowVersion, r.Environment, r.ApprovedByUserId, r.ApprovedAt, r.ApprovalJustification,
-                         r.PublishedByUserId, r.PublishedAt, r.PreviousPublishedReleaseId
+                         r.PublishedByUserId, r.PublishedAt, r.PreviousPublishedReleaseId, r.FiscalProfileJson,
+                         r.ArtifactSource, r.DerivedFromReleaseId, r.ManualEditReason, r.ManuallyEditedArtifactKindsJson
                   FROM dbo.tbMappingRelease r
                   JOIN dbo.tbLpWorkspaceMembership m ON m.WorkspaceId = r.WorkspaceId AND m.UserId = @UserId
                   WHERE r.ReleaseId = @ReleaseId;",
@@ -128,7 +135,9 @@ namespace LayoutParserApi.Services.Database
         }
 
         public async Task<(IReadOnlyList<MappingReleaseDetail> Items, int TotalCount)> ListByWorkspaceAsync(
-            Guid workspaceId, int page, int pageSize, CancellationToken cancellationToken)
+            Guid workspaceId, int page, int pageSize,
+            string? status, Guid? draftId, string? environment,
+            CancellationToken cancellationToken)
         {
             using var connection = new SqlConnection(_connectionString);
             await connection.OpenAsync(cancellationToken);
@@ -137,22 +146,41 @@ namespace LayoutParserApi.Services.Database
             var items = new List<MappingReleaseDetail>();
             var totalCount = 0;
 
+            // Filtros opcionais (issue #377): a cláusula WHERE é montada só a partir de fragmentos
+            // CONSTANTES no código — nenhum valor vindo do cliente é concatenado. Os valores entram
+            // exclusivamente por SqlParameter, condicionalmente. Sem filtro = WHERE idêntico ao anterior.
+            var conditions = new List<string> { "WorkspaceId = @WorkspaceId" };
+            if (!string.IsNullOrWhiteSpace(status))
+                conditions.Add("Status = @Status");
+            if (draftId is not null)
+                conditions.Add("DraftId = @DraftId");
+            if (!string.IsNullOrWhiteSpace(environment))
+                conditions.Add("Environment = @Environment");
+            var whereClause = string.Join(" AND ", conditions);
+
             // COUNT(*) OVER() traz o total na mesma ida ao banco — evita um segundo round-trip só
             // para paginação. Isolamento por WorkspaceId direto na cláusula WHERE (nunca em memória).
             using var command = new SqlCommand(
-                @"SELECT ReleaseId, WorkspaceId, DraftId, Engine, ArtifactsJson, SourceRuleIdsJson,
+                $@"SELECT ReleaseId, WorkspaceId, DraftId, Engine, ArtifactsJson, SourceRuleIdsJson,
                          CompileDiagnosticsJson, RulesSnapshotHash, TestRunSummaryJson, Status, CorrelationId,
                          CreatedAt, RowVersion, Environment, ApprovedByUserId, ApprovedAt, ApprovalJustification,
-                         PublishedByUserId, PublishedAt, PreviousPublishedReleaseId,
+                         PublishedByUserId, PublishedAt, PreviousPublishedReleaseId, FiscalProfileJson,
+                         ArtifactSource, DerivedFromReleaseId, ManualEditReason, ManuallyEditedArtifactKindsJson,
                          COUNT(*) OVER() AS TotalCount
                   FROM dbo.tbMappingRelease
-                  WHERE WorkspaceId = @WorkspaceId
+                  WHERE {whereClause}
                   ORDER BY CreatedAt DESC
                   OFFSET @Offset ROWS FETCH NEXT @PageSize ROWS ONLY;",
                 connection);
             command.Parameters.AddWithValue("@WorkspaceId", workspaceId);
             command.Parameters.AddWithValue("@Offset", (page - 1) * pageSize);
             command.Parameters.AddWithValue("@PageSize", pageSize);
+            if (!string.IsNullOrWhiteSpace(status))
+                command.Parameters.AddWithValue("@Status", status);
+            if (draftId is Guid draftIdValue)
+                command.Parameters.AddWithValue("@DraftId", draftIdValue);
+            if (!string.IsNullOrWhiteSpace(environment))
+                command.Parameters.AddWithValue("@Environment", environment);
 
             using var reader = await command.ExecuteReaderAsync(cancellationToken);
             while (await reader.ReadAsync(cancellationToken))
@@ -195,7 +223,8 @@ namespace LayoutParserApi.Services.Database
                 @"SELECT ReleaseId, WorkspaceId, DraftId, Engine, ArtifactsJson, SourceRuleIdsJson,
                          CompileDiagnosticsJson, RulesSnapshotHash, TestRunSummaryJson, Status, CorrelationId,
                          CreatedAt, RowVersion, Environment, ApprovedByUserId, ApprovedAt, ApprovalJustification,
-                         PublishedByUserId, PublishedAt, PreviousPublishedReleaseId
+                         PublishedByUserId, PublishedAt, PreviousPublishedReleaseId, FiscalProfileJson,
+                         ArtifactSource, DerivedFromReleaseId, ManualEditReason, ManuallyEditedArtifactKindsJson
                   FROM dbo.tbMappingRelease WHERE ReleaseId = @ReleaseId;",
                 connection);
             command.Parameters.AddWithValue("@ReleaseId", releaseId);
@@ -234,7 +263,24 @@ namespace LayoutParserApi.Services.Database
                 reader.IsDBNull(reader.GetOrdinal("ApprovalJustification")) ? null : reader.GetString(reader.GetOrdinal("ApprovalJustification")),
                 reader.IsDBNull(reader.GetOrdinal("PublishedByUserId")) ? null : reader.GetGuid(reader.GetOrdinal("PublishedByUserId")),
                 reader.IsDBNull(reader.GetOrdinal("PublishedAt")) ? null : new DateTimeOffset(reader.GetDateTime(reader.GetOrdinal("PublishedAt")), TimeSpan.Zero),
-                reader.IsDBNull(reader.GetOrdinal("PreviousPublishedReleaseId")) ? null : reader.GetGuid(reader.GetOrdinal("PreviousPublishedReleaseId")));
+                reader.IsDBNull(reader.GetOrdinal("PreviousPublishedReleaseId")) ? null : reader.GetGuid(reader.GetOrdinal("PreviousPublishedReleaseId")),
+                ReadFiscalProfile(reader, "FiscalProfileJson"),
+                reader.GetString(reader.GetOrdinal("ArtifactSource")),
+                reader.IsDBNull(reader.GetOrdinal("DerivedFromReleaseId")) ? null : reader.GetGuid(reader.GetOrdinal("DerivedFromReleaseId")),
+                reader.IsDBNull(reader.GetOrdinal("ManualEditReason")) ? null : reader.GetString(reader.GetOrdinal("ManualEditReason")),
+                ReadManuallyEditedArtifactKinds(reader, "ManuallyEditedArtifactKindsJson"));
+        }
+
+        private static FiscalProfile? ReadFiscalProfile(SqlDataReader reader, string columnName)
+        {
+            var ordinal = reader.GetOrdinal(columnName);
+            return reader.IsDBNull(ordinal) ? null : JsonSerializer.Deserialize<FiscalProfile>(reader.GetString(ordinal), JsonOptions);
+        }
+
+        private static IReadOnlyList<string>? ReadManuallyEditedArtifactKinds(SqlDataReader reader, string columnName)
+        {
+            var ordinal = reader.GetOrdinal(columnName);
+            return reader.IsDBNull(ordinal) ? null : JsonSerializer.Deserialize<List<string>>(reader.GetString(ordinal), JsonOptions);
         }
 
         // ✅ Campo público-de-assembly — mesma justificativa de <see cref="SqlFiscalPackageStore.SchemaDdl"/>
@@ -288,6 +334,31 @@ ALTER TABLE dbo.tbMappingRelease ADD PublishedAt DATETIME2 NULL;
 
 IF COL_LENGTH('dbo.tbMappingRelease', 'PreviousPublishedReleaseId') IS NULL
 ALTER TABLE dbo.tbMappingRelease ADD PreviousPublishedReleaseId UNIQUEIDENTIFIER NULL;
+
+-- Issue #379 (ADR perfil fiscal §2.5): snapshot congelado do perfil fiscal na compilação.
+IF COL_LENGTH('dbo.tbMappingRelease', 'FiscalProfileJson') IS NULL
+ALTER TABLE dbo.tbMappingRelease ADD FiscalProfileJson NVARCHAR(MAX) NULL;
+
+-- Issue #381 (ADR edição manual de artefato §2.1): editor manual TCL/XSLT. ArtifactContentHash só é
+-- preenchido em ArtifactSource='manual_edit' — usado para a identidade nova (DraftId,
+-- RulesSnapshotHash, ArtifactContentHash) e para a idempotência do PATCH .../artifacts/{engine}.
+IF COL_LENGTH('dbo.tbMappingRelease', 'ArtifactSource') IS NULL
+ALTER TABLE dbo.tbMappingRelease ADD ArtifactSource NVARCHAR(16) NOT NULL CONSTRAINT DF_tbMappingRelease_ArtifactSource DEFAULT 'compiled';
+
+IF COL_LENGTH('dbo.tbMappingRelease', 'DerivedFromReleaseId') IS NULL
+ALTER TABLE dbo.tbMappingRelease ADD DerivedFromReleaseId UNIQUEIDENTIFIER NULL;
+
+IF COL_LENGTH('dbo.tbMappingRelease', 'ManualEditReason') IS NULL
+ALTER TABLE dbo.tbMappingRelease ADD ManualEditReason NVARCHAR(1024) NULL;
+
+IF COL_LENGTH('dbo.tbMappingRelease', 'ManuallyEditedArtifactKindsJson') IS NULL
+ALTER TABLE dbo.tbMappingRelease ADD ManuallyEditedArtifactKindsJson NVARCHAR(MAX) NULL;
+
+IF COL_LENGTH('dbo.tbMappingRelease', 'ArtifactContentHash') IS NULL
+ALTER TABLE dbo.tbMappingRelease ADD ArtifactContentHash NVARCHAR(64) NULL;
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_tbMappingRelease_DraftId_RulesHash_ArtifactHash' AND object_id = OBJECT_ID('dbo.tbMappingRelease'))
+CREATE INDEX IX_tbMappingRelease_DraftId_RulesHash_ArtifactHash ON dbo.tbMappingRelease(DraftId, RulesSnapshotHash, ArtifactContentHash);
 
 IF OBJECT_ID('dbo.tbMappingTransition', 'U') IS NULL
 CREATE TABLE dbo.tbMappingTransition (
@@ -495,6 +566,243 @@ CREATE INDEX IX_tbMappingTransition_ReleaseId ON dbo.tbMappingTransition(Release
             return await GetReleaseAsync(connection, releaseId, cancellationToken)
                 ?? throw new InvalidOperationException("Falha ao reler a release após rollback.");
         }
+
+        public async Task<MappingReleaseDetail> DeprecateAsync(Guid releaseId, Guid actorUserId, string? justification, CancellationToken cancellationToken)
+        {
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await EnsureSchemaAsync(connection, cancellationToken);
+
+            using var tx = connection.BeginTransaction();
+            try
+            {
+                var current = await GetReleaseForUpdateAsync(connection, tx, releaseId, cancellationToken)
+                    ?? throw new InvalidOperationException($"Release {releaseId} não encontrada.");
+
+                // Idempotente (mesmo padrão do rollback): já deprecada — no-op, sem transição nova.
+                if (current.Status == MappingReleaseStatus.Deprecated)
+                {
+                    await tx.CommitAsync(cancellationToken);
+                    return await GetReleaseAsync(connection, releaseId, cancellationToken)
+                        ?? throw new InvalidOperationException("Falha ao reler a release na deprecação idempotente.");
+                }
+
+                if (current.Status != MappingReleaseStatus.Published)
+                    throw new InvalidOperationException($"Release {releaseId} está em \"{current.Status}\"; deprecação manual exige \"{MappingReleaseStatus.Published}\".");
+
+                await InsertTransitionAsync(connection, tx, releaseId, MappingReleaseStatus.Published, MappingReleaseStatus.Deprecated, actorUserId, justification ?? "Deprecação manual.", null, cancellationToken);
+                using (var update = new SqlCommand(
+                    "UPDATE dbo.tbMappingRelease SET Status = @Status WHERE ReleaseId = @ReleaseId;", connection, tx))
+                {
+                    update.Parameters.AddWithValue("@Status", MappingReleaseStatus.Deprecated);
+                    update.Parameters.AddWithValue("@ReleaseId", releaseId);
+                    await update.ExecuteNonQueryAsync(cancellationToken);
+                }
+
+                await tx.CommitAsync(cancellationToken);
+            }
+            catch
+            {
+                await tx.RollbackAsync(cancellationToken);
+                throw;
+            }
+
+            return await GetReleaseAsync(connection, releaseId, cancellationToken)
+                ?? throw new InvalidOperationException("Falha ao reler a release após deprecação.");
+        }
+
+        // Origens válidas para arquivamento manual (issue #378): deprecated é o caminho normal;
+        // test_failed/in_review cobrem releases abandonadas que nunca chegaram a publicar.
+        private static readonly string[] ArchivableFromStatuses =
+        {
+            MappingReleaseStatus.Deprecated,
+            MappingReleaseStatus.TestFailed,
+            MappingReleaseStatus.InReview,
+        };
+
+        public async Task<MappingReleaseDetail> ArchiveAsync(Guid releaseId, Guid actorUserId, string? justification, CancellationToken cancellationToken)
+        {
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await EnsureSchemaAsync(connection, cancellationToken);
+
+            using var tx = connection.BeginTransaction();
+            try
+            {
+                var current = await GetReleaseForUpdateAsync(connection, tx, releaseId, cancellationToken)
+                    ?? throw new InvalidOperationException($"Release {releaseId} não encontrada.");
+
+                // Idempotente: já arquivada — no-op, sem transição nova.
+                if (current.Status == MappingReleaseStatus.Archived)
+                {
+                    await tx.CommitAsync(cancellationToken);
+                    return await GetReleaseAsync(connection, releaseId, cancellationToken)
+                        ?? throw new InvalidOperationException("Falha ao reler a release no arquivamento idempotente.");
+                }
+
+                if (Array.IndexOf(ArchivableFromStatuses, current.Status) < 0)
+                    throw new InvalidOperationException($"Release {releaseId} está em \"{current.Status}\"; arquivamento manual exige um destes: {string.Join(", ", ArchivableFromStatuses)}.");
+
+                await InsertTransitionAsync(connection, tx, releaseId, current.Status, MappingReleaseStatus.Archived, actorUserId, justification ?? "Arquivamento manual.", null, cancellationToken);
+                using (var update = new SqlCommand(
+                    "UPDATE dbo.tbMappingRelease SET Status = @Status WHERE ReleaseId = @ReleaseId;", connection, tx))
+                {
+                    update.Parameters.AddWithValue("@Status", MappingReleaseStatus.Archived);
+                    update.Parameters.AddWithValue("@ReleaseId", releaseId);
+                    await update.ExecuteNonQueryAsync(cancellationToken);
+                }
+
+                await tx.CommitAsync(cancellationToken);
+            }
+            catch
+            {
+                await tx.RollbackAsync(cancellationToken);
+                throw;
+            }
+
+            return await GetReleaseAsync(connection, releaseId, cancellationToken)
+                ?? throw new InvalidOperationException("Falha ao reler a release após arquivamento.");
+        }
+
+        public async Task<CreateManualEditOutcome> CreateManualEditArtifactReleaseAsync(
+            Guid workspaceId,
+            Guid draftId,
+            string engine,
+            string content,
+            string manualEditReason,
+            string expectedArtifactHash,
+            Guid actorUserId,
+            string correlationId,
+            CancellationToken cancellationToken)
+        {
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await EnsureSchemaAsync(connection, cancellationToken);
+
+            using var tx = connection.BeginTransaction();
+            try
+            {
+                // Release-base: a mais recente do draft para este engine (compiled OU manual_edit —
+                // ADR §2.3: "normalmente a última compiled ou a última manual_edit daquele draft/engine").
+                Guid? baseReleaseId = null;
+                MappingReleaseArtifact? baseArtifact = null;
+                string? baseRulesSnapshotHash = null;
+                List<Guid>? baseSourceRuleIds = null;
+
+                using (var findBase = new SqlCommand(
+                    @"SELECT TOP 1 ReleaseId, ArtifactsJson, RulesSnapshotHash, SourceRuleIdsJson
+                      FROM dbo.tbMappingRelease WITH (UPDLOCK, ROWLOCK)
+                      WHERE DraftId = @DraftId AND Engine = @Engine
+                      ORDER BY CreatedAt DESC;", connection, tx))
+                {
+                    findBase.Parameters.AddWithValue("@DraftId", draftId);
+                    findBase.Parameters.AddWithValue("@Engine", engine);
+                    using var reader = await findBase.ExecuteReaderAsync(cancellationToken);
+                    if (await reader.ReadAsync(cancellationToken))
+                    {
+                        baseReleaseId = reader.GetGuid(0);
+                        var artifacts = JsonSerializer.Deserialize<List<MappingReleaseArtifact>>(reader.GetString(1), JsonOptions) ?? new();
+                        baseArtifact = artifacts.FirstOrDefault(a => a.Kind == engine);
+                        baseRulesSnapshotHash = reader.GetString(2);
+                        baseSourceRuleIds = JsonSerializer.Deserialize<List<Guid>>(reader.GetString(3), JsonOptions) ?? new();
+                    }
+                }
+
+                if (baseReleaseId is null || baseArtifact is null || baseRulesSnapshotHash is null)
+                {
+                    await tx.RollbackAsync(cancellationToken);
+                    return new CreateManualEditOutcome(CreateManualEditResult.NoBaseRelease, null, null);
+                }
+
+                if (!string.Equals(baseArtifact.Hash, expectedArtifactHash, StringComparison.Ordinal))
+                {
+                    await tx.RollbackAsync(cancellationToken);
+                    return new CreateManualEditOutcome(CreateManualEditResult.Conflict, null, baseArtifact);
+                }
+
+                var newHash = ComputeContentHash(content);
+
+                // Idempotência no eixo novo (ADR §2.1): (DraftId, RulesSnapshotHash, ArtifactContentHash)
+                // já existente devolve a release existente, não duplica.
+                using (var existing = new SqlCommand(
+                    @"SELECT TOP 1 ReleaseId FROM dbo.tbMappingRelease
+                      WHERE DraftId = @DraftId AND RulesSnapshotHash = @RulesSnapshotHash
+                        AND ArtifactSource = @ArtifactSource AND ArtifactContentHash = @ArtifactContentHash
+                      ORDER BY CreatedAt DESC;", connection, tx))
+                {
+                    existing.Parameters.AddWithValue("@DraftId", draftId);
+                    existing.Parameters.AddWithValue("@RulesSnapshotHash", baseRulesSnapshotHash);
+                    existing.Parameters.AddWithValue("@ArtifactSource", MappingReleaseArtifactSource.ManualEdit);
+                    existing.Parameters.AddWithValue("@ArtifactContentHash", newHash);
+                    var existingId = await existing.ExecuteScalarAsync(cancellationToken);
+                    if (existingId is Guid existingReleaseId)
+                    {
+                        await tx.CommitAsync(cancellationToken);
+                        var existingDetail = await GetReleaseAsync(connection, existingReleaseId, cancellationToken);
+                        _logger.LogInformation("Edição manual idempotente: reusando release {ReleaseId} (draft={DraftId}, engine={Engine}).", existingReleaseId, draftId, engine);
+                        return new CreateManualEditOutcome(CreateManualEditResult.Success, existingDetail, null);
+                    }
+                }
+
+                var newReleaseId = Guid.NewGuid();
+                var newArtifact = new MappingReleaseArtifact(engine, content, newHash, DateTimeOffset.UtcNow);
+                var manuallyEditedKinds = new List<string> { engine };
+
+                using (var insert = new SqlCommand(
+                    @"INSERT INTO dbo.tbMappingRelease
+                        (ReleaseId, WorkspaceId, DraftId, Engine, ArtifactsJson, SourceRuleIdsJson, CompileDiagnosticsJson,
+                         RulesSnapshotHash, TestRunSummaryJson, Status, CorrelationId, CreatedByJobId, CreatedAt,
+                         ArtifactSource, DerivedFromReleaseId, ManualEditReason, ManuallyEditedArtifactKindsJson, ArtifactContentHash)
+                      VALUES
+                        (@ReleaseId, @WorkspaceId, @DraftId, @Engine, @ArtifactsJson, @SourceRuleIdsJson, @CompileDiagnosticsJson,
+                         @RulesSnapshotHash, NULL, @Status, @CorrelationId, @CreatedByJobId, SYSUTCDATETIME(),
+                         @ArtifactSource, @DerivedFromReleaseId, @ManualEditReason, @ManuallyEditedArtifactKindsJson, @ArtifactContentHash);",
+                    connection, tx))
+                {
+                    insert.Parameters.AddWithValue("@ReleaseId", newReleaseId);
+                    insert.Parameters.AddWithValue("@WorkspaceId", workspaceId);
+                    insert.Parameters.AddWithValue("@DraftId", draftId);
+                    insert.Parameters.AddWithValue("@Engine", engine);
+                    insert.Parameters.AddWithValue("@ArtifactsJson", JsonSerializer.Serialize(new[] { newArtifact }, JsonOptions));
+                    insert.Parameters.AddWithValue("@SourceRuleIdsJson", JsonSerializer.Serialize(baseSourceRuleIds ?? new List<Guid>(), JsonOptions));
+                    insert.Parameters.AddWithValue("@CompileDiagnosticsJson", JsonSerializer.Serialize(Array.Empty<MappingReleaseCompileDiagnostic>(), JsonOptions));
+                    insert.Parameters.AddWithValue("@RulesSnapshotHash", baseRulesSnapshotHash);
+                    insert.Parameters.AddWithValue("@Status", MappingReleaseStatus.DraftCompiled);
+                    insert.Parameters.AddWithValue("@CorrelationId", correlationId);
+                    insert.Parameters.AddWithValue("@CreatedByJobId", Guid.Empty);
+                    insert.Parameters.AddWithValue("@ArtifactSource", MappingReleaseArtifactSource.ManualEdit);
+                    insert.Parameters.AddWithValue("@DerivedFromReleaseId", baseReleaseId.Value);
+                    insert.Parameters.AddWithValue("@ManualEditReason", manualEditReason);
+                    insert.Parameters.AddWithValue("@ManuallyEditedArtifactKindsJson", JsonSerializer.Serialize(manuallyEditedKinds, JsonOptions));
+                    insert.Parameters.AddWithValue("@ArtifactContentHash", newHash);
+                    await insert.ExecuteNonQueryAsync(cancellationToken);
+                }
+
+                // Transição sintética null → draft_compiled (ADR §2.5). FromStatus é NOT NULL no
+                // schema — string vazia representa "sem estado anterior" (a release nasce aqui).
+                var checksSnapshot = JsonSerializer.Serialize(new
+                {
+                    derivedFromReleaseId = baseReleaseId,
+                    manuallyEditedArtifactKinds = manuallyEditedKinds,
+                    baseArtifactHash = baseArtifact.Hash,
+                }, JsonOptions);
+                await InsertTransitionAsync(connection, tx, newReleaseId, string.Empty, MappingReleaseStatus.DraftCompiled, actorUserId, manualEditReason, checksSnapshot, cancellationToken);
+
+                await tx.CommitAsync(cancellationToken);
+
+                var created = await GetReleaseAsync(connection, newReleaseId, cancellationToken)
+                    ?? throw new InvalidOperationException("Falha ao ler a release derivada recém-criada.");
+                return new CreateManualEditOutcome(CreateManualEditResult.Success, created, null);
+            }
+            catch
+            {
+                await tx.RollbackAsync(cancellationToken);
+                throw;
+            }
+        }
+
+        private static string ComputeContentHash(string content)
+            => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(content))).ToLowerInvariant();
 
         private static async Task InsertTransitionAsync(
             SqlConnection connection, SqlTransaction tx, Guid releaseId, string fromStatus, string toStatus,

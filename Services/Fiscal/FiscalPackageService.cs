@@ -19,6 +19,7 @@ namespace LayoutParserApi.Services.Fiscal
         private readonly IFiscalMappingRuleExtractor _ruleExtractor;
         private readonly ILogger<FiscalPackageService> _logger;
         private readonly string _storePath;
+        private readonly IReadOnlyList<string> _requiredRuleSheetColumns;
         private readonly MultipartUploadValidator _validator = new();
 
         // Sanitização de nome de arquivo: só o basename, sem separador de caminho/traversal.
@@ -37,6 +38,10 @@ namespace LayoutParserApi.Services.Fiscal
             _logger = logger;
             _storePath = configuration["ML:FiscalMappingPackagesPath"]
                 ?? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "MLData", "FiscalMappingPackages");
+            // ✅ issue #424: lista configurável de colunas obrigatórias (default vazio — ver FiscalSpecQualityAnalyzer).
+            _requiredRuleSheetColumns = configuration.GetSection(FiscalSpecQualityAnalyzer.RequiredColumnsConfigKey)
+                .Get<string[]>()?.Where(c => !string.IsNullOrWhiteSpace(c)).ToList()
+                ?? new List<string>();
         }
 
         public async Task<CreatePackageOutcome> CreatePackageAsync(
@@ -107,6 +112,9 @@ namespace LayoutParserApi.Services.Fiscal
                         UploadedAt = DateTimeOffset.UtcNow,
                         InspectionStatus = Models.Entities.Fiscal.InspectionStatus.Pending,
                         StoragePath = relativePath,
+                        // ✅ issue #341: só grava a proveniência se for um valor explícito e válido —
+                        // valor ausente/inválido vira null, que a leitura trata como amostra real (fail-closed).
+                        Provenance = Models.Entities.Fiscal.ArtifactProvenance.IsValid(input.Provenance) ? input.Provenance : null,
                     });
                 }
 
@@ -191,6 +199,9 @@ namespace LayoutParserApi.Services.Fiscal
                         UploadedAt = DateTimeOffset.UtcNow,
                         InspectionStatus = Models.Entities.Fiscal.InspectionStatus.Pending,
                         StoragePath = relativePath,
+                        // ✅ issue #341: só grava a proveniência se for um valor explícito e válido —
+                        // valor ausente/inválido vira null, que a leitura trata como amostra real (fail-closed).
+                        Provenance = Models.Entities.Fiscal.ArtifactProvenance.IsValid(input.Provenance) ? input.Provenance : null,
                     });
                 }
 
@@ -257,6 +268,45 @@ namespace LayoutParserApi.Services.Fiscal
                 _logger.LogError(ex, "Falha ao gerar inventário do artefato {ArtifactId} do pacote {PackageId}.", artifactId, packageId);
                 return new ExcelInventoryOutcome(false, "Não foi possível ler a estrutura do arquivo Excel — pode estar corrompido.", false, null);
             }
+        }
+
+        /// <summary>
+        /// Sinais de qualidade dos artefatos <c>spec</c> da revisão mais recente (issue #424). Síncrono
+        /// (leitura de cabeçalhos + contagem, mesma passada do inventário), sem persistência. Falha em
+        /// um artefato degrada só aquele artefato para <c>failed</c> — nunca derruba o GET da revisão.
+        /// </summary>
+        public async Task<IReadOnlyDictionary<Guid, SpecQualityResult>> GetSpecQualityAsync(PackageDetail package, CancellationToken cancellationToken)
+        {
+            var results = new Dictionary<Guid, SpecQualityResult>();
+            foreach (var artifact in package.LatestRevision.Artifacts.Where(a => a.Kind == ArtifactKind.Spec))
+            {
+                try
+                {
+                    var relativePath = await _store.GetArtifactStoragePathAsync(artifact.ArtifactId, cancellationToken);
+                    if (relativePath == null)
+                    {
+                        results[artifact.ArtifactId] = new SpecQualityResult(QualityStatus.Failed, null, "Arquivo do artefato não localizado para análise de qualidade.");
+                        continue;
+                    }
+
+                    using var stream = File.OpenRead(Path.Combine(_storePath, relativePath));
+                    var extraction = _ruleExtractor.Extract(stream);
+                    var signals = FiscalSpecQualityAnalyzer.Analyze(extraction, _requiredRuleSheetColumns);
+                    results[artifact.ArtifactId] = new SpecQualityResult(QualityStatus.Complete, signals, null);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    // Nunca logar conteúdo da planilha — só ids. A mensagem devolvida também é genérica.
+                    _logger.LogWarning(ex, "Falha na análise de qualidade do artefato {ArtifactId} do pacote {PackageId}.", artifact.ArtifactId, package.PackageId);
+                    results[artifact.ArtifactId] = new SpecQualityResult(QualityStatus.Failed, null, "Não foi possível ler a planilha para análise de qualidade — pode estar corrompida.");
+                }
+            }
+
+            return results;
         }
 
         /// <summary>
