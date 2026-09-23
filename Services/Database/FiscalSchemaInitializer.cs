@@ -81,6 +81,13 @@ namespace LayoutParserApi.Services.Database
                 // ✅ Issue #438: tbGeneratedMapperArtifact — também autossuficiente (sem FK para
                 // tbMapper, que vive no banco compartilhado somente-leitura).
                 await SqlGeneratedMapperArtifactStore.EnsureSchemaAsync(connection, cancellationToken);
+                // ✅ Issue #423: tbTestSuite/tbTestSuiteFixture/tbTestSuiteRun — FK só entre si (sem FK
+                // para tbMappingDraft/tbMappingRelease, ver comentário em SqlTestSuiteStore.SchemaDdl).
+                await SqlTestSuiteStore.EnsureSchemaAsync(connection, cancellationToken);
+                // ✅ Issue #422: tbMappingRuleAnswer — autossuficiente (sem FK; vínculo validado no controller).
+                await SqlMappingRuleAnswerStore.EnsureSchemaAsync(connection, cancellationToken);
+                // ✅ Issue #366: tbLpFiscalAnalysis/tbLpFiscalAnalysisFile — FK só entre si (cascade).
+                await SqlFiscalAnalysisStore.EnsureSchemaAsync(connection, cancellationToken);
 
                 _logger.LogInformation("Schema fiscal e de identidade (IdentityDatabase:*) inicializado com sucesso no startup, em ordem de dependência de FK.");
             }

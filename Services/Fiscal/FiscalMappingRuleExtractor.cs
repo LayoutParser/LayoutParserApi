@@ -76,7 +76,7 @@ namespace LayoutParserApi.Services.Fiscal
                 }
 
                 var rows = ReadRows(entry, sharedStrings);
-                var rules = TryExtractDecisionTable(sheetName, rows);
+                var rules = TryExtractDecisionTable(sheetName, rows, out var sheetHeaders);
                 if (rules is null)
                 {
                     result.SkippedSheets.Add(sheetName);
@@ -84,6 +84,9 @@ namespace LayoutParserApi.Services.Fiscal
                 }
 
                 result.DecisionTableSheets.Add(sheetName);
+                // ✅ issue #424: guarda só os NOMES de coluna do cabeçalho (nunca valores de dados),
+                // para o check de colunas obrigatórias sem reler a planilha.
+                result.SheetHeaders[sheetName] = sheetHeaders;
                 result.Rules.AddRange(rules);
             }
 
@@ -96,8 +99,9 @@ namespace LayoutParserApi.Services.Fiscal
         /// nesse caso ela é tratada como fora de escopo deste extrator (provável catálogo de
         /// layout posicional), não como erro.
         /// </summary>
-        private List<FiscalMappingRule>? TryExtractDecisionTable(string sheetName, List<List<string>> rows)
+        private List<FiscalMappingRule>? TryExtractDecisionTable(string sheetName, List<List<string>> rows, out List<string> sheetHeaders)
         {
+            sheetHeaders = new List<string>();
             var headerRowIndex = rows.FindIndex(r => r.Count > 0 && RuleHeaderMarkers.Contains(r[0].Trim().ToLowerInvariant()));
             if (headerRowIndex < 0)
             {
@@ -117,6 +121,9 @@ namespace LayoutParserApi.Services.Fiscal
                 _logger.LogWarning("Aba {SheetName} tem linha 'Regra' mas sem colunas de condição — tratando como fora de escopo", sheetName);
                 return null;
             }
+
+            // Cabeçalho completo (rótulo "Regra" + colunas de condição), sem células vazias.
+            sheetHeaders = headerRow.Where(c => !string.IsNullOrWhiteSpace(c)).Select(c => c.Trim()).ToList();
 
             var rules = new List<FiscalMappingRule>();
 
