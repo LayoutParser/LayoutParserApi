@@ -77,12 +77,20 @@ namespace LayoutParserApi.Services.Fiscal
                         .Select(d => new MappingReleaseCompileDiagnostic(d.RuleId, d.Severity, d.Message))
                         .ToList();
 
+                    // ✅ Issue #379 (ADR §2.6): perfil fiscal ausente NÃO bloqueia a compilação — apenas
+                    // gera warning no diagnóstico e a release nasce sem perfil (a #380 fica indisponível
+                    // pra ela, o resto do fluxo prossegue normalmente).
+                    if (draft.FiscalProfile == null)
+                    {
+                        diagnostics.Add(new MappingReleaseCompileDiagnostic(Guid.Empty, "warning", "Draft compilado sem perfil fiscal definido — cobertura de obrigatórios (#380) indisponível para esta release."));
+                    }
+
                     using var scope = _scopeFactory.CreateScope();
                     var releaseStore = scope.ServiceProvider.GetRequiredService<IMappingReleaseStore>();
                     var release = await releaseStore.CreateOrGetCompiledReleaseAsync(
                         workspaceId, draftId, draft.Engine, rulesSnapshotHash,
                         processableRules.Select(r => r.RuleId).ToList(),
-                        new[] { artifact }, diagnostics, correlationId, jobId, cancellationToken);
+                        new[] { artifact }, diagnostics, correlationId, jobId, cancellationToken, draft.FiscalProfile);
 
                     state.ReleaseId = release.ReleaseId;
                     state.Status = CompileJobStatus.Completed;

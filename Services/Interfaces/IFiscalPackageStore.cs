@@ -10,7 +10,8 @@ namespace LayoutParserApi.Services.Interfaces
         long SizeBytes,
         string OriginalFileName,
         string InspectionStatus,
-        DateTimeOffset UploadedAt);
+        DateTimeOffset UploadedAt,
+        string? Provenance = null);
 
     /// <summary>Resumo de uma revisão com seu inventário de artefatos.</summary>
     public sealed record RevisionSummary(
@@ -27,6 +28,13 @@ namespace LayoutParserApi.Services.Interfaces
         string Name,
         DateTimeOffset CreatedAt,
         RevisionSummary LatestRevision);
+
+    /// <summary>
+    /// Projeto fiscal mínimo (listagem de leitura — NÃO é o CRUD de projeto descartado na issue #229,
+    /// ver <see cref="FiscalProject"/>). Devolvido para o front-end navegar/selecionar projeto em vez
+    /// de exigir o GUID colado manualmente.
+    /// </summary>
+    public sealed record ProjectSummary(Guid ProjectId, Guid WorkspaceId, string Name, DateTimeOffset CreatedAt);
 
     /// <summary>
     /// Acesso a dado de <see cref="FiscalMappingPackage"/>/<see cref="FiscalMappingPackageRevision"/>/
@@ -69,5 +77,30 @@ namespace LayoutParserApi.Services.Interfaces
 
         /// <summary>Atualiza o status de inspeção de antivírus de um artefato (job assíncrono pós-upload).</summary>
         Task UpdateInspectionStatusAsync(Guid artifactId, string inspectionStatus, CancellationToken cancellationToken);
+
+        /// <summary>
+        /// Lista os <see cref="FiscalProject"/> do workspace, só para quem é membro (join com
+        /// <c>tbWorkspaceMembership</c> — defesa em profundidade, o chamador já deve ter checado
+        /// membership antes). Leitura pura — não é o CRUD de projeto descartado na issue #229.
+        /// </summary>
+        Task<IReadOnlyList<ProjectSummary>> ListProjectsForMemberAsync(Guid workspaceId, Guid userId, CancellationToken cancellationToken);
+
+        /// <summary>
+        /// Cria uma NOVA revisão (imutável) de um <see cref="FiscalMappingPackage"/> já existente — o
+        /// número sequencial é <c>MAX(RevisionNumber) + 1</c> dentro do próprio pacote. O chamador é
+        /// responsável por já ter confirmado existência/membership do pacote antes de chamar isto.
+        /// </summary>
+        Task<PackageDetail> CreateRevisionAsync(
+            Guid packageId,
+            Guid createdByUserId,
+            IReadOnlyList<PackageArtifact> artifacts,
+            CancellationToken cancellationToken);
+
+        /// <summary>
+        /// Caminho relativo em disco (<c>PackageArtifact.StoragePath</c>) de um artefato — uso interno
+        /// do serviço para abrir o arquivo (ex.: inventário de estrutura do Excel), nunca exposto
+        /// diretamente ao cliente. O chamador já deve ter confirmado membership/posse do pacote dono.
+        /// </summary>
+        Task<string?> GetArtifactStoragePathAsync(Guid artifactId, CancellationToken cancellationToken);
     }
 }
