@@ -115,6 +115,100 @@ namespace LayoutParserApi.Services.Database
         }
 
         /// <summary>
+        /// Issue #322: upsert das 3 preferências de usuário além do prompt customizado (idioma de
+        /// exibição, nível de detalhe da explicação, engine padrão quando ambíguo). Mesmo espírito de
+        /// <see cref="EnsureSessionAsync"/> — <c>COALESCE(@Valor, target.Coluna)</c> preserva o que já
+        /// estava salvo quando o parâmetro chega <c>null</c> (permite atualizar só uma preferência por
+        /// vez sem apagar as outras).
+        /// </summary>
+        /// <remarks>
+        /// Resiliência: mesmo padrão de degradação do resto da store — falha de SQL é Warning, nunca
+        /// derruba o pathway/endpoint que chamou.
+        /// </remarks>
+        public async Task SetPreferencesAsync(
+            string userId,
+            string? preferredLanguage,
+            string? preferredExplanationDetailLevel,
+            string? defaultTransformationEngine,
+            CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(userId))
+                return;
+
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync(cancellationToken);
+                await EnsureSchemaAsync(connection, cancellationToken);
+
+                using var command = new SqlCommand(
+                    @"MERGE dbo.tbLpAiUserSession AS target
+                      USING (SELECT @UserId AS UserId) AS source
+                      ON target.UserId = source.UserId
+                      WHEN MATCHED THEN
+                          UPDATE SET PreferredLanguage = COALESCE(@PreferredLanguage, target.PreferredLanguage),
+                                     PreferredExplanationDetailLevel = COALESCE(@PreferredExplanationDetailLevel, target.PreferredExplanationDetailLevel),
+                                     DefaultTransformationEngine = COALESCE(@DefaultTransformationEngine, target.DefaultTransformationEngine),
+                                     UpdatedAt = SYSUTCDATETIME()
+                      WHEN NOT MATCHED THEN
+                          INSERT (UserId, PreferredLanguage, PreferredExplanationDetailLevel, DefaultTransformationEngine, CreatedAt, UpdatedAt)
+                          VALUES (@UserId, @PreferredLanguage, @PreferredExplanationDetailLevel, @DefaultTransformationEngine, SYSUTCDATETIME(), SYSUTCDATETIME());",
+                    connection);
+                command.Parameters.AddWithValue("@UserId", userId);
+                command.Parameters.AddWithValue("@PreferredLanguage", (object?)preferredLanguage ?? DBNull.Value);
+                command.Parameters.AddWithValue("@PreferredExplanationDetailLevel", (object?)preferredExplanationDetailLevel ?? DBNull.Value);
+                command.Parameters.AddWithValue("@DefaultTransformationEngine", (object?)defaultTransformationEngine ?? DBNull.Value);
+
+                await command.ExecuteNonQueryAsync(cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Falha ao gravar preferências de IA do usuário (degradado — não afeta o pathway de IA em si)");
+            }
+        }
+
+        /// <summary>
+        /// Issue #322: leitura das 4 preferências persistidas (prompt customizado + as 3 novas).
+        /// Devolve <c>null</c> quando o usuário nunca teve sessão criada (endpoint decide o default
+        /// nesse caso) — diferente de "sessão existe mas coluna é NULL", onde a preferência individual
+        /// vem <c>null</c> dentro do record e quem chama aplica o default por campo.
+        /// </summary>
+        public async Task<AiUserPreferences?> GetPreferencesAsync(string userId, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(userId))
+                return null;
+
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync(cancellationToken);
+                await EnsureSchemaAsync(connection, cancellationToken);
+
+                using var command = new SqlCommand(
+                    @"SELECT CustomPromptInstruction, PreferredLanguage, PreferredExplanationDetailLevel, DefaultTransformationEngine
+                      FROM dbo.tbLpAiUserSession
+                      WHERE UserId = @UserId;",
+                    connection);
+                command.Parameters.AddWithValue("@UserId", userId);
+
+                using var reader = await command.ExecuteReaderAsync(cancellationToken);
+                if (!await reader.ReadAsync(cancellationToken))
+                    return null;
+
+                return new AiUserPreferences(
+                    reader.IsDBNull(reader.GetOrdinal("CustomPromptInstruction")) ? null : reader.GetString(reader.GetOrdinal("CustomPromptInstruction")),
+                    reader.IsDBNull(reader.GetOrdinal("PreferredLanguage")) ? null : reader.GetString(reader.GetOrdinal("PreferredLanguage")),
+                    reader.IsDBNull(reader.GetOrdinal("PreferredExplanationDetailLevel")) ? null : reader.GetString(reader.GetOrdinal("PreferredExplanationDetailLevel")),
+                    reader.IsDBNull(reader.GetOrdinal("DefaultTransformationEngine")) ? null : reader.GetString(reader.GetOrdinal("DefaultTransformationEngine")));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Falha ao ler preferências de IA do usuário (degradado — devolve null, endpoint aplica defaults)");
+                return null;
+            }
+        }
+
+        /// <summary>
         /// Registra uma entrada de histórico (ticket + status) para o usuário — chamado quando um job
         /// do pathway de IA chega a um status terminal (<c>converged</c>/<c>failed</c>).
         /// </summary>
@@ -240,9 +334,23 @@ IF OBJECT_ID('dbo.tbLpAiUserSession', 'U') IS NULL
 CREATE TABLE dbo.tbLpAiUserSession (
     UserId NVARCHAR(256) NOT NULL PRIMARY KEY,
     CustomPromptInstruction NVARCHAR(MAX) NULL,
+    PreferredLanguage NVARCHAR(16) NULL,
+    PreferredExplanationDetailLevel NVARCHAR(32) NULL,
+    DefaultTransformationEngine NVARCHAR(16) NULL,
     CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
     UpdatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
 );
+
+-- Issue #322: colunas novas em instalação já existente (ALTER idempotente, mesmo espírito do
+-- CREATE TABLE IF OBJECT_ID IS NULL acima — não há projeto de migração dedicado nesta API).
+IF COL_LENGTH('dbo.tbLpAiUserSession', 'PreferredLanguage') IS NULL
+ALTER TABLE dbo.tbLpAiUserSession ADD PreferredLanguage NVARCHAR(16) NULL;
+
+IF COL_LENGTH('dbo.tbLpAiUserSession', 'PreferredExplanationDetailLevel') IS NULL
+ALTER TABLE dbo.tbLpAiUserSession ADD PreferredExplanationDetailLevel NVARCHAR(32) NULL;
+
+IF COL_LENGTH('dbo.tbLpAiUserSession', 'DefaultTransformationEngine') IS NULL
+ALTER TABLE dbo.tbLpAiUserSession ADD DefaultTransformationEngine NVARCHAR(16) NULL;
 
 IF OBJECT_ID('dbo.tbLpAiUserSessionHistoryEntry', 'U') IS NULL
 CREATE TABLE dbo.tbLpAiUserSessionHistoryEntry (
@@ -280,4 +388,41 @@ CREATE INDEX IX_tbLpAiUserSessionHistoryEntry_UserId_CreatedAt ON dbo.tbLpAiUser
 
     /// <summary>Uma entrada do histórico de longo prazo do pathway de IA (issue #102).</summary>
     public record AiUserSessionHistoryEntry(string Ticket, string Status, DateTimeOffset CreatedAt);
+
+    /// <summary>
+    /// As 4 preferências persistidas por usuário no pathway de IA (issue #322: prompt customizado —
+    /// já existente desde a issue #98 — + idioma/nível de detalhe/engine padrão, novos). Qualquer
+    /// campo pode vir <c>null</c> quando a linha existe mas a preferência nunca foi setada — quem
+    /// chama (o endpoint) aplica o default nesse caso, não esta store.
+    /// </summary>
+    public record AiUserPreferences(
+        string? CustomPromptInstruction,
+        string? PreferredLanguage,
+        string? PreferredExplanationDetailLevel,
+        string? DefaultTransformationEngine);
+
+    /// <summary>Valores válidos e defaults das preferências novas da issue #322.</summary>
+    public static class AiUserPreferenceDefaults
+    {
+        /// <summary>Bilíngue PT/EN é o padrão do produto (ver <c>.claude/CLAUDE.md</c> §0) — default quando nunca setado.</summary>
+        public const string DefaultLanguage = "pt-BR";
+
+        public const string DefaultExplanationDetailLevel = ExplanationDetailLevelConcise;
+        public const string ExplanationDetailLevelConcise = "concise";
+        public const string ExplanationDetailLevelDetailed = "detailed";
+
+        /// <summary>
+        /// Comportamento atual do sistema quando o engine é ambíguo (ver <c>TclExplanationAdapter</c>/
+        /// <c>XsltExplanationAdapter</c> — pathway canônico do projeto é o tcl-xsl, TCL primeiro).
+        /// </summary>
+        public const string DefaultTransformationEngine = TransformationEngineTcl;
+        public const string TransformationEngineTcl = "tcl";
+        public const string TransformationEngineXslt = "xslt";
+
+        public static readonly IReadOnlySet<string> ValidExplanationDetailLevels =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ExplanationDetailLevelConcise, ExplanationDetailLevelDetailed };
+
+        public static readonly IReadOnlySet<string> ValidTransformationEngines =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase) { TransformationEngineTcl, TransformationEngineXslt };
+    }
 }

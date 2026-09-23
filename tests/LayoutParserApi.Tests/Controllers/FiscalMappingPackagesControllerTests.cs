@@ -67,6 +67,10 @@ namespace LayoutParserApi.Tests.Controllers
 
             public Task<ExcelInventoryOutcome> GetExcelInventoryAsync(Guid workspaceId, Guid packageId, Guid artifactId, Guid userId, CancellationToken cancellationToken)
                 => Task.FromResult(NextExcelInventoryOutcome ?? throw new NotSupportedException("Configure NextExcelInventoryOutcome antes de chamar."));
+
+            public Task<IReadOnlyDictionary<Guid, LayoutParserApi.Services.Fiscal.SpecQualityResult>> GetSpecQualityAsync(PackageDetail package, CancellationToken cancellationToken)
+                => Task.FromResult<IReadOnlyDictionary<Guid, LayoutParserApi.Services.Fiscal.SpecQualityResult>>(
+                    new Dictionary<Guid, LayoutParserApi.Services.Fiscal.SpecQualityResult>());
         }
 
         private static FiscalMappingPackagesController BuildController(FakePackageService packageService, FakeIdentityWorkspaceService identityService, FakeCurrentUser user)

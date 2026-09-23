@@ -9,6 +9,7 @@ using LayoutParserApi.Services.Interfaces;
 using LayoutParserApi.Services.Learning;
 using LayoutParserApi.Services.Parsing.Implementations;
 using LayoutParserApi.Services.Transformation.LowCode;
+using LayoutParserApi.Tests.TestHelpers;
 
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -123,7 +124,7 @@ namespace LayoutParserApi.Tests.Controllers
                 NullLogger<ParseController>.Instance,
                 new LayoutDetector(),
                 new FileStorageService(config, NullLogger<FileStorageService>.Instance),
-                new LayoutLearningService(NullLogger<LayoutLearningService>.Instance),
+                new LayoutLearningService(NullLogger<LayoutLearningService>.Instance, new LineSplitter(new NoOpTechLogger())),
                 config,
                 lowCodeAuto,
                 opcoesLowCode,
