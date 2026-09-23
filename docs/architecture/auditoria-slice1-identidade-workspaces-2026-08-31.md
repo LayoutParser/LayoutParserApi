@@ -150,3 +150,75 @@ GET /api/workspaces/{workspaceId}
    qualquer endpoint que devolva dado por `workspaceId` além do `me`.
 
 Nenhum código foi escrito nesta sessão — só este documento, commitado localmente sem push.
+
+## Implementação — 2026-08-31 (@lp-backend-dev)
+
+Slice 1a e 1b implementados em cima do plano acima, sem desvio de arquitetura. `dotnet build` e
+`dotnet test` (437/437) verdes.
+
+### Arquivos criados
+
+- `Models/Entities/Identity/{FiscalUser,ExternalIdentity,FiscalWorkspace,WorkspaceMembership}.cs` —
+  domínio, incluindo `WorkspaceKind`/`WorkspaceRole` como constantes (não enum, para não travar
+  novos papéis a uma recompilação).
+- `Services/Interfaces/IIdentityWorkspaceStore.cs` (+ `WorkspaceSummary` record) — camada de
+  persistência crua, existe como interface (não só a implementação SQL) especificamente para os
+  testes de isolamento não dependerem de SQL Server real.
+- `Services/Interfaces/IIdentityWorkspaceService.cs` (+ `WorkspaceMeResult` record) — orquestração
+  com política fail-closed.
+- `Services/Database/SqlIdentityWorkspaceStore.cs` — ADO.NET cru, mesmo padrão de
+  `MapperDatabaseService`, mesmo banco `ConnectUS_Macgyver` (não há banco dedicado). DDL idempotente
+  (`IF OBJECT_ID(...) IS NULL`) executado uma vez por processo. Tabelas: `tbUser`,
+  `tbExternalIdentity` (UNIQUE `Provider+TenantOrIssuer+Subject`), `tbFiscalWorkspace` (índice
+  filtrado único por `OwnerUserId` onde `Kind='personal'`), `tbWorkspaceMembership` (UNIQUE
+  `WorkspaceId+UserId`). Corrida de INSERT tratada por captura de erro 2601/2627 + releitura —
+  não por `SELECT` prévio como garantia (só como fast-path).
+- `Services/Identity/IdentityWorkspaceService.cs` — trava em processo (`SemaphoreSlim` por chave de
+  identidade/usuário) como primeira camada de defesa contra duplicidade, por cima do UNIQUE
+  constraint do SQL (garantia definitiva, multi-instância).
+- `Controllers/WorkspacesController.cs` — os dois endpoints do Slice 1.
+- Testes: `tests/.../Controllers/WorkspacesControllerTests.cs` (isolamento cross-workspace, 404
+  uniforme, 401 no `/me` sem identidade, degradação 503 em falha de SQL) e
+  `tests/.../Services/Identity/IdentityWorkspaceServiceTests.cs` (idempotência sob concorrência em
+  processo, fail-closed, subject nunca logado).
+
+### Arquivos estendidos (não substituídos)
+
+- `Services/Interfaces/ICurrentUser.cs` / `Services/Security/CurrentUser.cs` — `UserId` (Guid?)
+  aditivo, `SetUserId` internal.
+- `Services/Security/TrustedIdentityOptions.cs` — 3 headers novos com os defaults do contrato.
+- `Services/Security/TrustedIdentityMiddleware.cs` — `InvokeAsync` ganhou o parâmetro
+  `IIdentityWorkspaceService` (resolvido via DI Scoped, mesmo mecanismo do `ICurrentUser`); os
+  headers novos são lidos sob a MESMA guarda de loopback, depois (não em vez) dos legados. Ausência
+  dos headers novos = `UserId` fica `null`, sem inferir de `Name` — confirmado por teste dedicado.
+- `Program.cs` — `IIdentityWorkspaceStore`/`IIdentityWorkspaceService` registrados no grupo Database.
+- Testes existentes que tinham fakes de `ICurrentUser`/chamavam `TrustedIdentityMiddleware.InvokeAsync`
+  diretamente (`AuditActionFilterTests`, `RoleAuthorizationTests`,
+  `TransformationExecutionController*Tests`) foram ajustados para a assinatura nova — nenhum teve
+  asserção alterada, só a superfície de compilação.
+
+### Desvios do plano original
+
+1. **`WorkspaceRole`/`WorkspaceKind` como `static class` de constantes `string`, não `enum`.**
+   A auditoria não especificou o tipo; strings casam diretamente com as colunas `NVARCHAR` do SQL
+   sem conversão, e o contrato cross-repo já usa strings minúsculas (`"owner"`, `"personal"`) no
+   JSON — evita um `enum` com `[JsonConverter]`/mapeamento redundante.
+2. **Trava em processo além do UNIQUE do SQL**, não mencionada explicitamente no plano (que citava
+   só o UNIQUE constraint). Adicionada porque o teste de concorrência exigido pelo pedido do dono
+   (`#17`) precisa de uma garantia testável sem SQL Server real — o lock em processo é essa
+   garantia, testada de fato; o UNIQUE constraint é a rede de segurança multi-instância, coberta só
+   por revisão de DDL nesta sessão (sem ambiente SQL Server disponível para um teste de integração
+   real).
+3. **`POST /api/workspaces/{workspaceId}/projects` não foi criado** — a auditoria já previa isso
+   como Slice 1.5/2 (§4, item 4), só confirmando que o escopo foi respeitado.
+
+### Limitação conhecida (documentar, não esconder)
+
+A garantia de idempotência sob concorrência **multi-instância/multi-processo** depende do UNIQUE
+constraint do SQL Server (`UQ_tbExternalIdentity`, índice filtrado `UX_tbFiscalWorkspace_
+PersonalOwner`, `UQ_tbWorkspaceMembership`) e do tratamento de erro 2601/2627 em
+`SqlIdentityWorkspaceStore` — revisados por leitura de código, mas **não exercitados por um teste
+de integração real** neste ambiente (sem acesso a SQL Server). Os testes automatizados cobrem a
+idempotência **em processo** (via o lock do `IdentityWorkspaceService`, com um `RaceyFakeStore` que
+simula a janela de corrida). Recomendação para `@lp-qa`: validar a corrida real contra o SQL de
+desenvolvimento antes de liberar tráfego de produção com múltiplas instâncias da API.

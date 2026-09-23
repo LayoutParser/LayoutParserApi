@@ -149,16 +149,23 @@ namespace LayoutParserApi.Services.XmlAnalysis
             {
                 _logger.LogInformation("Processando layout: {Name} (Type: {Type}, Guid: {Guid})", layout.Name, layout.LayoutType, layout.LayoutGuid);
 
+                // ✅ Issue #219: o `LayoutType` cru vindo da coluna SQL [LayoutType] pode divergir do
+                // `<LayoutType>` embutido no XML descriptografado do layout (ex.: cadastro legado com
+                // código numérico Sysmiddle "2" em vez do texto "TextPositional"). Normalizamos aqui
+                // antes de decidir o caminho de geração — ver ResolveEffectiveLayoutType.
+                var effectiveLayoutType = ResolveEffectiveLayoutType(layout);
+                processed.LayoutType = effectiveLayoutType;
+
                 // Verificar tipo do layout
-                if (layout.LayoutType == "TextPositional")
+                if (effectiveLayoutType == "TextPositional")
                     // TextPositional: gerar TCL e XSL
                     await ProcessTextPositionalLayoutAsync(layout, processed);
-                else if (layout.LayoutType == "XML")
+                else if (effectiveLayoutType == "XML")
                     // XML: gerar apenas XSL
                     await ProcessXmlLayoutAsync(layout, processed);
                 else
                 {
-                    processed.Warnings.Add($"Tipo de layout não suportado: {layout.LayoutType}");
+                    processed.Warnings.Add($"Tipo de layout não suportado: {effectiveLayoutType}");
                     processed.Success = false;
                     return processed;
                 }
@@ -172,6 +179,14 @@ namespace LayoutParserApi.Services.XmlAnalysis
 
             return processed;
         }
+
+        /// <summary>
+        /// Resolve o tipo efetivo do layout ("TextPositional"/"XML"), lidando com a divergência entre
+        /// a coluna SQL [LayoutType] e o XML descriptografado do layout.
+        /// ✅ Issue #219 — ver <see cref="LayoutTypeNormalizer"/> para a lógica completa e o racional.
+        /// </summary>
+        private string ResolveEffectiveLayoutType(LayoutRecord layout)
+            => LayoutTypeNormalizer.ResolveEffectiveLayoutType(layout, message => _logger.LogWarning("{Message}", message));
 
         /// <summary>
         /// Processa layout TextPositional (gera TCL e XSL)

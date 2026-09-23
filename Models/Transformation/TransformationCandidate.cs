@@ -84,5 +84,13 @@ namespace LayoutParserApi.Models.Transformation
         /// <summary>CorrelationId da request (<see cref="LayoutParserApi.Services.Logging.CorrelationContext.CurrentId"/>),
         /// permite ao suporte cruzar com o log estruturado completo (não sanitizado) desta chamada.</summary>
         public string? CorrelationId { get; set; }
+
+        /// <summary>Identificador estável do documento (ADR docs/architecture/adr-contrato-correcao-
+        /// guiada-humano-2026-09-08.md §4, Gap 1) — "doc_" + SHA256(InputContent + "|" +
+        /// resolvedLayoutGuid) truncado a 16 hex. Determinístico: mesmo InputContent + mesmo
+        /// LayoutGuid resolvido sempre produzem o mesmo valor. Usado pelo front para futuramente
+        /// referenciar este documento num reporte de correção humana (endpoint ainda não
+        /// implementado — só o identificador, campo aditivo).</summary>
+        public string? DocumentId { get; set; }
     }
 }
