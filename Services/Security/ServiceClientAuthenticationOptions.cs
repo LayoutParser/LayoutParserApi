@@ -32,8 +32,12 @@ namespace LayoutParserApi.Services.Security
         public string Authority { get; set; } = string.Empty;
 
         /// <summary>
-        /// Audience/Application ID URI do App Registration da própria API (ex.:
-        /// <c>api://layoutparser-api</c>). Vazio até ser provisionado.
+        /// Audience esperado no <c>aud</c> do token M2M — o <b>Client ID (GUID)</b> do App
+        /// Registration da própria API, <b>não</b> o Application ID URI <c>api://&lt;guid&gt;</c>.
+        /// O App Registration está com <c>accessTokenAcceptedVersion = 2</c> e token de acesso
+        /// v2 do Entra traz <c>aud = &lt;guid do recurso&gt;</c> (o <c>identifierUris</c> segue
+        /// <c>api://&lt;guid&gt;</c>, mas isso é só o scope pedido pelo consumidor, não o
+        /// <c>aud</c> emitido). Vazio até ser provisionado.
         /// </summary>
         public string Audience { get; set; } = string.Empty;
 

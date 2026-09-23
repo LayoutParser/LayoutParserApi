@@ -192,7 +192,7 @@ namespace LayoutParserApi.Tests.Controllers
         {
             public Task EnqueueAsync(string userId, string ticket, string layoutName, Guid layoutGuid, string mapperGuid,
                 string inputContent, string? groundTruthXml, CancellationToken cancellationToken,
-                IReadOnlyList<Models.Entities.ParsedField>? parsedFields = null) => Task.CompletedTask;
+                IReadOnlyList<LayoutParserApi.Models.Entities.ParsedField>? parsedFields = null) => Task.CompletedTask;
 
             public Task<AiCandidateStatus> GetStatusAsync(string userId, string ticket, CancellationToken cancellationToken) =>
                 Task.FromResult(new AiCandidateStatus { Status = AiCandidateStatus.StatusNotFound });
@@ -295,7 +295,11 @@ namespace LayoutParserApi.Tests.Controllers
                 mapperDb: mapperDb,
                 layoutParser: parserFake,
                 fieldMappingComposition: BuildFieldMappingComposition(),
-                scopeFactory: scopeFactory);
+                scopeFactory: scopeFactory,
+                canaryAlert: new LayoutParserApi.Services.Security.CanaryAlertService(
+                    NullLogger<LayoutParserApi.Services.Security.CanaryAlertService>.Instance),
+                fieldCorrectionStore: null!,
+                trainingDataCapture: null!);
 
             return (controller, parserFake, runner);
         }
