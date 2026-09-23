@@ -35,6 +35,8 @@ documentar a razão inline no controller (já existe comentário, reforçar cita
 ## 3. Vetores de adulteração a cobrir em teste (além do já coberto no Slice 3)
 
 1. `engine` como array/objeto em vez de string — `MappingEngineGuardFilter.ResolveEnginesAsync` só
+   trata `ValueKind == String`; um payload `{"engine":["sysmiddle"]}` ou `{"engine":{"value":"sysmiddle"}}`
+   passa sem detecção. **Lacuna real.**
    tratava `ValueKind == String`; um payload `{"engine":["sysmiddle"]}` ou `{"engine":{"value":"sysmiddle"}}`
    passava sem detecção. **Lacuna real — CORRIGIDA em 2026-09-01 (ver seção abaixo).**
 2. Homoglyphs/Unicode que normalizam para "sysmiddle" (ex.: caracteres Cyrillic visualmente

@@ -207,9 +207,11 @@ namespace LayoutParserApi.Services.Transformation
                     // sanitização; IsValidLayoutName barra separadores/".." antes do Path.Combine e o
                     // IsWithinBasePath confirma que o caminho final não escapou de _expectedOutputsPath.
                     var expectedPath = Path.Combine(_expectedOutputsPath, $"{layoutName}_expected.xml");
+#pragma warning disable SCS0018
                     if (IsWithinBasePath(expectedPath, _expectedOutputsPath) && File.Exists(expectedPath))
                     {
                         var expectedXml = await File.ReadAllTextAsync(expectedPath);
+#pragma warning restore SCS0018
                         var comparisonResult = await CompareWithExpectedAsync(
                             transformationResult.TransformedXml,
                             expectedXml);
@@ -282,7 +284,12 @@ namespace LayoutParserApi.Services.Transformation
 
             try
             {
+                // ✅ SCS0018 (issue #88): ValidateTclAsync só é chamada (linha 69) depois que
+                // ValidateTransformationAsync confirma IsWithinBasePath(tclPath, TclPath) —
+                // tclPath nunca chega aqui sem passar pela barreira.
+#pragma warning disable SCS0018
                 var tclContent = await File.ReadAllTextAsync(tclPath);
+#pragma warning restore SCS0018
 
                 // Verificar se o TCL é XML válido
                 try
@@ -298,8 +305,26 @@ namespace LayoutParserApi.Services.Transformation
                     result.Message = "TCL inválido";
                 }
 
-                // Verificar estrutura básica do TCL (MAP, LINE, FIELD)
-                // TODO: Implementar validação mais detalhada
+                // Verificar estrutura básica do TCL (MAP, LINE, FIELD) — issue #173: antes só
+                // checava bem-formação XML, sem checar se o TCL de fato tem os elementos/atributos
+                // que o parser posicional exige (o TODO original). Reaproveita
+                // TclStructureValidator (mesma lógica já usada por ImprovedTclGeneratorService),
+                // sem duplicar a checagem. Só roda se a etapa anterior (bem-formação) já passou —
+                // se o TCL nem é XML válido, o erro de parse já foi reportado acima e repetir a
+                // checagem de estrutura só duplicaria a mensagem.
+                if (result.Success)
+                {
+                    var structureValidation = TclStructureValidator.Validate(tclContent);
+                    if (!structureValidation.Success)
+                    {
+                        result.Success = false;
+                        result.Errors.AddRange(structureValidation.Errors);
+                        result.Message = "TCL com estrutura inválida";
+                        result.Details = string.IsNullOrEmpty(result.Details)
+                            ? structureValidation.Details
+                            : $"{result.Details}; {structureValidation.Details}";
+                    }
+                }
             }
             catch (Exception ex)
             {

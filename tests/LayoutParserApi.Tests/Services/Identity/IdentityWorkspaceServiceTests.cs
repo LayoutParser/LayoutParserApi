@@ -135,6 +135,30 @@ namespace LayoutParserApi.Tests.Services.Identity
             Assert.Equal(1, store.CreateCallCount);
         }
 
+        // ✅ LayoutParserReact#196 — repetição SEQUENCIAL (o caso do dia a dia: GET /me a cada carga de página).
+        [Fact]
+        public async Task Repeticao_sequencial_resolve_o_mesmo_userId_e_o_mesmo_workspace_pessoal()
+        {
+            var store = new RaceyFakeStore();
+            var service = new IdentityWorkspaceService(store, new CapturingLogger());
+
+            var userIds = new List<Guid?>();
+            var workspaceIds = new List<Guid>();
+            for (var i = 0; i < 5; i++)
+            {
+                var userId = await service.ResolveOrCreateUserAsync("entra", "tenant-x", "sub-sequencial", CancellationToken.None);
+                userIds.Add(userId);
+                var me = await service.GetOrCreateMyWorkspacesAsync(userId!.Value, CancellationToken.None);
+                workspaceIds.Add(me.ActiveWorkspaceId);
+                Assert.Single(me.Workspaces);
+            }
+
+            Assert.All(userIds, u => Assert.Equal(userIds[0], u));
+            Assert.All(workspaceIds, w => Assert.Equal(workspaceIds[0], w));
+            Assert.Equal(1, store.CreateCallCount);
+            Assert.Equal(1, store.EnsurePersonalWorkspaceCreateCallCount);
+        }
+
         [Fact]
         public async Task ResolveOrCreateUserAsync_usuarios_diferentes_nao_colidem()
         {

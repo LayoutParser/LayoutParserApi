@@ -61,9 +61,9 @@ namespace LayoutParserApi.Tests.Controllers
         {
             public MapperDbVazio(IConfiguration config) : base(NullLogger<MapperDatabaseService>.Instance, null!, config) { }
 
-            public override Task<List<Models.Entities.Mapper>> GetRankedMapperCandidatesForLayoutGuidAsync(
+            public override Task<List<LayoutParserApi.Models.Entities.Mapper>> GetRankedMapperCandidatesForLayoutGuidAsync(
                 string layoutGuid, int projectId, IReadOnlyCollection<string> allowedPackageGuids)
-                => Task.FromResult(new List<Models.Entities.Mapper>());
+                => Task.FromResult(new List<LayoutParserApi.Models.Entities.Mapper>());
         }
 
         private sealed class SpyAiCandidateService : IAiTransformationCandidateService
@@ -71,7 +71,7 @@ namespace LayoutParserApi.Tests.Controllers
             public int EnqueueCount { get; private set; }
             public Task EnqueueAsync(string userId, string ticket, string layoutName, Guid layoutGuid, string mapperGuid,
                 string inputContent, string? groundTruthXml, CancellationToken cancellationToken,
-                IReadOnlyList<Models.Entities.ParsedField>? parsedFields = null)
+                IReadOnlyList<LayoutParserApi.Models.Entities.ParsedField>? parsedFields = null)
             {
                 EnqueueCount++;
                 return Task.CompletedTask;
@@ -163,12 +163,17 @@ namespace LayoutParserApi.Tests.Controllers
                 aiUserInstructionStore: new LayoutParserApi.Services.Transformation.Ai.AiUserInstructionStore(),
                 aiUserSessionStore: new LayoutParserApi.Services.Database.SqlAiUserSessionStore(
                     NullLogger<LayoutParserApi.Services.Database.SqlAiUserSessionStore>.Instance,
-                    new ConfigurationBuilder().Build()),
+                    new ConfigurationBuilder().Build(),
+                    Microsoft.Extensions.Options.Options.Create(new LayoutParserApi.Services.Database.AiUserSessionHistoryOptions())),
                 currentUser: new FakeCurrentUser(),
                 mapperDb: null!,
                 layoutParser: null!,
                 fieldMappingComposition: null!,
-                scopeFactory: services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>());
+                scopeFactory: services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
+                canaryAlert: new LayoutParserApi.Services.Security.CanaryAlertService(
+                    NullLogger<LayoutParserApi.Services.Security.CanaryAlertService>.Instance),
+                fieldCorrectionStore: null!,
+                trainingDataCapture: null!);
 
             return (controller, aiSpy, tclDir);
         }

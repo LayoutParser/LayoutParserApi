@@ -55,6 +55,9 @@ namespace LayoutParserApi.Models.Entities.Fiscal
         public Guid CreatedByUserId { get; set; }
 
         public DateTimeOffset CreatedAt { get; set; }
+
+        /// <summary>Perfil fiscal de trabalho (issue #379) — mutável enquanto não há release derivada (ADR §2.2). <c>null</c> = ainda não definido.</summary>
+        public FiscalProfile? FiscalProfile { get; set; }
     }
 
     /// <summary>Uma referência de evidência que sustenta uma <see cref="MappingDraftRule"/> proposta pela IA.</summary>
