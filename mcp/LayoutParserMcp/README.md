@@ -20,9 +20,33 @@ A lógica de negócio **não** é duplicada aqui; cada tool apenas chama um endp
 | Tool | O que faz |
 |------|-----------|
 | `parse_document` | Parseia um documento (TXT/MQSeries/IDOC) contra um layout XML → estrutura JSON. (`POST /api/parse/upload`) |
+| `detect_layout` | Detecta automaticamente o layout de um documento MQSeries/IDoc → `unique`/`ambiguous`/`not_found` + candidatos ranqueados. (`POST /api/parse/auto`) |
 | `list_endpoints` | Lista os endpoints da API a partir do Swagger/OpenAPI em runtime. |
 | `api_get` | GET genérico em qualquer caminho da API (ex.: `/api/LayoutDatabase`). |
 | `api_post` | POST genérico (corpo JSON) em qualquer caminho da API. |
+
+### `detect_layout` (issue #216)
+
+Espelha fielmente `POST /api/parse/auto` — não reinterpreta o resultado, só repassa o JSON de
+`AutomaticParseResponse` como a API o produz:
+
+- **`status`**: `unique` (layout aplicado automaticamente, parse já incluso em `parseResult`),
+  `ambiguous` (retorna até **5** candidatos ranqueados — teto da própria API,
+  `AutomaticLayoutDetectionService.MaximumRankedCandidates` — cada um com `rank`, `matchScore`,
+  `evidence`, `conflicts`, `limitations` e `isTied` para empate; `totalCandidates`/`truncated`
+  informam se havia mais candidatos além dos 5) ou `not_found` (nenhum candidato compatível).
+- **Parâmetros:** `documentPath` (arquivo local MQSeries/IDoc) e `layoutGuidOverride` (opcional) —
+  para escolher explicitamente um candidato do ranking **desta mesma detecção**. A tool não
+  escolhe por conta própria nem tenta um layout alternativo sozinha: GUID fora do conjunto
+  retornado vira **422**, repassado como veio.
+- **Correlação:** cada chamada gera um `CorrelationId` novo, propagado no header
+  `X-Correlation-ID` da requisição; a resposta expõe o `CorrelationId` que a API efetivamente usou
+  (ecoado no header de resposta), tanto no corpo retornado em caso de erro quanto nos logs do MCP.
+- **Erros/limites HTTP** (`400`, `422`, `503`, `500`) são devolvidos como vieram — sem engolir,
+  sem inventar retry que troque de layout, sem inferir sucesso.
+- **Sem dado sensível em log:** só nome de arquivo local e metadados de detecção (status/rank/
+  guid) chegam ao `ILogger`; o conteúdo do documento e o layout descriptografado nunca são
+  logados.
 
 > `list_endpoints` + `api_get/api_post` permitem ao agente **descobrir e chamar qualquer
 > endpoint** sem hardcodar rotas — robusto a uma API em evolução. Conforme as rotas se
@@ -98,6 +122,7 @@ mcp/LayoutParserMcp/
 ├── CorrelationContext.cs    # gera/propaga o CorrelationId por chamada de tool
 ├── Tools/
 │   ├── ParseTools.cs        # parse_document
+│   ├── DetectLayoutTools.cs # detect_layout (POST /api/parse/auto, issue #216)
 │   └── ApiTools.cs          # list_endpoints, api_get, api_post
 └── README.md
 ```

@@ -372,85 +372,79 @@ jobs:
     # por exemplo) que ninguem versionou. Este step faz UPSERT: reescreve so as chaves que
     # gerencia e PRESERVA todo o resto. Sobrescrever em bloco apagaria a senha do SQL.
     #
+    # IdentityDatabase__Server/Database/UserId/Password: mesmo SQL Server dedicado de
+    # identidade (172.25.32.5) usado pelo ci-dev.yml, injetado aqui pelo mesmo par de
+    # secrets/variables (IDENTITY_DB_USERID/IDENTITY_DB_PASSWORD/IDENTITY_DB_SERVER/
+    # IDENTITY_DB_NAME) - ver bloco no $managed logo abaixo.
+    #
     # Roda ANTES do deploy de proposito: o servico e parado e reiniciado la, entao sobe ja
     # com o ambiente novo. Variavel de ambiente e lida no start do processo.
 
-    # -- Publicacao do runner low-code -----------------------------------------------
+    # -- Publicacao do runner low-code (pasta Functions do repo) --------------------
     #
-    # `LowCode:RunnerPath` aponta para `<deploy>\api\LayoutParserLowCodeRunner.exe` e NENHUM
-    # workflow colocava esse arquivo la - toda a configuracao low-code ficava correta e inerte.
-    # Este step fecha isso, mas NAO copiando para `<deploy>\api`: nao adiantaria.
+    # `LowCode:RunnerPath` historicamente apontava para `<deploy>\api\LayoutParserLowCodeRunner.exe`
+    # e NENHUM workflow colocava o arquivo la - a config low-code ficava correta e inerte (issue
+    # #373: execute-lowcode = 500 "runner .exe nao encontrado no host").
     #
-    # O runner e net481/x86 e resolve dependencias pelo diretorio do PROPRIO .exe. So executa de
-    # dentro de uma Bin do Sysmiddle completa, e "completa" tem um discriminador binario - a versao
-    # do log4net (verificado 2026-08-10 na maquina de dev):
-    #   C:\appconnector\App\Bin        log4net 2.0.17.0  -> APTA (580 arquivos)
-    #   <deploy>\api\Functions         log4net 1.2.13.0  -> estoura em InstanceFactory.Initialize()
+    # O runner e net481/x86 e resolve dependencias pelo diretorio do PROPRIO .exe. Ate a issue
+    # #391/#392 a unica pasta apta no host era a Bin de uma instancia AppConnector de TERCEIROS -
+    # a pasta versionada `tools/LowCodeRunner/Functions/` carregava log4net 1.2.13.0 e estourava
+    # em InstanceFactory.Initialize(). Com o #391/#392 essa pasta passou a ter log4net 2.0.17.0
+    # ao lado de SysMiddle.Base.dll: virou um runtime home completo por si so.
     #
-    # [ATENCAO] ESCOPO: em producao isto escreve na Bin de um produto de TERCEIROS (a instancia do
-    # AppConnector). E deliberadamente aditivo - copia dois arquivos novos e nao sobrescreve
-    # nenhuma DLL existente - e reversivel apagando os dois. Ainda assim, combine com quem opera o
-    # FiatMQ antes do primeiro deploy que rodar este step.
+    # Este step copia `Functions/` INTEIRA (do checkout que o job ja faz) para
+    # `<deploy>\api\lowcode-runner\`, preservando a estrutura, e resolve
+    # LOWCODE_RUNNER_PATH_RESOLVED para o `.exe` nesse local - consumido pelo step de Environment
+    # do servico logo abaixo (o appsettings.json do destino e preservado, entao esse caminho so
+    # chega a API por variavel de ambiente). Nao depende mais de procurar uma Bin de terceiros.
     #
-    # Nao e fatal: sem Bin apta o deploy segue e a API sobe; so o pathway low-code fica
-    # indisponivel, e o diagnostico do fim do workflow explica por que.
-    - name: Publicar runner low-code na Bin do Sysmiddle
+    # O diretorio `<deploy>\api\lowcode-runner` esta na allowlist do clean-deploy (step "Deploy to
+    # server (local)") para nao ser removido como orfao logo em seguida.
+    #
+    # Nao e fatal: se a pasta Functions/ nao vier no checkout ou regredir o log4net, o step avisa
+    # e segue - a API sobe, so o pathway low-code fica indisponivel. O smoke test do runner mais
+    # abaixo (tambem nao-fatal) diz se ele realmente SOBE no host.
+    - name: Publicar runner low-code (pasta Functions do repo)
       continue-on-error: true
       run: |
         $ErrorActionPreference = "Continue"
+        $DEPLOY_PATH = "${{ secrets.DEPLOY_PATH }}".Trim('"', '''', ' ')
+        if ([string]::IsNullOrWhiteSpace($DEPLOY_PATH)) {
+          Write-Warning "DEPLOY_PATH nao configurado - runner low-code nao sera publicado."
+          exit 0
+        }
+
         $runnerSrc = Join-Path $PWD.Path "LayoutParserApi\tools\LowCodeRunner\Functions"
         $runnerExe = Join-Path $runnerSrc "LayoutParserLowCodeRunner.exe"
-
         if (-not (Test-Path $runnerExe)) {
           Write-Warning "Runner nao encontrado no checkout: $runnerExe - pathway low-code seguira indisponivel."
           exit 0
         }
 
-        # Bin apta = tem SysMiddle.Base.dll E log4net 2.x ao lado.
-        $aptas = New-Object System.Collections.Generic.List[string]
-        $raizes = Get-ChildItem -Path 'C:\' -Directory -Force -ErrorAction SilentlyContinue |
-                  Where-Object { $_.Name -notin @('Windows','Users','ProgramData','$Recycle.Bin','System Volume Information','Recovery') }
-        foreach ($r in $raizes) {
-          Get-ChildItem -Path $r.FullName -File -Recurse -Depth 4 -Filter 'SysMiddle.Base.dll' -ErrorAction SilentlyContinue |
-            ForEach-Object {
-              $l4n = Join-Path $_.DirectoryName 'log4net.dll'
-              if ((Test-Path $l4n) -and ((Get-Item $l4n).VersionInfo.FileVersion -like '2.*')) {
-                $aptas.Add($_.DirectoryName)
-              }
-            }
-        }
-
-        # [ATENCAO] Escolha pela Bin MAIS COMPLETA (mais arquivos), nao pela primeira em ordem alfabetica.
-        # Medido no .42 em 2026-08-10: ha QUATRO diretorios com SysMiddle.Base.dll + log4net 2.x -
-        #   C:\appconnector\App\Bin            636 arquivos  <- a Bin real da instancia
-        #   C:\appconnector\Settings           217
-        #   C:\appconnector\Tools              158
-        #   C:\appconnector\App\Bin\Functions  102
-        # Todos passam no teste "apta", mas so o primeiro tem o conjunto completo de dependencias.
-        # Ordem alfabetica acertaria por coincidencia aqui e erraria em qualquer host onde a
-        # instancia esteja sob um caminho de nome menor - escolher por acaso nao e escolher.
-        $ranking = $aptas | Sort-Object -Unique |
-                   ForEach-Object { [PSCustomObject]@{ Caminho = $_; Arquivos = (Get-ChildItem $_ -File -ErrorAction SilentlyContinue).Count } } |
-                   Sort-Object Arquivos -Descending
-
-        $destino = ($ranking | Select-Object -First 1).Caminho
-        if (-not $destino) {
-          Write-Warning "Nenhuma Bin do Sysmiddle APTA neste host (SysMiddle.Base.dll + log4net 2.x)."
-          Write-Warning "O pathway low-code seguira indisponivel. Ver diagnostico no fim do workflow."
+        # Discriminador binario da aptidao (verificado no repo apos issue #391/#392): a pasta
+        # precisa ter SysMiddle.Base.dll E log4net 2.x ao lado do .exe. Se a pasta versionada
+        # regredir, avisa e NAO publica - copiar uma pasta com log4net 1.x so produziria uma
+        # falha em runtime (InstanceFactory.Initialize()), sem erro de deploy.
+        $l4n = Join-Path $runnerSrc "log4net.dll"
+        $l4nVer = if (Test-Path $l4n) { (Get-Item $l4n).VersionInfo.FileVersion } else { "(ausente)" }
+        $temBase = Test-Path (Join-Path $runnerSrc "SysMiddle.Base.dll")
+        if ((-not $temBase) -or ($l4nVer -notlike "2.*")) {
+          Write-Warning "Functions/ nao esta apta (SysMiddle.Base.dll presente=$temBase, log4net=$l4nVer) - runner nao publicado."
           exit 0
         }
 
-        if ($ranking.Count -gt 1) {
-          Write-Host "Bins aptas encontradas ($($ranking.Count)), ordenadas por completude:"
-          $ranking | ForEach-Object { Write-Host "   $($_.Arquivos.ToString().PadLeft(5)) arquivos  $($_.Caminho)" }
-        }
-
-        Copy-Item $runnerExe $destino -Force
-        $cfg = Join-Path $runnerSrc "LayoutParserLowCodeRunner.exe.config"
-        if (Test-Path $cfg) { Copy-Item $cfg $destino -Force }
+        $destino = Join-Path $DEPLOY_PATH "api\lowcode-runner"
+        if (Test-Path $destino) { Remove-Item $destino -Recurse -Force -ErrorAction SilentlyContinue }
+        New-Item -ItemType Directory -Path $destino -Force | Out-Null
+        Copy-Item -Path (Join-Path $runnerSrc "*") -Destination $destino -Recurse -Force
 
         $publicado = Join-Path $destino "LayoutParserLowCodeRunner.exe"
-        Write-Host "Runner publicado em: $publicado"
+        if (-not (Test-Path $publicado)) {
+          Write-Warning "Falha ao copiar o runner para $destino - pathway low-code seguira indisponivel."
+          exit 0
+        }
+        $qtd = (Get-ChildItem $destino -Recurse -File -ErrorAction SilentlyContinue | Measure-Object).Count
+        Write-Host "Runner low-code publicado em: $publicado ($qtd arquivos, log4net $l4nVer)"
 
         Add-Content -Path $env:GITHUB_ENV -Value "LOWCODE_RUNNER_PATH_RESOLVED=$publicado"
 
@@ -505,9 +499,20 @@ jobs:
           }
         }
 
+        # Defesa em profundidade contra a causa raiz registrada em #112 (comentario de @lp-devops,
+        # 2026-09-06): o appsettings.json do repo teve comentarios `// ...` (commit 0a2162b) e
+        # ConvertFrom-Json nao aceita comentario - falhava silenciosamente sob continue-on-error,
+        # deixando $mapaRepo vazio e o relatorio de drift mentiroso. O arquivo do repo ja foi
+        # corrigido para JSON estrito (comentarios viraram chaves "_comment"), mas o parser aqui
+        # fica tolerante de qualquer forma - remove linha que comeca (so espacos antes) com `//`,
+        # o padrao usado neste repo. Nao mexe em `//` dentro de string de valor.
+        function RemoverComentarios($caminho) {
+          return ((Get-Content $caminho) | Where-Object { $_ -notmatch '^\s*//' }) -join "`n"
+        }
+
         $mapaRepo = @{}; $mapaDestino = @{}
-        Flatten (Get-Content $repo -Raw | ConvertFrom-Json) '' $mapaRepo
-        Flatten (Get-Content $destino -Raw | ConvertFrom-Json) '' $mapaDestino
+        Flatten (RemoverComentarios $repo | ConvertFrom-Json) '' $mapaRepo
+        Flatten (RemoverComentarios $destino | ConvertFrom-Json) '' $mapaDestino
 
         # NUNCA ecoar valor de chave sensivel: o destino carrega Database:Password em texto plano.
         function EhSensivel($chave) {
@@ -643,6 +648,11 @@ jobs:
     - name: Configurar ambiente do servico (upsert, nao destrutivo)
       env:
         AI_METRICS_INGEST_KEY: ${{ secrets.AI_METRICS_INGEST_KEY }}
+        IDENTITY_DB_SERVER: ${{ vars.IDENTITY_DB_SERVER }}
+        IDENTITY_DB_NAME: ${{ vars.IDENTITY_DB_NAME }}
+        IDENTITY_DB_USERID: ${{ secrets.IDENTITY_DB_USERID }}
+        IDENTITY_DB_PASSWORD: ${{ secrets.IDENTITY_DB_PASSWORD }}
+        DB_PASSWORD_PROD: ${{ secrets.DB_PASSWORD_PROD }}
       run: |
         $ErrorActionPreference = "Stop"
         $serviceName = "LayoutParserApi"
@@ -673,11 +683,12 @@ jobs:
         # 180s da ~30% de folga sobre o pior caso medido. Ver comentario extenso no ci-dev.yml.
         $managed['LowCode__RunnerTimeoutSeconds'] = '180'
 
-        # LowCode__RunnerPath: resolvido pelo step de publicacao do runner, logo acima. So entra no
-        # conjunto gerenciado quando o runner foi de fato publicado numa Bin apta. Se nao foi, a
-        # chave NAO e gerenciada - e, pela semantica de upsert deste step, um valor que ja exista no
-        # destino (definido manualmente) e PRESERVADO em vez de apagado. Sobrescrever com vazio aqui
-        # quebraria uma instalacao que alguem configurou a mao.
+        # LowCode__RunnerPath: resolvido pelo step de publicacao do runner, logo acima (aponta para
+        # <deploy>\api\lowcode-runner\LayoutParserLowCodeRunner.exe, a copia da pasta Functions/ do
+        # repo). So entra no conjunto gerenciado quando o runner foi de fato publicado. Se nao foi,
+        # a chave NAO e gerenciada - e, pela semantica de upsert deste step, um valor que ja exista
+        # no destino (definido manualmente) e PRESERVADO em vez de apagado. Sobrescrever com vazio
+        # aqui quebraria uma instalacao que alguem configurou a mao.
         if (-not [string]::IsNullOrWhiteSpace($env:LOWCODE_RUNNER_PATH_RESOLVED)) {
           $managed['LowCode__RunnerPath'] = $env:LOWCODE_RUNNER_PATH_RESOLVED
         } else {
@@ -698,6 +709,58 @@ jobs:
         } else {
           Write-Warning ("Secret AI_METRICS_INGEST_KEY ausente - a ingestao de metricas de IA continuara RECUSADA. " +
             "Crie em: GitHub -> Settings -> Secrets and variables -> Actions -> aba Secrets.")
+        }
+
+        # IdentityDatabase:* - SQL Server dedicado (172.25.32.5) para identidade/workspace,
+        # substituindo o uso indevido do banco Sysmiddle ConnectUS_Macgyver (Error 1770 de FK
+        # em SqlIdentityWorkspaceStore.cs). Server/Database vem de variables (nao sensiveis);
+        # UserId/Password vem de secrets (NUNCA ecoar o valor). Mesmo mecanismo do ci-dev.yml,
+        # mas aqui em upsert: se algum estiver ausente, a chave correspondente simplesmente NAO
+        # entra em $managed - um valor ja configurado manualmente no destino fica PRESERVADO em
+        # vez de apagado (mesma semantica de LowCode__RunnerPath acima).
+        if (-not [string]::IsNullOrWhiteSpace($env:IDENTITY_DB_SERVER)) {
+          $managed['IdentityDatabase__Server'] = $env:IDENTITY_DB_SERVER
+        } else {
+          Write-Warning "Variable IDENTITY_DB_SERVER ausente - IdentityDatabase:Server nao sera gerenciada (valor existente, se houver, fica preservado)."
+        }
+        if (-not [string]::IsNullOrWhiteSpace($env:IDENTITY_DB_NAME)) {
+          $managed['IdentityDatabase__Database'] = $env:IDENTITY_DB_NAME
+        } else {
+          Write-Warning "Variable IDENTITY_DB_NAME ausente - IdentityDatabase:Database nao sera gerenciada (valor existente, se houver, fica preservado)."
+        }
+        if (-not [string]::IsNullOrWhiteSpace($env:IDENTITY_DB_USERID)) {
+          $managed['IdentityDatabase__UserId'] = $env:IDENTITY_DB_USERID
+        } else {
+          Write-Warning "Secret IDENTITY_DB_USERID ausente - IdentityDatabase:UserId nao sera gerenciada (valor existente, se houver, fica preservado)."
+        }
+        if (-not [string]::IsNullOrWhiteSpace($env:IDENTITY_DB_PASSWORD)) {
+          $managed['IdentityDatabase__Password'] = $env:IDENTITY_DB_PASSWORD
+        } else {
+          Write-Warning ("Secret IDENTITY_DB_PASSWORD ausente - IdentityDatabase:Password nao sera gerenciada (valor existente, se houver, fica preservado). " +
+            "Sem ela e sem valor manual no destino, a API sobe fail-closed negando UserId. " +
+            "Crie em: GitHub -> Settings -> Secrets and variables -> Actions -> aba Secrets.")
+        }
+
+        # Database__Password: fecha o pre-requisito #1 registrado na issue #112 (comentario de
+        # @lp-devops, 2026-09-06) para ativar vars.MIGRATE_CONFIG_TO_REPO=true. O guard-rail de
+        # segredo do step "Config drift" aborta a migracao enquanto Database:Password divergir do
+        # repo (repo tem "") e NAO existir Database__Password no Environment do servico - hoje a
+        # senha do SQL (172.31.249.51, credencial compartilhada org-wide, ver
+        # .claude/rules/security.md) so existe em texto plano no appsettings.json do disco.
+        #
+        # O valor NAO pode ser obtido por este workflow (host de producao sem SSH/WinRM/SMB) nem
+        # inventado por um agente - precisa ser o mesmo valor ja em uso, provisionado manualmente
+        # pelo dono do projeto como secret DB_PASSWORD_PROD. Enquanto o secret nao existir, esta
+        # chave simplesmente NAO entra em $managed (mesma semantica de upsert das demais acima) -
+        # nada muda no Environment e a senha continua vindo do appsettings.json ate a migracao
+        # ser desbloqueada.
+        if (-not [string]::IsNullOrWhiteSpace($env:DB_PASSWORD_PROD)) {
+          $managed['Database__Password'] = $env:DB_PASSWORD_PROD
+        } else {
+          Write-Warning ("Secret DB_PASSWORD_PROD ausente - Database__Password nao sera gerenciada. " +
+            "E pre-requisito para ativar vars.MIGRATE_CONFIG_TO_REPO=true (issue #112): crie o secret " +
+            "com o MESMO valor de senha ja em uso hoje (nao e rotacao) em GitHub -> Settings -> " +
+            "Secrets and variables -> Actions -> aba Secrets.")
         }
 
         # Kestrel__Endpoints__Http__Url: TRAVA DE REDE (2026-08-12, plano em
@@ -914,15 +977,52 @@ jobs:
           Write-Host "appsettings.json nao encontrado em: $APP_SETTINGS_PATH (primeiro deploy?)"
         }
         
-        # Parar servico Windows se existir
+        # Parar servico Windows se existir.
+        #
+        # MIGRACAO NSSM -> NATIVO: este servidor de producao foi originalmente instalado com o
+        # NSSM (C:\Users\Administrator\Downloads\nssm-2.24\nssm-2.24), antes deste workflow saber
+        # criar servico Windows nativo (Program.cs ja usa builder.Host.UseWindowsService() ha
+        # tempo). O ci-dev.yml ja detecta e migra isso a cada deploy de dev (step "Parar servico
+        # (e remover NSSM legado, se houver)") - aqui portamos a MESMA logica: se o ImagePath do
+        # servico registrado contiver "nssm", removemos o registro do servico (sc.exe delete) para
+        # que o bloco de (re)criacao mais abaixo o recrie como servico Windows nativo. Servico ja
+        # nativo (ImagePath aponta direto para LayoutParserApi.exe) segue sem alteracao - so para,
+        # binarios sao trocados, reinicia.
         $serviceName = "LayoutParserApi"
-        if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
+        $svc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+        if ($svc) {
+          $imagePath = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$serviceName" -ErrorAction SilentlyContinue).ImagePath
+          Write-Host "Servico existente (Status=$($svc.Status)). ImagePath: $imagePath"
+
           Write-Host "Parando servico $serviceName..."
           Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 3
           Write-Host "Servico parado"
+
+          if ($imagePath -match 'nssm') {
+            Write-Host "MIGRACAO NSSM -> NATIVO: servico legado gerenciado pelo NSSM detectado."
+
+            # sc.exe delete apaga a chave de registro inteira do servico, inclusive o valor
+            # Environment que o step "Configurar ambiente do servico (upsert, nao destrutivo)"
+            # acabou de escrever (roda ANTES deste, na mesma chave HKLM do servico NSSM ainda
+            # registrado). Sem capturar aqui, o servico nativo recriado abaixo subiria sem
+            # Database__Password/IdentityDatabase__*/etc. Guardamos para restaurar apos a criacao.
+            $preMigrationEnvironment = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$serviceName" -Name 'Environment' -ErrorAction SilentlyContinue).Environment
+
+            Write-Host "Removendo o registro do servico para recria-lo como servico Windows nativo..."
+            sc.exe delete $serviceName | Out-Null
+            for ($i = 0; $i -lt 10; $i++) {
+              Start-Sleep -Seconds 2
+              if (-not (Get-Service -Name $serviceName -ErrorAction SilentlyContinue)) { break }
+            }
+            if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
+              Write-Error "Servico ainda presente apos delete (marcado para exclusao?). Feche services.msc/handles e re-execute o workflow."
+              exit 1
+            }
+            Write-Host "Servico NSSM removido - sera recriado como nativo apos a copia dos binarios."
+          }
         } else {
-          Write-Host "Servico $serviceName nao encontrado (pode nao estar instalado como servico)"
+          Write-Host "Servico $serviceName nao encontrado (pode nao estar instalado como servico) - sera criado como nativo apos a copia dos binarios."
         }
         
         # Copiar arquivos da API (manter appsettings.json se ja existir)
@@ -971,6 +1071,81 @@ jobs:
           Write-Warning "Nenhum arquivo encontrado em: $DEPLOY_API_SOURCE"
           Write-Host "Conteudo do diretorio de origem:"
           Get-ChildItem -Path $DEPLOY_API_SOURCE -Recurse | Select-Object FullName | Format-Table
+        }
+
+        # -- Clean deploy: remove do destino o que NAO faz parte do publish atual --------------
+        #
+        # POR QUE ESTE BLOCO EXISTE: ate aqui o deploy so SOBRESCREVIA arquivos - um arquivo que
+        # saiu do repo (renomeado, movido, ou uma DLL de dependencia removida) continuava para
+        # sempre no `<deploy>\api` do servidor, de release em release. Decisao do dono
+        # (2026-09-07, ver docs/architecture/clean-deploy-estrategia-2026-09-07.md): o destino deve
+        # corresponder exatamente ao que o `dotnet publish` deste commit produz - reprodutivel,
+        # sem acumulo.
+        #
+        # O QUE E PRESERVADO DE PROPOSITO (nao e "limpo"): a pasta Logs/logs inteira (historico de
+        # log sobrevive a um redeploy - Logging:File:Directory aponta para
+        # `<deploy>\api\logs`, DENTRO desta pasta) e appsettings.json/appsettings.Production.json
+        # (canal de config local/migrado, ja tratado acima pela flag CONFIG_MIGRATED - aqui so
+        # garante que uma limpeza generica nao os apague por engano). Nao mexe em nada fora de
+        # `<deploy>\api` (backups/, MLData/, Exemplo/, xsd/, tcl/, xsl/, sysmiddle/, globalfolder/
+        # etc. sao pastas IRMAS de `api/`, fora do escopo deste bloco - ver o doc para o
+        # levantamento completo dos diretorios de runtime).
+        #
+        # NAO e um `rm -rf` seguido de copia: e um diff entre o que existe no destino e o que o
+        # publish atual contem, removendo so os arquivos ORFAOS (existem no destino, nao existem
+        # no publish nem estao na allowlist acima). Erro ao remover um arquivo individual e
+        # best-effort (nao aborta o deploy) - o objetivo e reduzir acumulo, nao e tao critico
+        # quanto a copia em si.
+        if (Test-Path $DEPLOY_API_PATH) {
+          # 'logs' = historico de log (Logging:File:Directory aponta para dentro);
+          # 'lowcode-runner' = runner low-code publicado por um step anterior (issue #373),
+          # fora do publish da API - clean-deploy nao pode trata-lo como orfao.
+          $preservarPastasTopo = @('logs', 'lowcode-runner')  # comparado case-insensitive
+          $preservarArquivos = @('appsettings.json', 'appsettings.production.json')
+
+          $novosRelativos = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+          foreach ($file in $apiFiles) {
+            [void]$novosRelativos.Add($file.FullName.Substring($DEPLOY_API_SOURCE.Length + 1))
+          }
+          # LayoutParserDecrypt.exe/.config e LayoutParserLib.dll sao copiados por um passo
+          # separado logo abaixo (fora de $apiFiles) - registrados aqui tambem para nao virarem
+          # "orfaos" na mesma passada em que acabaram de ser publicados.
+          foreach ($extra in @('LayoutParserDecrypt.exe', 'LayoutParserDecrypt.exe.config', 'LayoutParserLib.dll')) {
+            [void]$novosRelativos.Add($extra)
+          }
+
+          $removidos = 0
+          $existentes = Get-ChildItem -Path $DEPLOY_API_PATH -Recurse -File -ErrorAction SilentlyContinue
+          foreach ($existente in $existentes) {
+            $relExistente = $existente.FullName.Substring($DEPLOY_API_PATH.Length + 1)
+            $primeiraPasta = ($relExistente -split '[\\/]')[0]
+            if ($preservarPastasTopo -contains $primeiraPasta.ToLowerInvariant()) { continue }
+            if ($preservarArquivos -contains $relExistente.ToLowerInvariant()) { continue }
+            if ($relExistente -like 'appsettings.*.local.json' -or $relExistente -eq 'appsettings.Local.json') { continue }
+            if ($novosRelativos.Contains($relExistente)) { continue }
+
+            try {
+              Remove-Item -Path $existente.FullName -Force -ErrorAction Stop
+              $removidos++
+            } catch {
+              Write-Warning "Clean deploy: falha ao remover orfao $relExistente (best-effort, seguindo): $($_.Exception.Message)"
+            }
+          }
+
+          if ($removidos -gt 0) {
+            Write-Host "Clean deploy: $removidos arquivo(s) orfao(s) removido(s) de $DEPLOY_API_PATH (fora do publish atual e fora da allowlist Logs/appsettings)."
+          } else {
+            Write-Host "Clean deploy: nenhum arquivo orfao encontrado em $DEPLOY_API_PATH."
+          }
+
+          # Diretorios vazios remanescentes (exceto os preservados) - cosmetico, best-effort.
+          Get-ChildItem -Path $DEPLOY_API_PATH -Recurse -Directory -ErrorAction SilentlyContinue |
+            Where-Object {
+              $preservarPastasTopo -notcontains $_.Name.ToLowerInvariant() -and
+              (Get-ChildItem -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue).Count -eq 0
+            } |
+            Sort-Object { $_.FullName.Length } -Descending |
+            ForEach-Object { Remove-Item -Path $_.FullName -Force -ErrorAction SilentlyContinue }
         }
         
         $copiedCount = 0
@@ -1053,12 +1228,49 @@ jobs:
           Write-Warning "LayoutParserApi.dll nao encontrado em: $apiDllPath"
         }
         
-        # Reiniciar servico Windows se existir
+        # (Re)criar servico Windows NATIVO se necessario, entao (re)iniciar.
+        #
+        # Cobre dois casos: (1) migracao NSSM -> nativo (servico removido no bloco acima) e
+        # (2) primeiro deploy neste host (servico nunca existiu). Mesma abordagem do
+        # ci-dev.yml (step "Criar/configurar servico Windows nativo"): sc.exe create com o
+        # binPath apontando para o .exe recem-copiado, descricao e auto-restart em falha.
+        if (-not (Get-Service -Name $serviceName -ErrorAction SilentlyContinue)) {
+          $exePath = Join-Path $DEPLOY_API_PATH "LayoutParserApi.exe"
+          if (-not (Test-Path $exePath)) {
+            Write-Error "Executavel nao encontrado: $exePath - nao e possivel criar o servico Windows nativo."
+            exit 1
+          }
+
+          Write-Host "Criando servico Windows NATIVO $serviceName..."
+          # Aspas embutidas via variavel (idiom de PowerShell) para o ImagePath ficar citado no registro.
+          $binPath = '"{0}"' -f $exePath
+          sc.exe create $serviceName binPath= $binPath start= auto
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Falha ao criar o servico (sc create retornou $LASTEXITCODE)"
+            exit 1
+          }
+          sc.exe description $serviceName "LayoutParser API (ASP.NET Core) - servico Windows nativo, deploy via CI producao" | Out-Null
+          # Auto-restart em falha: ate 3 restarts com 60s de intervalo; contador zera em 24h.
+          sc.exe failure $serviceName reset= 86400 actions= restart/60000/restart/60000/restart/60000 | Out-Null
+          Write-Host "Servico criado (start=auto, failure actions configuradas)."
+
+          if ($preMigrationEnvironment) {
+            # Migracao NSSM -> nativo: restaura o Environment capturado antes do sc.exe delete
+            # (ver comentario no bloco de parada acima) para nao perder Database__Password/
+            # IdentityDatabase__*/AiMetrics__IngestApiKey na primeira subida do servico novo.
+            Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\$serviceName" -Name "Environment" -Value ([string[]]$preMigrationEnvironment) -Type MultiString
+            Write-Host "Environment restaurado apos migracao NSSM -> nativo ($($preMigrationEnvironment.Count) variavel(is))."
+          } else {
+            Write-Warning "Servico recem-criado sem Environment previo (primeiro deploy neste host?). O step 'Configurar ambiente do servico (upsert, nao destrutivo)' roda ANTES deste no pipeline e sai sem escrever nada se o servico ainda nao estava registrado - rode o workflow de novo apos esta criacao para que esse step aplique Database__Password/IdentityDatabase__*/etc., ou configure manualmente antes do proximo deploy."
+          }
+        }
+
+        # Reiniciar servico Windows
         if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
           Write-Host "Reiniciando servico $serviceName..."
           Start-Service -Name $serviceName -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 2
-          
+
           $service = Get-Service -Name $serviceName
           if ($service.Status -eq 'Running') {
             Write-Host "Servico $serviceName esta em execucao"
@@ -1122,13 +1334,36 @@ jobs:
         # Mesma cadencia do ci-dev: ate 24 tentativas x 5s = ~2min de folga para o warm-up.
         $status = $null
         $tentativas = 24
+        $corpo = $null
         for ($i = 1; $i -le $tentativas; $i++) {
+          $corpo = $null
           try {
-            $resp = Invoke-WebRequest -Uri $smokeUrl -UseBasicParsing -TimeoutSec 5 -Headers $smokeHeaders
+            # TimeoutSec=10 (era 5): o pior caso do proprio SqlServerHealthCheck (Connection
+            # Timeout=3 + Command Timeout=3, ate ~6s) e maior que os 5s antigos, o que confundia
+            # "SQL um pouco lento" com "sem resposta". 10s da margem sem alargar a janela total
+            # de tentativas (investigacao docs/architecture/investigacao-instabilidade-sql-deploy-2026-09-05.md).
+            $resp = Invoke-WebRequest -Uri $smokeUrl -UseBasicParsing -TimeoutSec 10 -Headers $smokeHeaders
             $status = [int]$resp.StatusCode
+            $corpo = $resp.Content
           } catch {
             $r = $_.Exception.Response
             $status = if ($r -and $r.StatusCode) { [int]$r.StatusCode } else { $null }
+            if ($r) {
+              try {
+                # GetResponseStream() pode vir vazio/fechado (WebException ja consumido pelo
+                # Invoke-WebRequest), o que fazia o corpo do 503 nunca aparecer no log (achado #4
+                # da investigacao 2026-09-05). $_.ErrorDetails.Message preserva o corpo em erro
+                # de forma confiavel no PowerShell 7 (pwsh, ja e o shell usado aqui) - tenta
+                # primeiro, cai no stream como fallback.
+                if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+                  $corpo = $_.ErrorDetails.Message
+                } else {
+                  $stream = $r.GetResponseStream()
+                  $reader = New-Object System.IO.StreamReader($stream)
+                  $corpo = $reader.ReadToEnd()
+                }
+              } catch { }
+            }
           }
 
           if ($status -eq 200) {
@@ -1137,6 +1372,9 @@ jobs:
           }
 
           $descr = if ($null -eq $status) { "sem resposta" } else { "HTTP $status" }
+          # Corpo do /health/ready mostra QUAL dependencia esta Unhealthy (sql/redis/decryptor/
+          # lowcode-runner/catalog) - sem isso so se descobre a causa lendo o log do host depois.
+          if ($corpo) { Write-Host "    corpo: $corpo" }
           if ($i -lt $tentativas) {
             Write-Host "  tentativa $i/$($tentativas): readiness ainda nao pronta ($descr), aguardando 5s..."
             Start-Sleep -Seconds 5
@@ -1145,7 +1383,14 @@ jobs:
 
         if ($status -ne 200) {
           $ultimo = if ($null -eq $status) { "sem resposta" } else { "HTTP $status" }
-          Write-Error ("Readiness nao ficou 200 em $smokeUrl apos $tentativas tentativas (ultimo: $ultimo). " +
+          # FIX (2026-09-07): era Write-Error. Com $ErrorActionPreference="Stop" (topo do
+          # step), Write-Error e SEMPRE terminante - o script abortava exatamente aqui, ANTES
+          # do bloco de rollback abaixo rodar. Ou seja, o rollback automatico prometido pelo
+          # incidente de 2026-08-15/PR #114 nunca chegava a executar; producao ficava presa na
+          # versao quebrada com o service Windows "Running" mas sem responder. Descoberto ao
+          # vivo no deploy que ativou MIGRATE_CONFIG_TO_REPO (issue #112) - Write-Host nao-
+          # terminante deixa o fluxo continuar ate o rollback de verdade, abaixo.
+          Write-Host ("ATENCAO: Readiness nao ficou 200 em $smokeUrl apos $tentativas tentativas (ultimo: $ultimo). " +
             "A versao nova falhou o smoke test - iniciando rollback automatico para nao deixar producao no ar " +
             "quebrada (incidente de 2026-08-15, PR #114, motivou este mecanismo).")
 
@@ -1176,7 +1421,8 @@ jobs:
               $rollbackMsg = ("ROLLBACK NAO EXECUTADO - nenhum backup pre-deploy encontrado em $BACKUPS_ROOT " +
                 "(primeiro deploy?). Producao permanece na versao que falhou o smoke test - intervencao " +
                 "manual necessaria AGORA no host de producao.")
-              Write-Error $rollbackMsg
+              # Write-Host, nao Write-Error (mesmo motivo do fix acima: precisa chegar no resumo/e-mail abaixo).
+              Write-Host $rollbackMsg
             } else {
               Write-Host "Restaurando backup: $backupPath -> $DEPLOY_API_PATH"
               $serviceName = "LayoutParserApi"
@@ -1199,7 +1445,9 @@ jobs:
               # o servico de volta, nao revalida o warm-up completo.
               $statusRollback = $null
               try {
-                $respRollback = Invoke-WebRequest -Uri $smokeUrl -UseBasicParsing -TimeoutSec 5
+                # TimeoutSec=10 (era 5) - mesma margem aplicada ao smoke test principal acima,
+                # coerente com o pior caso do SqlServerHealthCheck (~6s).
+                $respRollback = Invoke-WebRequest -Uri $smokeUrl -UseBasicParsing -TimeoutSec 10
                 $statusRollback = [int]$respRollback.StatusCode
               } catch {
                 $r = $_.Exception.Response
@@ -1214,13 +1462,13 @@ jobs:
                 $descrRollback = if ($null -eq $statusRollback) { "sem resposta" } else { "HTTP $statusRollback" }
                 $rollbackMsg = ("ROLLBACK EXECUTADO mas o servico NAO respondeu 200 apos restaurar ($descrRollback) - " +
                   "situacao MAIS GRAVE que uma falha comum de deploy, requer intervencao manual IMEDIATA no host de producao.")
-                Write-Error $rollbackMsg
+                Write-Host $rollbackMsg
               }
             }
           } catch {
             $rollbackMsg = ("ROLLBACK FALHOU com excecao: $($_.Exception.Message) - producao pode estar em estado " +
               "inconsistente, intervencao manual IMEDIATA necessaria no host de producao.")
-            Write-Error $rollbackMsg
+            Write-Host $rollbackMsg
           }
 
           # Resumo minimo viavel (sem webhook/integracao nova): o proprio GITHUB_STEP_SUMMARY,
@@ -1279,7 +1527,7 @@ jobs:
       continue-on-error: true
       # Pinado por SHA (tag mutavel proibida p/ Action de terceiro nao-imutavel - CodeQL
       # actions/unpinned-tag). SHA corresponde a tag v3.
-      uses: dawidd6/action-send-mail@94de994a9f6fffee200243214e17002e2920bb59
+      uses: dawidd6/action-send-mail@67ce3558d613188179559c61d3565140cf389968
       with:
         # Secrets ainda NAO preenchidos pelo dono (provedor SMTP em aberto). Enquanto
         # secrets.SMTP_SERVER estiver vazio, a Action falha rapido - por isso o step inteiro
@@ -1292,6 +1540,71 @@ jobs:
         to: ${{ secrets.ALERT_EMAIL_TO }}
         from: "LayoutParserApi Deploy <${{ secrets.SMTP_USERNAME }}>"
         body: ${{ steps.smoke_test.outputs.alert_body }}
+
+    # -- Smoke test do runner low-code (NAO-FATAL, ruidoso) -------------------------
+    #
+    # O smoke test de readiness acima so confere que LowCode:RunnerPath aponta para um arquivo
+    # existente (LowCodeRunnerHealthCheck e Degraded->200 quando falta) - NAO prova que o `.exe`
+    # SOBE. A parte sensivel e SysMiddle.Base.InstanceFactory.Initialize() (carga de log4net e do
+    # gate de licenca), que so roda quando o runner chega em CriarExecutor.
+    #
+    # Este step exercita exatamente isso: roda o runner em modo LIST posicional
+    # (<globalFolder> <package> LIST <in> <out>). LIST sobe o SDK e enumera os mapeadores do
+    # package, sem precisar de documento de entrada nem dos 48-137s de uma transformacao real.
+    # Exit 0 = runner apto no host. Qualquer outra coisa = pathway low-code quebrado.
+    #
+    # POR QUE NAO-FATAL (por ora): tornar isto fatal acopla TODO deploy futuro da API - inclusive
+    # correcoes que nao tocam low-code - a um runtime de TERCEIROS (SDK Sysmiddle + gate de
+    # licenca + catalogo globalfolder no host) que nunca foi provado rodar a partir de Functions/
+    # no .42. O caminho seguro e deixar ruidoso agora e, depois de um deploy confirmar que sobe,
+    # promover a fatal (trocar o `exit 0` final por `exit 1` e remover continue-on-error).
+    # Recomendacao registrada para o dono decidir.
+    - name: Smoke test do runner low-code (nao-fatal)
+      continue-on-error: true
+      run: |
+        $ErrorActionPreference = "Continue"
+        $runner = "$env:LOWCODE_RUNNER_PATH_RESOLVED"
+        if ([string]::IsNullOrWhiteSpace($runner) -or -not (Test-Path $runner)) {
+          Write-Warning "Runner low-code nao foi publicado neste deploy (LOWCODE_RUNNER_PATH_RESOLVED vazio) - nada a testar."
+          exit 0
+        }
+
+        $DEPLOY_PATH = "${{ secrets.DEPLOY_PATH }}".Trim('"', '''', ' ')
+        $globalFolder = Join-Path $DEPLOY_PATH 'globalfolder'
+        if (-not (Test-Path $globalFolder)) {
+          Write-Warning "globalfolder nao encontrado em $globalFolder - LIST do runner nao pode rodar. Pathway low-code NAO validado neste deploy."
+          exit 0
+        }
+
+        # Package: mesmo valor gerenciado pelo step de Environment (identificador do projeto
+        # Sysmiddle, nao e segredo).
+        $package = '938f9978-836f-48c1-9c0f-c2898caf4b20'
+        $tmp = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP }
+        $dummy = Join-Path $tmp 'lowcode-smoke-unused.txt'
+
+        Write-Host "Rodando runner em modo LIST: $runner"
+        $saida = & $runner $globalFolder $package 'LIST' $dummy $dummy 2>&1
+        $code = $LASTEXITCODE
+        $saida | ForEach-Object { Write-Host "    $_" }
+        Write-Host "Runner LIST exit=$code"
+
+        if ($code -eq 0) {
+          Write-Host "Runner low-code SOBE no host (LIST enumerou o package sem erro de init)."
+          exit 0
+        }
+
+        $msg = "ATENCAO: runner low-code NAO subiu (LIST exit=$code). O endpoint execute-lowcode segue " +
+          "retornando 500 em producao mesmo com o .exe publicado - provavel falha em " +
+          "InstanceFactory.Initialize() (assembly/licenca) ou globalfolder/package invalido. " +
+          "Deploy NAO foi abortado (step nao-fatal, ver cabecalho)."
+        Write-Host $msg
+        if ($env:GITHUB_STEP_SUMMARY) {
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## Runner low-code: smoke test FALHOU (nao-fatal)"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- LIST exit=$code em ``$runner``"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- O endpoint execute-lowcode continuara retornando 500 ate isto ser resolvido."
+        }
+        exit 0
 
     # -- Diagnostico de pre-requisitos (NAO-FATAL) -----------------------------------
     #
@@ -1319,14 +1632,22 @@ jobs:
           $DEPLOY_PATH = "${{ secrets.DEPLOY_PATH }}".Trim('"', '''', ' ')
 
           Write-Host "=== 1) Runner low-code no destino ==="
-          $runnerPath = Join-Path $DEPLOY_PATH 'api\LayoutParserLowCodeRunner.exe'
+          # Desde a issue #373 o runner e publicado em <deploy>\api\lowcode-runner\ (copia da pasta
+          # Functions/ do repo). O caminho legado <deploy>\api\LayoutParserLowCodeRunner.exe fica
+          # so como checagem historica.
+          $runnerPath = Join-Path $DEPLOY_PATH 'api\lowcode-runner\LayoutParserLowCodeRunner.exe'
+          $runnerLegado = Join-Path $DEPLOY_PATH 'api\LayoutParserLowCodeRunner.exe'
           if (Test-Path $runnerPath) {
             $info = Get-Item $runnerPath
-            Write-Host "  PRESENTE: $runnerPath ($([math]::Round($info.Length / 1KB, 2)) KB, $($info.LastWriteTime))"
+            $l4n = Join-Path (Split-Path $runnerPath) 'log4net.dll'
+            $l4nVer = if (Test-Path $l4n) { (Get-Item $l4n).VersionInfo.FileVersion } else { '(ausente)' }
+            Write-Host "  PRESENTE: $runnerPath ($([math]::Round($info.Length / 1KB, 2)) KB, $($info.LastWriteTime), log4net $l4nVer)"
+          } elseif (Test-Path $runnerLegado) {
+            Write-Host "  PRESENTE (caminho legado): $runnerLegado - migrar para lowcode-runner\ no proximo deploy."
           } else {
             Write-Host "  AUSENTE: $runnerPath"
             Write-Host "  -> LowCode:RunnerPath aponta para um arquivo que nao existe; toda transformacao low-code falha."
-            Write-Host "  -> Nenhum workflow compila ou copia este exe hoje (decisao pendente - ver o cabecalho deste step)."
+            Write-Host "  -> Ver o step 'Publicar runner low-code (pasta Functions do repo)' - provavel Functions/ ausente/inapta no checkout."
           }
 
           Write-Host "=== 2) Bin do Sysmiddle apta a hospedar o runner ==="
@@ -1407,7 +1728,7 @@ jobs:
       continue-on-error: true
       # Pinado por SHA (tag mutavel proibida p/ Action de terceiro nao-imutavel - CodeQL
       # actions/unpinned-tag). SHA corresponde a tag v3.
-      uses: dawidd6/action-send-mail@94de994a9f6fffee200243214e17002e2920bb59
+      uses: dawidd6/action-send-mail@67ce3558d613188179559c61d3565140cf389968
       with:
         server_address: ${{ secrets.SMTP_SERVER }}
         server_port: ${{ secrets.SMTP_PORT }}
