@@ -1,5 +1,8 @@
+using LayoutParserApi.Models.Configuration;
+using LayoutParserApi.Models.Enums;
 using LayoutParserApi.Models.Learning;
 using LayoutParserApi.Services.Learning.Models;
+using LayoutParserApi.Services.Parsing.Interfaces;
 
 using System.Text;
 using System.Text.RegularExpressions;
@@ -13,10 +16,12 @@ namespace LayoutParserApi.Services.Learning
     public class LayoutLearningService
     {
         private readonly ILogger<LayoutLearningService> _logger;
+        private readonly ILineSplitter _lineSplitter;
 
-        public LayoutLearningService(ILogger<LayoutLearningService> logger)
+        public LayoutLearningService(ILogger<LayoutLearningService> logger, ILineSplitter lineSplitter)
         {
             _logger = logger;
+            _lineSplitter = lineSplitter;
         }
 
         /// <summary>
@@ -32,7 +37,24 @@ namespace LayoutParserApi.Services.Learning
                 _logger.LogInformation("Iniciando aprendizado de layout para arquivo: {Path}", filePath);
 
                 var content = await File.ReadAllTextAsync(filePath, Encoding.UTF8);
-                var lines = content.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).Where(l => !string.IsNullOrWhiteSpace(l)).ToList();
+
+                // ✅ fix/mqseries-line-detection-601: MQSeries é um stream contínuo de largura
+                // fixa (sem terminador de linha explícito entre "linhas" lógicas) — split por
+                // \r\n tratava o arquivo inteiro como 1 única "linha" gigante (TotalFields=0).
+                // Reusa o mesmo splitter canônico (ADR-001) usado no parse real, garantindo que
+                // aprendizado e parse concordem sobre onde as linhas começam/terminam.
+                List<string> lines;
+                if (string.Equals(fileType, "mqseries", StringComparison.OrdinalIgnoreCase))
+                {
+                    lines = _lineSplitter
+                        .SplitTextIntoLines(content, PositionalFormat.ContinuousStream, LineLengthResolver.LegacyDefaultLineLength)
+                        .Where(l => !string.IsNullOrWhiteSpace(l))
+                        .ToList();
+                }
+                else
+                {
+                    lines = content.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).Where(l => !string.IsNullOrWhiteSpace(l)).ToList();
+                }
 
                 if (!lines.Any())
                 {
@@ -42,11 +64,12 @@ namespace LayoutParserApi.Services.Learning
                 }
 
                 LayoutModel model;
+                var isContinuousStream = string.Equals(fileType, "mqseries", StringComparison.OrdinalIgnoreCase);
 
                 if (fileType.ToLower() == "xml")
                     model = await LearnXmlStructureAsync(lines, filePath);
                 else
-                    model = await LearnTextPositionalStructureAsync(lines, filePath);
+                    model = await LearnTextPositionalStructureAsync(lines, filePath, isContinuousStream);
 
                 result.Success = true;
                 result.LearnedModel = model;
@@ -70,7 +93,16 @@ namespace LayoutParserApi.Services.Learning
         /// <summary>
         /// Aprende estrutura de arquivo de texto posicional
         /// </summary>
-        private async Task<LayoutModel> LearnTextPositionalStructureAsync(List<string> lines, string filePath)
+        /// <param name="isContinuousStream">
+        /// ✅ fix/mqseries-line-detection-601: MQSeries não tem linhas com prefixo textual
+        /// repetido ("HEADER"/"LINHA001"/etc.) — cada "linha" começa com um contador sequencial
+        /// de 9 dígitos que é ÚNICO por linha (ver <see cref="Services.Parsing.Implementations.LayoutDetector.LooksLikeMqSeries"/>).
+        /// O agrupamento por prefixo literal (<see cref="DetectLinePatterns"/>) nunca encontra
+        /// 3+ linhas com o mesmo prefixo nesse formato, então nenhum campo é aprendido mesmo após
+        /// o split físico estar correto. Para esse formato, agrupamos por presença/ausência do
+        /// literal "HEADER" em vez de prefixo posicional completo.
+        /// </param>
+        private async Task<LayoutModel> LearnTextPositionalStructureAsync(List<string> lines, string filePath, bool isContinuousStream = false)
         {
             var model = new LayoutModel
             {
@@ -85,15 +117,14 @@ namespace LayoutParserApi.Services.Learning
             var firstLine = lines.First();
             model.LineLength = firstLine.Length;
 
-            // Detectar padrões de quebra de linha (HEADER, LINHA000, etc.)
-            var linePatterns = DetectLinePatterns(lines);
+            var linePatternGroups = isContinuousStream
+                ? DetectContinuousStreamGroups(lines)
+                : DetectLinePatterns(lines).ToDictionary(p => p.Name, p => lines.Where(l => p.IsMatch(l)).Take(100).ToList());
 
             // Para cada tipo de linha, detectar campos
-            foreach (var linePattern in linePatterns)
+            foreach (var group in linePatternGroups)
             {
-                var lineSamples = lines.Where(l => linePattern.IsMatch(l)).Take(100).ToList();
-                var fields = DetectFieldsInLine(lineSamples, linePattern.Name);
-
+                var fields = DetectFieldsInLine(group.Value, group.Key);
                 model.Fields.AddRange(fields);
             }
 
@@ -101,6 +132,25 @@ namespace LayoutParserApi.Services.Learning
             model.Statistics = CalculateStatistics(model, lines);
 
             return model;
+        }
+
+        /// <summary>
+        /// Agrupamento de linhas para MQSeries (stream contínuo, sem prefixo textual repetido):
+        /// separa a linha "HEADER" (se houver) do restante — todas as demais linhas, mesmo tendo
+        /// contador sequencial único, compartilham o mesmo layout posicional de campos.
+        /// </summary>
+        private Dictionary<string, List<string>> DetectContinuousStreamGroups(List<string> lines)
+        {
+            var header = lines.Where(l => l.StartsWith("HEADER", StringComparison.OrdinalIgnoreCase)).Take(100).ToList();
+            var data = lines.Where(l => !l.StartsWith("HEADER", StringComparison.OrdinalIgnoreCase)).Take(100).ToList();
+
+            var groups = new Dictionary<string, List<string>>();
+            if (header.Any())
+                groups["HEADER"] = header;
+            if (data.Any())
+                groups["MQSERIES_LINE"] = data;
+
+            return groups;
         }
 
         /// <summary>

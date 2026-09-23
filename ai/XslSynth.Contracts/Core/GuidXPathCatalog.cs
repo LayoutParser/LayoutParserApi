@@ -33,7 +33,24 @@ namespace XslSynth.Core;
 /// <param name="Name">Nome local do elemento/atributo.</param>
 /// <param name="IsAttribute">Veio de um AttributeElementVO.</param>
 /// <param name="IsGroup">Tem filhos próprios no LayoutVO (GroupTagElementVO com Elements).</param>
-public sealed record GuidXPathEntry(string ElementGuid, string XPath, string Name, bool IsAttribute, bool IsGroup);
+/// <param name="MinOccurs">
+/// De <c>MinimalOccurrence</c> (nó <c>ParentOccurrenceVO</c> — issue #425). <c>null</c> quando o
+/// nó não declara ocorrência (ex.: atributo).
+/// </param>
+/// <param name="MaxOccurs">De <c>MaximumOccurrence</c> — mesma origem/degradação de <see cref="MinOccurs"/>.</param>
+public sealed record GuidXPathEntry(
+    string ElementGuid, string XPath, string Name, bool IsAttribute, bool IsGroup,
+    int? MinOccurs = null, int? MaxOccurs = null);
+
+/// <summary>
+/// Nó recursivo da árvore de layout (issue #425 — endpoint <c>GET .../layout-tree</c>). Mesma
+/// convenção de <see cref="GuidXPathEntry"/> (wrappers Choice/Sequence não viram nó, só repassam
+/// os filhos ao pai), mas preservando a hierarquia completa em vez de um dicionário achatado.
+/// </summary>
+/// <param name="Kind"><c>"group"</c> (tem filhos), <c>"element"</c> (folha) ou <c>"attribute"</c>.</param>
+public sealed record LayoutTreeNode(
+    string? ElementGuid, string Name, string Kind, int? MinOccurs, int? MaxOccurs,
+    IReadOnlyList<LayoutTreeNode> Children);
 
 /// <summary>Catálogo GUID→XPath construído a partir de um LayoutVO exportado (Connect Us).</summary>
 public sealed class GuidXPathCatalog
@@ -68,19 +85,48 @@ public sealed class GuidXPathCatalog
             return new GuidXPathCatalog(new Dictionary<string, GuidXPathEntry>(StringComparer.Ordinal), null);
         }
 
-        XElement root;
+        string text;
         try
         {
             // Mesma pegadinha do MapperVO (RealMapperParser): o LayoutVO exportado
             // declara encoding="utf-16" no prólogo, mas os bytes são UTF-8 (com
             // BOM) — XDocument.Load direto falha ("no Unicode byte order mark").
-            var text = RealMapperParser.DecodeAndFixDeclaration(File.ReadAllBytes(layoutPath));
-            root = XDocument.Parse(text).Root
-                ?? throw new InvalidOperationException("LayoutVO sem elemento raiz.");
+            text = RealMapperParser.DecodeAndFixDeclaration(File.ReadAllBytes(layoutPath));
         }
         catch (Exception ex)
         {
             log?.Invoke($"   [aviso] LayoutVO ilegível ({ex.Message}) — catálogo GUID→XPath vazio.");
+            return new GuidXPathCatalog(new Dictionary<string, GuidXPathEntry>(StringComparer.Ordinal), null);
+        }
+
+        return LoadFromXml(text, sourceLabel: Path.GetFileName(layoutPath), log);
+    }
+
+    /// <summary>
+    /// Mesma lógica de <see cref="Load"/>, mas a partir de um LayoutVO já em memória (issue #425 —
+    /// consumidor real é o lookup por GUID no banco via <c>ICachedLayoutService</c>/
+    /// <c>LayoutDatabaseService</c>, não mais um caminho de arquivo local). O conteúdo já vem
+    /// decodificado pelo <c>IDecryptionService</c> (mesmo padrão do <c>SysmiddleExplanationAdapter</c>
+    /// com <c>Mapper.DecryptedContent</c>) — sem a pegadinha utf-16/UTF-8 do arquivo exportado.
+    /// Degrade gracioso: XML ausente/malformado → catálogo VAZIO (nunca lança).
+    /// </summary>
+    public static GuidXPathCatalog LoadFromXml(string? xmlContent, string sourceLabel = "(memória)", Action<string>? log = null)
+    {
+        if (string.IsNullOrWhiteSpace(xmlContent))
+        {
+            log?.Invoke($"   [aviso] LayoutVO vazio ({sourceLabel}) — catálogo GUID→XPath vazio.");
+            return new GuidXPathCatalog(new Dictionary<string, GuidXPathEntry>(StringComparer.Ordinal), null);
+        }
+
+        XElement root;
+        try
+        {
+            root = XDocument.Parse(xmlContent).Root
+                ?? throw new InvalidOperationException("LayoutVO sem elemento raiz.");
+        }
+        catch (Exception ex)
+        {
+            log?.Invoke($"   [aviso] LayoutVO ilegível ({ex.Message}, {sourceLabel}) — catálogo GUID→XPath vazio.");
             return new GuidXPathCatalog(new Dictionary<string, GuidXPathEntry>(StringComparer.Ordinal), null);
         }
 
@@ -92,9 +138,44 @@ public sealed class GuidXPathCatalog
             foreach (var el in elementsRoot.Elements("Element"))
                 Caminha(el, basePath: "", byGuid);
 
-        log?.Invoke($"   [guid-catalog] {byGuid.Count} GUIDs resolvidos de '{Path.GetFileName(layoutPath)}' "
+        log?.Invoke($"   [guid-catalog] {byGuid.Count} GUIDs resolvidos de '{sourceLabel}' "
             + $"(LayoutGuid={layoutGuid ?? "?"}).");
         return new GuidXPathCatalog(byGuid, layoutGuid);
+    }
+
+    /// <summary>
+    /// Constrói a árvore RECURSIVA do LayoutVO (issue #425 — endpoint de árvore dupla para o
+    /// React replicar a UI do Connect Us). Reaproveita a mesma convenção de dispatch por
+    /// <c>xsi:type</c>/wrappers Choice-Sequence de <see cref="Caminha"/>, mas preserva
+    /// hierarquia em vez de achatar num dicionário. Degrade gracioso: XML ausente/malformado →
+    /// <c>(LayoutGuid: null, Roots: [])</c>, nunca lança.
+    /// </summary>
+    public static (string? LayoutGuid, IReadOnlyList<LayoutTreeNode> Roots) BuildTree(
+        string? xmlContent, string sourceLabel = "(memória)", Action<string>? log = null)
+    {
+        if (string.IsNullOrWhiteSpace(xmlContent))
+        {
+            log?.Invoke($"   [aviso] LayoutVO vazio ({sourceLabel}) — árvore vazia.");
+            return (null, Array.Empty<LayoutTreeNode>());
+        }
+
+        XElement root;
+        try
+        {
+            root = XDocument.Parse(xmlContent).Root
+                ?? throw new InvalidOperationException("LayoutVO sem elemento raiz.");
+        }
+        catch (Exception ex)
+        {
+            log?.Invoke($"   [aviso] LayoutVO ilegível ({ex.Message}, {sourceLabel}) — árvore vazia.");
+            return (null, Array.Empty<LayoutTreeNode>());
+        }
+
+        var layoutGuid = (string?)root.Element("LayoutGuid");
+        var roots = CaminhaTreeFilhos(root.Element("Elements"));
+
+        log?.Invoke($"   [guid-tree] {roots.Count} raiz(es) resolvida(s) de '{sourceLabel}' (LayoutGuid={layoutGuid ?? "?"}).");
+        return (layoutGuid, roots);
     }
 
     private static void Caminha(XElement el, string basePath, Dictionary<string, GuidXPathEntry> byGuid)
@@ -119,7 +200,8 @@ public sealed class GuidXPathCatalog
 
         if (guid is not null && !ehWrapper)
         {
-            byGuid[guid] = new GuidXPathEntry(guid, path, name, ehAtributo, filhos is not null);
+            var (min, max) = LeOcorrencia(el);
+            byGuid[guid] = new GuidXPathEntry(guid, path, name, ehAtributo, filhos is not null, min, max);
         }
 
         if (filhos is not null)
@@ -130,6 +212,71 @@ public sealed class GuidXPathCatalog
             foreach (var filho in filhos.Elements("Element"))
                 Caminha(filho, pathParaFilhos, byGuid);
         }
+    }
+
+    /// <summary>
+    /// Mesma travessia de <see cref="Caminha"/>, mas retornando a árvore recursiva (issue #425)
+    /// em vez de achatar num dicionário. Wrapper (Choice/Sequence) não vira nó — seus filhos são
+    /// "adotados" como IRMÃOS diretos do nó pai (achatamento 0..N, não 1:1 — um Sequence com 3
+    /// filhos flat-maps para 3 nós no pai; mesma convenção de XPath já usada pelo catálogo).
+    /// </summary>
+    private static LayoutTreeNode? CaminhaTree(XElement el)
+    {
+        var tipo = ((string?)el.Attribute(XNamespace.Get("http://www.w3.org/2001/XMLSchema-instance") + "type"))?.Trim() ?? "";
+
+        // Wrapper isolado (defensivo — não deveria aparecer como raiz de Elements/Element):
+        // não tem identidade própria, então não há nó pra devolver aqui; ver CaminhaTreeFilhos
+        // para o caso normal (wrapper como FILHO, achatado na lista do pai).
+        if (WrapperTypes.Contains(tipo))
+            return null;
+
+        var guid = ((string?)el.Element("ElementGuid"))?.Trim();
+        var name = ((string?)el.Element("Name"))?.Trim() ?? "";
+        var filhos = el.Element("Elements");
+        var ehAtributo = tipo == "AttributeElementVO";
+
+        var childNodes = CaminhaTreeFilhos(filhos);
+        var (min, max) = LeOcorrencia(el);
+        var kind = ehAtributo ? "attribute" : filhos is not null ? "group" : "element";
+
+        return new LayoutTreeNode(guid, name, kind, min, max, childNodes);
+    }
+
+    /// <summary>
+    /// Constrói a lista de filhos de um nó `Elements`, achatando wrappers Choice/Sequence: cada
+    /// `Element` filho vira 0..N nós na lista (1 nó normal, ou os netos do wrapper quando o
+    /// filho é Choice/Sequence).
+    /// </summary>
+    private static List<LayoutTreeNode> CaminhaTreeFilhos(XElement? elementsNode)
+    {
+        var result = new List<LayoutTreeNode>();
+        if (elementsNode is null)
+            return result;
+
+        foreach (var filho in elementsNode.Elements("Element"))
+        {
+            var tipoFilho = ((string?)filho.Attribute(XNamespace.Get("http://www.w3.org/2001/XMLSchema-instance") + "type"))?.Trim() ?? "";
+            if (WrapperTypes.Contains(tipoFilho))
+            {
+                // Wrapper: seus próprios filhos entram direto na lista do pai (achatamento).
+                result.AddRange(CaminhaTreeFilhos(filho.Element("Elements")));
+                continue;
+            }
+
+            var node = CaminhaTree(filho);
+            if (node is not null)
+                result.Add(node);
+        }
+
+        return result;
+    }
+
+    /// <summary>Lê <c>MinimalOccurrence</c>/<c>MaximumOccurrence</c> (nó <c>ParentOccurrenceVO</c> — issue #425).</summary>
+    private static (int? Min, int? Max) LeOcorrencia(XElement el)
+    {
+        var min = int.TryParse((string?)el.Element("MinimalOccurrence"), out var minParsed) ? minParsed : (int?)null;
+        var max = int.TryParse((string?)el.Element("MaximumOccurrence"), out var maxParsed) ? maxParsed : (int?)null;
+        return (min, max);
     }
 
     /// <summary>Resolve um GUID (TAG_/GRT_/ATT_/FLD_/LIN_…) para o XPath completo. Degrade: não encontrado → false.</summary>
