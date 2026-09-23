@@ -10,7 +10,8 @@ namespace LayoutParserApi.Services.Interfaces
         long SizeBytes,
         string OriginalFileName,
         string InspectionStatus,
-        DateTimeOffset UploadedAt);
+        DateTimeOffset UploadedAt,
+        string? Provenance = null);
 
     /// <summary>Resumo de uma revisão com seu inventário de artefatos.</summary>
     public sealed record RevisionSummary(
