@@ -39,6 +39,7 @@ namespace LayoutParserApi.Tests.Controllers
             public IReadOnlyList<string> Roles { get; set; } = Array.Empty<string>();
             public bool IsAuthenticated => Name != null;
             public bool IsInRole(string role) => Roles.Contains(role, StringComparer.OrdinalIgnoreCase);
+            public Guid? UserId => null;
         }
 
         private sealed class FakeLayoutDatabaseService : ILayoutDatabaseService
@@ -60,16 +61,17 @@ namespace LayoutParserApi.Tests.Controllers
         {
             public MapperDbVazio(IConfiguration config) : base(NullLogger<MapperDatabaseService>.Instance, null!, config) { }
 
-            public override Task<List<Models.Entities.Mapper>> GetRankedMapperCandidatesForLayoutGuidAsync(
+            public override Task<List<LayoutParserApi.Models.Entities.Mapper>> GetRankedMapperCandidatesForLayoutGuidAsync(
                 string layoutGuid, int projectId, IReadOnlyCollection<string> allowedPackageGuids)
-                => Task.FromResult(new List<Models.Entities.Mapper>());
+                => Task.FromResult(new List<LayoutParserApi.Models.Entities.Mapper>());
         }
 
         private sealed class SpyAiCandidateService : IAiTransformationCandidateService
         {
             public int EnqueueCount { get; private set; }
             public Task EnqueueAsync(string userId, string ticket, string layoutName, Guid layoutGuid, string mapperGuid,
-                string inputContent, string? groundTruthXml, CancellationToken cancellationToken)
+                string inputContent, string? groundTruthXml, CancellationToken cancellationToken,
+                IReadOnlyList<LayoutParserApi.Models.Entities.ParsedField>? parsedFields = null)
             {
                 EnqueueCount++;
                 return Task.CompletedTask;
@@ -158,10 +160,20 @@ namespace LayoutParserApi.Tests.Controllers
                 lowCodeOptions: lowCodeOptions,
                 aiCandidateService: aiSpy,
                 aiFallbackGate: new SpyAiFallbackSuppressionGate(),
+                aiUserInstructionStore: new LayoutParserApi.Services.Transformation.Ai.AiUserInstructionStore(),
+                aiUserSessionStore: new LayoutParserApi.Services.Database.SqlAiUserSessionStore(
+                    NullLogger<LayoutParserApi.Services.Database.SqlAiUserSessionStore>.Instance,
+                    new ConfigurationBuilder().Build(),
+                    Microsoft.Extensions.Options.Options.Create(new LayoutParserApi.Services.Database.AiUserSessionHistoryOptions())),
                 currentUser: new FakeCurrentUser(),
                 mapperDb: null!,
                 layoutParser: null!,
-                fieldMappingComposition: null!);
+                fieldMappingComposition: null!,
+                scopeFactory: services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
+                canaryAlert: new LayoutParserApi.Services.Security.CanaryAlertService(
+                    NullLogger<LayoutParserApi.Services.Security.CanaryAlertService>.Instance),
+                fieldCorrectionStore: null!,
+                trainingDataCapture: null!);
 
             return (controller, aiSpy, tclDir);
         }
@@ -264,6 +276,52 @@ namespace LayoutParserApi.Tests.Controllers
             var tclXsl = Assert.Single(response.PathwayDiagnostics, d => d.Pathway == "tcl-xsl");
             Assert.Equal("failed", tclXsl.Status);
             Assert.Equal("xsl_not_found", tclXsl.Code);
+        }
+
+        /// <summary>
+        /// Gate QA (@lp-qa) — issue #138/#126: o contrato exige distinguir <c>null</c>
+        /// ("pathway não suporta rastreabilidade") de <c>[]</c> ("suporta, mas não achou nada") em
+        /// <see cref="TransformationCandidate.SectionMappings"/>. Os testes existentes de
+        /// <c>SysmiddleSectionMappingResolverTests</c> já cobrem o caso <c>[]</c> do pathway
+        /// sysmiddle; faltava um teste ponta-a-ponta do controller com um candidato tcl-xsl
+        /// BEM-SUCEDIDO (não apenas os cenários de falha já cobertos acima) confirmando que
+        /// <c>SectionMappings</c> sai <c>null</c> por definição — reaproveita o fixture mínimo de
+        /// <c>TransformationPipelineServiceMapFileTests.Layout_real_CNHI_resolve_MAP_via_TclPath_layoutName_tcl</c>.
+        /// </summary>
+        [Fact]
+        public async Task TclXsl_bem_sucedido_reporta_SectionMappings_null_nao_lista_vazia()
+        {
+            var (controller, _, tclDir) = BuildController();
+            var xslDir = Path.Combine(Path.GetDirectoryName(tclDir)!, "xsl");
+
+            var mapXml = "<MAP><LINE identifier=\"HEADER\" name=\"HEADER\"><FIELD name=\"data\" length=\"8\"/></LINE></MAP>";
+            await File.WriteAllTextAsync(Path.Combine(tclDir, $"{LayoutName}.tcl"), mapXml);
+
+            var xslContent =
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" +
+                "<xsl:stylesheet version=\"1.0\" xmlns:xsl=\"http://www.w3.org/1999/XSL/Transform\">" +
+                "  <xsl:output method=\"xml\" encoding=\"UTF-8\"/>" +
+                "  <xsl:template match=\"/\"><Resultado/></xsl:template>" +
+                "</xsl:stylesheet>";
+            await File.WriteAllTextAsync(Path.Combine(xslDir, $"MAP_TESTE_{LayoutName}.xsl"), xslContent);
+
+            var request = new TransformationRequest
+            {
+                InputContent = "20260827SINTETICO",
+                LayoutName = LayoutName,
+                LayoutGuid = LayoutGuid.ToString()
+            };
+
+            var actionResult = await controller.ExecuteTransformationCandidates(request);
+            var ok = Assert.IsType<OkObjectResult>(actionResult);
+            var response = Assert.IsType<TransformationExecutionCandidatesResponse>(ok.Value);
+
+            var tclXslCandidate = Assert.Single(response.Candidates, c => c.Pathway == "tcl-xsl");
+            Assert.Null(tclXslCandidate.SectionMappings);
+            Assert.Null(tclXslCandidate.XmlNamespaces);
+
+            var tclXslDiag = Assert.Single(response.PathwayDiagnostics, d => d.Pathway == "tcl-xsl");
+            Assert.Equal("candidate_generated", tclXslDiag.Status);
         }
     }
 }

@@ -283,7 +283,13 @@ namespace LayoutParserApi.Services.Transformation.LowCode
                 if (!File.Exists(caminhoIndice))
                     return null;
 
+                // ✅ SCS0018 (issue #88): caminhoIndice já passou por TryResolveIndexFile
+                // (BuildTicket valida sha256/layoutGuid por regex + TryResolveInsideStore
+                // canonicaliza e confere prefixo contra _storePath) antes deste ponto — dupla
+                // barreira que o SCS não reconhece como sanitizador.
+#pragma warning disable SCS0018
                 var json = await File.ReadAllTextAsync(caminhoIndice, Encoding.UTF8);
+#pragma warning restore SCS0018
                 return JsonSerializer.Deserialize<LowCodeTransformationIndexEntry>(json, JsonOptions);
             }
             catch (Exception ex)

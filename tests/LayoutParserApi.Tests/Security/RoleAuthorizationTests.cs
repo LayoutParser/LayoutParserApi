@@ -29,6 +29,20 @@ namespace LayoutParserApi.Tests.Security
     /// </summary>
     public class RoleAuthorizationTests
     {
+        /// <summary>Dublê neutro (Slice 1, #225): este teste cobre RBAC dos headers legados, não a
+        /// resolução de UserId — nunca resolve identidade nova.</summary>
+        private sealed class NoopIdentityWorkspaceService : IIdentityWorkspaceService
+        {
+            public Task<Guid?> ResolveOrCreateUserAsync(string provider, string? tenantOrIssuer, string subject, CancellationToken cancellationToken)
+                => Task.FromResult<Guid?>(null);
+
+            public Task<WorkspaceMeResult> GetOrCreateMyWorkspacesAsync(Guid userId, CancellationToken cancellationToken)
+                => throw new NotSupportedException();
+
+            public Task<WorkspaceSummary?> GetWorkspaceForMemberAsync(Guid workspaceId, Guid userId, CancellationToken cancellationToken)
+                => throw new NotSupportedException();
+        }
+
         private const string UserHeader = "x-iis-user";
         private const string RolesHeader = "x-iis-roles";
 
@@ -112,7 +126,9 @@ namespace LayoutParserApi.Tests.Security
                 options: Options.Create(new TrustedIdentityOptions()),
                 logger: NullLogger<TrustedIdentityMiddleware>.Instance);
 
-            await middleware.InvokeAsync(context, currentUser);
+            // Dublê neutro: este teste cobre RBAC dos headers legados, não a resolução de UserId (#225).
+            var identityWorkspaceService = new NoopIdentityWorkspaceService();
+            await middleware.InvokeAsync(context, currentUser, identityWorkspaceService);
             return context;
         }
 

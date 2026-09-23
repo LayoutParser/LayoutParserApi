@@ -15,9 +15,28 @@ namespace LayoutParserApi.Models.Transformation
 
         public string TransformedXml { get; set; } = "";
 
+        /// <summary>
+        /// XSLT sintetizado pelo <c>RepairOrchestrator</c> (ai/XslSynth.Core), quando o candidato
+        /// veio do pathway IA via <see cref="LayoutParserApi.Services.Transformation.Ai.IXslSynthesizerService"/>.
+        /// <c>null</c> nos demais pathways (sysmiddle/tcl-xsl já têm XSLT persistido em disco,
+        /// não neste campo) ou quando o loop caiu no fallback legado XML-direto (sem XSLT reutilizável).
+        /// </summary>
+        public string? GeneratedXslt { get; set; }
+
         public double? Score { get; set; }
 
         public Dictionary<string, string>? SegmentMappings { get; set; }
+
+        /// <summary>
+        /// Mapeamentos campo-a-campo (issue #141), compostos por <see cref="LayoutParserApi.Services.Transformation.StructuralResolution.FieldMappingCompositionService"/>
+        /// sobre o mesmo <c>Layout</c>/<c>MapperVo</c> já usados para produzir <see cref="TransformedXml"/>
+        /// (pathway sysmiddle). <c>null</c> quando: (a) pathway é <c>tcl-xsl</c> (decisão categórica, sem
+        /// fonte estrutural equivalente hoje — mesma decisão de <c>SegmentMappings</c> para esse pathway);
+        /// (b) a composição falhou isoladamente (nunca derruba o candidato, vira warning); ou (c) o parse
+        /// posicional compartilhado do documento falhou. Lista vazia (não nula) é resultado válido: mapper
+        /// existe mas não resolveu nenhum <c>FieldToXmlMapping</c>.
+        /// </summary>
+        public IReadOnlyList<XslSynth.Model.FieldToXmlMapping>? FieldMappings { get; set; }
 
         public object? Validation { get; set; }
 
@@ -25,6 +44,28 @@ namespace LayoutParserApi.Models.Transformation
         /// (candidatos que falham não aparecem no array, ver tabela de decisão do contrato), mas mantido
         /// no schema porque o contrato o define explicitamente.</summary>
         public string? FailureReason { get; set; }
+
+        /// <summary>
+        /// Fase 0 do contrato de rastreabilidade TXT↔XML (issue #138/#126), granularidade de
+        /// LINHA/SEÇÃO — NÃO campo (isso é #140/#141). Semântica obrigatória:
+        /// <list type="bullet">
+        /// <item><c>null</c> = este pathway não suporta rastreabilidade ainda (hoje: <c>tcl-xsl</c>).</item>
+        /// <item><c>[]</c> (lista vazia) = pathway suporta, mas não encontrou mapeamentos estruturais
+        /// resolvíveis para este candidato específico.</item>
+        /// <item>lista preenchida = mapeamentos disponíveis, cada um com XPath absoluto e
+        /// confiança (ver <see cref="SectionMapping.Confidence"/>).</item>
+        /// </list>
+        /// Resolução sempre ESTRUTURAL (via GUID/definição declarada do mapper) — nunca por
+        /// comparação de valor textual do documento.
+        /// </summary>
+        public List<SectionMapping>? SectionMappings { get; set; }
+
+        /// <summary>
+        /// Namespaces XML usados nos XPaths de <see cref="SectionMappings"/> — reportado UMA VEZ por
+        /// candidato (não repetido por mapping). <c>null</c> quando <see cref="SectionMappings"/> também
+        /// é <c>null</c>/vazio.
+        /// </summary>
+        public Dictionary<string, string>? XmlNamespaces { get; set; }
     }
 
     public class TransformationExecutionCandidatesResponse
@@ -43,5 +84,13 @@ namespace LayoutParserApi.Models.Transformation
         /// <summary>CorrelationId da request (<see cref="LayoutParserApi.Services.Logging.CorrelationContext.CurrentId"/>),
         /// permite ao suporte cruzar com o log estruturado completo (não sanitizado) desta chamada.</summary>
         public string? CorrelationId { get; set; }
+
+        /// <summary>Identificador estável do documento (ADR docs/architecture/adr-contrato-correcao-
+        /// guiada-humano-2026-09-08.md §4, Gap 1) — "doc_" + SHA256(InputContent + "|" +
+        /// resolvedLayoutGuid) truncado a 16 hex. Determinístico: mesmo InputContent + mesmo
+        /// LayoutGuid resolvido sempre produzem o mesmo valor. Usado pelo front para futuramente
+        /// referenciar este documento num reporte de correção humana (endpoint ainda não
+        /// implementado — só o identificador, campo aditivo).</summary>
+        public string? DocumentId { get; set; }
     }
 }
