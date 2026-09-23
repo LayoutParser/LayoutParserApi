@@ -977,15 +977,52 @@ jobs:
           Write-Host "appsettings.json nao encontrado em: $APP_SETTINGS_PATH (primeiro deploy?)"
         }
         
-        # Parar servico Windows se existir
+        # Parar servico Windows se existir.
+        #
+        # MIGRACAO NSSM -> NATIVO: este servidor de producao foi originalmente instalado com o
+        # NSSM (C:\Users\Administrator\Downloads\nssm-2.24\nssm-2.24), antes deste workflow saber
+        # criar servico Windows nativo (Program.cs ja usa builder.Host.UseWindowsService() ha
+        # tempo). O ci-dev.yml ja detecta e migra isso a cada deploy de dev (step "Parar servico
+        # (e remover NSSM legado, se houver)") - aqui portamos a MESMA logica: se o ImagePath do
+        # servico registrado contiver "nssm", removemos o registro do servico (sc.exe delete) para
+        # que o bloco de (re)criacao mais abaixo o recrie como servico Windows nativo. Servico ja
+        # nativo (ImagePath aponta direto para LayoutParserApi.exe) segue sem alteracao - so para,
+        # binarios sao trocados, reinicia.
         $serviceName = "LayoutParserApi"
-        if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
+        $svc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+        if ($svc) {
+          $imagePath = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$serviceName" -ErrorAction SilentlyContinue).ImagePath
+          Write-Host "Servico existente (Status=$($svc.Status)). ImagePath: $imagePath"
+
           Write-Host "Parando servico $serviceName..."
           Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 3
           Write-Host "Servico parado"
+
+          if ($imagePath -match 'nssm') {
+            Write-Host "MIGRACAO NSSM -> NATIVO: servico legado gerenciado pelo NSSM detectado."
+
+            # sc.exe delete apaga a chave de registro inteira do servico, inclusive o valor
+            # Environment que o step "Configurar ambiente do servico (upsert, nao destrutivo)"
+            # acabou de escrever (roda ANTES deste, na mesma chave HKLM do servico NSSM ainda
+            # registrado). Sem capturar aqui, o servico nativo recriado abaixo subiria sem
+            # Database__Password/IdentityDatabase__*/etc. Guardamos para restaurar apos a criacao.
+            $preMigrationEnvironment = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$serviceName" -Name 'Environment' -ErrorAction SilentlyContinue).Environment
+
+            Write-Host "Removendo o registro do servico para recria-lo como servico Windows nativo..."
+            sc.exe delete $serviceName | Out-Null
+            for ($i = 0; $i -lt 10; $i++) {
+              Start-Sleep -Seconds 2
+              if (-not (Get-Service -Name $serviceName -ErrorAction SilentlyContinue)) { break }
+            }
+            if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
+              Write-Error "Servico ainda presente apos delete (marcado para exclusao?). Feche services.msc/handles e re-execute o workflow."
+              exit 1
+            }
+            Write-Host "Servico NSSM removido - sera recriado como nativo apos a copia dos binarios."
+          }
         } else {
-          Write-Host "Servico $serviceName nao encontrado (pode nao estar instalado como servico)"
+          Write-Host "Servico $serviceName nao encontrado (pode nao estar instalado como servico) - sera criado como nativo apos a copia dos binarios."
         }
         
         # Copiar arquivos da API (manter appsettings.json se ja existir)
@@ -1191,12 +1228,49 @@ jobs:
           Write-Warning "LayoutParserApi.dll nao encontrado em: $apiDllPath"
         }
         
-        # Reiniciar servico Windows se existir
+        # (Re)criar servico Windows NATIVO se necessario, entao (re)iniciar.
+        #
+        # Cobre dois casos: (1) migracao NSSM -> nativo (servico removido no bloco acima) e
+        # (2) primeiro deploy neste host (servico nunca existiu). Mesma abordagem do
+        # ci-dev.yml (step "Criar/configurar servico Windows nativo"): sc.exe create com o
+        # binPath apontando para o .exe recem-copiado, descricao e auto-restart em falha.
+        if (-not (Get-Service -Name $serviceName -ErrorAction SilentlyContinue)) {
+          $exePath = Join-Path $DEPLOY_API_PATH "LayoutParserApi.exe"
+          if (-not (Test-Path $exePath)) {
+            Write-Error "Executavel nao encontrado: $exePath - nao e possivel criar o servico Windows nativo."
+            exit 1
+          }
+
+          Write-Host "Criando servico Windows NATIVO $serviceName..."
+          # Aspas embutidas via variavel (idiom de PowerShell) para o ImagePath ficar citado no registro.
+          $binPath = '"{0}"' -f $exePath
+          sc.exe create $serviceName binPath= $binPath start= auto
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Falha ao criar o servico (sc create retornou $LASTEXITCODE)"
+            exit 1
+          }
+          sc.exe description $serviceName "LayoutParser API (ASP.NET Core) - servico Windows nativo, deploy via CI producao" | Out-Null
+          # Auto-restart em falha: ate 3 restarts com 60s de intervalo; contador zera em 24h.
+          sc.exe failure $serviceName reset= 86400 actions= restart/60000/restart/60000/restart/60000 | Out-Null
+          Write-Host "Servico criado (start=auto, failure actions configuradas)."
+
+          if ($preMigrationEnvironment) {
+            # Migracao NSSM -> nativo: restaura o Environment capturado antes do sc.exe delete
+            # (ver comentario no bloco de parada acima) para nao perder Database__Password/
+            # IdentityDatabase__*/AiMetrics__IngestApiKey na primeira subida do servico novo.
+            Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\$serviceName" -Name "Environment" -Value ([string[]]$preMigrationEnvironment) -Type MultiString
+            Write-Host "Environment restaurado apos migracao NSSM -> nativo ($($preMigrationEnvironment.Count) variavel(is))."
+          } else {
+            Write-Warning "Servico recem-criado sem Environment previo (primeiro deploy neste host?). O step 'Configurar ambiente do servico (upsert, nao destrutivo)' roda ANTES deste no pipeline e sai sem escrever nada se o servico ainda nao estava registrado - rode o workflow de novo apos esta criacao para que esse step aplique Database__Password/IdentityDatabase__*/etc., ou configure manualmente antes do proximo deploy."
+          }
+        }
+
+        # Reiniciar servico Windows
         if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
           Write-Host "Reiniciando servico $serviceName..."
           Start-Service -Name $serviceName -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 2
-          
+
           $service = Get-Service -Name $serviceName
           if ($service.Status -eq 'Running') {
             Write-Host "Servico $serviceName esta em execucao"
@@ -1453,7 +1527,7 @@ jobs:
       continue-on-error: true
       # Pinado por SHA (tag mutavel proibida p/ Action de terceiro nao-imutavel - CodeQL
       # actions/unpinned-tag). SHA corresponde a tag v3.
-      uses: dawidd6/action-send-mail@03a02a49409134de07636216fb379a026c52991e
+      uses: dawidd6/action-send-mail@67ce3558d613188179559c61d3565140cf389968
       with:
         # Secrets ainda NAO preenchidos pelo dono (provedor SMTP em aberto). Enquanto
         # secrets.SMTP_SERVER estiver vazio, a Action falha rapido - por isso o step inteiro
@@ -1654,7 +1728,7 @@ jobs:
       continue-on-error: true
       # Pinado por SHA (tag mutavel proibida p/ Action de terceiro nao-imutavel - CodeQL
       # actions/unpinned-tag). SHA corresponde a tag v3.
-      uses: dawidd6/action-send-mail@03a02a49409134de07636216fb379a026c52991e
+      uses: dawidd6/action-send-mail@67ce3558d613188179559c61d3565140cf389968
       with:
         server_address: ${{ secrets.SMTP_SERVER }}
         server_port: ${{ secrets.SMTP_PORT }}

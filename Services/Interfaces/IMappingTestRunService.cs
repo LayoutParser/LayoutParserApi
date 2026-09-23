@@ -1,3 +1,5 @@
+using LayoutParserApi.Models.Entities.Fiscal;
+
 namespace LayoutParserApi.Services.Interfaces
 {
     /// <summary>Status observável de um job de test-run (Slice 5 — issue #231, mesmo padrão de <c>SuggestionJobStatus</c>/<c>CompileJobStatus</c>).</summary>
@@ -40,5 +42,20 @@ namespace LayoutParserApi.Services.Interfaces
             CancellationToken cancellationToken);
 
         Task<TestRunJobState?> GetStatusAsync(Guid jobId, CancellationToken cancellationToken);
+
+        /// <summary>
+        /// Núcleo síncrono e reutilizável de um único test-run — extraído do corpo do job de
+        /// <see cref="EnqueueAsync"/> (issue #423, suíte de teste versionada) para ser reaproveitado
+        /// fixture-a-fixture pela execução de suíte, sem duplicar a seleção xslt/tcl nem o diff
+        /// canônico/validação XSD já centralizados em <c>EvaluateAsync</c>. Não persiste nada — quem
+        /// chama decide o que fazer com o <see cref="MappingTestRunSummary"/> resultante.
+        /// </summary>
+        Task<MappingTestRunSummary> EvaluateFixtureAsync(
+            MappingReleaseDetail release,
+            MappingDraftDetail draft,
+            string inputXml,
+            string expectedXml,
+            string? xsdVersion,
+            CancellationToken cancellationToken);
     }
 }
