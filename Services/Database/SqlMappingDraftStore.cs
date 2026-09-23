@@ -1,0 +1,539 @@
+using System.Text.Json;
+
+using LayoutParserApi.Models.Entities.Fiscal;
+using LayoutParserApi.Services.Interfaces;
+
+using Microsoft.Data.SqlClient;
+
+namespace LayoutParserApi.Services.Database
+{
+    /// <summary>
+    /// Implementação SQL de <see cref="IMappingDraftStore"/> — Slice 3 (issue #230). Migrado do
+    /// banco compartilhado <c>ConnectUS_Macgyver</c> (<c>Database:*</c>) para o banco DEDICADO do
+    /// projeto (<c>IdentityDatabase:*</c>), junto com <see cref="SqlFiscalPackageStore"/> — mesma
+    /// justificativa (raiz do bug de FK cross-database da PR #312). Mesmo padrão ADO.NET cru. Só LÊ
+    /// as tabelas do Slice 2 (revisão/artefato) — nunca escreve nelas, respeitando "não tocar código
+    /// dos Slices 1/2 além de reaproveitar".
+    /// </summary>
+    public sealed class SqlMappingDraftStore : IMappingDraftStore
+    {
+        private readonly ILogger<SqlMappingDraftStore> _logger;
+        private readonly string _connectionString;
+
+        private static bool _schemaEnsured;
+        private static readonly SemaphoreSlim _schemaLock = new(1, 1);
+
+        private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+        public SqlMappingDraftStore(ILogger<SqlMappingDraftStore> logger, IConfiguration configuration)
+        {
+            _logger = logger;
+            // ✅ Banco dedicado do projeto (não mais o ConnectUS_Macgyver compartilhado).
+            var server = configuration["IdentityDatabase:Server"];
+            var database = configuration["IdentityDatabase:Database"];
+            var userId = configuration["IdentityDatabase:UserId"];
+            var password = configuration["IdentityDatabase:Password"];
+
+            _connectionString = $"Server={server};Database={database};User Id={userId};Password={password};TrustServerCertificate=True;";
+        }
+
+        public async Task<bool> RevisionBelongsToWorkspacePackageAsync(Guid workspaceId, Guid packageId, Guid revisionId, CancellationToken cancellationToken)
+        {
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await EnsureSchemaAsync(connection, cancellationToken);
+
+            // ✅ Isolamento por workspace (LayoutParserReact#196): a revisão precisa ser do pacote E o
+            // pacote precisa ser do workspace da rota — o JOIN com tbFiscalMappingPackage compara o
+            // WorkspaceId do pacote, nunca confiando só nos GUIDs enviados pelo cliente.
+            using var command = new SqlCommand(
+                @"SELECT 1
+                  FROM dbo.tbFiscalMappingPackageRevision r
+                  JOIN dbo.tbFiscalMappingPackage p ON p.PackageId = r.PackageId
+                  WHERE r.RevisionId = @RevisionId AND r.PackageId = @PackageId AND p.WorkspaceId = @WorkspaceId;",
+                connection);
+            command.Parameters.AddWithValue("@RevisionId", revisionId);
+            command.Parameters.AddWithValue("@PackageId", packageId);
+            command.Parameters.AddWithValue("@WorkspaceId", workspaceId);
+            return await command.ExecuteScalarAsync(cancellationToken) != null;
+        }
+
+        /// <summary>Issue #416: paginado, isolado por WorkspaceId no WHERE. Sem regras (COUNT via subquery correlacionada).</summary>
+        public async Task<(IReadOnlyList<MappingDraftSummary> Items, int TotalCount)> ListByWorkspaceAsync(
+            Guid workspaceId, int page, int pageSize, string? engine, CancellationToken cancellationToken)
+        {
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await EnsureSchemaAsync(connection, cancellationToken);
+
+            var items = new List<MappingDraftSummary>();
+            var totalCount = 0;
+
+            // Mesmo padrão do SqlMappingReleaseStore.ListByWorkspaceAsync (issue #377): WHERE montado
+            // só a partir de fragmentos constantes — valor do cliente entra exclusivamente via SqlParameter.
+            var conditions = new List<string> { "d.WorkspaceId = @WorkspaceId" };
+            if (!string.IsNullOrWhiteSpace(engine))
+                conditions.Add("d.Engine = @Engine");
+            var whereClause = string.Join(" AND ", conditions);
+
+            using var command = new SqlCommand(
+                $@"SELECT d.DraftId, d.WorkspaceId, d.PackageId, d.RevisionId, d.Engine, d.CreatedAt, d.FiscalProfileJson,
+                         (SELECT COUNT(*) FROM dbo.tbMappingDraftRule r WHERE r.DraftId = d.DraftId) AS RulesCount,
+                         COUNT(*) OVER() AS TotalCount
+                  FROM dbo.tbMappingDraft d
+                  WHERE {whereClause}
+                  ORDER BY d.CreatedAt DESC
+                  OFFSET @Offset ROWS FETCH NEXT @PageSize ROWS ONLY;",
+                connection);
+            command.Parameters.AddWithValue("@WorkspaceId", workspaceId);
+            command.Parameters.AddWithValue("@Offset", (page - 1) * pageSize);
+            command.Parameters.AddWithValue("@PageSize", pageSize);
+            if (!string.IsNullOrWhiteSpace(engine))
+                command.Parameters.AddWithValue("@Engine", engine);
+
+            using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                items.Add(new MappingDraftSummary(
+                    reader.GetGuid(reader.GetOrdinal("DraftId")),
+                    reader.GetGuid(reader.GetOrdinal("WorkspaceId")),
+                    reader.GetGuid(reader.GetOrdinal("PackageId")),
+                    reader.GetGuid(reader.GetOrdinal("RevisionId")),
+                    reader.GetString(reader.GetOrdinal("Engine")),
+                    new DateTimeOffset(reader.GetDateTime(reader.GetOrdinal("CreatedAt")), TimeSpan.Zero),
+                    reader.GetInt32(reader.GetOrdinal("RulesCount")),
+                    ReadFiscalProfile(reader, "FiscalProfileJson")));
+                totalCount = reader.GetInt32(reader.GetOrdinal("TotalCount"));
+            }
+
+            return (items, totalCount);
+        }
+
+        public async Task<IReadOnlyList<ArtifactFileRef>> GetArtifactFilesForRevisionAsync(Guid revisionId, CancellationToken cancellationToken)
+        {
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await EnsureSchemaAsync(connection, cancellationToken);
+
+            var result = new List<ArtifactFileRef>();
+            using var command = new SqlCommand(
+                "SELECT ArtifactId, Kind, StoragePath, OriginalFileName, Provenance FROM dbo.tbPackageArtifact WHERE RevisionId = @RevisionId;",
+                connection);
+            command.Parameters.AddWithValue("@RevisionId", revisionId);
+            using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                result.Add(new ArtifactFileRef(
+                    reader.GetGuid(reader.GetOrdinal("ArtifactId")),
+                    reader.GetString(reader.GetOrdinal("Kind")),
+                    reader.GetString(reader.GetOrdinal("StoragePath")),
+                    reader.GetString(reader.GetOrdinal("OriginalFileName")),
+                    // ✅ issue #341: coluna pode não existir ainda se o schema de tbPackageArtifact
+                    // (dono: SqlFiscalPackageStore) não rodou o ALTER — trata ausência da coluna em si
+                    // como erro real (propaga), só o VALOR NULL da linha é tratado como ausência de proveniência.
+                    reader.IsDBNull(reader.GetOrdinal("Provenance")) ? null : reader.GetString(reader.GetOrdinal("Provenance"))));
+            }
+            return result;
+        }
+
+        public async Task<MappingDraftDetail> CreateDraftAsync(
+            Guid workspaceId, Guid packageId, Guid revisionId, Guid createdByUserId, string engine, CancellationToken cancellationToken)
+        {
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await EnsureSchemaAsync(connection, cancellationToken);
+
+            var draftId = Guid.NewGuid();
+            var createdAt = DateTimeOffset.UtcNow;
+
+            using var command = new SqlCommand(
+                @"INSERT INTO dbo.tbMappingDraft (DraftId, WorkspaceId, PackageId, RevisionId, Engine, CreatedByUserId, CreatedAt)
+                  VALUES (@DraftId, @WorkspaceId, @PackageId, @RevisionId, @Engine, @CreatedByUserId, SYSUTCDATETIME());",
+                connection);
+            command.Parameters.AddWithValue("@DraftId", draftId);
+            command.Parameters.AddWithValue("@WorkspaceId", workspaceId);
+            command.Parameters.AddWithValue("@PackageId", packageId);
+            command.Parameters.AddWithValue("@RevisionId", revisionId);
+            command.Parameters.AddWithValue("@Engine", engine);
+            command.Parameters.AddWithValue("@CreatedByUserId", createdByUserId);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+
+            return new MappingDraftDetail(draftId, workspaceId, packageId, revisionId, engine, createdAt, Array.Empty<MappingDraftRuleDetail>(), FiscalProfile: null);
+        }
+
+        public async Task<MappingDraftDetail?> GetDraftIfMemberAsync(Guid draftId, Guid userId, CancellationToken cancellationToken)
+        {
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await EnsureSchemaAsync(connection, cancellationToken);
+
+            Guid workspaceId, packageId, revisionId;
+            string engine;
+            DateTimeOffset createdAt;
+            FiscalProfile? fiscalProfile;
+
+            using (var selectDraft = new SqlCommand(
+                @"SELECT d.WorkspaceId, d.PackageId, d.RevisionId, d.Engine, d.CreatedAt, d.FiscalProfileJson
+                  FROM dbo.tbMappingDraft d
+                  JOIN dbo.tbLpWorkspaceMembership m ON m.WorkspaceId = d.WorkspaceId AND m.UserId = @UserId
+                  WHERE d.DraftId = @DraftId;",
+                connection))
+            {
+                selectDraft.Parameters.AddWithValue("@DraftId", draftId);
+                selectDraft.Parameters.AddWithValue("@UserId", userId);
+                using var reader = await selectDraft.ExecuteReaderAsync(cancellationToken);
+                if (!await reader.ReadAsync(cancellationToken))
+                    return null; // Não existe OU não é seu — indistinguível, mesmo padrão do Slice 1/2.
+
+                workspaceId = reader.GetGuid(reader.GetOrdinal("WorkspaceId"));
+                packageId = reader.GetGuid(reader.GetOrdinal("PackageId"));
+                revisionId = reader.GetGuid(reader.GetOrdinal("RevisionId"));
+                engine = reader.GetString(reader.GetOrdinal("Engine"));
+                createdAt = new DateTimeOffset(reader.GetDateTime(reader.GetOrdinal("CreatedAt")), TimeSpan.Zero);
+                fiscalProfile = ReadFiscalProfile(reader, "FiscalProfileJson");
+            }
+
+            var rules = await LoadRulesAsync(connection, draftId, cancellationToken);
+            return new MappingDraftDetail(draftId, workspaceId, packageId, revisionId, engine, createdAt, rules, fiscalProfile);
+        }
+
+        /// <summary>Idempotente (issue #379, ADR §2.2/§2.6): grava/substitui, não retroage releases já compiladas.</summary>
+        public async Task<MappingDraftDetail?> SetFiscalProfileAsync(Guid draftId, Guid userId, FiscalProfile profile, CancellationToken cancellationToken)
+        {
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await EnsureSchemaAsync(connection, cancellationToken);
+
+            using (var update = new SqlCommand(
+                @"UPDATE d
+                  SET d.FiscalProfileJson = @FiscalProfileJson
+                  FROM dbo.tbMappingDraft d
+                  JOIN dbo.tbLpWorkspaceMembership m ON m.WorkspaceId = d.WorkspaceId AND m.UserId = @UserId
+                  WHERE d.DraftId = @DraftId;",
+                connection))
+            {
+                update.Parameters.AddWithValue("@FiscalProfileJson", JsonSerializer.Serialize(profile, JsonOptions));
+                update.Parameters.AddWithValue("@UserId", userId);
+                update.Parameters.AddWithValue("@DraftId", draftId);
+                var rows = await update.ExecuteNonQueryAsync(cancellationToken);
+                if (rows == 0)
+                    return null; // Não existe OU não é seu — mesmo padrão fail-closed dos demais métodos.
+            }
+
+            return await GetDraftIfMemberAsync(draftId, userId, cancellationToken);
+        }
+
+        private static FiscalProfile? ReadFiscalProfile(SqlDataReader reader, string columnName)
+        {
+            var ordinal = reader.GetOrdinal(columnName);
+            return reader.IsDBNull(ordinal) ? null : JsonSerializer.Deserialize<FiscalProfile>(reader.GetString(ordinal), JsonOptions);
+        }
+
+        public async Task<MappingDraftRuleDetail?> GetRuleIfMemberAsync(Guid draftId, Guid ruleId, Guid userId, CancellationToken cancellationToken)
+        {
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await EnsureSchemaAsync(connection, cancellationToken);
+
+            using var command = new SqlCommand(
+                @"SELECT r.RuleId, r.DraftId, r.SourceRefs, r.TargetRefs, r.Operation, r.ConditionsJson, r.TransformationsJson,
+                         r.Cardinality, r.EvidenceJson, r.Confidence, r.Status, r.OpenQuestionsJson, r.CreatedAt, r.RowVersion
+                  FROM dbo.tbMappingDraftRule r
+                  JOIN dbo.tbMappingDraft d ON d.DraftId = r.DraftId
+                  JOIN dbo.tbLpWorkspaceMembership m ON m.WorkspaceId = d.WorkspaceId AND m.UserId = @UserId
+                  WHERE r.RuleId = @RuleId AND r.DraftId = @DraftId;",
+                connection);
+            command.Parameters.AddWithValue("@RuleId", ruleId);
+            command.Parameters.AddWithValue("@DraftId", draftId);
+            command.Parameters.AddWithValue("@UserId", userId);
+
+            using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken))
+                return null;
+
+            return ReadRuleDetail(reader);
+        }
+
+        public async Task InsertProposedRulesAsync(Guid draftId, Guid jobId, IReadOnlyList<MappingDraftRuleProposal> proposals, CancellationToken cancellationToken)
+        {
+            if (proposals.Count == 0)
+                return;
+
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await EnsureSchemaAsync(connection, cancellationToken);
+
+            using var tx = connection.BeginTransaction();
+            try
+            {
+                foreach (var proposal in proposals)
+                {
+                    var targetRefsJson = JsonSerializer.Serialize(proposal.TargetRefs, JsonOptions);
+
+                    // Nova sugestão cobrindo o mesmo TargetRefs de uma regra já decidida vira superseded
+                    // — nunca apagada (spec §8/design §2).
+                    using (var supersede = new SqlCommand(
+                        @"UPDATE dbo.tbMappingDraftRule
+                          SET Status = @Superseded
+                          WHERE DraftId = @DraftId AND TargetRefs = @TargetRefsJson
+                                AND Status IN (@Accepted, @Edited, @Rejected);",
+                        connection, tx))
+                    {
+                        supersede.Parameters.AddWithValue("@Superseded", MappingDraftRuleStatus.Superseded);
+                        supersede.Parameters.AddWithValue("@DraftId", draftId);
+                        supersede.Parameters.AddWithValue("@TargetRefsJson", targetRefsJson);
+                        supersede.Parameters.AddWithValue("@Accepted", MappingDraftRuleStatus.Accepted);
+                        supersede.Parameters.AddWithValue("@Edited", MappingDraftRuleStatus.Edited);
+                        supersede.Parameters.AddWithValue("@Rejected", MappingDraftRuleStatus.Rejected);
+                        await supersede.ExecuteNonQueryAsync(cancellationToken);
+                    }
+
+                    using var insert = new SqlCommand(
+                        @"INSERT INTO dbo.tbMappingDraftRule
+                            (RuleId, DraftId, SourceRefs, TargetRefs, Operation, ConditionsJson, TransformationsJson,
+                             Cardinality, EvidenceJson, Confidence, Status, OpenQuestionsJson, CreatedByJobId, CreatedAt)
+                          VALUES
+                            (@RuleId, @DraftId, @SourceRefs, @TargetRefs, @Operation, @ConditionsJson, @TransformationsJson,
+                             @Cardinality, @EvidenceJson, @Confidence, @Status, @OpenQuestionsJson, @CreatedByJobId, SYSUTCDATETIME());",
+                        connection, tx);
+
+                    insert.Parameters.AddWithValue("@RuleId", Guid.NewGuid());
+                    insert.Parameters.AddWithValue("@DraftId", draftId);
+                    insert.Parameters.AddWithValue("@SourceRefs", JsonSerializer.Serialize(proposal.SourceRefs, JsonOptions));
+                    insert.Parameters.AddWithValue("@TargetRefs", targetRefsJson);
+                    insert.Parameters.AddWithValue("@Operation", proposal.Operation);
+                    insert.Parameters.AddWithValue("@ConditionsJson", proposal.ConditionsJson);
+                    insert.Parameters.AddWithValue("@TransformationsJson", proposal.TransformationsJson);
+                    insert.Parameters.AddWithValue("@Cardinality", proposal.Cardinality);
+                    insert.Parameters.AddWithValue("@EvidenceJson", JsonSerializer.Serialize(proposal.Evidence, JsonOptions));
+                    insert.Parameters.AddWithValue("@Confidence", proposal.Confidence);
+                    insert.Parameters.AddWithValue("@Status", proposal.Status);
+                    insert.Parameters.AddWithValue("@OpenQuestionsJson", JsonSerializer.Serialize(proposal.OpenQuestions, JsonOptions));
+                    insert.Parameters.AddWithValue("@CreatedByJobId", jobId);
+                    await insert.ExecuteNonQueryAsync(cancellationToken);
+                }
+
+                await tx.CommitAsync(cancellationToken);
+            }
+            catch
+            {
+                await tx.RollbackAsync(cancellationToken);
+                throw;
+            }
+        }
+
+        public async Task<UpdateRuleOutcome> UpdateRuleStatusAsync(
+            Guid draftId,
+            Guid ruleId,
+            Guid userId,
+            byte[] expectedRowVersion,
+            string newStatus,
+            string? justification,
+            IReadOnlyList<string>? editedSourceRefs,
+            IReadOnlyList<string>? editedTargetRefs,
+            string? editedOperation,
+            CancellationToken cancellationToken)
+        {
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await EnsureSchemaAsync(connection, cancellationToken);
+
+            using var tx = connection.BeginTransaction();
+            try
+            {
+                // Isolamento: só atualiza se a regra pertencer a um draft de um workspace do qual o
+                // usuário é membro — mesma cláusula de join do Slice 1/2.
+                using (var update = new SqlCommand(
+                    @"UPDATE r
+                      SET r.Status = @NewStatus,
+                          r.SourceRefs = COALESCE(@EditedSourceRefs, r.SourceRefs),
+                          r.TargetRefs = COALESCE(@EditedTargetRefs, r.TargetRefs),
+                          r.Operation = COALESCE(@EditedOperation, r.Operation)
+                      FROM dbo.tbMappingDraftRule r
+                      JOIN dbo.tbMappingDraft d ON d.DraftId = r.DraftId
+                      JOIN dbo.tbLpWorkspaceMembership m ON m.WorkspaceId = d.WorkspaceId AND m.UserId = @UserId
+                      WHERE r.RuleId = @RuleId AND r.DraftId = @DraftId AND r.RowVersion = @ExpectedRowVersion;",
+                    connection, tx))
+                {
+                    update.Parameters.AddWithValue("@NewStatus", newStatus);
+                    update.Parameters.AddWithValue("@EditedSourceRefs", (object?)(editedSourceRefs != null ? JsonSerializer.Serialize(editedSourceRefs, JsonOptions) : null) ?? DBNull.Value);
+                    update.Parameters.AddWithValue("@EditedTargetRefs", (object?)(editedTargetRefs != null ? JsonSerializer.Serialize(editedTargetRefs, JsonOptions) : null) ?? DBNull.Value);
+                    update.Parameters.AddWithValue("@EditedOperation", (object?)editedOperation ?? DBNull.Value);
+                    update.Parameters.AddWithValue("@RuleId", ruleId);
+                    update.Parameters.AddWithValue("@DraftId", draftId);
+                    update.Parameters.AddWithValue("@UserId", userId);
+                    update.Parameters.AddWithValue("@ExpectedRowVersion", expectedRowVersion);
+
+                    var rowsAffected = await update.ExecuteNonQueryAsync(cancellationToken);
+                    if (rowsAffected == 0)
+                    {
+                        // RowCount=0: distingue "não existe/não é seu"(NotFound) de "conflito"(Conflict)
+                        // por uma consulta de existência separada — só aqui, no caminho de falha.
+                        using var existsCheck = new SqlCommand(
+                            @"SELECT 1 FROM dbo.tbMappingDraftRule r
+                              JOIN dbo.tbMappingDraft d ON d.DraftId = r.DraftId
+                              JOIN dbo.tbLpWorkspaceMembership m ON m.WorkspaceId = d.WorkspaceId AND m.UserId = @UserId
+                              WHERE r.RuleId = @RuleId AND r.DraftId = @DraftId;",
+                            connection, tx);
+                        existsCheck.Parameters.AddWithValue("@RuleId", ruleId);
+                        existsCheck.Parameters.AddWithValue("@DraftId", draftId);
+                        existsCheck.Parameters.AddWithValue("@UserId", userId);
+                        var exists = await existsCheck.ExecuteScalarAsync(cancellationToken) != null;
+
+                        await tx.RollbackAsync(cancellationToken);
+                        return new UpdateRuleOutcome(exists ? UpdateRuleResult.Conflict : UpdateRuleResult.NotFound, null);
+                    }
+                }
+
+                using (var insertDecision = new SqlCommand(
+                    @"INSERT INTO dbo.tbMappingDraftRuleDecision (DecisionId, RuleId, ActorUserId, At, RevisionId, NewStatus, Justification)
+                      SELECT @DecisionId, @RuleId, @ActorUserId, SYSUTCDATETIME(), d.RevisionId, @NewStatus, @Justification
+                      FROM dbo.tbMappingDraftRule r JOIN dbo.tbMappingDraft d ON d.DraftId = r.DraftId
+                      WHERE r.RuleId = @RuleId;",
+                    connection, tx))
+                {
+                    insertDecision.Parameters.AddWithValue("@DecisionId", Guid.NewGuid());
+                    insertDecision.Parameters.AddWithValue("@RuleId", ruleId);
+                    insertDecision.Parameters.AddWithValue("@ActorUserId", userId);
+                    insertDecision.Parameters.AddWithValue("@NewStatus", newStatus);
+                    insertDecision.Parameters.AddWithValue("@Justification", (object?)justification ?? DBNull.Value);
+                    await insertDecision.ExecuteNonQueryAsync(cancellationToken);
+                }
+
+                await tx.CommitAsync(cancellationToken);
+            }
+            catch
+            {
+                await tx.RollbackAsync(cancellationToken);
+                throw;
+            }
+
+            using var selectUpdated = new SqlCommand(
+                @"SELECT RuleId, DraftId, SourceRefs, TargetRefs, Operation, ConditionsJson, TransformationsJson,
+                         Cardinality, EvidenceJson, Confidence, Status, OpenQuestionsJson, CreatedAt, RowVersion
+                  FROM dbo.tbMappingDraftRule WHERE RuleId = @RuleId;",
+                connection);
+            selectUpdated.Parameters.AddWithValue("@RuleId", ruleId);
+            using var readerFinal = await selectUpdated.ExecuteReaderAsync(cancellationToken);
+            if (!await readerFinal.ReadAsync(cancellationToken))
+                return new UpdateRuleOutcome(UpdateRuleResult.NotFound, null);
+
+            return new UpdateRuleOutcome(UpdateRuleResult.Success, ReadRuleDetail(readerFinal));
+        }
+
+        private static async Task<IReadOnlyList<MappingDraftRuleDetail>> LoadRulesAsync(SqlConnection connection, Guid draftId, CancellationToken cancellationToken)
+        {
+            var result = new List<MappingDraftRuleDetail>();
+            using var command = new SqlCommand(
+                @"SELECT RuleId, DraftId, SourceRefs, TargetRefs, Operation, ConditionsJson, TransformationsJson,
+                         Cardinality, EvidenceJson, Confidence, Status, OpenQuestionsJson, CreatedAt, RowVersion
+                  FROM dbo.tbMappingDraftRule WHERE DraftId = @DraftId ORDER BY CreatedAt ASC;",
+                connection);
+            command.Parameters.AddWithValue("@DraftId", draftId);
+            using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+                result.Add(ReadRuleDetail(reader));
+            return result;
+        }
+
+        private static MappingDraftRuleDetail ReadRuleDetail(SqlDataReader reader)
+        {
+            var rowVersion = (byte[])reader["RowVersion"];
+            return new MappingDraftRuleDetail(
+                reader.GetGuid(reader.GetOrdinal("RuleId")),
+                reader.GetGuid(reader.GetOrdinal("DraftId")),
+                JsonSerializer.Deserialize<List<string>>(reader.GetString(reader.GetOrdinal("SourceRefs")), JsonOptions) ?? new(),
+                JsonSerializer.Deserialize<List<string>>(reader.GetString(reader.GetOrdinal("TargetRefs")), JsonOptions) ?? new(),
+                reader.GetString(reader.GetOrdinal("Operation")),
+                reader.GetString(reader.GetOrdinal("ConditionsJson")),
+                reader.GetString(reader.GetOrdinal("TransformationsJson")),
+                reader.GetString(reader.GetOrdinal("Cardinality")),
+                JsonSerializer.Deserialize<List<MappingDraftRuleEvidence>>(reader.GetString(reader.GetOrdinal("EvidenceJson")), JsonOptions) ?? new(),
+                reader.GetString(reader.GetOrdinal("Confidence")),
+                reader.GetString(reader.GetOrdinal("Status")),
+                JsonSerializer.Deserialize<List<string>>(reader.GetString(reader.GetOrdinal("OpenQuestionsJson")), JsonOptions) ?? new(),
+                new DateTimeOffset(reader.GetDateTime(reader.GetOrdinal("CreatedAt")), TimeSpan.Zero),
+                Convert.ToBase64String(rowVersion));
+        }
+
+        // ✅ Campo público-de-assembly (não mais `const string` local) — ver comentário equivalente
+        // em <see cref="SqlFiscalPackageStore.SchemaDdl"/> sobre o `FiscalSchemaInitializer` e sobre a
+        // remoção da FK inválida `REFERENCES dbo.tbFiscalWorkspace`. Além disso, `PackageId`/`RevisionId`
+        // referenciam tabelas criadas por <see cref="SqlFiscalPackageStore"/> — ESTE store depende de
+        // aquele ter rodado primeiro (mesmo banco `IdentityDatabase:*`, desde a migração descrita no
+        // cabeçalho da classe), daí a ordem imposta pelo initializer.
+        public static readonly string SchemaDdl = @"
+IF OBJECT_ID('dbo.tbMappingDraft', 'U') IS NULL
+CREATE TABLE dbo.tbMappingDraft (
+    DraftId UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
+    WorkspaceId UNIQUEIDENTIFIER NOT NULL,
+    PackageId UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.tbFiscalMappingPackage(PackageId),
+    RevisionId UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.tbFiscalMappingPackageRevision(RevisionId),
+    Engine NVARCHAR(16) NOT NULL,
+    CreatedByUserId UNIQUEIDENTIFIER NOT NULL,
+    CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+);
+
+IF OBJECT_ID('dbo.tbMappingDraftRule', 'U') IS NULL
+CREATE TABLE dbo.tbMappingDraftRule (
+    RuleId UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
+    DraftId UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.tbMappingDraft(DraftId),
+    SourceRefs NVARCHAR(MAX) NOT NULL,
+    TargetRefs NVARCHAR(MAX) NOT NULL,
+    Operation NVARCHAR(32) NOT NULL,
+    ConditionsJson NVARCHAR(MAX) NOT NULL,
+    TransformationsJson NVARCHAR(MAX) NOT NULL,
+    Cardinality NVARCHAR(8) NOT NULL,
+    EvidenceJson NVARCHAR(MAX) NOT NULL,
+    Confidence NVARCHAR(16) NOT NULL,
+    Status NVARCHAR(16) NOT NULL,
+    OpenQuestionsJson NVARCHAR(MAX) NOT NULL,
+    CreatedByJobId UNIQUEIDENTIFIER NOT NULL,
+    CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+    RowVersion ROWVERSION NOT NULL
+);
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_tbMappingDraftRule_DraftId' AND object_id = OBJECT_ID('dbo.tbMappingDraftRule'))
+CREATE INDEX IX_tbMappingDraftRule_DraftId ON dbo.tbMappingDraftRule(DraftId);
+
+-- Issue #379 (ADR perfil fiscal §2.5): coluna adicionada idempotentemente — bases criadas antes
+-- deste slice já têm dbo.tbMappingDraft sem FiscalProfileJson.
+IF COL_LENGTH('dbo.tbMappingDraft', 'FiscalProfileJson') IS NULL
+ALTER TABLE dbo.tbMappingDraft ADD FiscalProfileJson NVARCHAR(MAX) NULL;
+
+IF OBJECT_ID('dbo.tbMappingDraftRuleDecision', 'U') IS NULL
+CREATE TABLE dbo.tbMappingDraftRuleDecision (
+    DecisionId UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
+    RuleId UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.tbMappingDraftRule(RuleId),
+    ActorUserId UNIQUEIDENTIFIER NOT NULL,
+    At DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+    RevisionId UNIQUEIDENTIFIER NOT NULL,
+    NewStatus NVARCHAR(16) NOT NULL,
+    Justification NVARCHAR(2000) NULL
+);
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_tbMappingDraftRuleDecision_RuleId' AND object_id = OBJECT_ID('dbo.tbMappingDraftRuleDecision'))
+CREATE INDEX IX_tbMappingDraftRuleDecision_RuleId ON dbo.tbMappingDraftRuleDecision(RuleId);";
+
+        internal static async Task EnsureSchemaAsync(SqlConnection connection, CancellationToken cancellationToken)
+        {
+            if (_schemaEnsured)
+                return;
+
+            await _schemaLock.WaitAsync(cancellationToken);
+            try
+            {
+                if (_schemaEnsured)
+                    return;
+
+                using var command = new SqlCommand(SchemaDdl, connection);
+                await command.ExecuteNonQueryAsync(cancellationToken);
+                _schemaEnsured = true;
+            }
+            finally
+            {
+                _schemaLock.Release();
+            }
+        }
+    }
+}
