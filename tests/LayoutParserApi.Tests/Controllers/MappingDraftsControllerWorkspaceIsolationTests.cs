@@ -1,5 +1,6 @@
 using LayoutParserApi.Controllers;
 using LayoutParserApi.Models.Entities.Fiscal;
+using LayoutParserApi.Services.Fiscal;
 using LayoutParserApi.Services.Interfaces;
 
 using Microsoft.AspNetCore.Mvc;
@@ -77,11 +78,15 @@ namespace LayoutParserApi.Tests.Controllers
 
             public FakeMappingDraftStore(FakeIdentityWorkspaceService identity) => _identity = identity;
 
-            public Task<bool> RevisionBelongsToPackageAsync(Guid packageId, Guid revisionId, CancellationToken cancellationToken)
+            public Task<bool> RevisionBelongsToWorkspacePackageAsync(Guid workspaceId, Guid packageId, Guid revisionId, CancellationToken cancellationToken)
                 => Task.FromResult(true);
 
             public Task<IReadOnlyList<ArtifactFileRef>> GetArtifactFilesForRevisionAsync(Guid revisionId, CancellationToken cancellationToken)
                 => Task.FromResult<IReadOnlyList<ArtifactFileRef>>(Array.Empty<ArtifactFileRef>());
+
+            public Task<(IReadOnlyList<MappingDraftSummary> Items, int TotalCount)> ListByWorkspaceAsync(
+                Guid workspaceId, int page, int pageSize, string? engine, CancellationToken cancellationToken)
+                => throw new NotSupportedException("Não exercitado por estes testes — cobertos em MappingDraftsControllerListTests.");
 
             public Task<MappingDraftDetail> CreateDraftAsync(Guid workspaceId, Guid packageId, Guid revisionId, Guid createdByUserId, string engine, CancellationToken cancellationToken)
             {
@@ -145,6 +150,19 @@ namespace LayoutParserApi.Tests.Controllers
                 IReadOnlyList<string>? editedSourceRefs, IReadOnlyList<string>? editedTargetRefs, string? editedOperation,
                 CancellationToken cancellationToken)
                 => throw new NotSupportedException("Não exercitado por estes testes — a checagem de workspace acontece antes deste ponto.");
+
+            public Task<MappingDraftDetail?> SetFiscalProfileAsync(Guid draftId, Guid userId, FiscalProfile profile, CancellationToken cancellationToken)
+                => throw new NotSupportedException("Não exercitado por estes testes — a checagem de workspace acontece antes deste ponto.");
+        }
+
+        /// <summary>Stub sempre-válido — a cascata de validação do §2.4 é coberta em testes dedicados do resolver.</summary>
+        private sealed class FakeFiscalProfileResolver : IFiscalProfileResolver
+        {
+            public FiscalProfileValidationResult Validate(FiscalProfile profile)
+                => new(true, null, new FiscalResolvedXsd(profile.SchemaVersion, "urn:test", "Root"));
+
+            public FiscalResolvedXsd? Resolve(string documentType, string schemaVersion)
+                => new(schemaVersion, "urn:test", "Root");
         }
 
         private sealed class NoopMappingSuggestionService : IMappingSuggestionService
@@ -184,6 +202,7 @@ namespace LayoutParserApi.Tests.Controllers
                 store,
                 suggestions,
                 identity,
+                new FakeFiscalProfileResolver(),
                 user,
                 NullLogger<MappingDraftsController>.Instance);
 

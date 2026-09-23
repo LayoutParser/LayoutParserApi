@@ -142,12 +142,23 @@ namespace LayoutParserApi.Services.Fiscal
                 OpaqueRuleCount: opaqueCount);
         }
 
-        /// <summary>Mapeamento direto campo→campo (sem DSL) — sempre <c>authoritative</c>, é dado de vinculação puro.</summary>
+        /// <summary>
+        /// Mapeamento direto campo→campo (sem DSL) — sempre <c>authoritative</c>, é dado de vinculação puro.
+        ///
+        /// <para><b>Issue #430 (alinhamento de identidade de nó):</b> <c>SourceRefs</c>/<c>TargetRefs</c>
+        /// usam sempre <c>InputGuid</c>/<c>TargetGuid</c> — a MESMA fonte que <see cref="LayoutTreeService"/>
+        /// usa em <c>LayoutTreeRule.SourceElementGuid</c>/<c>TargetElementGuid</c>. Antes, <c>TargetLeafName</c>
+        /// (nome legível) tinha prioridade sobre o GUID aqui, mas o layout-tree sempre usa o GUID —
+        /// isso quebrava o cruzamento regra↔nó no front. O nome legível continua disponível, só que
+        /// em <c>HumanDescription</c> (texto pra humano, não em identificador estrutural).</para>
+        /// </summary>
         private static ExplainedRule ToExplainedRule(LinkMappingItem link)
         {
             var ruleId = link.ElementGuid ?? $"link:{link.Name}";
-            var target = link.TargetLeafName ?? link.TargetGuid ?? "?";
-            var source = link.InputGuid ?? link.Name ?? "?";
+            var target = link.TargetGuid ?? "?";
+            var source = link.InputGuid ?? "?";
+            var targetLabel = link.TargetLeafName ?? target;
+            var sourceLabel = link.Name ?? source;
 
             return new ExplainedRule(
                 RuleId: ruleId,
@@ -157,7 +168,7 @@ namespace LayoutParserApi.Services.Fiscal
                 Operations: new[] { "copy" },
                 Cardinality: "1:1",
                 Evidence: new[] { new EvidenceRef("sysmiddle-link-mapping", link.Name ?? ruleId) },
-                HumanDescription: $"Copia o valor de \"{source}\" diretamente para \"{target}\".",
+                HumanDescription: $"Copia o valor de \"{sourceLabel}\" diretamente para \"{targetLabel}\".",
                 TechnicalDetail: null,
                 SupportLevel: MappingExplanationSupportLevel.Authoritative);
         }
