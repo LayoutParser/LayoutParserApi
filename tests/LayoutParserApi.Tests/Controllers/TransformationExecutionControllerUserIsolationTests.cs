@@ -53,7 +53,7 @@ namespace LayoutParserApi.Tests.Controllers
             public Task EnqueueAsync(
                 string userId, string ticket, string layoutName, Guid layoutGuid, string mapperGuid,
                 string inputContent, string? groundTruthXml, CancellationToken cancellationToken,
-                IReadOnlyList<Models.Entities.ParsedField>? parsedFields = null)
+                IReadOnlyList<LayoutParserApi.Models.Entities.ParsedField>? parsedFields = null)
             {
                 LastEnqueueUserId = userId;
                 return Task.CompletedTask;
@@ -116,7 +116,9 @@ namespace LayoutParserApi.Tests.Controllers
                 fieldMappingComposition: null!,
                 scopeFactory: null!,
                 canaryAlert: new LayoutParserApi.Services.Security.CanaryAlertService(
-                    NullLogger<LayoutParserApi.Services.Security.CanaryAlertService>.Instance));
+                    NullLogger<LayoutParserApi.Services.Security.CanaryAlertService>.Instance),
+                fieldCorrectionStore: null!,
+                trainingDataCapture: null!);
 
             return (controller, spy, user);
         }

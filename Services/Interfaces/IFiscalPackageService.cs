@@ -1,7 +1,10 @@
+using LayoutParserApi.Services.Fiscal;
+
 namespace LayoutParserApi.Services.Interfaces
 {
     /// <summary>Um arquivo recebido no upload, já lido em memória pelo controller (até o limite de tamanho).</summary>
-    public sealed record UploadedArtifactInput(string Kind, string OriginalFileName, string ContentType, byte[] Content);
+    /// <summary><paramref name="Provenance"/> ver <see cref="Models.Entities.Fiscal.ArtifactProvenance"/> (issue #341) — opcional, ausência resolve fail-closed como amostra real.</summary>
+    public sealed record UploadedArtifactInput(string Kind, string OriginalFileName, string ContentType, byte[] Content, string? Provenance = null);
 
     /// <summary>Resultado de uma tentativa de criação de pacote — pode falhar por validação (422) sem lançar.</summary>
     public sealed record CreatePackageOutcome(bool Success, string? Error, PackageDetail? Package);
@@ -77,5 +80,12 @@ namespace LayoutParserApi.Services.Interfaces
             Guid artifactId,
             Guid userId,
             CancellationToken cancellationToken);
+
+        /// <summary>
+        /// Sinais de qualidade (issue #424) dos artefatos <c>spec</c> da revisão mais recente de
+        /// <paramref name="package"/> (chave = ArtifactId). Calculado na leitura, nada persistido. NUNCA
+        /// lança: planilha ilegível vira <c>failed</c> com mensagem segura para aquele artefato.
+        /// </summary>
+        Task<IReadOnlyDictionary<Guid, SpecQualityResult>> GetSpecQualityAsync(PackageDetail package, CancellationToken cancellationToken);
     }
 }

@@ -19,6 +19,7 @@ using LayoutParserApi.Services.Filters;
 using LayoutParserApi.Models.Database;
 using LayoutParserApi.Models.Transformation;
 using LayoutParserApi.Models.Parsing;
+using LayoutParserApi.Models.Fiscal;
 
 using XslSynth.Core;
 
@@ -57,6 +58,8 @@ namespace LayoutParserApi.Controllers
         private readonly FieldMappingCompositionService _fieldMappingComposition;
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly Services.Security.ICanaryAlertService _canaryAlert;
+        private readonly IFieldCorrectionStore _fieldCorrectionStore;
+        private readonly TrainingDataCaptureService _trainingDataCapture;
 
         public TransformationExecutionController(
             ILogger<TransformationExecutionController> logger,
@@ -77,7 +80,9 @@ namespace LayoutParserApi.Controllers
             ILayoutParserService layoutParser,
             FieldMappingCompositionService fieldMappingComposition,
             IServiceScopeFactory scopeFactory,
-            Services.Security.ICanaryAlertService canaryAlert)
+            Services.Security.ICanaryAlertService canaryAlert,
+            IFieldCorrectionStore fieldCorrectionStore,
+            TrainingDataCaptureService trainingDataCapture)
         {
             _logger = logger;
             _pipelineService = pipelineService;
@@ -98,6 +103,8 @@ namespace LayoutParserApi.Controllers
             _fieldMappingComposition = fieldMappingComposition;
             _scopeFactory = scopeFactory;
             _canaryAlert = canaryAlert;
+            _fieldCorrectionStore = fieldCorrectionStore;
+            _trainingDataCapture = trainingDataCapture;
         }
 
         // Issue #92: chave de particionamento da AiCandidateStore. ICurrentUser.Name é null quando
@@ -377,6 +384,21 @@ namespace LayoutParserApi.Controllers
                 recommendedId = bestScored?.CandidateId ?? candidates[0].CandidateId;
             }
 
+            // DocumentId (ADR docs/architecture/adr-contrato-correcao-guiada-humano-2026-09-08.md §4,
+            // Gap 1): identificador estável derivado de hash, mesma resolução de LayoutGuid já usada
+            // pelo pathway sysmiddle (request.LayoutGuid tem precedência sobre o catálogo, que pode
+            // vir Guid.Empty). Quando nenhum dos dois resolve, cai no LayoutGuid cru do catálogo —
+            // ainda determinístico, nunca lança.
+            var resolvedLayoutGuidForDocumentId =
+                LowCodeLayoutGuidResolver.Resolve(request.LayoutGuid, layoutRecord.LayoutGuid)
+                ?? layoutRecord.LayoutGuid.ToString();
+            var documentId = DocumentIdCalculator.Calculate(request.InputContent, resolvedLayoutGuidForDocumentId);
+
+            // tbFieldCorrectionContext (issue #345, ADR §4/§7): gravação best-effort, fire-and-forget —
+            // nunca atrasa nem derruba esta resposta. Habilita o futuro POST field-correction a
+            // resolver documentId -> contexto do documento.
+            TryPersistFieldCorrectionContext(request, layoutRecord, candidates, documentId, resolvedLayoutGuidForDocumentId);
+
             return Ok(new TransformationExecutionCandidatesResponse
             {
                 Success = true,
@@ -386,8 +408,281 @@ namespace LayoutParserApi.Controllers
                 // pathwayDiagnostics (Issue #86): populado na origem por cada pathway (sysmiddle,
                 // tcl-xsl, ai-fallback) — ver docs/architecture/diagnostico-issue-86-*.md §4.
                 PathwayDiagnostics = pathwayDiagnostics.ToList(),
-                CorrelationId = Services.Logging.CorrelationContext.CurrentId
+                CorrelationId = Services.Logging.CorrelationContext.CurrentId,
+                DocumentId = documentId
             });
+        }
+
+        /// <summary>
+        /// Best-effort (issue #345, ADR §4/§7): grava <c>tbFieldCorrectionContext</c> com o
+        /// documentId já calculado, o gabarito sysmiddle quando existir (primeiro candidato do
+        /// pathway sysmiddle) e o LayoutGuid/Name resolvidos. Mapper/GroundTruth ficam <c>null</c>
+        /// quando a request não produziu candidato sysmiddle (ex.: entrada XML) — reporte de
+        /// correção continua possível, só sem o gabarito ao lado. Fire-and-forget: qualquer falha
+        /// (IdentityDatabase indisponível etc.) vira log, nunca afeta a resposta síncrona já calculada.
+        /// </summary>
+        private void TryPersistFieldCorrectionContext(
+            TransformationRequest request, LayoutRecord layoutRecord, List<TransformationCandidate> candidates,
+            string documentId, string resolvedLayoutGuid)
+        {
+            var sysmiddleCandidate = candidates.FirstOrDefault(c => c.Pathway == "sysmiddle" && !string.IsNullOrEmpty(c.TransformedXml));
+            var mapperGuid = sysmiddleCandidate != null && sysmiddleCandidate.CandidateId.StartsWith("sysmiddle-", StringComparison.Ordinal)
+                ? sysmiddleCandidate.CandidateId["sysmiddle-".Length..]
+                : null;
+            var groundTruthXml = sysmiddleCandidate?.TransformedXml;
+            var layoutName = request.LayoutName;
+            var inputContent = request.InputContent;
+            var safeLayoutNameForLog = Services.Logging.LogMessageSanitizer.Sanitize(layoutName);
+
+            // ✅ Mesmo padrão de TryEnqueueAiCandidate: Task.Run + CancellationToken.None, sobrevive
+            // ao fim da request HTTP; IFieldCorrectionStore é Scoped, então precisa de scope próprio.
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    using var scope = _scopeFactory.CreateScope();
+                    var scopedStore = scope.ServiceProvider.GetRequiredService<IFieldCorrectionStore>();
+                    await scopedStore.SaveContextAsync(
+                        new FieldCorrectionContext(
+                            documentId,
+                            mapperGuid,
+                            MapperName: null, // não disponível neste ponto sem consulta SQL adicional — best-effort, campo aditivo.
+                            resolvedLayoutGuid,
+                            layoutName,
+                            inputContent,
+                            groundTruthXml,
+                            DateTimeOffset.UtcNow),
+                        CancellationToken.None);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex,
+                        "Falha ao persistir tbFieldCorrectionContext (best-effort) para documentId={DocumentId} layout={LayoutName}",
+                        documentId, safeLayoutNameForLog);
+                }
+            }, CancellationToken.None);
+        }
+
+        /// <summary>
+        /// Issue #345 (ADR docs/architecture/adr-contrato-correcao-guiada-humano-2026-09-08.md §3/§5/§7):
+        /// reporte de correção humana de um campo divergente. Assíncrono por design — não
+        /// re-executa nenhum pathway nem chama Ollama no request; só valida, resolve o contexto
+        /// via <c>documentId</c> e persiste com <c>Status = pending</c> (curadoria humana é a Issue 2,
+        /// fora do escopo aqui). Fail-closed via <c>_currentUser.UserId</c>, mesmo padrão de
+        /// <see cref="MappingGovernanceController"/> — sem identidade resolvida, <c>404</c> (não
+        /// <c>401</c>), para não distinguir "recurso inexistente" de "sem permissão".
+        /// </summary>
+        /// <param name="request">
+        /// <c>documentId</c>/<c>candidateId</c>/<c>fieldPath</c>/<c>observedValue</c>/<c>expectedValue</c>
+        /// obrigatórios; <c>justification</c> e <c>documentType</c> (só telemetria) opcionais.
+        /// </param>
+        /// <response code="202">Reporte registrado — <c>{ reportId, status: "queued", message }</c>.</response>
+        /// <response code="400">Campo obrigatório ausente.</response>
+        /// <response code="404">
+        /// Sem identidade resolvida, OU <c>documentId</c> não resolve contexto persistido (mensagem
+        /// pede para reenviar o parse — contexto pode ter expirado, gravação best-effort pode ter
+        /// falhado, ou o id nunca existiu).
+        /// </response>
+        [Authorize]
+        [HttpPost("field-correction")]
+        public async Task<IActionResult> ReportFieldCorrection([FromBody] FieldCorrectionRequest request, CancellationToken cancellationToken)
+        {
+            if (_currentUser.UserId is not Guid userId)
+                return NotFound(); // fail-closed, mesmo padrão de MappingGovernanceController.
+
+            if (request == null || string.IsNullOrWhiteSpace(request.DocumentId))
+                return BadRequest(new { success = false, error = "documentId é obrigatório" });
+            if (string.IsNullOrWhiteSpace(request.CandidateId))
+                return BadRequest(new { success = false, error = "candidateId é obrigatório" });
+            if (string.IsNullOrWhiteSpace(request.FieldPath))
+                return BadRequest(new { success = false, error = "fieldPath é obrigatório" });
+            if (string.IsNullOrWhiteSpace(request.ObservedValue))
+                return BadRequest(new { success = false, error = "observedValue é obrigatório" });
+            if (string.IsNullOrWhiteSpace(request.ExpectedValue))
+                return BadRequest(new { success = false, error = "expectedValue é obrigatório" });
+
+            FieldCorrectionContext? context;
+            try
+            {
+                context = await _fieldCorrectionStore.GetContextAsync(request.DocumentId, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                // Diferente da gravação (best-effort, nunca falha), a LEITURA aqui é o caminho crítico
+                // do endpoint — se o IdentityDatabase estiver fora do ar, não há como resolver o
+                // documentId, então degrada para 404 (mesma mensagem do caso "nunca existiu"), nunca
+                // deixa a exceção subir.
+                _logger.LogWarning(ex, "Falha ao consultar tbFieldCorrectionContext para documentId={DocumentId}", request.DocumentId);
+                context = null;
+            }
+
+            if (context == null)
+                return NotFound(new { success = false, error = "contexto do documento expirado — reenvie o parse para reportar uma correção" });
+
+            Guid reportId;
+            try
+            {
+                reportId = await _fieldCorrectionStore.CreateReportAsync(
+                    new FieldCorrectionReportInput(
+                        request.DocumentId,
+                        request.CandidateId,
+                        request.FieldPath,
+                        request.ObservedValue,
+                        request.ExpectedValue,
+                        request.Justification),
+                    userId,
+                    cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Falha ao persistir tbFieldCorrectionReport para documentId={DocumentId}", request.DocumentId);
+                return StatusCode(500, new { success = false, error = "Falha de infraestrutura ao registrar a correção" });
+            }
+
+            _logger.LogInformation(
+                "Correção humana registrada: reportId={ReportId} documentId={DocumentId} candidateId={CandidateId} usuario={UserId}",
+                reportId, request.DocumentId, Services.Logging.LogMessageSanitizer.Sanitize(request.CandidateId), userId);
+
+            return Accepted(new
+            {
+                reportId,
+                status = "queued",
+                message = "Correção registrada. Será usada para refinar o modelo em treinos futuros."
+            });
+        }
+
+        // ─────────────────────────────────────────────────────────────────────────────
+        // Curadoria de correção humana (issue #346, ADR §6/§8)
+        //
+        // NOTA DE AUTORIZAÇÃO: não existe hoje um papel dedicado de revisor fiscal no projeto —
+        // os papéis em uso são "admin" (DataGenerationController, LogsController) e "operador"
+        // (MapperDatabaseController). Curar o que vira dado de treino do modelo é uma operação
+        // privilegiada, então cai em "admin". TODO(#346): trocar por um papel "fiscal"/"revisor"
+        // quando o produto definir a matriz de papéis (ver docs/architecture/rollout-p2-autenticacao.md).
+        // ─────────────────────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Fila de curadoria: reportes de correção humana ainda <c>pending</c> (issue #346), mais
+        /// antigos primeiro. Somente <c>admin</c>.
+        /// </summary>
+        /// <param name="limit">Teto de itens retornados (default 100, máx. 500).</param>
+        /// <response code="200"><c>{ success, count, reports[] }</c>.</response>
+        /// <response code="404">Sem identidade resolvida (fail-closed).</response>
+        /// <response code="500">Falha de infraestrutura ao consultar o <c>IdentityDatabase</c>.</response>
+        [Authorize(Roles = "admin")]
+        [HttpGet("field-correction/pending")]
+        public async Task<IActionResult> ListPendingFieldCorrections([FromQuery] int limit = 100, CancellationToken cancellationToken = default)
+        {
+            if (_currentUser.UserId is not Guid)
+                return NotFound(); // fail-closed, mesmo padrão de ReportFieldCorrection.
+
+            if (limit <= 0) limit = 100;
+            if (limit > 500) limit = 500;
+
+            try
+            {
+                var pending = await _fieldCorrectionStore.ListPendingReportsAsync(limit, cancellationToken);
+                return Ok(new { success = true, count = pending.Count, reports = pending });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Falha ao listar reportes de correção pendentes");
+                return StatusCode(500, new { success = false, error = "Falha de infraestrutura ao listar pendências de curadoria" });
+            }
+        }
+
+        /// <summary>
+        /// Transição de curadoria de um reporte: <c>pending → reviewed_accepted | reviewed_rejected</c>
+        /// (issue #346). Grava <c>ReviewedByUserId</c> (via <see cref="ICurrentUser"/>) e
+        /// <c>ReviewedAtUtc</c>. Idempotente: um segundo review do mesmo reporte devolve <c>409</c>.
+        /// Só <c>reviewed_accepted</c> gera uma linha no dataset de treino incremental
+        /// (<c>source = "human-correction-reviewed"</c>); <c>reviewed_rejected</c> apenas encerra o
+        /// ciclo de vida. O <c>GroundTruthXml</c> do contexto NUNCA é tocado — a revisão só decide
+        /// o que vira treino. Somente <c>admin</c>.
+        /// </summary>
+        /// <response code="200"><c>{ reportId, status }</c> — transição efetuada.</response>
+        /// <response code="400"><c>decision</c> ausente ou diferente de <c>accepted</c>/<c>rejected</c>.</response>
+        /// <response code="404">Sem identidade resolvida (fail-closed).</response>
+        /// <response code="409">Reporte inexistente ou já revisado (só <c>pending</c> transiciona).</response>
+        /// <response code="500">Falha de infraestrutura ao gravar a transição.</response>
+        [Authorize(Roles = "admin")]
+        [HttpPost("field-correction/{reportId:guid}/review")]
+        public async Task<IActionResult> ReviewFieldCorrection(Guid reportId, [FromBody] FieldCorrectionReviewRequest request, CancellationToken cancellationToken)
+        {
+            if (_currentUser.UserId is not Guid reviewerId)
+                return NotFound(); // fail-closed.
+
+            var decision = request?.Decision?.Trim().ToLowerInvariant();
+            var newStatus = decision switch
+            {
+                "accepted" => FieldCorrectionReportStatus.ReviewedAccepted,
+                "rejected" => FieldCorrectionReportStatus.ReviewedRejected,
+                _ => null
+            };
+            if (newStatus is null)
+                return BadRequest(new { success = false, error = "decision é obrigatório e deve ser 'accepted' ou 'rejected'" });
+
+            bool transitioned;
+            try
+            {
+                transitioned = await _fieldCorrectionStore.TransitionStatusAsync(reportId, newStatus, reviewerId, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Falha ao transicionar reporte de correção reportId={ReportId}", reportId);
+                return StatusCode(500, new { success = false, error = "Falha de infraestrutura ao registrar a revisão" });
+            }
+
+            if (!transitioned)
+                return Conflict(new { success = false, error = "reporte inexistente ou já revisado — apenas reportes 'pending' podem ser curados" });
+
+            _logger.LogInformation(
+                "Curadoria de correção humana: reportId={ReportId} status={Status} revisor={ReviewerId}",
+                reportId, newStatus, reviewerId);
+
+            // Só o aceite alimenta o dataset incremental. Best-effort: a transição já está gravada,
+            // uma falha aqui (contexto expirado, disco cheio) vira warning, nunca reverte a revisão
+            // nem derruba a resposta.
+            if (newStatus == FieldCorrectionReportStatus.ReviewedAccepted)
+                await TryCaptureAcceptedCorrectionAsync(reportId, cancellationToken);
+
+            return Ok(new { reportId, status = newStatus });
+        }
+
+        /// <summary>
+        /// Monta o exemplo de treino incremental de um reporte recém-aceito: contexto original
+        /// (<c>InputXml</c>/<c>GroundTruthXml</c>) + <c>ExpectedValue</c> do reporte como saída
+        /// esperada. Delega a escrita ao <see cref="TrainingDataCaptureService"/> (mesmo arquivo
+        /// diário e formato do runtime capture). Best-effort — nunca lança.
+        /// </summary>
+        private async Task TryCaptureAcceptedCorrectionAsync(Guid reportId, CancellationToken cancellationToken)
+        {
+            try
+            {
+                var report = await _fieldCorrectionStore.GetReportAsync(reportId, cancellationToken);
+                if (report is null)
+                {
+                    _logger.LogWarning("Reporte aceito não encontrado ao montar o exemplo de treino (reportId={ReportId})", reportId);
+                    return;
+                }
+
+                var context = await _fieldCorrectionStore.GetContextAsync(report.DocumentId, cancellationToken);
+                if (context is null)
+                {
+                    _logger.LogWarning(
+                        "Contexto do documento ausente/expirado ao montar o exemplo de treino do reporte aceito (reportId={ReportId} documentId={DocumentId})",
+                        reportId, report.DocumentId);
+                    return;
+                }
+
+                _trainingDataCapture.TryCaptureHumanCorrection(context, report);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "Falha ao capturar o exemplo de treino do reporte aceito — best-effort, a revisão permanece gravada (reportId={ReportId})",
+                    reportId);
+            }
         }
 
         /// <summary>
@@ -909,6 +1204,89 @@ namespace LayoutParserApi.Controllers
         }
 
         /// <summary>
+        /// Issue #322: define/atualiza as 3 preferências de usuário além do prompt customizado
+        /// (idioma de exibição, nível de detalhe da explicação de mapeamento, engine padrão quando o
+        /// sistema precisa escolher entre TCL/XSLT sem sinal explícito no request). Rota dedicada,
+        /// paralela a <c>ai-prompt-adicional</c> (issue #98) em vez de consolidada nela — granularidade
+        /// mantida porque as duas evoluem em ritmos diferentes (o prompt já está em produção e não deve
+        /// ganhar um contrato novo por acidente de "juntar tudo"; preferências estruturadas têm
+        /// validação própria, `422` por valor inválido, que um campo de texto livre não tem).
+        /// Persistido em <c>tbLpAiUserSession</c> (<see cref="Services.Database.SqlAiUserSessionStore"/>,
+        /// schema da issue #102) — diferente do <see cref="AiUserInstructionStore"/> usado pelo
+        /// <c>ai-prompt-adicional</c> atual, que é só em memória (não sobrevive a restart). Campos
+        /// omitidos/nulos no corpo preservam o valor já salvo (upsert parcial); envie o valor atual de
+        /// volta para não alterá-lo.
+        /// </summary>
+        /// <param name="request">Qualquer campo pode vir nulo (preserva o valor já salvo).</param>
+        /// <response code="200"><c>{ saved: true }</c>.</response>
+        /// <response code="404">Sem identidade resolvida (fail-closed, mesmo padrão de <see cref="ReportFieldCorrection"/>).</response>
+        /// <response code="422"><c>preferredExplanationDetailLevel</c> ou <c>defaultTransformationEngine</c> fora dos valores aceitos.</response>
+        [Authorize]
+        [HttpPut("ai-preferences")]
+        public async Task<IActionResult> SetAiPreferences([FromBody] SetAiPreferencesRequest request, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(CurrentUserId))
+                return NotFound(); // fail-closed, mesmo padrão de ReportFieldCorrection.
+
+            if (!string.IsNullOrWhiteSpace(request?.PreferredExplanationDetailLevel)
+                && !Services.Database.AiUserPreferenceDefaults.ValidExplanationDetailLevels.Contains(request.PreferredExplanationDetailLevel))
+            {
+                return UnprocessableEntity(new
+                {
+                    success = false,
+                    error = $"preferredExplanationDetailLevel deve ser um de: {string.Join(", ", Services.Database.AiUserPreferenceDefaults.ValidExplanationDetailLevels)}"
+                });
+            }
+
+            if (!string.IsNullOrWhiteSpace(request?.DefaultTransformationEngine)
+                && !Services.Database.AiUserPreferenceDefaults.ValidTransformationEngines.Contains(request.DefaultTransformationEngine))
+            {
+                return UnprocessableEntity(new
+                {
+                    success = false,
+                    error = $"defaultTransformationEngine deve ser um de: {string.Join(", ", Services.Database.AiUserPreferenceDefaults.ValidTransformationEngines)}"
+                });
+            }
+
+            await _aiUserSessionStore.SetPreferencesAsync(
+                CurrentUserId,
+                request?.PreferredLanguage,
+                request?.PreferredExplanationDetailLevel,
+                request?.DefaultTransformationEngine,
+                cancellationToken);
+
+            return Ok(new { saved = true });
+        }
+
+        /// <summary>
+        /// Issue #322: consulta as 4 preferências do usuário atual (prompt customizado + idioma/nível
+        /// de detalhe/engine padrão), com defaults aplicados quando a preferência nunca foi setada (ver
+        /// <see cref="Services.Database.AiUserPreferenceDefaults"/>). <c>customPromptInstruction</c>
+        /// continua vindo do <see cref="AiUserInstructionStore"/> em memória (fonte de verdade atual do
+        /// <c>ai-prompt-adicional</c>, issue #98) — não migrado para o SQL nesta issue.
+        /// </summary>
+        /// <response code="200">Preferências com defaults já aplicados.</response>
+        /// <response code="404">Sem identidade resolvida (fail-closed).</response>
+        [Authorize]
+        [HttpGet("ai-preferences")]
+        public async Task<IActionResult> GetAiPreferences(CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(CurrentUserId))
+                return NotFound(); // fail-closed, mesmo padrão de ReportFieldCorrection.
+
+            var saved = await _aiUserSessionStore.GetPreferencesAsync(CurrentUserId, cancellationToken);
+            var customPromptInstruction = _aiUserInstructionStore.Get(CurrentUserId);
+
+            return Ok(new
+            {
+                customPromptInstruction,
+                preferredLanguage = saved?.PreferredLanguage ?? Services.Database.AiUserPreferenceDefaults.DefaultLanguage,
+                preferredExplanationDetailLevel = saved?.PreferredExplanationDetailLevel ?? Services.Database.AiUserPreferenceDefaults.DefaultExplanationDetailLevel,
+                defaultTransformationEngine = saved?.DefaultTransformationEngine ?? Services.Database.AiUserPreferenceDefaults.DefaultTransformationEngine
+            });
+        }
+
+        /// <summary>
         /// Issue #97 (fase 2, Passo 3): histórico persistente do usuário atual — <c>Ticket</c>/
         /// <c>Status</c>/<c>CreatedAt</c> gravados por <see cref="Services.Database.SqlAiUserSessionStore"/>
         /// (schema já criado pela issue #102) toda vez que um job do pathway IA chega a um status
@@ -1419,6 +1797,14 @@ namespace LayoutParserApi.Controllers
         public string? Instruction { get; set; }
     }
 
+    /// <summary>Requisição de <c>PUT ai-preferences</c> (issue #322). Campos nulos preservam o valor já salvo.</summary>
+    public class SetAiPreferencesRequest
+    {
+        public string? PreferredLanguage { get; set; }
+        public string? PreferredExplanationDetailLevel { get; set; }
+        public string? DefaultTransformationEngine { get; set; }
+    }
+
     /// <summary>Request do endpoint /field-mappings (issue #140). Mesma convenção de LayoutGuid
     /// opcional já usada por <see cref="TransformationRequest"/> (precedência sobre o catálogo).</summary>
     public class FieldMappingsRequest
@@ -1442,5 +1828,30 @@ namespace LayoutParserApi.Controllers
         public string? Package { get; set; }
         public string? GlobalFolder { get; set; }
         public string? SysmiddleDir { get; set; }
+    }
+
+    /// <summary>
+    /// Request de <c>POST field-correction</c> (issue #345, ADR §7). <c>documentId</c>/<c>candidateId</c>
+    /// vêm da resposta de <c>execute-candidates</c>; <c>documentType</c> é opcional e usado só para
+    /// telemetria — nunca prevalece sobre o <c>layoutGuid</c> resolvido no contexto persistido.
+    /// </summary>
+    public class FieldCorrectionRequest
+    {
+        public string DocumentId { get; set; } = "";
+        public string CandidateId { get; set; } = "";
+        public string FieldPath { get; set; } = "";
+        public string ObservedValue { get; set; } = "";
+        public string ExpectedValue { get; set; } = "";
+        public string? Justification { get; set; }
+        public string? DocumentType { get; set; }
+    }
+
+    /// <summary>
+    /// Body de <c>POST field-correction/{reportId}/review</c> (issue #346). <c>decision</c>
+    /// obrigatório: <c>"accepted"</c> ou <c>"rejected"</c> (case-insensitive).
+    /// </summary>
+    public class FieldCorrectionReviewRequest
+    {
+        public string? Decision { get; set; }
     }
 }

@@ -1,0 +1,14 @@
+feat(security): honeypot/canary de deteccao para M2M (ADR Parte 2, issues #218/#221)
+
+Implementa a Parte 2 do ADR de autenticacao M2M (docs/architecture/adr-autenticacao-m2m-e2e-cypress-2026-09-03.md):
+endpoint-isca (POST /api/TransformationExecution/execute-legacy, sem auth, nunca executa logica
+real) + credencial-isca (header X-Service-Credential com valor "aposentado", documentado em
+appsettings.Legacy.json.example) + alarme via log Critical (CANARY_TRIGGERED, CorrelationId
+preservado). E deteccao, nao prevencao - nao substitui TrustedIdentityMiddleware/esquema
+ServiceClient da Parte 1 (PR #305).
+
+CanaryCredentialDetectionMiddleware roda antes de qualquer auth real e nunca autentica nem
+bloqueia por conta propria, so loga e segue. Sink de e-mail documentado como extensao futura
+(depende do provedor SMTP ainda nao escolhido pelo dono).
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>

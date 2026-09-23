@@ -337,7 +337,8 @@ namespace LayoutParserApi.Services.Fiscal
         /// <c>{"type":"lookup","table":{"chave":"valor"},"default":"..."}</c>. Só o objeto com
         /// <c>type</c> correspondente à operação é lido — os demais são ignorados.
         /// </summary>
-        private static string? ReadTransformationString(MappingDraftRule rule, string type, string property)
+        /// <summary>Internal (não private): reaproveitado por <see cref="TclRuleApplier"/> (issue #421) para interpretar as mesmas regras sem duplicar o parsing do contrato JSON.</summary>
+        internal static string? ReadTransformationString(MappingDraftRule rule, string type, string property)
         {
             using var doc = JsonDocument.Parse(rule.TransformationsJson ?? "[]");
             foreach (var item in doc.RootElement.EnumerateArray())
@@ -352,9 +353,9 @@ namespace LayoutParserApi.Services.Fiscal
             return null;
         }
 
-        private sealed record LookupTableSpec(IReadOnlyList<(string Key, string Value)> Table, string? DefaultValue);
+        internal sealed record LookupTableSpec(IReadOnlyList<(string Key, string Value)> Table, string? DefaultValue);
 
-        private static LookupTableSpec ReadLookupTable(MappingDraftRule rule)
+        internal static LookupTableSpec ReadLookupTable(MappingDraftRule rule)
         {
             using var doc = JsonDocument.Parse(rule.TransformationsJson ?? "[]");
             foreach (var item in doc.RootElement.EnumerateArray())
@@ -388,9 +389,9 @@ namespace LayoutParserApi.Services.Fiscal
         /// <c>{"testXPath":"...", "sourceRef":"...", "value":"...", "default":true}</c>. Exatamente
         /// um item deve ter <c>"default":true</c> pra virar o ramo <c>xsl:otherwise</c>/fallback.
         /// </summary>
-        private sealed record ConditionSpec(string TestXPath, string? SourceRef, string? Value, bool IsDefault);
+        internal sealed record ConditionSpec(string TestXPath, string? SourceRef, string? Value, bool IsDefault);
 
-        private static List<ConditionSpec> ReadConditions(MappingDraftRule rule)
+        internal static List<ConditionSpec> ReadConditions(MappingDraftRule rule)
         {
             using var doc = JsonDocument.Parse(rule.ConditionsJson ?? "[]");
             var result = new List<ConditionSpec>();
@@ -418,7 +419,7 @@ namespace LayoutParserApi.Services.Fiscal
 
         public const string ProvenanceNamespace = "urn:layoutparser:provenance";
 
-        private static string LastSegment(string reference)
+        internal static string LastSegment(string reference)
         {
             var trimmed = reference.TrimEnd('/');
             var idx = trimmed.LastIndexOfAny(new[] { '/', ':' });

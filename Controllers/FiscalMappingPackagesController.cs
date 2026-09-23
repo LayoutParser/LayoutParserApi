@@ -95,7 +95,14 @@ namespace LayoutParserApi.Controllers
                 using var memoryStream = new MemoryStream();
                 await file.CopyToAsync(memoryStream, cancellationToken);
 
-                artifacts.Add(new UploadedArtifactInput(file.Name, file.FileName, file.ContentType, memoryStream.ToArray()));
+                // ✅ issue #341: campo de texto opcional "{kind}Provenance" (ex.: "sampleProvenance")
+                // — proveniência declarada pelo analista, NUNCA inferida. Ausente/inválido vira null
+                // e o serviço trata como amostra real (fail-closed, ver ArtifactProvenance.IsValid).
+                var provenance = Request.Form.TryGetValue($"{file.Name}Provenance", out var provenanceValue)
+                    ? provenanceValue.ToString()
+                    : null;
+
+                artifacts.Add(new UploadedArtifactInput(file.Name, file.FileName, file.ContentType, memoryStream.ToArray(), provenance));
             }
 
             var idempotencyKey = Request.Headers.TryGetValue("Idempotency-Key", out var headerValue) ? headerValue.ToString() : null;
@@ -205,7 +212,14 @@ namespace LayoutParserApi.Controllers
                 using var memoryStream = new MemoryStream();
                 await file.CopyToAsync(memoryStream, cancellationToken);
 
-                artifacts.Add(new UploadedArtifactInput(file.Name, file.FileName, file.ContentType, memoryStream.ToArray()));
+                // ✅ issue #341: campo de texto opcional "{kind}Provenance" (ex.: "sampleProvenance")
+                // — proveniência declarada pelo analista, NUNCA inferida. Ausente/inválido vira null
+                // e o serviço trata como amostra real (fail-closed, ver ArtifactProvenance.IsValid).
+                var provenance = Request.Form.TryGetValue($"{file.Name}Provenance", out var provenanceValue)
+                    ? provenanceValue.ToString()
+                    : null;
+
+                artifacts.Add(new UploadedArtifactInput(file.Name, file.FileName, file.ContentType, memoryStream.ToArray(), provenance));
             }
 
             CreateRevisionOutcome outcome;
@@ -293,10 +307,26 @@ namespace LayoutParserApi.Controllers
             if (package == null || package.WorkspaceId != workspaceId)
                 return NotFound();
 
-            return Ok(ToResponse(package));
+            // ✅ issue #424: sinais de qualidade são ADITIVOS e opcionais — qualquer falha aqui degrada
+            // (log + resposta sem os campos), nunca derruba o GET da revisão.
+            IReadOnlyDictionary<Guid, Services.Fiscal.SpecQualityResult>? quality = null;
+            try
+            {
+                quality = await _packageService.GetSpecQualityAsync(package, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Falha ao calcular sinais de qualidade do pacote {PackageId}.", packageId);
+            }
+
+            return Ok(ToResponse(package, quality));
         }
 
-        private static object ToResponse(PackageDetail package) => new
+        private static object ToResponse(PackageDetail package, IReadOnlyDictionary<Guid, Services.Fiscal.SpecQualityResult>? quality = null) => new
         {
             packageId = package.PackageId,
             workspaceId = package.WorkspaceId,
@@ -319,6 +349,22 @@ namespace LayoutParserApi.Controllers
                         originalFileName = a.OriginalFileName,
                         inspectionStatus = a.InspectionStatus,
                         uploadedAt = a.UploadedAt,
+                        provenance = a.Provenance,
+                        // ✅ issue #424 (aditivo): só artefatos spec analisados. checksRun diz o que foi
+                        // realmente verificado — array vazio só é "sem problema" se o check constar lá.
+                        qualityStatus = quality != null && quality.TryGetValue(a.ArtifactId, out var q) ? q.Status : null,
+                        qualityError = quality != null && quality.TryGetValue(a.ArtifactId, out var qe) ? qe.Error : null,
+                        qualitySignals = quality != null && quality.TryGetValue(a.ArtifactId, out var qs) && qs.Signals != null
+                            ? new
+                            {
+                                missingRequiredColumns = qs.Signals.MissingRequiredColumns,
+                                conflicts = qs.Signals.Conflicts.Select(c => new { field = c.Field, reason = c.Reason }),
+                                absentReferences = qs.Signals.AbsentReferences,
+                                skippedSheets = qs.Signals.SkippedSheets,
+                                emptySheets = qs.Signals.EmptySheets,
+                                checksRun = qs.Signals.ChecksRun,
+                            }
+                            : null,
                     })
                 }
             }
