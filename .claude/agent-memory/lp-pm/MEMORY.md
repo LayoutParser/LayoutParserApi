@@ -14,3 +14,4 @@
 - [LLM provider plugável 2026-09-08](project_llm-provider-plugavel-2026-09-08.md) — #340 (F1 ILlmProvider) e #341 (F2 gap proveniência); F3/F4 aguardam dono escolher provedor.
 - [Correção humana de campo 2026-09-08](project_correcao-humana-campo-2026-09-08.md) — #345 (endpoint+DocumentId, urgente pro React#234) e #346 (curadoria, depende de #345).
 - [Retraining automatizado F4 2026-09-08](project_retraining-automatizado-f4-2026-09-08.md) — #351 (F4.1-F4.3 faseado), continuação de #151; backfill em lote deliberadamente não formalizado.
+- [Board-sync 2026-09-16](project_board-sync-2026-09-16.md) — varredura completa autorizada; board foi de 74→104 itens, agora 1:1 com o repo; 30 issues adicionadas (24 Done, 6 Todo).

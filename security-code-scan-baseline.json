@@ -158,5 +158,14 @@
   "generatedAt": "2026-08-13",
   "generatedFromCommit": "616a8ad",
   "keyFormat": "codigo:arquivo:linha",
-  "findings": []
+  "findings": [
+    {
+      "code": "SCS0003",
+      "file": "Services/XmlAnalysis/ReverseReconstructionService.cs",
+      "line": 158,
+      "addedAt": "2026-09-15",
+      "addedFromPr": 407,
+      "reason": "navigator.SelectSingleNode(target.Xpath) — o SCS marca como XPath injection porque target.Xpath vem do corpo da request (POST api/xml-analysis/reverse-reconstruct, issue #151). Aceito conscientemente: tanto o Xpath quanto o TargetXml contra o qual ele roda vem da MESMA request do MESMO chamador autenticado — não existe cenario de vazamento cross-documento (o chamador so pode ler o proprio XML que ele mesmo acabou de enviar). E leitura pura (SelectSingleNode para extrair valor, nunca usado para bypass de autorizacao) e ja esta dentro de try/catch(XPathException). Debito de baixo risco, nao vulnerabilidade real neste contexto especifico."
+    }
+  ]
 }

@@ -337,6 +337,49 @@ namespace LayoutParserApi.Services.XmlAnalysis
         }
 
         /// <summary>
+        /// Carrega o <see cref="XmlSchemaSet"/> compilado para uma versão de XSD (issue #380,
+        /// #198.5 — cobertura de destinos obrigatórios). Reaproveita a mesma resolução de arquivo
+        /// (<see cref="FindXsdFile"/>) usada em <see cref="ValidateXmlAgainstXsdAsync"/> — não
+        /// reinventa o parser de XSD. Degrada gracioso (dotnet-standards.md §Resiliência): arquivo
+        /// ausente/schema inválido devolve <c>null</c> (logado), nunca lança para o chamador.
+        /// </summary>
+        public XmlSchemaSet? TryLoadSchemaSet(string xsdVersion)
+        {
+            try
+            {
+                var xsdPath = FindXsdFile(xsdVersion);
+                if (string.IsNullOrEmpty(xsdPath) || !File.Exists(xsdPath))
+                {
+                    _logger.LogWarning("Arquivo XSD não encontrado para cálculo de cobertura obrigatória: {XsdVersion}", xsdVersion);
+                    return null;
+                }
+
+                var schemas = new XmlSchemaSet();
+                schemas.ValidationEventHandler += (sender, e) =>
+                    _logger.LogWarning("Aviso ao carregar schema XSD (cobertura obrigatória): {Message}", e.Message);
+
+                // ✅ SCS0018: xsdPath vem de FindXsdFile, já confinado a _xsdBasePath via SafePathResolver.
+#pragma warning disable SCS0018
+                using var reader = XmlReader.Create(xsdPath);
+                var schema = XmlSchema.Read(reader, (sender, e) =>
+                    _logger.LogError("Erro ao ler schema XSD (cobertura obrigatória): {Message}", e.Message));
+#pragma warning restore SCS0018
+
+                if (schema == null)
+                    return null;
+
+                schemas.Add(schema);
+                schemas.Compile();
+                return schemas;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Falha ao carregar XSD para cálculo de cobertura obrigatória (versão {XsdVersion}).", xsdVersion);
+                return null;
+            }
+        }
+
+        /// <summary>
         /// Encontra arquivo XSD na pasta especificada
         /// </summary>
         private string FindXsdFile(string version)
