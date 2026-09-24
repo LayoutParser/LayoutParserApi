@@ -111,6 +111,9 @@ namespace LayoutParserApi.Controllers
         /// <remarks>
         /// RBAC: qualquer papel de membro (<c>owner</c>/<c>fiscal_admin</c>/<c>mapper</c>/
         /// <c>reviewer</c>/<c>operator</c>/<c>viewer</c>). Não-membro ou sem identidade → 404.
+        /// Só aceita <c>page</c>/<c>pageSize</c> — não há filtro por <c>status</c>/<c>draftId</c>/
+        /// <c>environment</c> ainda (issue #377, backlog).
+        /// </remarks>
         /// Aceita <c>page</c>/<c>pageSize</c> e os filtros opcionais <c>status</c>/<c>draftId</c>/
         /// <c>environment</c> (issue #377).
         /// </remarks>
