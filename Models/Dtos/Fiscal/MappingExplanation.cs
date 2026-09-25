@@ -20,7 +20,19 @@ namespace LayoutParserApi.Models.Dtos.Fiscal
     }
 
     /// <summary>Capacidades do motor por trás de uma explicação (Slice 4, design §1). Nunca lidas de config — cada adapter hard-coda as suas.</summary>
-    public sealed record EngineCapabilities(bool Execute, bool Explain, bool Author, bool Compile, bool Publish);
+    /// <param name="DeterministicTest">
+    /// <c>true</c> quando o Fiscal Test Lab (<see cref="IMappingTestRunService"/>) consegue executar
+    /// este engine de ponta a ponta e a mesma entrada sempre produz o mesmo resultado — propriedade
+    /// do TEST RUNNER local, não do gabarito de geração (não confundir com <c>validationBasis:
+    /// declared_dsl</c> do gerador de amostras, que descreve a origem do XML esperado, não se o
+    /// motor de teste consegue rodá-lo). <c>tcl</c>/<c>xslt</c> = <c>true</c> (#421);
+    /// <c>sysmiddle</c> = <c>false</c> — nunca participa de <c>createTestRun</c>, só explica
+    /// (read-only), e o runner real segue bloqueado por licença FiatMQ (ver
+    /// <c>docs/architecture/adr-geracao-automatica-gabarito-sysmiddle.md</c> §2). Default
+    /// <c>true</c> só existe para não quebrar call sites existentes ao tornar o parâmetro aditivo —
+    /// todo adapter real deve declarar o valor explicitamente.
+    /// </param>
+    public sealed record EngineCapabilities(bool Execute, bool Explain, bool Author, bool Compile, bool Publish, bool DeterministicTest = true);
 
     /// <summary>Referência de schema de origem/destino (quando resolvível).</summary>
     public sealed record SchemaRef(string? LayoutGuid, string? Description);

@@ -46,7 +46,7 @@ namespace LayoutParserApi.Services.Fiscal
         };
 
         private static readonly EngineCapabilities FixedCapabilities =
-            new(Execute: true, Explain: true, Author: false, Compile: false, Publish: false);
+            new(Execute: true, Explain: true, Author: false, Compile: false, Publish: false, DeterministicTest: false);
 
         private readonly ICachedMapperService _cachedMapperService;
         private readonly ILogger<SysmiddleExplanationAdapter> _logger;
