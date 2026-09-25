@@ -22,7 +22,7 @@ namespace LayoutParserApi.Services.Fiscal
         public string Engine => "tcl";
 
         private static readonly EngineCapabilities FixedCapabilities =
-            new(Execute: false, Explain: true, Author: true, Compile: false, Publish: false);
+            new(Execute: false, Explain: true, Author: true, Compile: false, Publish: false, DeterministicTest: true);
 
         private readonly IMappingDraftStore _store;
         private readonly ILogger<TclExplanationAdapter> _logger;

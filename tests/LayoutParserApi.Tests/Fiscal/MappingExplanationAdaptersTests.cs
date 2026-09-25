@@ -329,5 +329,54 @@ namespace LayoutParserApi.Tests.Fiscal
 
             Assert.Null(explanation);
         }
+
+        // ── issue #467: DeterministicTest por engine (ADR adr-capability-teste-deterministico-467) ──
+        // tcl/xslt = true (runner local determinístico), sysmiddle = false (nunca entra em createTestRun).
+
+        [Fact]
+        public async Task Tcl_Capabilities_DeterministicTest_IsTrue()
+        {
+            var workspaceId = Guid.NewGuid();
+            var draftId = Guid.NewGuid();
+            var store = new FakeDraftStore();
+            store.Drafts[draftId] = new MappingDraftDetail(draftId, workspaceId, Guid.NewGuid(), Guid.NewGuid(), "tcl", DateTimeOffset.UtcNow, Array.Empty<MappingDraftRuleDetail>());
+
+            var adapter = new TclExplanationAdapter(store, NullLogger<TclExplanationAdapter>.Instance);
+            var explanation = await adapter.ExplainAsync(
+                new MappingExplanationRequest(workspaceId, Guid.NewGuid(), draftId.ToString(), "draft"), CancellationToken.None);
+
+            Assert.NotNull(explanation);
+            Assert.True(explanation!.Capabilities.DeterministicTest);
+        }
+
+        [Fact]
+        public async Task Xslt_Capabilities_DeterministicTest_IsTrue()
+        {
+            var workspaceId = Guid.NewGuid();
+            var draftId = Guid.NewGuid();
+            var store = new FakeDraftStore();
+            store.Drafts[draftId] = new MappingDraftDetail(draftId, workspaceId, Guid.NewGuid(), Guid.NewGuid(), "xslt", DateTimeOffset.UtcNow, Array.Empty<MappingDraftRuleDetail>());
+
+            var adapter = new XsltExplanationAdapter(store, NullLogger<XsltExplanationAdapter>.Instance);
+            var explanation = await adapter.ExplainAsync(
+                new MappingExplanationRequest(workspaceId, Guid.NewGuid(), draftId.ToString(), "draft"), CancellationToken.None);
+
+            Assert.NotNull(explanation);
+            Assert.True(explanation!.Capabilities.DeterministicTest);
+        }
+
+        [Fact]
+        public async Task Sysmiddle_Capabilities_DeterministicTest_IsFalse()
+        {
+            var cache = new FakeCachedMapperService();
+            cache.Mappers.Add(BuildSysmiddleMapper("MAP_DET", "%beginRuleContent;T.xMun=I.LINHA1/Campo;%endRuleContent;"));
+            var adapter = new SysmiddleExplanationAdapter(cache, NullLogger<SysmiddleExplanationAdapter>.Instance);
+
+            var explanation = await adapter.ExplainAsync(
+                new MappingExplanationRequest(Guid.NewGuid(), Guid.NewGuid(), "MAP_DET", "current"), CancellationToken.None);
+
+            Assert.NotNull(explanation);
+            Assert.False(explanation!.Capabilities.DeterministicTest);
+        }
     }
 }

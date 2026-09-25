@@ -32,7 +32,7 @@ namespace LayoutParserApi.Services.Fiscal
         };
 
         private static readonly EngineCapabilities FixedCapabilities =
-            new(Execute: true, Explain: true, Author: true, Compile: false, Publish: false);
+            new(Execute: true, Explain: true, Author: true, Compile: false, Publish: false, DeterministicTest: true);
 
         private readonly IMappingDraftStore _store;
         private readonly ILogger<XsltExplanationAdapter> _logger;
