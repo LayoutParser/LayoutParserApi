@@ -31,19 +31,43 @@ para um `Program.cs` de 307 linhas, não é um esqueleto vazio a ser escrito do 
 
 ## 1. Achado técnico que muda a leitura do problema
 
-Investigação de `LayoutParserLib/CryptographySysMiddle.cs` (~41 linhas): o algoritmo usa **somente**
-`System.Security.Cryptography.RijndaelManaged` — criptografia 100% gerenciada, **sem P/Invoke,
-sem COM interop**. Tecnicamente, esse código poderia rodar em .NET moderno em Linux hoje, sem
-adaptação de plataforma.
+> ### ⚠️ Errata (2026-09-25, mesma sessão — corrigido durante a implementação da Parte 1)
+>
+> ~~Investigação de `LayoutParserLib/CryptographySysMiddle.cs` (~41 linhas): o algoritmo usa
+> **somente** `System.Security.Cryptography.RijndaelManaged` — criptografia 100% gerenciada, **sem
+> P/Invoke, sem COM interop**. Tecnicamente, esse código poderia rodar em .NET moderno em Linux
+> hoje, sem adaptação de plataforma.~~
+>
+> **Correção:** essa conclusão estava certa sobre a ausência de P/Invoke/COM, mas errada na
+> prática para a chave/IV reais deste projeto. A partir do .NET Core/.NET 5+, `RijndaelManaged`
+> deixou de ser o algoritmo Rijndael "de verdade" (bloco/chave de tamanho variável) e virou um
+> shim fino sobre AES, que só aceita chaves de **128/192/256 bits**. A chave usada em produção
+> (`"dbc%$#h92785"`, 96 bits) e o IV (`"Ca#&UjO){Qwz*@FcsPs"`, 152 bits) **não são tamanhos
+> válidos para AES** — logo não rodam em .NET moderno, mesmo sem nenhuma dependência nativa.
+>
+> Comprovado empiricamente pelo `@lp-backend-dev` (Dex) durante a implementação da Parte 1
+> (branch `feat/decrypt-http-service-adr` do repo `LayoutParserDecrypt`): um teste de round-trip
+> (`CreateEncryptor`/`CreateDecryptor` com essa chave/IV) falha em `net10.0` com
+> `ArgumentException: Specified key is not a valid size for this algorithm`. O mesmo código roda
+> normalmente em .NET Framework 4.8.1, onde `RijndaelManaged` ainda é Rijndael de verdade.
+>
+> **Consequência aplicada:** `LayoutParserDecrypt` **permanece em .NET Framework 4.8.1** — não foi
+> migrado para .NET moderno como este ADR sugeria como caminho natural. Só o transporte mudou
+> (subprocess local → HTTP via `System.Net.HttpListener` auto-hospedado, já que ASP.NET Core
+> moderno não roda em .NET Framework clássico). O restante deste ADR (§2–§4, decisão de HTTP+Polly,
+> ordem de implementação) continua válido — a correção afeta só a leitura de "o que bloqueia
+> Windows" abaixo e o §5 (fora de escopo).
 
 O motivo documentado no próprio README do repositório `LayoutParserDecrypt` para justificar o
 processo Windows separado ("a API não consegue executar `RijndaelManaged` em processo de forma
-compatível") é **histórico**, não uma limitação técnica que sobrevive nos fatos do código atual.
+compatível") é, na verdade, **tecnicamente correto** para a chave/IV reais em uso — ver errata
+acima. Não é só decisão herdada; o algoritmo genuinamente não roda em .NET moderno com esses
+parâmetros.
 
-**Conclusão:** o verdadeiro bloqueador de Windows na cadeia de descriptografia/transformação é
-**só o LowCodeRunner** (motor proprietário x86, licença por host). O Decrypt é Windows-only por
-decisão herdada, não por necessidade técnica atual — ver §5 (fora de escopo) para a decisão
-futura de eliminar esse salto por completo.
+**Conclusão (revisada):** o Decrypt continua preso ao Windows/.NET Framework por um motivo técnico
+real (incompatibilidade de tamanho de chave), não apenas por decisão herdada — além do
+LowCodeRunner (motor proprietário x86, licença por host), que já era o bloqueador reconhecido.
+Ver §5 (fora de escopo) para o que seria necessário para eliminar esse salto no futuro.
 
 ## 2. Decisão de transporte: HTTP interno com Polly, não message broker
 
@@ -116,11 +140,15 @@ antes de implementar a etapa do LowCodeRunner. Não é decidível por nenhum age
 
 Se o Decrypt deveria ser **reescrito em .NET moderno para rodar em Linux também** — eliminando um
 dos dois saltos de rede Linux→Windows que a API passaria a ter — é uma pergunta tecnicamente
-válida dado o achado do §1 (`LayoutParserLib` não tem dependência nativa). Mas é uma mudança de
-escopo maior: recriar/portar o algoritmo em .NET moderno e validar compatibilidade byte-a-byte com
-`RijndaelManaged` existente é trabalho não trivial de validação, não uma decisão a tomar dentro
-deste ADR. Registrar como candidato a ADR futuro se o dono quiser avançar essa frente depois que
-a segregação básica estiver estável.
+válida. **Atualizado pela errata do §1:** essa reescrita agora envolve dois problemas empilhados,
+não um: (1) portabilidade de plataforma (ausência de P/Invoke/COM não é mais suficiente — precisa
+adicionar) (2) trocar o próprio algoritmo, já que `RijndaelManaged` no .NET moderno não aceita a
+chave/IV reais em uso (96/152 bits — ver errata). Um candidato viável seria substituir
+`RijndaelManaged` por uma implementação que aceite bloco/chave de tamanho variável (ex.:
+BouncyCastle `RijndaelEngine`), validando compatibilidade byte-a-byte com dado já criptografado em
+produção. Trabalho não trivial de validação, não uma decisão a tomar dentro deste ADR. Registrar
+como candidato a ADR futuro se o dono quiser avançar essa frente depois que a segregação básica
+estiver estável.
 
 ## Consequências
 
