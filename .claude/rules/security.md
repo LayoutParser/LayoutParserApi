@@ -333,7 +333,7 @@ não ao Dependabot version updates. Nenhuma ação necessária no `dependabot.ym
 - **Identidade vem do BFF, não há `[Authorize]` ainda.** A API não autentica ninguém diretamente:
   `Services/Security/TrustedIdentityMiddleware.cs` lê os headers `x-iis-user`/`x-iis-roles`
   (configuráveis via `Security:TrustedUserHeader`/`Security:TrustedRolesHeader`) injetados pelo BFF
-  Fastify (`LayoutParserReact/server/`, autenticação Entra OIDC) e popula `ICurrentUser` +
+  Fastify (`layoutparser-portal/server/`, autenticação Entra OIDC) e popula `ICurrentUser` +
   `HttpContext.User`. Só confia nesses headers se a origem da requisição for **loopback**
   (`TrustIdentityFromLoopbackOnly`, default `true`, deliberadamente fora do `appsettings.json`) —
   isso fecha forja de identidade mesmo com a API respondendo em `0.0.0.0`. Nenhum endpoint tem

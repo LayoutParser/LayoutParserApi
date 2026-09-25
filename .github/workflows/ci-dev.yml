@@ -33,7 +33,7 @@ jobs:
 
     steps:
     - name: Checkout LayoutParserApi
-      uses: actions/checkout@v7
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         path: LayoutParserApi
 
@@ -86,25 +86,25 @@ jobs:
     # condicional para bin\Debug quando a DLL da configuracao nao existe) - o checkout
     # lado a lado e obrigatorio, no mesmo padrao do deploy.yml.
     - name: Checkout LayoutParserLib
-      uses: actions/checkout@v7
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
-        repository: LayoutParser/LayoutParserLib
-        path: LayoutParserLib
+        repository: LayoutParser/layoutparser-lib
+        path: layoutparser-lib
         token: ${{ secrets.GH_PAT_TOKEN || secrets.GITHUB_TOKEN }}
         fetch-depth: 1
 
     # O Decrypt e standalone (embute os fontes minimos da Lib) e compila com dotnet build -
     # o runner dev-local NAO possui VS Build Tools/msbuild.exe (nao usar setup-msbuild aqui).
     - name: Checkout LayoutParserDecrypt
-      uses: actions/checkout@v7
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
-        repository: LayoutParser/LayoutParserDecrypt
-        path: LayoutParserDecrypt
+        repository: LayoutParser/layoutparser-decrypt
+        path: layoutparser-decrypt
         token: ${{ secrets.GH_PAT_TOKEN || secrets.GITHUB_TOKEN }}
         fetch-depth: 1
 
     - name: Setup .NET
-      uses: actions/setup-dotnet@v6
+      uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
       with:
         dotnet-version: '10.0.x'
 
@@ -116,7 +116,7 @@ jobs:
         # obrigacao de config casada entre Lib e API.
         # A Lib e csproj legado (non-SDK) sem PackageReference: o MSBuild do SDK .NET
         # compila direto - validado no runner dev-local, que NAO possui VS Build Tools/msbuild.exe.
-        $LIB_PROJECT = Join-Path $PWD.Path "LayoutParserLib\LayoutParserLib.csproj"
+        $LIB_PROJECT = Join-Path $PWD.Path "layoutparser-lib\LayoutParserLib.csproj"
 
         if (-not (Test-Path $LIB_PROJECT)) {
           Write-Error "Projeto nao encontrado: $LIB_PROJECT"
@@ -130,7 +130,7 @@ jobs:
           exit 1
         }
 
-        $LIB_DLL = Join-Path $PWD.Path "LayoutParserLib\bin\Debug\LayoutParserLib.dll"
+        $LIB_DLL = Join-Path $PWD.Path "layoutparser-lib\bin\Debug\LayoutParserLib.dll"
         if (-not (Test-Path $LIB_DLL)) {
           Write-Error "LayoutParserLib.dll nao foi gerada em: $LIB_DLL"
           exit 1
@@ -303,7 +303,7 @@ jobs:
     # seguimos com o binario que ja existir no destino.
     - name: Build LayoutParserDecrypt (Release, .NET Framework 4.8.1)
       run: |
-        $DECRYPT_PROJECT = Join-Path $PWD.Path "LayoutParserDecrypt\LayoutParserDecrypt.csproj"
+        $DECRYPT_PROJECT = Join-Path $PWD.Path "layoutparser-decrypt\LayoutParserDecrypt.csproj"
 
         if (-not (Test-Path $DECRYPT_PROJECT)) {
           Write-Warning "Projeto nao encontrado: $DECRYPT_PROJECT - seguindo sem rebuild do Decrypt."
@@ -505,7 +505,7 @@ jobs:
         }
 
         # LayoutParserDecrypt.exe (+ config) - processo externo de descriptografia.
-        $DECRYPT_BIN = Join-Path $PWD.Path "LayoutParserDecrypt\bin\Release"
+        $DECRYPT_BIN = Join-Path $PWD.Path "layoutparser-decrypt\bin\Release"
         foreach ($f in @('LayoutParserDecrypt.exe', 'LayoutParserDecrypt.exe.config')) {
           $p = Join-Path $DECRYPT_BIN $f
           if (Test-Path $p) {
@@ -520,7 +520,7 @@ jobs:
         # fallback: copiar da build Debug da Lib se por algum motivo faltar.
         $libInDest = Join-Path $API_DEST "LayoutParserLib.dll"
         if (-not (Test-Path $libInDest)) {
-          $libDll = Join-Path $PWD.Path "LayoutParserLib\bin\Debug\LayoutParserLib.dll"
+          $libDll = Join-Path $PWD.Path "layoutparser-lib\bin\Debug\LayoutParserLib.dll"
           if (Test-Path $libDll) {
             Copy-Item -Path $libDll -Destination $API_DEST -Force
             Write-Host "  LayoutParserLib.dll copiada (fallback da build Debug)."
