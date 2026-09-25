@@ -62,8 +62,8 @@
          → cai no fallback; dev local (tudo Debug) → casa direto. Assim nem ci-dev.yml nem
          deploy.yml precisam mudar. -->
     <Reference Include="LayoutParserLib">
-      <HintPath>..\LayoutParserLib\bin\$(Configuration)\LayoutParserLib.dll</HintPath>
-      <HintPath Condition="!Exists('..\LayoutParserLib\bin\$(Configuration)\LayoutParserLib.dll')">..\LayoutParserLib\bin\Debug\LayoutParserLib.dll</HintPath>
+      <HintPath>..\layoutparser-lib\bin\$(Configuration)\LayoutParserLib.dll</HintPath>
+      <HintPath Condition="!Exists('..\layoutparser-lib\bin\$(Configuration)\LayoutParserLib.dll')">..\layoutparser-lib\bin\Debug\LayoutParserLib.dll</HintPath>
     </Reference>
   </ItemGroup>
 
